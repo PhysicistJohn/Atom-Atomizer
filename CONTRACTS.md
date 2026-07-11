@@ -1,12 +1,14 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: active execution baseline, API v2, 2026-07-11
+Status: active execution baseline, API v2, trio composition v1, 2026-07-11
 Companion: [PLAN.md](./PLAN.md)
+
+Trio authority: [contracts/trio-composition-v1.json](./contracts/trio-composition-v1.json)
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 Advanced-measurement authority: [docs/ADVANCED_MEASUREMENTS_CONTRACT.md](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
-Replay authority: [docs/WAVEFORM_REPLAY_CONTRACT.md](./docs/WAVEFORM_REPLAY_CONTRACT.md)
+Stimulus authority: sibling `../TinySA_SignalLab/CONTRACTS.md` (current sink is reserved, not connected)
 Experience authority: [docs/UI_UX_CONTRACTS.md](./docs/UI_UX_CONTRACTS.md)
 Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
 
@@ -14,7 +16,7 @@ Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
 
 ### Objective
 
-Deliver a production-quality Electron desktop application that wholly operates one tinySA Ultra+ ZS407 over USB to the extent exposed by its installed firmware. The product includes analyzer and generator control, measurement visualization, remote screen/touch, local sessions and exports, robust recovery, packaged installers, automated tests, and operating documentation.
+Deliver a production-quality Electron desktop application that wholly operates one tinySA Ultra+ ZS407 over verified USB to the extent exposed by its installed firmware, or the explicitly labeled executable Firmware twin when no exact physical candidate exists. The product includes analyzer and generator control, measurement visualization, remote screen/touch, exports, governed Atom operation, automated tests, and operating documentation.
 
 The software baseline is no longer based on wiki guesses. Host protocol v2 is derived from sibling firmware commit `c97938697b6c7485e7cab50bca9af76996b7d671`. Source-derived framing, commands, limits, screen shape, and readback semantics are frozen in the protocol contract. The ordered unit still gates physical timing, shipped-version variance, RF accuracy, cable-loss behavior, and final safety qualification.
 
@@ -36,9 +38,11 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for the API v2 contracts, exact prompt/parser/scheduler, serial transport boundary, byte-level ZS407 simulator, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, spectral morphology, zero-span envelope analysis, Electron v2 bridge, export serialization, Atom session/tool policy, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
+The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v3, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
 
-The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and continuously replays an evolving byte stream selected from a 79-profile closed catalog: visual CW/AM/FM; six published GSM/EDGE normal-burst modulations; 25 in-scope Release 19 LTE E-TM/sE-TM/N-TM profiles; 41 NR-FR1/NR-N-TM/SBFD profiles; and four IEEE 802.11ax HE PPDU formats. Seeded AWGN and correlated frequency-selective Rayleigh modes share receiver ripple, sweep evolution, and stable low-level spurs. Standards-derived profiles remain power-spectrum/time projections, not bit-exact or conformance-validated I/Q. A physical discovery error must fail rather than activate demo mode.
+Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. Exact physical ZS407 discovery suppresses automatic twin admission; discovery failure and twin boot/evidence failure are visible and never activate another backend.
+
+SignalLab is an independent repository and application. It owns 79 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Its Firmware sink is `reserved-not-connected`; Atomizer has no SignalLab tools or hidden process coupling. Activating that future edge requires a coordinated contract-version change in all three repositories.
 
 Spectrum now exposes four host-derived trace slots and eight host-derived markers over complete acquired sweeps, plus trigger and amplitude-display controls. This mirrors established instrument workflows without claiming unreadable firmware state or equivalence to a vendor implementation. Exact mode semantics, evidence labels, and acceptance tests are governed by the measurement contract.
 
@@ -92,13 +96,15 @@ Every package must:
 ```text
 apps/desktop/             Electron main, preload, and React renderer
 packages/contracts/       Pure serializable TypeScript contracts
-packages/tinysa/          Protocol codecs, device service, capability profiles
-packages/test-device/     Fake transport, simulator, transcript fixtures
-packages/waveforms/       Qualified catalog and deterministic channel replay
+packages/tinysa/          Physical/twin transports, protocol codecs, device service
+packages/test-device/     Test-only protocol double and transcript fixtures
 packages/analysis/        Traces, markers, detection and characterization
-packages/session/         Session model, persistence, import/export
+packages/agent/           Atom surface, schemas, policy and Realtime settings
+contracts/                Byte-identical trio composition manifest
 docs/                     User, support, protocol, ADR, and release documents
 tools/                    Hardware probes and release utilities
+../TinySA_Firmware/       Executable Renode twin and future stimulus sink owner
+../TinySA_SignalLab/      Independent stimulus-authoring application
 ```
 
 ### Ownership rules
@@ -112,12 +118,25 @@ tools/                    Hardware probes and release utilities
 | Sessions | WP-11 | UI/export | Versioned schema and atomic persistence |
 | Fixtures/simulator | WP-03 | All test suites | Deterministic and hardware-independent |
 | Capability profile | WP-01/06 | UI | Renderer never infers model rules |
+| Executable twin | `TinySA_Firmware` | Device service | Exact bridge v1 evidence; never represented as USB |
+| Stimulus intent | `TinySA_SignalLab` | Future Firmware sink | Reserved-not-connected until coordinated activation |
+| Atom tool/control topology | `packages/agent` | Renderer host | Exactly one policy, executor, projection and guarantee per hook |
 
 ### Required state machines
 
 Connection: `disconnected -> discovering -> connecting -> identifying -> ready -> recovering -> disconnected`, with `faulted` reachable from every active state.
 
 Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. Generator output is an explicit state, never inferred from mode. Transitions stop conflicting activity before configuration changes.
+
+### Assume/guarantee composition rule
+
+For each active producer→consumer edge, release composition is valid only when the producer guarantee implies every consumer assumption: `G_producer => A_consumer`. The three repositories carry byte-identical copies of composition contract v1, and `npm run check:trio-contract` proves identity plus the pinned bridge, firmware, SignalLab, device API, and Atom-surface versions.
+
+- Physical→Atomizer assumes completed discovery, exact ZS407 USB identity, and the required firmware shell; Atomizer guarantees `execution=physical`, `transport=usb-cdc-acm`, and verified USB only after identity.
+- Firmware→Atomizer assumes an exact bridge-v1 ready declaration; Firmware guarantees executable-origin sweeps/LCD/touch/generator evidence, `execution=firmware-digital-twin`, and `usbTransactionsModeled=false`.
+- SignalLab→Firmware assumes a future explicit stimulus sink; SignalLab currently guarantees only versioned intent and non-impersonation. Because the sink is absent, the composition result must remain `reserved-not-connected`.
+
+Safety invariants hold in every reachable state; liveness requires every admitted request to settle exactly once; failure algebra defines a single visible terminal result for invalid input, discovery, identity, boot, evidence, policy, approval, and Realtime-setting failure. Retry, reroute, downgrade, fabrication, and implicit edge activation are outside the contract.
 
 ## 4. Work packages
 

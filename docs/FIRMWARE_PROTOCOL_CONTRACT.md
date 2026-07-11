@@ -87,8 +87,13 @@ HW Version:V0.5.4 + ZS407 max2871
 ```
 
 Atomizer accepts only a ZS407 identity for a physical production session. The
-simulator returns the same protocol identity with `simulated: true`. Other serial
-ports remain visible for diagnostics but fail identification loudly.
+test-only protocol double may return the same shell identity but must preserve
+`execution=protocol-test-double`, `usbIdentityVerified=false`, and test-only
+qualification. The executable Firmware twin preserves
+`execution=firmware-digital-twin`, `transport=renode-monitor-bridge`, and
+`usbTransactionsModeled=false`; it is never admitted through physical USB
+identity. Other serial ports remain visible for selection but fail
+identification loudly.
 
 ## Firmware-derived ZS407 limits
 

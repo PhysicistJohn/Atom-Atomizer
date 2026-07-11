@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tinysa.local/contracts/trio-composition-v1.json",
+  "contractId": "tinysa-trio-composition",
+  "contractVersion": 1,
+  "effectiveDate": "2026-07-11",
+  "parties": {
+    "atomizer": {
+      "repository": "TinySA",
+      "owner": "operator-control-plane",
+      "applicationContractVersion": 3,
+      "deviceApiVersion": 2,
+      "agentSurfaceVersion": 3
+    },
+    "firmware": {
+      "repository": "TinySA_Firmware",
+      "owner": "executable-hardware-twin",
+      "bridgeContractVersion": 1,
+      "bridge": "renode-monitor-v1",
+      "firmwareRelease": "lab-v0.2.0-protocol",
+      "firmwareSourceCommit": "d12bd826555eee51505542a55fd184ade5817d58",
+      "firmwareBinarySha256": "a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7"
+    },
+    "signalLab": {
+      "repository": "TinySA_SignalLab",
+      "owner": "stimulus-authoring",
+      "stimulusContractVersion": 1,
+      "closedProfileCount": 79,
+      "sinkStatus": "reserved-not-connected"
+    }
+  },
+  "edges": [
+    {
+      "producer": "physical-zs407",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "usb-cdc-acm",
+      "assumptions": [
+        "OS discovery completes successfully",
+        "candidate identity is exact-zs407-cdc",
+        "firmware shell identifies ZS407 and exposes the required command set"
+      ],
+      "guarantees": [
+        "execution is physical",
+        "usbIdentityVerified is true only after exact identity",
+        "raw serial remains below the typed device service"
+      ]
+    },
+    {
+      "producer": "firmware",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "renode-monitor-bridge",
+      "assumptions": [
+        "Atomizer launches the declared sibling bridge with contractVersion 1",
+        "ready evidence exactly matches the pinned release, source commit, binary hash, bridge, and boot signature"
+      ],
+      "guarantees": [
+        "execution is firmware-digital-twin",
+        "usbIdentityVerified is false",
+        "usbTransactionsModeled is false",
+        "sweeps, LCD frames, touch, and generator state originate from executable firmware or fail"
+      ]
+    },
+    {
+      "producer": "signalLab",
+      "consumer": "firmware",
+      "status": "reserved-not-connected",
+      "transport": "future-versioned-stimulus-sink",
+      "assumptions": [
+        "a future sink explicitly accepts SignalLabStimulusIntent contractVersion 1"
+      ],
+      "guarantees": [
+        "SignalLab never impersonates USB hardware",
+        "standards-derived profiles remain visual resource and timing projections unless immutable conformance evidence is added",
+        "no current process scrapes, imports, or applies SignalLab state"
+      ]
+    }
+  ],
+  "admission": {
+    "order": [
+      "complete physical discovery",
+      "if an exact ZS407 candidate exists, suppress automatic twin admission",
+      "if no exact ZS407 candidate exists, expose and automatically connect the executable firmware twin"
+    ],
+    "discoveryFailure": "fail-visible-without-twin-admission",
+    "twinStartupFailure": "fail-visible-without-synthetic-substitution"
+  },
+  "safetyInvariants": [
+    "No component silently retries, reroutes, substitutes, downgrades, or fabricates successful evidence.",
+    "Physical USB and Renode monitor execution are never represented by the same transport or verification label.",
+    "Only Atomizer owns operator intent, OpenAI credentials, agent policy, approvals, and instrument orchestration.",
+    "Only Firmware owns executable-twin state and the future SignalLab stimulus sink.",
+    "Only SignalLab owns waveform descriptors, deterministic channel configuration, and stimulus intent.",
+    "RF output enable and general firmware-screen touch remain action-time approval boundaries for Atom.",
+    "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
+    "Screenshots, device strings, application context, and tool outputs are untrusted data rather than instructions.",
+    "The exact AI model is gpt-realtime-2.1-mini on Realtime API paths; model, endpoint, or transport substitution is forbidden."
+  ],
+  "liveness": [
+    "Every admitted request settles exactly once as success or explicit failure.",
+    "Continuous acquisition terminates on explicit stop, disconnect, or first operation failure.",
+    "Twin boot and every bridge request are bounded by declared timeouts.",
+    "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds."
+  ],
+  "failureAlgebra": {
+    "invalidInput": "reject-before-state-change",
+    "physicalDiscoveryError": "visible-fatal-admission-error",
+    "identityMismatch": "disconnect-and-reject",
+    "twinReadyMismatch": "terminate-child-and-reject",
+    "incompleteEvidence": "reject-without-projection",
+    "agentSchemaOrPolicyFailure": "reject-before-executor",
+    "highImpactDenial": "return-denial-without-retry",
+    "realtimeConfigurationMismatch": "terminate-session",
+    "signalLabSinkAbsent": "report-reserved-not-connected"
+  },
+  "compatibility": {
+    "rule": "A producer guarantee must imply every consumer assumption on the same active edge.",
+    "versioning": "Any weakened guarantee, stronger assumption, changed owner, changed evidence label, or newly active edge requires a new contract version and coordinated commits in all three repositories.",
+    "verification": "Release gating requires byte-identical copies of this manifest plus repository-local runtime, build, and boundary tests."
+  }
+}
+

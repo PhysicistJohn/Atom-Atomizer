@@ -229,7 +229,8 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
       this.#emitEvent({ type: 'opened' });
     } catch (error) {
       this.#client = undefined;
-      await client.close().catch(() => undefined);
+      try { await client.close(); }
+      catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Digital twin startup failed and bridge cleanup also failed'); }
       throw error;
     }
   }

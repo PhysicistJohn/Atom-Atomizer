@@ -1,7 +1,7 @@
 # TinySA Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: 2
+Contract/API version: device API 2, Atom surface 3, trio composition 1
 Updated: 2026-07-11
 Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
 
@@ -26,7 +26,11 @@ operator / Atom voice / Atom text / app-only computer actions
                             |
         serialized command scheduler + byte parser
                             |
-           USB CDC transport or explicit simulator
+     verified USB CDC or Renode monitor bridge
+                    /                 \
+          physical ZS407       executable Firmware twin
+
+TinySA SignalLab -- reserved future stimulus intent --> Firmware sink
 ```
 
 No layer may substitute a lower layer after failure. In particular, typed command failure never falls through to physical-screen clicking, another command spelling, another transport, another model, or simulation.
@@ -53,12 +57,12 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis plus marker, trace, display, waterfall, channel, envelope-STFT, waveform and replay-channel contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict API v2, Atom surface v3, byte-identical trio composition v1, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
-| Simulator | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry | scripted corrupt/truncated/unplug matrix expansion |
-| Waveform engine | closed 79-profile catalog; corrected resolved-line FM projection; six GSM/EDGE normal-burst modulations; 25 Release 19 LTE E/sE/N-TMs; 41 NR-FR1/N/SBFD TMs; four Wi-Fi 6 HE PPDUs; seeded AWGN and correlated Rayleigh channels | admitted hashed I/Q assets and independent checks before any conformance-validated claim; multi-carrier ETC/NRTC orchestration |
-| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; continuously replay the selected waveform/channel while the companion window changes the real text/raw/zero-span byte source and recommended analyzer range | physical-device coexistence test; visual review at supported display scales |
+| Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
+| Executable Firmware twin | physical-first admission; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
+| Separate SignalLab | independent repository/app; 79 closed profiles; seeded AWGN/Rayleigh; versioned stimulus intent | Firmware-owned sink remains reserved-not-connected until coordinated trio contract v2 |
 | Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
 | Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
 | Spectrum | one no-scroll four-view stage; analyzer/trigger controls; four traces; eight markers/search/delta/noise; amplitude scaling; Spectrum; coherent Waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; detected-envelope Time/STFT; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
@@ -67,7 +71,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
-| Atom | exact model, high reasoning, Ballad, VAD 0.95, voice/text, all feature hooks, screenshots, policies, approvals | live eval corpus, safety identifier policy, production credential storage |
+| Atom | exact model, high reasoning, Ballad, VAD 0.95, identical voice/text tools, live DOM control topology, screenshots, policies, contextual approvals, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
 | UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 
 ## Execution gates

@@ -117,12 +117,14 @@ async function createWindow(): Promise<void> {
 }
 
 async function connectDefaultDigitalTwin(): Promise<void> {
-  const candidates = await device.listDevices();
-  const twin = candidates.find((candidate) => candidate.execution === 'firmware-digital-twin');
-  if (!twin) return;
-  try { await device.connect(twin); }
+  try {
+    const candidates = await device.listDevices();
+    const twin = candidates.find((candidate) => candidate.execution === 'firmware-digital-twin');
+    if (!twin) return;
+    await device.connect(twin);
+  }
   catch (error) {
-    const message = `Executable digital twin startup failed: ${error instanceof Error ? error.message : String(error)}`;
+    const message = `Default instrument admission failed: ${error instanceof Error ? error.message : String(error)}`;
     console.error(message, error);
     mainWindow?.webContents.send(`tinysa:event:v${API_VERSION}`, { type: 'error', error: { code: 'transport', message, recoverable: false } } satisfies DeviceEvent);
   }

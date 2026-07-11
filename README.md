@@ -1,60 +1,130 @@
 # TinySA Atomizer
 
-TinySA Atomizer is an AI-native Electron control plane for the tinySA Ultra+ ZS407. It owns the instrument through USB CDC, preserves measurement provenance, exposes every accepted operation through a typed API, and gives the same governed surface to Atom, its native voice and tool-using RF agent.
+TinySA Atomizer is an AI-native Electron control plane for the tinySA Ultra+ ZS407. It owns operator intent, physical USB orchestration, measurement projections, and Atom—the application-layer voice and tool-using RF agent.
 
-The repository is executable today with a byte-level ZS407 simulator. Its host protocol is derived from the sibling firmware checkout at commit `c97938697b6c7485e7cab50bca9af76996b7d671`; the ordered physical unit is still required to qualify RF accuracy, shipped firmware variance, timing, and cable-loss behavior.
+The live system is deliberately split into three independently versioned repositories:
+
+| Repository | Sole owner | Current edge |
+|---|---|---|
+| `TinySA` | Operator app, physical USB, measurement analysis, Atom policy and approvals | Physical ZS407 or Firmware twin |
+| `TinySA_Firmware` | Pinned executable Renode twin and bridge | Active Atomizer producer |
+| `TinySA_SignalLab` | Waveform descriptors, seeded channel models, stimulus intent | Reserved; no sink is connected yet |
+
+The normative composition is byte-identical in all three repositories at [trio-composition-v1.json](./contracts/trio-composition-v1.json). Physical USB and the Renode monitor bridge are never represented as the same transport or evidence class.
 
 ## Run
 
-Requirements: Node.js 22+ and npm 11+.
+Requirements:
+
+- Node.js 22+ and npm 11+.
+- The sibling Firmware repository at `../TinySA_Firmware`.
+- Renode and the pinned Firmware twin dependencies declared by that repository.
+- `../TinySA_SignalLab` only when running the separate SignalLab application.
 
 ```bash
 npm install
 npm run check
-TINYSA_SIMULATOR=1 npm run dev
+npm run dev
 ```
 
-Without `TINYSA_SIMULATOR=1`, Atomizer enumerates OS serial devices and accepts a production session only after the console identifies as a ZS407 and exposes the required command set. There is no raw-console or legacy-command fallback.
+Startup follows one closed admission rule:
 
-If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. It immediately starts a paced synthetic replay with seeded AWGN or correlated Rayleigh fading, receiver ripple, sweep evolution, and stable low-level spurs. Its 79-profile library contains CW/AM/FM, all contracted GSM/EDGE normal-burst modulations, the complete in-scope Release 19 LTE and NR-FR1 transmitter test-model sets, and all four Wi-Fi 6 HE PPDU formats. Selecting one changes the live byte stream and analyzer range. The demo is visibly simulated and never substitutes for a failed physical-device operation. Standards-derived profiles are spectrum/time projections, not bit-exact or conformance-validated I/Q.
+1. Complete physical USB discovery.
+2. If an exact ZS407 CDC candidate exists, suppress automatic twin admission and let the operator connect it.
+3. If no exact ZS407 exists, expose and automatically connect the executable twin from `../TinySA_Firmware`.
+4. A discovery error or twin boot/evidence mismatch is visible and terminal for that admission attempt. It never activates a test double or synthetic replacement.
 
-To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron main. Voice uses the unified Realtime WebRTC flow; text, tools, image input, and application-scoped computer operation use a trusted Realtime WebSocket. Both are locked to exactly `gpt-realtime-2.1-mini`, `reasoning.effort: high`, voice `ballad`, and server VAD threshold `0.95`. A model, API, transport, configuration, or tool failure is surfaced and stops the operation.
+The executable twin boots the pinned `lab-v0.2.0-protocol` firmware in Renode. Its sweeps, LCD framebuffer, touch behavior, and generator state come from executable firmware. Its transport is `renode-monitor-bridge`; USB transactions are explicitly not modeled.
 
-## Implemented vertical slice
+The byte-level test device in `packages/test-device` is test-only. It is not a runtime fallback.
 
-- Exact USB shell correlation: CR commands, echoed command, CRLF text, exact `ch> ` prompt, 47-character limit.
-- Stateful ZS407 byte simulator with fragmented delivery, boot banner, text/raw sweeps, zero span, diagnostics, RGB565 screen, touch, and generator commands.
-- Automatic companion Signal Lab with 79 closed live profiles, family/model browsing, seeded AWGN/Rayleigh replay, explicit source/qualification, and the same production byte protocol.
-- Fail-closed serialized command scheduler and typed device state machine.
-- Analyzer configuration with readback verification, 20–450 points, text/raw acquisition, RBW, attenuation, detector, spur, LNA, trigger, and sweep timing.
-- Single and continuous spectrum acquisition with bounded 50-sweep in-memory history and provenance-preserving CSV/JSON export.
-- One no-scroll measurement stage with Spectrum, coherent sweep-history Waterfall, Channel Power/PSD/ACP/ACLR/percent-power OBW, and detected-envelope Time/STFT views.
-- Four simultaneous host-derived traces with Clear/Write, Max Hold, Min Hold, linear-power Average, View/Freeze, Blank, per-trace reset, and persistent configuration.
-- Eight trace-assignable markers with peak tracking, peak/min/next search, delta and dBm/Hz readouts, click/drag placement, plus reference-level and 1/2/5/10/20 dB/div display control.
-- Robust adaptive/absolute signal detection with cross-sweep promotion, stable IDs, and release behavior.
-- Experimental spectral-morphology characterization plus zero-span envelope classification; both retain explicit unknown behavior and never claim I/Q or protocol decoding.
-- Generator path, level, frequency, AM/FM controls, forced-off configuration sequence, persistent RF state, and approval-gated Atom enable.
-- Device workspace with firmware identity, telemetry, command diagnostics, exact 480×320 screen capture, and governed remote touch.
-- Full v2 Electron IPC/preload API with runtime validation and device event subscription.
-- Atom voice/text, typed tool catalog, app-only screenshots/clicks, action-time approvals, and recursive verification of every returned Realtime session setting.
+## SignalLab
+
+SignalLab is now a separate application and Git repository:
+
+```bash
+npm --prefix ../TinySA_SignalLab install
+npm --prefix ../TinySA_SignalLab run dev
+```
+
+It owns 79 closed visual stimulus profiles and deterministic AWGN/Rayleigh channel configuration. It does not impersonate USB hardware and is not currently connected to Atomizer or the twin. The future edge is a versioned `SignalLabStimulusIntent -> Firmware stimulus sink`; only the Firmware repository may activate that edge.
+
+## Atom
+
+Place `OPENAI_KEY` in `.env`. The key is read only by the trusted Electron main process and never crosses preload into the renderer.
+
+Both AI paths use exactly `gpt-realtime-2.1-mini`:
+
+| Path | Transport | Modalities |
+|---|---|---|
+| Voice | Realtime API over WebRTC | Audio, image context, function tools |
+| Text | Realtime API over trusted WebSocket | Text, image context, function tools |
+
+Both paths use the identical closed tool catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad and server VAD threshold `0.95`; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+
+Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
+
+Atom’s application surface is contract version 3:
+
+- Every declared UI hook resolves to exactly one preferred typed tool, risk class, evidence projection, executor, and guarantee.
+- The same validator, policy table, action-time approval, and executor serve voice and text.
+- App screenshots are treated as untrusted image data.
+- Coordinate actions are confined to the Atomizer window and fail closed on high-impact DOM targets.
+- RF-output enable and general firmware-screen touch require immediate human approval.
+- Tool loops are bounded to eight operations.
+- Unknown tools, malformed arguments, missing evidence, duplicate Realtime calls, and unavailable conversations fail visibly without retry or reroute.
+
+## Implemented instrument surface
+
+- Exact ZS407 USB-shell framing and serialized command scheduling.
+- Physical-first discovery with executable-firmware twin admission.
+- Analyzer configuration, readback, single/continuous spectrum acquisition, raw/text transfers, and zero span.
+- Spectrum, coherent waterfall, channel power/PSD/ACP/ACLR/OBW, and detected-envelope STFT.
+- Four host traces: Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset.
+- Eight markers: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
+- Explicit reference level, dB/div, and evidence-backed auto scale.
+- Persistent signal detection and bounded spectral/envelope classification with explicit unknown results.
+- Generator frequency, level, path, AM/FM configuration, forced-off apply, RF state, and governed enable.
+- Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
+- Provenance-preserving CSV/JSON export.
+- Sandboxed Electron renderer, allow-listed preload IPC, app-scoped computer harness, and exact-model Atom gateway.
 
 ## Safety and evidence boundary
 
-Generator frequency, level, modulation, path, and physical output do not have dependable firmware readback. Atomizer labels them `commanded`; cable loss makes RF state `unknown`. Software is not a hardware interlock.
+Generator configuration and physical output do not have dependable firmware readback. They remain labeled `commanded`; uncertain transport loss makes RF state `unknown`. Software is not a hardware interlock.
 
-The firmware exposes analyzer harmonic paths up to a command-derived 17.9226 GHz and generator mixer output up to the same ceiling. Those limits describe addressable firmware behavior, not calibrated performance. The UI warns above the 7.3701 GHz Ultra transition until the ordered ZS407 is characterized.
+The firmware’s addressable frequency limits are not claims of calibrated performance. The ordered physical ZS407 is still required to qualify shipped-firmware variance, RF accuracy, timing, high-frequency behavior, and cable-loss safety.
 
-Zero span is repeated detected-power measurement at one frequency. Its Hann-windowed envelope STFT can expose power-modulation rates, but it is not I/Q and cannot establish phase, EVM, complex symbols, or decode a waveform protocol. Channel measurements are RBW-normalized scalar-sweep engineering estimates until the physical RF path is characterized.
+Zero span is detected power versus time, not I/Q. Envelope STFT cannot establish phase, EVM, symbols, or protocol identity. Standards-derived SignalLab profiles are visual resource/timing projections unless separately backed by immutable conformance evidence.
+
+## Release gates
+
+Repository-local verification:
+
+```bash
+npm run check
+npm --prefix ../TinySA_SignalLab run check
+```
+
+Cross-repository contract and executable-twin verification:
+
+```bash
+npm run check:trio-contract
+npm run check:firmware-twin
+npm run release:trio
+```
+
+`check:trio-contract` requires byte-identical manifests and reconciles Atomizer, Firmware bridge, pinned firmware evidence, and SignalLab contract versions. `check:firmware-twin` boots Renode, checks the exact ready declaration, runs a real firmware sweep, captures the LCD, and verifies generator output returns off.
 
 ## Workspace map
 
-- `apps/desktop`: hardened Electron main/preload, v2 bridge, Atom gateway, computer harness, and React instrument UI.
-- `packages/contracts`: runtime-validated device, measurement, analysis, export, safety, and API v2 types.
-- `packages/tinysa`: byte transport, exact parser/scheduler, serial implementation, and ZS407 device service.
-- `packages/test-device`: deterministic byte-level firmware simulator.
-- `packages/analysis`: robust detection/tracking, metrics, spectral morphology, and zero-span envelope analysis.
-- `packages/agent`: exact-model session config, closed tool schemas, policy, approvals, and returned-setting verification.
-- `packages/waveforms`: qualified synthetic waveform catalog, AWGN/Rayleigh channel engine, spectrum projections, and zero-span fixtures.
+- `apps/desktop`: Electron main/preload, React operator UI, Atom host, and app computer harness.
+- `packages/contracts`: runtime-validated device, transport, measurement, safety, and API v2 types.
+- `packages/tinysa`: physical serial transport, executable-twin adapter, parser, scheduler, and device service.
+- `packages/test-device`: deterministic protocol test double used only by tests.
+- `packages/analysis`: traces, markers, detection, metrics, channel analysis, morphology, and envelope STFT.
+- `packages/agent`: exact Realtime configuration, closed tool/control topology, schemas, policies, approvals, and session verification.
+- `contracts`: cross-repository composition manifest.
 
 ## macOS live development app
 
@@ -62,15 +132,15 @@ Zero span is repeated detected-power measurement at one frequency. Its Hann-wind
 npm run dev:install-app
 ```
 
-This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkout, adds the Atom icon to the Dock, and launches the simulator or USB mode declared in [`tools/dev-launcher/config.json`](./tools/dev-launcher/config.json). Renderer edits use HMR. Quit and reopen the Dock app after main, preload, or shared-package changes. Launcher logs and recovery steps are in [`tools/dev-launcher/README.md`](./tools/dev-launcher/README.md).
+This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkout, adds the icon to the Dock, and launches the live development app. Renderer edits use HMR. Quit and reopen after main, preload, or shared-package changes. Launcher logs and recovery steps are in [tools/dev-launcher/README.md](./tools/dev-launcher/README.md).
 
 ## Normative contracts
 
+- [Trio composition](./contracts/trio-composition-v1.json)
+- [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 - [Markers, traces, display, and trigger](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 - [Waterfall, channel measurements, OBW/ACP, and envelope STFT](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
-- [Qualified waveform and channel replay](./docs/WAVEFORM_REPLAY_CONTRACT.md)
-- [UI, UX, and custom analysis modes](./docs/UI_UX_CONTRACTS.md)
-- [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
+- [UI and UX](./docs/UI_UX_CONTRACTS.md)
 - [Master work-package contract](./CONTRACTS.md)
 - [Delivery and hardware-qualification plan](./PLAN.md)

@@ -67,19 +67,17 @@ Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a det
 
 Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum now contains a bounded four-view measurement stage, 50-sweep history, and native CSV/JSON export.
 
-### 2.3 Signal Lab companion
+### 2.3 Executable twin and separate SignalLab
 
-When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. It immediately starts a paced continuous replay through the production acquisition service. A compact second BrowserWindow exposes the 79-profile closed catalog through counted Lab, GSM, LTE, 5G NR, and Wi-Fi family tabs plus a model selector. Selection changes the simulator's actual text/raw/zero-span byte source and recommended analyzer range while replay remains live. If the operator pauses replay, selecting a new profile starts it again. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
+Startup completes physical discovery before choosing an execution backend. An exact `0483:5740` ZS407 suppresses automatic twin admission. When no exact ZS407 exists, main exposes and automatically connects the sibling Firmware repository's pinned executable Renode twin. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. Discovery failure or twin boot/evidence failure is a visible error; no synthesized or test backend is substituted.
 
-The replay channel is explicitly AWGN or Rayleigh. Seeded complex-Gaussian periodogram power evolves on every frame and combines with spatially correlated receiver ripple, broad passband shape, bounded sweep drift, edge lift, and stable low-level spurs. Rayleigh mode adds correlated frequency-selective signal fades with operator-controlled temporal rate. Replay cadence is explicitly paced so the UI animates naturally without an unbounded simulator loop.
-
-Every profile shows `VISUAL`, `STD-DERIVED`, or `CONFORMANCE-VALIDATED`, its allocation/timing projection, and exact source clause. Current cellular/WLAN entries are standards-derived power-spectrum/time projections, not bit-exact or conformance-validated I/Q; GSM and Wi-Fi retain their published Normal Burst/PPDU naming rather than invented test-model IDs. The FM visual fixture renders resolved sideband lines and may not elevate non-line channel-floor bins. Atom receives typed `select_demo_signal` and `configure_demo_channel` hooks. The app-only coordinate harness remains scoped to the main window. Exact qualification, algorithms, catalog membership, and admission gates are normative in `WAVEFORM_REPLAY_CONTRACT.md`.
+SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither launches it nor imports its state. The future `SignalLabStimulusIntent -> Firmware stimulus sink` edge is displayed to Atom as `reserved-not-connected`. Activating it requires a new coordinated trio contract; current UI must not expose dead SignalLab controls or claim that its 79-profile catalog is feeding the instrument.
 
 ### 2.4 Active-function control surface
 
 Instrument settings use one shared `ParameterRow` contract across analyzer,
 marker, trace, display, detector, classifier, generator, waterfall, channel,
-STFT, and Signal Lab surfaces:
+and STFT surfaces:
 
 1. A closed row exposes one label and one complete effective value at a minimum
    44 px target height; main-app rows use 52 px.
@@ -116,7 +114,7 @@ Acceptance:
 - `UI-PAR-003`: invalid entry remains open with a specific inline error.
 - `UI-PAR-004`: only one editor per stack can be open.
 - `UI-PAR-005`: disabled rows cannot open and are visually consistent.
-- `UI-PAR-006`: all route and companion-window value controls are shared rows; raw route-local numeric/select controls are absent.
+- `UI-PAR-006`: all Atomizer route value controls are shared rows; raw route-local numeric/select controls are absent.
 - `UI-PAR-007`: reference screenshots show no truncated effective value, second-line chevron, horizontal overflow, or body scroll.
 
 ## 3. Global state contracts
@@ -547,7 +545,8 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
 | Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `EnvelopeStftView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
-| Waveform/channel replay | `packages/waveforms`, `components/DemoLab.tsx`, `main/demo-transport.ts` |
+| Execution admission | `packages/tinysa/src/digital-twin-transport.ts`, `apps/desktop/src/main/main.ts` |
+| Trio/SignalLab topology | `contracts/trio-composition-v1.json`, `packages/agent/src/index.ts` |
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Generator | `components/GeneratorWorkspace.tsx`, `packages/tinysa` |
