@@ -2,7 +2,7 @@
 
 Status: active implementation baseline
 Contract/API version: 2
-Updated: 2026-07-10
+Updated: 2026-07-11
 Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
 
 ## Outcome
@@ -53,7 +53,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis plus marker, trace, display, waveform and replay-channel contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis plus marker, trace, display, waterfall, channel, envelope-STFT, waveform and replay-channel contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Simulator | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry | scripted corrupt/truncated/unplug matrix expansion |
@@ -61,14 +61,14 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Demo Signal Lab | auto-attach only when no exact ZS407 is detected; continuously replay the selected waveform/channel while the companion window changes the real text/raw/zero-span byte source and recommended analyzer range | physical-device coexistence test; visual review at supported display scales |
 | Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
 | Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
-| Spectrum | advanced analyzer/trigger controls, four host-derived trace modes, eight trace-assignable markers/search/delta/noise readouts, amplitude scaling, exact plot/metrics, single/continuous sweeps, 50-sweep memory history, CSV/JSON | complete keyboard marker workflow, waterfall/limit lines, sustained physical soak |
+| Spectrum | one no-scroll four-view stage; analyzer/trigger controls; four traces; eight markers/search/delta/noise; amplitude scaling; Spectrum; coherent Waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; detected-envelope Time/STFT; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
 | Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
 | Classification | morphology evidence, ranked candidates, unknown rejection, zero-span envelope mode | labeled physical corpus and validated modulation/protocol model |
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
 | Atom | exact model, high reasoning, Ballad, VAD 0.95, voice/text, all feature hooks, screenshots, policies, approvals | live eval corpus, safety identifier policy, production credential storage |
-| UX | atomic precision visual system, five live workspaces, responsive Atom rail | screenshot review at all supported scales and operator usability pass |
+| UX | atomic precision visual system, five live workspaces, bounded measurement tabs/overlays, responsive Atom rail | screenshot review at minimum/scaled viewports and operator usability pass |
 
 ## Execution gates
 
@@ -138,7 +138,7 @@ Every application capability ships with a domain contract, closed agent schema, 
 1. Keep Gate A green and visually inspect every simulator workspace at the reference and minimum window sizes.
 2. Expand fault fixtures and parser fuzz/property tests.
 3. Add durable versioned session persistence, sweep comparison, and import validation.
-4. Add zoom, waterfall and limit lines only after measured renderer throughput; keep marker/trace behavior green at 450 points.
+4. Add zoom and editable limit lines only after measured renderer throughput; keep waterfall, channel, envelope-STFT, marker, and trace behavior green at 450 points/50 frames.
 5. Run the physical characterization protocol immediately when the ZS407 arrives.
 6. Build the RF capture corpus only after hardware/session provenance is stable.
 7. Freeze platform support, packaging, credential storage, and release policy after hardware Gate B.

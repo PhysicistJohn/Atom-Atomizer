@@ -1,7 +1,7 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 2.0.0
+Version: 2.1.0
 Model lock: `gpt-realtime-2.1-mini`  
 Reasoning lock: `high`  
 Voice lock: `ballad`  
@@ -146,7 +146,7 @@ Default context may include:
 - Simulation flag and visible error.
 - Device identity, firmware, capabilities, mode, RF output and verification.
 - Analyzer/generator/detector configuration.
-- Host trace bank, active markers/readouts, amplitude display, selected demo waveform qualification, and replay-channel state.
+- Active measurement view; host trace bank; markers/readouts; amplitude display; waterfall/channel/STFT configurations and computed result/error; selected demo waveform qualification; and replay-channel state.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
@@ -161,6 +161,13 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
 | `get_measurement_state` | Observe | Never | Reads the four trace modes, eight markers/readouts, searches, and host display scale |
+| `set_measurement_view` | Operate | Never | Selects Spectrum, Waterfall, Channel, or detected-envelope STFT |
+| `configure_waterfall` | Operate | Never | Sets bounded coherent history depth and explicit dBm color scale |
+| `configure_channel_measurement` | Operate | Never | Sets main/adjacent bandwidths, spacing, offset pairs, and OBW behavior |
+| `get_channel_measurement_results` | Observe | Never | Calculates CHP/PSD/ACP/ACLR/OBW or returns the exact evidence failure |
+| `configure_envelope_stft` | Operate | Never | Sets Hann window, hop, DC removal, and display range for detected power |
+| `get_envelope_stft_results` | Observe | Never | Reads the latest detected-envelope STFT or exact failure |
+| `acquire_envelope_stft` | Operate | Never | Acquires staged zero-span evidence and returns its Not-I/Q STFT |
 | `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
 | `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |

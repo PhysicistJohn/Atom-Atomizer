@@ -1,10 +1,11 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: active execution baseline, API v2, 2026-07-10
+Status: active execution baseline, API v2, 2026-07-11
 Companion: [PLAN.md](./PLAN.md)
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
+Advanced-measurement authority: [docs/ADVANCED_MEASUREMENTS_CONTRACT.md](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 Replay authority: [docs/WAVEFORM_REPLAY_CONTRACT.md](./docs/WAVEFORM_REPLAY_CONTRACT.md)
 Experience authority: [docs/UI_UX_CONTRACTS.md](./docs/UI_UX_CONTRACTS.md)
 Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
@@ -556,6 +557,36 @@ Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. 
 - Zero policy-bypass or unapproved RF-enable cases across the release red-team corpus.
 - RF expert accepts the supported-domain claims and known limitations.
 
+## WP-22 — Advanced swept measurements and bounded instrument stage
+
+**Outcome:** the Spectrum route provides the core measurement workflows common
+to entry spectrum analyzers without scrolling, hidden data, or unsupported I/Q
+claims.
+**Estimate:** 8–14 ED plus physical/RF qualification.
+**Dependencies:** WP-02, WP-07–08, WP-15, WP-18.
+
+**Deliverables**
+
+- Runtime-validated view, waterfall, channel-definition, OBW, and envelope-STFT
+  contracts with explicit scalar-sweep/Not-I-Q provenance.
+- RBW-normalized band-power integration, lower/upper ACP/ACLR, configurable
+  percent-power OBW, and deterministic Hann-windowed envelope STFT engines.
+- One fixed-height Spectrum/Waterfall/Channel/Time-STFT stage with setup and
+  trace/marker/display overlays; 1720 × 1040 work-area-clamped startup sizing.
+- Typed Atom selection/configuration/result/acquisition hooks and minimized
+  application context for every new view.
+- Official-vendor workflow research, evidence boundary, failure matrix, unit
+  fixtures, renderer interaction tests, and populated simulator screenshot audit.
+
+**Acceptance**
+
+- ADV-001 through ADV-014 in `docs/ADVANCED_MEASUREMENTS_CONTRACT.md` pass.
+- No frequency-grid interpolation, requested-RBW substitution, out-of-span
+  partial result, or I/Q/vector claim is permitted.
+- Physical ZS407 validation records integration error versus a characterized
+  source across representative RBW, span, point-count, level, and detector cases
+  before channel results may be promoted beyond engineering estimates.
+
 ## 5. Integration gates
 
 | Gate | Required packages | Exit evidence |
@@ -564,7 +595,7 @@ Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. 
 | G1 Protocol truth | WP-01–03 | Capability profile, fixtures, approved API, deterministic simulator |
 | G2 Device SDK | WP-04–06 | Hardware connect/acquire/capture/touch and safety demonstrations |
 | G3 Secure vertical slice | WP-07–09 partial | Packaged dev build connects, displays one sweep, disconnects safely |
-| G4 Feature complete | WP-08–12, WP-15–16, WP-18–20 | Capability matrix closed; visual and agentic workflows work on simulator and reference hardware |
+| G4 Feature complete | WP-08–12, WP-15–16, WP-18–20, WP-22 | Capability matrix closed; visual, advanced-measurement, and agentic workflows work on simulator and reference hardware |
 | G5 Analysis qualified | WP-17 | Accepted corpus, model, open-set/calibration evidence and signed model package |
 | G6 Agent qualified | WP-21 | AI security, RF, voice, tool and computer-use eval gates pass |
 | G7 Release candidate | WP-13–14 | Platform qualification, signed artifacts, docs, no release blockers |
@@ -583,6 +614,7 @@ WP-00 -> WP-01 -> WP-02/03 -> WP-04/05 -> WP-06 -> WP-07
                                                        |
                                                        +----> WP-15 -> WP-16 -> WP-17
                                                        +----> WP-18 -> WP-19/20 -> WP-21
+                                                       +----> WP-22
 WP-00 -> WP-08 -------------------------------+
 WP-02 -> WP-11 -------------------------------------------> WP-13
 ```
@@ -591,13 +623,13 @@ Suggested ownership lanes:
 
 - **Device/protocol engineer:** WP-01, WP-04–06; supports WP-10 and hardware QA.
 - **Desktop platform engineer:** WP-00, WP-07, WP-12, WP-14.
-- **Product/UI engineer:** WP-08–11.
-- **Analysis/ML engineer:** WP-15–17; partners with RF acceptance owner on corpus validity.
+- **Product/UI engineer:** WP-08–11, WP-22 UI.
+- **Analysis/ML engineer:** WP-15–17, WP-22 math; partners with RF acceptance owner on corpus and measurement validity.
 - **Agent/voice engineer:** WP-18–21; partners with platform, product and RF safety owners.
 - **Quality/release engineer:** WP-03, WP-13, release portions of WP-14.
 - **Product owner/RF acceptance owner:** scope decisions, capability-matrix disposition, safe-range review, milestone acceptance.
 
-Nominal total is **173–283 ED**, including signal detection, classification, the first validated model, native voice/agent/computer operation, package-local engineering, and explicit verification/release work. A single cross-disciplinary engineer should plan roughly 10–16 elapsed months after hardware arrival. A coordinated desktop/protocol/analysis/agent team can overlap lanes after G1 and target roughly 5–8 elapsed months; hardware characterization, corpus collection, and agent qualification remain evidence gates.
+Nominal total is **181–297 ED**, including signal detection, classification, the first validated model, advanced swept measurements, native voice/agent/computer operation, package-local engineering, and explicit verification/release work. A single cross-disciplinary engineer should plan roughly 10–16 elapsed months after hardware arrival. A coordinated desktop/protocol/analysis/agent team can overlap lanes after G1 and target roughly 5–8 elapsed months; hardware characterization, corpus collection, measurement validation, and agent qualification remain evidence gates.
 
 ## 7. Required owner-supplied items
 
@@ -616,7 +648,7 @@ Potential follow-on packages:
 - **CP-02 Multi-device:** identity, parallel operation, UI and resource isolation.
 - **CP-03 Automation API:** authenticated local API, scripting and headless runner with RF safety policy.
 - **CP-04 Additional models:** per-model hardware characterization and capability profiles.
-- **CP-05 Advanced analysis:** channel power, occupied bandwidth, ACPR, masks, report templates, with measurement validation.
+- **CP-05 Compliance analysis:** editable masks/limit lines, harmonics/TOI orchestration, C/I, antenna corrections, report templates, and measurement validation beyond the implemented CHP/OBW/ACP baseline.
 
 ## 9. First authorization slice
 

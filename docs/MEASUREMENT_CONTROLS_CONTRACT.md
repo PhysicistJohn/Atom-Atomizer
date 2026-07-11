@@ -1,8 +1,8 @@
 # Spectrum measurement controls contract
 
 Status: implementation baseline  
-Version: 2.1.0  
-Updated: 2026-07-10
+Version: 2.2.0
+Updated: 2026-07-11
 
 This document is normative for TinySA Atomizer marker, trace, amplitude-display,
 and trigger behavior. It deliberately separates capabilities visible in the
@@ -93,15 +93,18 @@ into host trace math.
 ## UI and Atom contract
 
 The closed command bar always reports active marker count, visible trace count,
-scale, up to four live marker readouts, and `HOST MATH`. Opening Markers, Traces,
-or Display expands one surface at a time. The 1580 × 948 reference viewport must
-have no clipped input, overlapping label, or horizontal overflow with Atom open.
+scale, up to four live marker readouts, and `HOST MATH`. It lives inside the
+`Traces & markers` overlay of the bounded measurement stage. Opening Markers,
+Traces, or Display expands one surface at a time without changing document or
+stage height. The 1720 × 1040 reference viewport must have no clipped input,
+overlapping label, horizontal overflow, or workspace scroll with Atom open.
 
 Atom receives typed tools for `get_measurement_state`, `configure_marker`,
 `search_marker`, `configure_trace`, `reset_trace`, and
-`configure_spectrum_display`. These execute the same reducers as the visual
-controls. Screenshot/computer operation remains available for UI inspection but
-is not a substitute for the typed measurement tools.
+`configure_spectrum_display`, plus the advanced view tools governed by
+`ADVANCED_MEASUREMENTS_CONTRACT.md`. These execute the same reducers as the
+visual controls. Screenshot/computer operation remains available for UI
+inspection but is not a substitute for the typed measurement tools.
 
 ## Acceptance
 

@@ -1,8 +1,8 @@
 # TinySA Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
-Version: 2.0.0
-Updated: 2026-07-10
+Version: 2.1.0
+Updated: 2026-07-11
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
 
@@ -46,6 +46,11 @@ The frame contains five regions:
 
 These regions remain mounted across workspace changes. Generator output `on` or `unknown` must remain visible in the navigation and top-level status treatment regardless of active workspace.
 
+On macOS the main window uses the same native `hiddenInset` chrome as Signal
+Lab. Traffic-light controls occupy a reserved leading area inside the draggable
+top bar; brand and controls may not overlap them. Other platforms retain native
+window controls without the macOS-only inset spacing.
+
 Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a detached intelligence layer and the workspace reserves its full footprint, so the active trace is never hidden. Below the reference width Atom becomes an explicit overlay that the operator can close; it must not silently cover a high-impact approval or RF state. The exact model identity, reasoning effort, transport, and configured/listening/thinking/speaking state remain visible.
 
 ### 2.2 Workspace routes
@@ -58,7 +63,7 @@ Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a det
 | Generator | WS-GEN | Configure and deliberately enable RF output | Software core; physical qualification pending |
 | Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical qualification pending |
 
-Durable saved sessions, comparison, waterfall, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum provides bounded in-memory history and native CSV/JSON export now.
+Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum now contains a bounded four-view measurement stage, 50-sweep history, and native CSV/JSON export.
 
 ### 2.3 Signal Lab companion
 
@@ -181,6 +186,17 @@ delta, and noise-density readouts. The surface and plot say `HOST MATH`; they do
 not claim full firmware state. Exact calculations, persistence, reset, and
 failure semantics are governed by `MEASUREMENT_CONTROLS_CONTRACT.md`.
 
+### UX-SPC-06 — Advanced measurement views
+
+Spectrum, Waterfall, Channel, and Time / STFT are tabs inside one fixed-height
+measurement stage. Sweep setup and trace/marker/display controls are overlays;
+they never create document scroll or permanently reduce the active canvas.
+Waterfall uses only identical sweep grids. Channel Power, PSD, ACP/ACLR, and OBW
+are RBW-normalized host estimates from complete scalar sweeps. STFT consumes only
+zero-span detected-power evidence and is always labeled Envelope/Not I/Q. Exact
+math, failure behavior, Atom hooks, and acceptance are governed by
+`ADVANCED_MEASUREMENTS_CONTRACT.md`.
+
 ## 6. Signal Detection mode contract
 
 Detection consumes immutable sweeps and emits immutable `DetectedSignal[]`. It cannot access serial, IPC, files, React, or generator operations.
@@ -287,6 +303,10 @@ Cable loss, transition timeout or unverified reconnect results in `unknown`. The
 | `Sidebar` | route, output state, capabilities | route intent | active, unavailable, RF on/unknown | guarded navigation, current page |
 | `ConnectionDialog` | candidates, selection, busy, error | refresh/select/connect/disconnect/close | empty, list, connecting, connected, failed | focus trap/restore, duplicate submit |
 | `SpectrumPlot` | trace frames, markers, detections, busy, freshness, display | marker placement intents | empty, loading, live, stale | exact bins, multi-trace overlay, markers, axes, resize, performance |
+| `MeasurementWorkspace` | active view, sweep/history, channel/STFT configs, measurement controls | view/config/acquisition intents | spectrum, waterfall, channel, envelope STFT, overlays | fixed height, no scroll, view persistence, Atom parity |
+| `WaterfallView` | coherent sweep history, color/depth config | validated config intent | empty, populated, grid exclusions | bounded memory, canvas fidelity, scale labels |
+| `ChannelAnalysisView` | sweep, channel definition, display scale | validated definition intent | empty, result, out-of-span/error | integration windows, dBm/dBc, OBW evidence |
+| `EnvelopeStftView` | zero-span config/capture, STFT config | capture/config intents | empty, blocked by replay, result, failure | Not-I/Q label, sample/window bounds, heatmap |
 | `MeasurementDock` | trace/marker/display configurations and readings | configure/search/reset/auto-scale intents | compact, marker, trace, display | calculations, overflow, persistence, keyboard |
 | `AnalyzerInspector` | config, capabilities, busy | validated config change | auto/manual, invalid, unsupported | units, ordered range, operation lock |
 | `MetricStrip` | sweep, events, operation | none | empty/current/stale | atomic update, units |
@@ -330,8 +350,8 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 
 ### 11.1 Spatial rules
 
-1. At the 1580 × 948 reference viewport, Spectrum has exactly one dominant measurement plane. Its rendered area exceeds any control or agent surface.
-2. Analyzer settings form one horizontal command dock. They do not become a competing inspector column at the reference viewport.
+1. At the 1720 × 1040 reference viewport, Spectrum has exactly one dominant measurement plane and no workspace scroll. Its rendered area exceeds any control surface.
+2. Analyzer settings form one horizontal overlay. They do not become a competing inspector column or change stage height at the reference viewport.
 3. Navigation is an instrument rail no wider than 104 CSS px. Core destinations remain labeled; icon-only navigation is forbidden.
 4. Atom is visually detached with a bounded 404 CSS px width. At widths at or above 1430 px the workspace reserves 438 px while Atom is open.
 5. Metrics are integrated with the measurement plane and update atomically with the trace.
@@ -347,7 +367,7 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 - Every visible button performs its labeled action. Placeholder controls are omitted instead of simulated.
 - The plot marker binds to an actual sweep bin and exposes its exact power/frequency as text.
 
-Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1580 × 948 CSS px; minimum is 1120 × 720. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
+Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1720 × 1040 CSS px; minimum is 1280 × 800 where the display work area permits it. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
 
 ## 12. Accessibility contract
 
@@ -446,6 +466,8 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **ATM-08:** Reduced motion disables orbital, voice-ring, sweep and drawer animations.
 - **ATM-09:** Simulated provenance remains visible in top bar and status contract.
 - **ATM-10:** Screenshot review fixtures cover disconnected Spectrum and connected Spectrum/Detection/Classification/Generator/Device at the reference viewport.
+- **ATM-11:** Spectrum, Waterfall, Channel, and populated Envelope STFT each remain fully visible with Atom open and without workspace scrolling.
+- **ATM-12:** macOS traffic lights are native, integrated into the carbon top bar, and never overlap the brand or draggable controls.
 
 ## 14. Delivery decomposition
 
@@ -454,7 +476,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | UX-00 | Tokens, primitives, frame, accessibility harness | contracts | XP rules; scale review |
 | UX-01 | Connection/global state | transport/device API | CON-01..12 |
 | UX-02 | Spectrum configuration/acquisition | analyzer service | SPC-01..10 |
-| UX-03 | Plot, four-trace, eight-marker, and future waterfall engine | measured throughput | MEAS-001..12; performance/a11y |
+| UX-03 | Spectrum, four-trace, eight-marker, waterfall, channel, and envelope-STFT engines | measured throughput | MEAS-001..12; ADV-001..14; performance/a11y |
 | UX-04 | Detection configuration and sweep segmentation | sweeps | DET-01..07,09 |
 | UX-05 | Cross-sweep tracker and alerts | bounded stream | DET-08,10 |
 | UX-06 | Classification pipeline and unknown UX | detections/model manifest | CLS-01..05,08,09 |
@@ -467,7 +489,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | UX-10 | Diagnostics/settings/help | error catalog | recovery/support tests |
 | UX-11 | Accessibility/usability qualification | stable workflows | operator studies |
 
-UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemented vertical slice. Hardware clauses, complete keyboard marker workflow, durable session persistence, comparison, waterfall, limit lines, and support bundles remain open.
+UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemented vertical slice. Hardware clauses, complete keyboard marker workflow, durable session persistence, comparison, limit lines/emission masks, harmonic orchestration, and support bundles remain open.
 
 ## 15. Traceability to current source
 
@@ -478,7 +500,7 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Exact unit parsing | `apps/desktop/src/renderer/format.ts` |
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
-| Spectrum | `components/SpectrumPlot.tsx`, `components/AnalyzerInspector.tsx`, `components/MeasurementDock.tsx`, `packages/analysis` |
+| Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `EnvelopeStftView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
 | Waveform/channel replay | `packages/waveforms`, `components/DemoLab.tsx`, `main/demo-transport.ts` |
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |

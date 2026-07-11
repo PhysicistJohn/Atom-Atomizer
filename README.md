@@ -28,6 +28,7 @@ To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron
 - Fail-closed serialized command scheduler and typed device state machine.
 - Analyzer configuration with readback verification, 20–450 points, text/raw acquisition, RBW, attenuation, detector, spur, LNA, trigger, and sweep timing.
 - Single and continuous spectrum acquisition with bounded 50-sweep in-memory history and provenance-preserving CSV/JSON export.
+- One no-scroll measurement stage with Spectrum, coherent sweep-history Waterfall, Channel Power/PSD/ACP/ACLR/percent-power OBW, and detected-envelope Time/STFT views.
 - Four simultaneous host-derived traces with Clear/Write, Max Hold, Min Hold, linear-power Average, View/Freeze, Blank, per-trace reset, and persistent configuration.
 - Eight trace-assignable markers with peak tracking, peak/min/next search, delta and dBm/Hz readouts, click/drag placement, plus reference-level and 1/2/5/10/20 dB/div display control.
 - Robust adaptive/absolute signal detection with cross-sweep promotion, stable IDs, and release behavior.
@@ -43,7 +44,7 @@ Generator frequency, level, modulation, path, and physical output do not have de
 
 The firmware exposes analyzer harmonic paths up to a command-derived 17.9226 GHz and generator mixer output up to the same ceiling. Those limits describe addressable firmware behavior, not calibrated performance. The UI warns above the 7.3701 GHz Ultra transition until the ordered ZS407 is characterized.
 
-Zero span is repeated detected-power measurement at one frequency. It is not I/Q and cannot establish phase or decode a waveform protocol.
+Zero span is repeated detected-power measurement at one frequency. Its Hann-windowed envelope STFT can expose power-modulation rates, but it is not I/Q and cannot establish phase, EVM, complex symbols, or decode a waveform protocol. Channel measurements are RBW-normalized scalar-sweep engineering estimates until the physical RF path is characterized.
 
 ## Workspace map
 
@@ -67,6 +68,7 @@ This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkou
 
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 - [Markers, traces, display, and trigger](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
+- [Waterfall, channel measurements, OBW/ACP, and envelope STFT](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 - [Qualified waveform and channel replay](./docs/WAVEFORM_REPLAY_CONTRACT.md)
 - [UI, UX, and custom analysis modes](./docs/UI_UX_CONTRACTS.md)
 - [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
