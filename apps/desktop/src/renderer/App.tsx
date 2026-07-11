@@ -3,7 +3,12 @@ import { CircleAlert, Clock3, Download, LoaderCircle, Play, RadioTower, Repeat2,
 import {
   analyzerConfigSchema,
   generatorConfigSchema,
+  markerConfigurationSchema,
+  markerSearchConfigurationSchema,
   signalDetectionConfigSchema,
+  spectrumDisplayConfigurationSchema,
+  traceBankConfigurationSchema,
+  traceConfigurationSchema,
   zeroSpanConfigSchema,
   type AnalyzerConfig,
   type DeviceDiagnostics,
@@ -12,11 +17,22 @@ import {
   type DeviceSnapshot,
   type DetectedSignal,
   type GeneratorConfig,
+  type MarkerConfiguration,
+  type MarkerId,
+  type MarkerSearchAction,
+  type MarkerSearchConfiguration,
   type PortCandidate,
+  type ReplayChannelConfiguration,
   type ScreenFrame,
   type ScreenPoint,
   type SignalDetectionConfig,
+  type SpectrumDisplayConfiguration,
   type Sweep,
+  type SynthesizedSignalProfile,
+  type TraceBankConfiguration,
+  type TraceConfiguration,
+  type TraceFrame,
+  type TraceId,
   type WaveformClassification,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
@@ -25,8 +41,12 @@ import {
   SignalDetector,
   SignalTracker,
   SpectralMorphologyClassifier,
+  TraceAccumulator,
+  autoScaleSpectrum,
   calculateSweepMetrics,
   classifyZeroSpanEnvelope,
+  readMarkers,
+  searchMarker,
   type EnvelopeClassification,
 } from '@tinysa/analysis';
 import type { AgentToolName } from '@tinysa/agent';
@@ -37,6 +57,7 @@ import { ConnectionDialog } from './components/ConnectionDialog.js';
 import { DetectionWorkspace } from './components/DetectionWorkspace.js';
 import { DeviceWorkspace } from './components/DeviceWorkspace.js';
 import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
+import { MeasurementDock } from './components/MeasurementDock.js';
 import { Sidebar } from './components/Sidebar.js';
 import { SpectrumPlot } from './components/SpectrumPlot.js';
 import { TopBar } from './components/TopBar.js';
@@ -59,6 +80,22 @@ const DEFAULT_ZERO_SPAN: ZeroSpanConfig = {
   trigger: { mode: 'auto' },
 };
 const HISTORY_LIMIT = 50;
+const DEFAULT_TRACES: TraceBankConfiguration = traceBankConfigurationSchema.parse([
+  { id: 1, mode: 'clear-write', averageCount: 8 },
+  { id: 2, mode: 'blank', averageCount: 8 },
+  { id: 3, mode: 'blank', averageCount: 8 },
+  { id: 4, mode: 'blank', averageCount: 8 },
+]);
+const DEFAULT_MARKERS: readonly MarkerConfiguration[] = Array.from({ length: 8 }, (_, index) => markerConfigurationSchema.parse({
+  id: index + 1,
+  enabled: index === 0,
+  traceId: 1,
+  mode: 'normal',
+  frequencyHz: 98_000_000,
+  tracking: index === 0 ? 'peak' : 'fixed',
+}));
+const DEFAULT_MARKER_SEARCH: MarkerSearchConfiguration = { minimumLevelDbm: -90, minimumExcursionDb: 6 };
+const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
 
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceId>('spectrum');
@@ -72,6 +109,12 @@ export function App() {
   const [generator, setGenerator] = useState<GeneratorConfig>(() => loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR));
   const [detectionConfig, setDetectionConfig] = useState<SignalDetectionConfig>(() => loadStored('detector', signalDetectionConfigSchema.parse, DEFAULT_DETECTION));
   const [zeroConfig, setZeroConfig] = useState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN));
+  const [traceConfiguration, setTraceConfiguration] = useState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES));
+  const [traceFrames, setTraceFrames] = useState<readonly TraceFrame[]>([]);
+  const [markers, setMarkers] = useState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS));
+  const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
+  const [markerSearchConfiguration, setMarkerSearchConfiguration] = useState<MarkerSearchConfiguration>(() => loadStored('marker-search', markerSearchConfigurationSchema.parse, DEFAULT_MARKER_SEARCH));
+  const [displayConfiguration, setDisplayConfiguration] = useState<SpectrumDisplayConfiguration>(() => loadStored('spectrum-display', spectrumDisplayConfigurationSchema.parse, DEFAULT_DISPLAY));
   const [sweep, setSweep] = useState<Sweep>();
   const [history, setHistory] = useState<readonly Sweep[]>([]);
   const [detections, setDetections] = useState<readonly DetectedSignal[]>([]);
@@ -89,6 +132,7 @@ export function App() {
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
   const classifier = useRef(new SpectralMorphologyClassifier());
+  const traceAccumulator = useRef(new TraceAccumulator(traceConfiguration));
   const snapshotRef = useRef<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const continuousRequested = useRef(false);
@@ -101,6 +145,7 @@ export function App() {
   const busy = connectionBusy || operationBusy;
   const simulated = snapshot.identity?.simulated ?? ports.some((port) => port.path.startsWith('fake://'));
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
+  const markerReadings = useMemo(() => readMarkers(markers, traceFrames, sweep?.actualRbwHz ?? 10_000), [markers, traceFrames, sweep?.actualRbwHz]);
 
   useEffect(() => {
     const unsubscribe = window.tinySA.subscribe(handleDeviceEvent);
@@ -118,7 +163,10 @@ export function App() {
         setContinuous(false);
         setAcquisition('complete');
       }
-      if (!previous?.active || previous.profile !== status.profile) void ensureDemoPlayback(status);
+      const profileChanged = previous?.profile !== status.profile;
+      const channelChanged = previous && JSON.stringify(previous.channel) !== JSON.stringify(status.channel);
+      if (!previous?.active || profileChanged) void ensureDemoPlayback(status, true);
+      else if (channelChanged) setNotice(`${status.channel.model.toUpperCase()} channel replay applied at ${status.channel.noiseFloorDbm} dBm`);
     });
     void initialize();
     return () => {
@@ -137,6 +185,14 @@ export function App() {
   useEffect(() => saveStored('detector', detectionConfig), [detectionConfig]);
   useEffect(() => saveStored('zero-span', zeroConfig), [zeroConfig]);
   useEffect(() => {
+    traceAccumulator.current.configure(traceConfiguration);
+    setTraceFrames(traceAccumulator.current.frames());
+    saveStored('traces', traceConfiguration);
+  }, [traceConfiguration]);
+  useEffect(() => saveStored('markers', markers), [markers]);
+  useEffect(() => saveStored('marker-search', markerSearchConfiguration), [markerSearchConfiguration]);
+  useEffect(() => saveStored('spectrum-display', displayConfiguration), [displayConfiguration]);
+  useEffect(() => {
     detector.current.configure(detectionConfig);
     tracker.current.configure(detectionConfig);
     setDetections([]);
@@ -151,25 +207,38 @@ export function App() {
       acceptSnapshot(currentSnapshot);
       demoStatusRef.current = demo;
       setDemoStatus(demo);
-      if (demo.active && currentSnapshot.connection === 'ready') void ensureDemoPlayback(demo);
+      if (demo.active && currentSnapshot.connection === 'ready') void ensureDemoPlayback(demo, true);
     } catch (value) {
       setError(errorMessage(value));
     }
   }
 
-  async function ensureDemoPlayback(status: DemoLabStatus): Promise<void> {
+  async function ensureDemoPlayback(status: DemoLabStatus, configureWaveform = false): Promise<void> {
     if (!status.active || demoPlaybackStarting.current) return;
-    if (continuousRequested.current || status.playback) {
+    if (!configureWaveform && (continuousRequested.current || status.playback)) {
       setNotice(`${status.profile.toUpperCase()} synthesis is live; the next replay frame will use it`);
       return;
     }
     if (snapshotRef.current.connection !== 'ready') return;
     demoPlaybackStarting.current = true;
     try {
-      await startContinuous();
-      setNotice(`${status.profile.toUpperCase()} synthetic replay is live`);
+      if (continuousRequested.current) await stopContinuous();
+      if (configureWaveform) {
+        const halfSpan = status.waveform.recommendedSpanHz / 2;
+        const nextAnalyzer = analyzerConfigSchema.parse({
+          ...analyzerRef.current,
+          startHz: Math.round(status.waveform.centerHz - halfSpan),
+          stopHz: Math.round(status.waveform.centerHz + halfSpan),
+        });
+        analyzerRef.current = nextAnalyzer;
+        setAnalyzer(nextAnalyzer);
+      }
+      if (!continuousRequested.current) await startContinuous();
+      setNotice(`${status.waveform.label} · ${status.channel.model.toUpperCase()} replay is live`);
     } catch (value) {
-      console.error('Signal Lab synthetic replay failed to start', value);
+      const message = `Signal Lab synthetic replay failed: ${errorMessage(value)}`;
+      console.error(message, value);
+      setError(message);
     } finally {
       demoPlaybackStarting.current = false;
     }
@@ -269,6 +338,7 @@ export function App() {
     const sequence = ++analysisSequence.current;
     setSweep(next);
     setHistory((current) => [next, ...current].slice(0, HISTORY_LIMIT));
+    setTraceFrames(traceAccumulator.current.update(next));
     const candidates = detector.current.analyze(next);
     const tracked = tracker.current.update(next, candidates);
     setDetections(tracked);
@@ -440,6 +510,70 @@ export function App() {
     } catch (value) { setError(errorMessage(value)); }
   }
 
+  function configureTrace(input: TraceConfiguration): void {
+    try {
+      const trace = traceConfigurationSchema.parse(input);
+      setTraceConfiguration((current) => traceBankConfigurationSchema.parse(current.map((item) => item.id === trace.id ? trace : item)));
+      setError(undefined);
+    } catch (value) { setError(`Trace configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function resetTrace(traceId: TraceId): void {
+    try {
+      traceAccumulator.current.reset(traceId);
+      setTraceFrames(traceAccumulator.current.frames());
+      setNotice(`Trace ${traceId} memory cleared`);
+    } catch (value) { setError(`Trace reset failed: ${errorMessage(value)}`); }
+  }
+
+  function configureMarker(input: MarkerConfiguration): void {
+    try {
+      const marker = markerConfigurationSchema.parse(input);
+      setMarkers((current) => {
+        const next = current.map((item) => item.id === marker.id ? marker : item);
+        if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
+          return next.map((item) => item.id === marker.referenceMarkerId && !item.enabled ? { ...item, enabled: true } : item);
+        }
+        return next;
+      });
+      setActiveMarkerId(marker.id);
+      setError(undefined);
+    } catch (value) { setError(`Marker configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function placeActiveMarker(frequencyHz: number): void {
+    const marker = markers.find((item) => item.id === activeMarkerId);
+    if (!marker) { setError(`Active marker M${activeMarkerId} is unavailable`); return; }
+    configureMarker({ ...marker, enabled: true, tracking: 'fixed', frequencyHz });
+  }
+
+  function runMarkerSearch(action: MarkerSearchAction, markerId: MarkerId = activeMarkerId): void {
+    try {
+      const marker = markers.find((item) => item.id === markerId);
+      if (!marker) throw new Error(`Marker M${markerId} is unavailable`);
+      const frame = traceFrames.find((item) => item.traceId === marker.traceId);
+      if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
+      const frequencyHz = searchMarker(frame, marker.frequencyHz, action, markerSearchConfiguration);
+      configureMarker({ ...marker, enabled: true, tracking: action === 'peak' ? 'peak' : 'fixed', frequencyHz });
+      setNotice(`M${marker.id} moved by ${action.replace('-', ' ')} search`);
+    } catch (value) { setError(`Marker search failed: ${errorMessage(value)}`); }
+  }
+
+  function configureMarkerSearch(input: MarkerSearchConfiguration): void {
+    try { setMarkerSearchConfiguration(markerSearchConfigurationSchema.parse(input)); setError(undefined); }
+    catch (value) { setError(`Marker search criteria failed: ${errorMessage(value)}`); }
+  }
+
+  function configureDisplay(input: SpectrumDisplayConfiguration): void {
+    try { setDisplayConfiguration(spectrumDisplayConfigurationSchema.parse(input)); setError(undefined); }
+    catch (value) { setError(`Display configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function autoScaleDisplay(): void {
+    if (!sweep) { setError('Acquire a sweep before auto-scaling the display'); return; }
+    configureDisplay(autoScaleSpectrum(sweep));
+  }
+
   function applicationContext(): string {
     return JSON.stringify({
       workspace,
@@ -458,6 +592,14 @@ export function App() {
       detections: detections.map(({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps }) => ({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps })),
       classifications: classifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
       zeroSpan: zeroCapture && envelope ? { frequencyHz: zeroCapture.frequencyHz, samples: zeroCapture.powerDbm.length, samplePeriodSeconds: zeroCapture.samplePeriodSeconds, envelope } : null,
+      measurement: {
+        traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
+        markers: markerReadings,
+        activeMarkerId,
+        markerSearch: markerSearchConfiguration,
+        display: displayConfiguration,
+        evidence: 'host-derived',
+      },
     });
   }
 
@@ -482,7 +624,7 @@ export function App() {
         return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, simulated: next.identity.simulated, verification: next.verification };
       }
       case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: (await window.tinySA.getSnapshot()).connection };
-      case 'inspect_interface': return { activeWorkspace: workspace, controls: { 'workspace.spectrum': true, 'workspace.detection': true, 'workspace.classification': true, 'workspace.generator': snapshot.generatorOutput !== 'on' || workspace === 'generator', 'workspace.device': true, 'acquisition.single': connected && !busy, 'acquisition.continuous.start': connected && !busy, 'acquisition.continuous.stop': continuous, 'connection.open': !connectionBusy, 'device.capture-screen': connected && !busy, 'atom.close': agentOpen } };
+      case 'inspect_interface': return { activeWorkspace: workspace, controls: { 'workspace.spectrum': true, 'workspace.detection': true, 'workspace.classification': true, 'workspace.generator': snapshot.generatorOutput !== 'on' || workspace === 'generator', 'workspace.device': true, 'acquisition.single': connected && !busy, 'acquisition.continuous.start': connected && !busy, 'acquisition.continuous.stop': continuous, 'measurement.markers': workspace === 'spectrum', 'measurement.traces': workspace === 'spectrum', 'measurement.display': workspace === 'spectrum', 'connection.open': !connectionBusy, 'device.capture-screen': connected && !busy, 'atom.close': agentOpen } };
       case 'computer_action': {
         const control = (args as { controlId: string }).controlId;
         if (control.startsWith('workspace.')) changeWorkspace(control.slice('workspace.'.length) as WorkspaceId);
@@ -505,6 +647,42 @@ export function App() {
       case 'acquire_sweep': { const result = await acquire(); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source }; }
       case 'start_continuous_sweeps': await startContinuous(); return { streaming: true };
       case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
+      case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
+      case 'configure_marker': {
+        const marker = markerConfigurationSchema.parse(args);
+        configureMarker(marker);
+        setWorkspace('spectrum');
+        return { marker, evidence: 'host-derived' };
+      }
+      case 'search_marker': {
+        const value = args as { markerId: MarkerId; action: MarkerSearchAction };
+        const marker = markers.find((item) => item.id === value.markerId);
+        if (!marker) throw new Error(`Marker M${value.markerId} is unavailable`);
+        const frame = traceFrames.find((item) => item.traceId === marker.traceId);
+        if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
+        const frequencyHz = searchMarker(frame, marker.frequencyHz, value.action, markerSearchConfiguration);
+        configureMarker({ ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' : 'fixed', frequencyHz });
+        setWorkspace('spectrum');
+        return { markerId: value.markerId, action: value.action, frequencyHz, evidence: 'host-derived' };
+      }
+      case 'configure_trace': {
+        const trace = traceConfigurationSchema.parse(args);
+        configureTrace(trace);
+        setWorkspace('spectrum');
+        return { trace, evidence: 'host-derived' };
+      }
+      case 'reset_trace': {
+        const traceId = (args as { traceId: TraceId }).traceId;
+        traceAccumulator.current.reset(traceId);
+        setTraceFrames(traceAccumulator.current.frames());
+        return { traceId, reset: true, evidence: 'host-derived' };
+      }
+      case 'configure_spectrum_display': {
+        const display = spectrumDisplayConfigurationSchema.parse(args);
+        configureDisplay(display);
+        setWorkspace('spectrum');
+        return { display, evidence: 'host-derived' };
+      }
       case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); setDetectionConfig(next); setWorkspace('detection'); return next; }
       case 'configure_zero_span': { const next = zeroSpanConfigSchema.parse(args); setZeroConfig(next); setWorkspace('classification'); return next; }
       case 'acquire_zero_span': { const result = await acquireZeroSpan(); setWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result) }; }
@@ -521,7 +699,12 @@ export function App() {
       }
       case 'export_latest_sweep': return exportLatest((args as { format: 'csv' | 'json' }).format);
       case 'select_demo_signal': {
-        const status = await window.demoLab.select((args as { profile: 'cw' | 'am' | 'fm' | 'lte' }).profile);
+        const status = await window.demoLab.select((args as { profile: SynthesizedSignalProfile }).profile);
+        setDemoStatus(status);
+        return status;
+      }
+      case 'configure_demo_channel': {
+        const status = await window.demoLab.configureChannel(args as ReplayChannelConfiguration);
         setDemoStatus(status);
         return status;
       }
@@ -539,7 +722,7 @@ export function App() {
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {!connected && <div className="connection-banner"><div><RadioTower size={17}/><span><strong>No instrument connected</strong><small>Connect an exact ZS407 USB CDC device or the byte-level simulator to enable controls.</small></span></div><button className="text-button" onClick={() => setConnectionOpen(true)}>Choose device</button></div>}
-      {workspace === 'spectrum' && <div className="spectrum-layout"><AnalyzerInspector config={analyzer} disabled={busy} onChange={setAnalyzer}/><div className="spectrum-main"><SpectrumPlot sweep={sweep} detections={detections.filter((item) => item.state !== 'released')} busy={busy}/><MetricStrip sweep={sweep} detections={detections.length} acquisition={acquisition} historyCount={history.length}/></div></div>}
+      {workspace === 'spectrum' && <div className="spectrum-layout"><AnalyzerInspector config={analyzer} disabled={busy} onChange={setAnalyzer}/><MeasurementDock traces={traceConfiguration} frames={traceFrames} markers={markers} readings={markerReadings} activeMarkerId={activeMarkerId} search={markerSearchConfiguration} display={displayConfiguration} onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId} onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay} onAutoScale={autoScaleDisplay}/><div className="spectrum-main"><SpectrumPlot sweep={sweep} traces={traceFrames} markers={markerReadings} activeMarkerId={activeMarkerId} display={displayConfiguration} onMarkerPlace={placeActiveMarker} detections={detections.filter((item) => item.state !== 'released')} busy={busy}/><MetricStrip sweep={sweep} detections={detections.length} acquisition={acquisition} historyCount={history.length}/></div></div>}
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
       {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
@@ -572,4 +755,10 @@ function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): 
   return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
 }
 function saveStored(name: string, value: unknown): void { localStorage.setItem(`tinysa-atomizer:v2:${name}`, JSON.stringify(value)); }
+function parseMarkerBank(value: unknown): readonly MarkerConfiguration[] {
+  if (!Array.isArray(value) || value.length !== 8) throw new Error('Marker bank must contain exactly eight markers');
+  const markers = value.map((marker) => markerConfigurationSchema.parse(marker));
+  if (new Set(markers.map((marker) => marker.id)).size !== 8) throw new Error('Marker bank must contain markers 1 through 8 exactly once');
+  return markers;
+}
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }

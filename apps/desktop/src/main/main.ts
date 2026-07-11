@@ -10,7 +10,9 @@ import {
   analyzerConfigSchema,
   generatorConfigSchema,
   portCandidateSchema,
+  replayChannelConfigurationSchema,
   screenPointSchema,
+  synthesizedSignalProfileSchema,
   sweepExportRequestSchema,
   zeroSpanConfigSchema,
   type DeviceEvent,
@@ -21,7 +23,6 @@ import type { AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
 import { AutoDemoTransport } from './demo-transport.js';
-import { synthesizedSignalProfileSchema } from '@tinysa/contracts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
@@ -78,6 +79,11 @@ function registerIpc(): void {
   ipcMain.handle('demo:status', () => transport.status());
   ipcMain.handle('demo:select', (_event, value: unknown) => {
     const status = transport.select(synthesizedSignalProfileSchema.parse(value));
+    broadcastDemoStatus(status);
+    return status;
+  });
+  ipcMain.handle('demo:channel', (_event, value: unknown) => {
+    const status = transport.configureChannel(replayChannelConfigurationSchema.parse(value));
     broadcastDemoStatus(status);
     return status;
   });
@@ -144,12 +150,12 @@ async function prepareStartupInstrument(): Promise<void> {
 async function createDemoWindow(): Promise<void> {
   if (!transport.status().available) return;
   const win = new BrowserWindow({
-    width: 430,
-    height: 330,
-    minWidth: 430,
-    minHeight: 330,
-    maxWidth: 430,
-    maxHeight: 330,
+    width: 520,
+    height: 590,
+    minWidth: 520,
+    minHeight: 590,
+    maxWidth: 520,
+    maxHeight: 590,
     resizable: false,
     parent: mainWindow,
     title: 'Atom Signal Lab',

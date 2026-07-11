@@ -7,7 +7,7 @@ export function TopBar({ snapshot, simulated, demoProfile, agentOpen, agentConfi
   return <header className="topbar">
     <div className="brand-lockup"><div className="brand-symbol"><AtomicMark size={27}/></div><div><small>tinySA</small><strong>Atomizer</strong></div><span className="version">407</span></div>
     <div className="topbar-actions">
-      {simulated && <span className="environment-badge">{demoProfile ? `SIGNAL LAB · ${demoProfile === 'lte' ? 'LTE-LIKE' : demoProfile.toUpperCase()}` : 'SIMULATED DATA'}</span>}
+      {simulated && <span className="environment-badge">{demoProfile ? `SIGNAL LAB · ${demoLabel(demoProfile)}` : 'SIMULATED DATA'}</span>}
       {snapshot.generatorOutput !== 'off' && <span className={`top-rf-state ${snapshot.generatorOutput}`}>RF {snapshot.generatorOutput.toUpperCase()}</span>}
       <button className={`connection-pill ${ready ? 'is-ready' : ''}`} onClick={onConnection} aria-haspopup="dialog">
         <span className="status-dot"/><Cable size={15}/><span><b>{ready ? snapshot.identity?.model ?? 'IDENTITY MISSING' : 'No instrument'}</b><small>{ready ? snapshot.identity?.firmwareVersion : 'Choose USB device'}</small></span><ChevronDown size={14}/>
@@ -15,4 +15,8 @@ export function TopBar({ snapshot, simulated, demoProfile, agentOpen, agentConfi
       <button className={`atom-launch ${agentOpen?'active':''}`} onClick={onAgent} aria-label="Open Atom AI copilot"><span className="atom-launch-orb"><AtomicMark size={23} active={agentOpen}/></span><span><b>Atom</b><small>{agentConfigured?'Listening when you are':'Setup required'}</small></span><em>⌘K</em></button>
     </div>
   </header>;
+}
+
+function demoLabel(profile: SynthesizedSignalProfile): string {
+  return ({ cw: 'CW', am: 'AM', fm: 'FM', 'gsm-normal-burst': 'GSM', 'lte-etm1.1': 'LTE E-TM1.1', 'nr-fr1-tm1.1': 'NR-TM1.1', 'wifi6-he-su': 'WI-FI 6 HE' })[profile];
 }

@@ -101,6 +101,10 @@ export interface DeviceCapabilities {
   remoteTouch: boolean;
   streaming: boolean;
   rawSweep: boolean;
+  markerCount: 8;
+  traceCount: 4;
+  firmwareMarkers: boolean;
+  firmwareTraces: boolean;
   generatorReadback: false;
   modulation: readonly ('off' | 'am' | 'fm')[];
   commands: readonly string[];
@@ -117,6 +121,83 @@ export type SweepStatus = 'paused' | 'resumed';
 export type TraceDetector = 'sample' | 'minimum-hold' | 'maximum-hold' | 'maximum-decay' | 'average-4' | 'average-16' | 'average' | 'quasi-peak';
 export type SpurRejection = 'off' | 'on' | 'auto';
 export type TriggerMode = 'auto' | 'normal' | 'single';
+
+export const traceIdSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
+export type TraceId = z.infer<typeof traceIdSchema>;
+export const traceModeSchema = z.enum(['clear-write', 'max-hold', 'min-hold', 'average', 'view', 'blank']);
+export type TraceMode = z.infer<typeof traceModeSchema>;
+export const traceConfigurationSchema = z.object({
+  id: traceIdSchema,
+  mode: traceModeSchema,
+  averageCount: z.number().int().min(2).max(100),
+}).strict();
+export type TraceConfiguration = z.infer<typeof traceConfigurationSchema>;
+export const traceBankConfigurationSchema = z.array(traceConfigurationSchema).length(4).superRefine((traces, context) => {
+  const identifiers = new Set(traces.map((trace) => trace.id));
+  if (identifiers.size !== 4) context.addIssue({ code: 'custom', message: 'Trace bank must contain traces 1 through 4 exactly once' });
+});
+export type TraceBankConfiguration = z.infer<typeof traceBankConfigurationSchema>;
+
+export const markerIdSchema = z.union([
+  z.literal(1), z.literal(2), z.literal(3), z.literal(4),
+  z.literal(5), z.literal(6), z.literal(7), z.literal(8),
+]);
+export type MarkerId = z.infer<typeof markerIdSchema>;
+export const markerModeSchema = z.enum(['normal', 'delta', 'noise-density']);
+export type MarkerMode = z.infer<typeof markerModeSchema>;
+export const markerConfigurationSchema = z.object({
+  id: markerIdSchema,
+  enabled: z.boolean(),
+  traceId: traceIdSchema,
+  mode: markerModeSchema,
+  frequencyHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  tracking: z.enum(['fixed', 'peak']),
+  referenceMarkerId: markerIdSchema.optional(),
+}).strict().superRefine((marker, context) => {
+  if (marker.mode === 'delta' && marker.referenceMarkerId === undefined) {
+    context.addIssue({ code: 'custom', path: ['referenceMarkerId'], message: 'Delta markers require a reference marker' });
+  }
+  if (marker.referenceMarkerId === marker.id) {
+    context.addIssue({ code: 'custom', path: ['referenceMarkerId'], message: 'A marker cannot reference itself' });
+  }
+});
+export type MarkerConfiguration = z.infer<typeof markerConfigurationSchema>;
+export const markerSearchConfigurationSchema = z.object({
+  minimumLevelDbm: z.number().finite().min(-174).max(30),
+  minimumExcursionDb: z.number().finite().min(0).max(100),
+}).strict();
+export type MarkerSearchConfiguration = z.infer<typeof markerSearchConfigurationSchema>;
+export const markerSearchActionSchema = z.enum(['peak', 'minimum', 'next-left', 'next-right']);
+export type MarkerSearchAction = z.infer<typeof markerSearchActionSchema>;
+export const spectrumDisplayConfigurationSchema = z.object({
+  referenceLevelDbm: z.number().finite().min(-150).max(30),
+  decibelsPerDivision: z.union([z.literal(1), z.literal(2), z.literal(5), z.literal(10), z.literal(20)]),
+  divisions: z.literal(10),
+}).strict();
+export type SpectrumDisplayConfiguration = z.infer<typeof spectrumDisplayConfigurationSchema>;
+
+export interface TraceFrame {
+  traceId: TraceId;
+  mode: TraceMode;
+  frequencyHz: readonly number[];
+  powerDbm: readonly number[];
+  sweepCount: number;
+  sourceSweepId: string;
+  evidence: 'host-derived';
+}
+export interface MarkerReading {
+  markerId: MarkerId;
+  traceId: TraceId;
+  mode: MarkerMode;
+  binIndex: number;
+  frequencyHz: number;
+  powerDbm: number;
+  deltaFrequencyHz?: number;
+  deltaPowerDb?: number;
+  noiseDensityDbmHz?: number;
+  sourceSweepId: string;
+  evidence: 'host-derived';
+}
 
 export const triggerConfigSchema = z.object({
   mode: z.enum(['auto', 'normal', 'single']),
@@ -406,17 +487,65 @@ export interface TinySaApiV2 {
 
 export type TinySaApiV1 = TinySaApiV2;
 
-export const synthesizedSignalProfileSchema = z.enum(['cw', 'am', 'fm', 'lte']);
+export const synthesizedSignalProfileSchema = z.enum([
+  'cw',
+  'am',
+  'fm',
+  'gsm-normal-burst',
+  'lte-etm1.1',
+  'nr-fr1-tm1.1',
+  'wifi6-he-su',
+]);
 export type SynthesizedSignalProfile = z.infer<typeof synthesizedSignalProfileSchema>;
+export const replayChannelConfigurationSchema = z.object({
+  model: z.enum(['awgn', 'rayleigh']),
+  noiseFloorDbm: z.number().finite().min(-150).max(-30),
+  seed: z.number().int().min(1).max(0xffff_ffff),
+  fadingRateHz: z.number().finite().min(0.1).max(100),
+}).strict();
+export type ReplayChannelConfiguration = z.infer<typeof replayChannelConfigurationSchema>;
+export const waveformQualificationSchema = z.enum(['visual', 'standards-derived', 'conformance-validated']);
+export type WaveformQualification = z.infer<typeof waveformQualificationSchema>;
+export const waveformDescriptorSchema = z.object({
+  id: synthesizedSignalProfileSchema,
+  label: z.string().min(1),
+  family: z.enum(['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan']),
+  model: z.string().min(1),
+  qualification: waveformQualificationSchema,
+  centerHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  occupiedBandwidthHz: z.number().int().positive(),
+  recommendedSpanHz: z.number().int().positive(),
+  standard: z.object({
+    organization: z.enum(['TinySA Atomizer', '3GPP', 'IEEE']),
+    specification: z.string().min(1),
+    clause: z.string().min(1),
+    revision: z.string().min(1),
+    url: z.string().url(),
+  }).strict(),
+  disclosure: z.string().min(1),
+  assetSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+}).strict().superRefine((descriptor, context) => {
+  if (descriptor.recommendedSpanHz < descriptor.occupiedBandwidthHz) {
+    context.addIssue({ code: 'custom', path: ['recommendedSpanHz'], message: 'Recommended span must contain the occupied bandwidth' });
+  }
+  if (descriptor.qualification === 'conformance-validated' && descriptor.assetSha256 === undefined) {
+    context.addIssue({ code: 'custom', path: ['assetSha256'], message: 'Conformance-validated waveforms require a verified I/Q asset hash' });
+  }
+});
+export type WaveformDescriptor = z.infer<typeof waveformDescriptorSchema>;
 export interface DemoLabStatus {
   available: boolean;
   active: boolean;
   playback: boolean;
   profile: SynthesizedSignalProfile;
   profiles: readonly SynthesizedSignalProfile[];
+  waveform: WaveformDescriptor;
+  catalog: readonly WaveformDescriptor[];
+  channel: ReplayChannelConfiguration;
 }
 export interface DemoLabApi {
   status(): Promise<DemoLabStatus>;
   select(profile: SynthesizedSignalProfile): Promise<DemoLabStatus>;
+  configureChannel(config: ReplayChannelConfiguration): Promise<DemoLabStatus>;
   subscribe(listener: (status: DemoLabStatus) => void): () => void;
 }

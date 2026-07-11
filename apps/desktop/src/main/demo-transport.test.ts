@@ -11,7 +11,8 @@ describe('automatic Signal Lab transport', () => {
     expect(transport.status()).toMatchObject({ available: true, active: false, playback: false, profile: 'cw' });
     await transport.open(candidates[0]!);
     expect(transport.setPlayback(true)).toMatchObject({ active: true, playback: true });
-    expect(transport.select('lte')).toMatchObject({ active: true, profile: 'lte' });
+    expect(transport.select('lte-etm1.1')).toMatchObject({ active: true, profile: 'lte-etm1.1', waveform: { qualification: 'standards-derived' } });
+    expect(transport.configureChannel({ model: 'rayleigh', noiseFloorDbm: -105, seed: 407, fadingRateHz: 3 })).toMatchObject({ channel: { model: 'rayleigh', noiseFloorDbm: -105 } });
     await transport.close();
     expect(transport.status().playback).toBe(false);
   });

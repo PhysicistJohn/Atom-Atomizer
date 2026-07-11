@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TinySaDeviceService } from '@tinysa/device';
 import type { AnalyzerConfig, GeneratorConfig, ZeroSpanConfig } from '@tinysa/contracts';
+import { suggestedAnalyzerRange, waveformDescriptor } from '@tinysa/waveforms';
 import { FakeTinySaTransport } from './index.js';
 
 const analyzer: AnalyzerConfig = {
@@ -99,9 +100,10 @@ describe('device service against byte-level simulator', () => {
     const transport = new FakeTinySaTransport({ signalProfile: 'cw', demoIdentity: true });
     const device = new TinySaDeviceService(transport);
     await device.connect(transport.port);
-    await device.configureAnalyzer({ ...analyzer, points: 145 });
+    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('cw')), points: 145 });
     const cw = await device.acquireSweep();
-    transport.setSignalProfile('lte');
+    transport.setSignalProfile('lte-etm1.1');
+    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('lte-etm1.1')), points: 145 });
     const lte = await device.acquireSweep();
     expect(cw.powerDbm.filter((value) => value > -80).length).toBeLessThan(8);
     expect(lte.powerDbm.filter((value) => value > -80).length).toBeGreaterThan(40);
@@ -112,7 +114,7 @@ describe('device service against byte-level simulator', () => {
     const transport = new FakeTinySaTransport({ signalProfile: 'cw', demoIdentity: true });
     const device = new TinySaDeviceService(transport);
     await device.connect(transport.port);
-    await device.configureAnalyzer({ ...analyzer, points: 321 });
+    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('cw')), points: 321 });
     const first = await device.acquireSweep();
     const second = await device.acquireSweep();
     const backgroundIndexes = first.powerDbm

@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('atomAgent', {
 contextBridge.exposeInMainWorld('demoLab', {
   status: () => ipcRenderer.invoke('demo:status'),
   select: (profile: import('@tinysa/contracts').SynthesizedSignalProfile) => ipcRenderer.invoke('demo:select', profile),
+  configureChannel: (config: import('@tinysa/contracts').ReplayChannelConfiguration) => ipcRenderer.invoke('demo:channel', config),
   subscribe: (listener: (status: import('@tinysa/contracts').DemoLabStatus) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, status: import('@tinysa/contracts').DemoLabStatus) => listener(status);
     ipcRenderer.on('demo:status', wrapped);

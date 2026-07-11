@@ -3,16 +3,23 @@ import {
   SignalDetector,
   SignalTracker,
   SpectralMorphologyClassifier,
+  TraceAccumulator,
   UnknownClassifier,
+  autoScaleSpectrum,
   calculateSweepMetrics,
   classifyZeroSpanEnvelope,
+  readMarkers,
+  searchMarker,
 } from './index.js';
 import { FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
 import type {
   AnalyzerConfig,
   DeviceIdentity,
+  MarkerConfiguration,
   SignalDetectionConfig,
   Sweep,
+  TraceBankConfiguration,
+  TraceFrame,
   ZeroSpanCapture,
 } from '@tinysa/contracts';
 
@@ -155,6 +162,54 @@ describe('signal analysis', () => {
       identity,
     };
     expect(classifyZeroSpanEnvelope(capture)).toMatchObject({ label: 'pulsed-envelope', modelId: 'zero-span-envelope-v1' });
+  });
+
+  it('maintains four explicit host traces with hold, linear-power average, view, blank, and reset semantics', () => {
+    const configuration: TraceBankConfiguration = [
+      { id: 1, mode: 'clear-write', averageCount: 4 },
+      { id: 2, mode: 'max-hold', averageCount: 4 },
+      { id: 3, mode: 'average', averageCount: 2 },
+      { id: 4, mode: 'blank', averageCount: 4 },
+    ];
+    const accumulator = new TraceAccumulator(configuration);
+    const first = makeSweep({ id: 'trace-1', powerDbm: Array(20).fill(-90) });
+    const second = makeSweep({ id: 'trace-2', powerDbm: Array.from({ length: 20 }, (_, index) => index === 5 ? -40 : -100) });
+    accumulator.update(first);
+    const frames = accumulator.update(second);
+    expect(frames.map((frame) => frame.traceId)).toEqual([1, 2, 3]);
+    expect(frames.find((frame) => frame.traceId === 1)?.powerDbm[0]).toBe(-100);
+    expect(frames.find((frame) => frame.traceId === 2)?.powerDbm[0]).toBe(-90);
+    expect(frames.find((frame) => frame.traceId === 2)?.powerDbm[5]).toBe(-40);
+    expect(frames.find((frame) => frame.traceId === 3)?.powerDbm[0]).toBeGreaterThan(-97.1);
+
+    accumulator.configure(configuration.map((trace) => trace.id === 2 ? { ...trace, mode: 'view' as const } : trace));
+    accumulator.update(makeSweep({ id: 'trace-3', powerDbm: Array(20).fill(-20) }));
+    expect(accumulator.frames().find((frame) => frame.traceId === 2)?.powerDbm[5]).toBe(-40);
+    expect(accumulator.frames().find((frame) => frame.traceId === 2)?.mode).toBe('view');
+    accumulator.configure(configuration);
+    accumulator.update(makeSweep({ id: 'trace-4', powerDbm: Array.from({ length: 20 }, (_, index) => index === 8 ? -30 : -110) }));
+    expect(accumulator.frames().find((frame) => frame.traceId === 2)).toMatchObject({ mode: 'max-hold', sweepCount: 3 });
+    expect(accumulator.frames().find((frame) => frame.traceId === 2)?.powerDbm[5]).toBe(-40);
+    accumulator.reset(2);
+    expect(accumulator.frames().some((frame) => frame.traceId === 2)).toBe(false);
+  });
+
+  it('reads normal, delta, noise-density, peak-tracking markers and performs bounded peak searches', () => {
+    const sweep = makeSweep();
+    const frame: TraceFrame = { traceId: 1, mode: 'clear-write', frequencyHz: sweep.frequencyHz, powerDbm: sweep.powerDbm, sweepCount: 1, sourceSweepId: sweep.id, evidence: 'host-derived' };
+    const markers: readonly MarkerConfiguration[] = [
+      { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 900, tracking: 'peak' },
+      { id: 2, enabled: true, traceId: 1, mode: 'delta', frequencyHz: 1_100, tracking: 'fixed', referenceMarkerId: 1 },
+      { id: 3, enabled: true, traceId: 1, mode: 'noise-density', frequencyHz: 100, tracking: 'fixed' },
+    ];
+    const readings = readMarkers(markers, [frame], 10_000);
+    expect(readings[0]).toMatchObject({ markerId: 1, frequencyHz: 1_000, powerDbm: -48, evidence: 'host-derived' });
+    expect(readings[1]).toMatchObject({ deltaFrequencyHz: 100, deltaPowerDb: -6 });
+    expect(readings[2]?.noiseDensityDbmHz).toBe(-130);
+    expect(searchMarker(frame, 500, 'peak', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toBe(1_000);
+    expect(searchMarker(frame, 500, 'next-right', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toBe(1_000);
+    expect(() => searchMarker(frame, 1_500, 'next-right', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toThrow(/No qualifying peak/i);
+    expect(autoScaleSpectrum(sweep)).toMatchObject({ referenceLevelDbm: -40, divisions: 10 });
   });
 
   it('fails loudly when sweep vectors are missing, mismatched, or non-finite', () => {

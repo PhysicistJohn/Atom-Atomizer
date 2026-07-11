@@ -32,7 +32,7 @@ import type { ByteTransport, TransportEvent } from './transport.js';
 
 const REQUIRED_COMMANDS = [
   'version', 'info', 'help', 'status', 'pause', 'resume', 'abort',
-  'mode', 'sweep', 'scan', 'scanraw', 'rbw', 'attenuate', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace',
+  'mode', 'sweep', 'scan', 'scanraw', 'rbw', 'attenuate', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
   'freq', 'level', 'modulation', 'output', 'vbat', 'deviceid', 'capture', 'touch', 'release',
 ] as const;
 const SCREEN_BYTES = ZS407_FIRMWARE_LIMITS.screenWidth * ZS407_FIRMWARE_LIMITS.screenHeight * 2;
@@ -600,6 +600,10 @@ function buildCapabilities(commands: readonly string[], simulated: boolean): Dev
     remoteTouch: commands.includes('touch') && commands.includes('release'),
     streaming: commands.includes('scan'),
     rawSweep: commands.includes('scanraw'),
+    markerCount: 8,
+    traceCount: 4,
+    firmwareMarkers: commands.includes('marker'),
+    firmwareTraces: commands.includes('trace'),
     generatorReadback: false,
     modulation: ['off', 'am', 'fm'],
     commands: [...commands],

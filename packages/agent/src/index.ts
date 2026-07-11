@@ -3,7 +3,15 @@ import {
   ZS407_FIRMWARE_LIMITS,
   analyzerConfigSchema,
   generatorConfigSchema,
+  markerConfigurationSchema,
+  markerIdSchema,
+  markerSearchActionSchema,
+  replayChannelConfigurationSchema,
   signalDetectionConfigSchema,
+  spectrumDisplayConfigurationSchema,
+  synthesizedSignalProfileSchema,
+  traceConfigurationSchema,
+  traceIdSchema,
   zeroSpanConfigSchema,
 } from '@tinysa/contracts';
 
@@ -23,9 +31,10 @@ export type AgentToolName =
   | 'computer_screenshot' | 'computer_click' | 'computer_type' | 'computer_key' | 'computer_scroll'
   | 'navigate_workspace' | 'configure_analyzer' | 'acquire_sweep'
   | 'start_continuous_sweeps' | 'stop_continuous_sweeps'
+  | 'get_measurement_state' | 'configure_marker' | 'search_marker' | 'configure_trace' | 'reset_trace' | 'configure_spectrum_display'
   | 'configure_signal_detector' | 'configure_zero_span' | 'acquire_zero_span'
   | 'configure_generator' | 'set_rf_output'
-  | 'capture_device_screen' | 'remote_device_touch' | 'export_latest_sweep' | 'select_demo_signal';
+  | 'capture_device_screen' | 'remote_device_touch' | 'export_latest_sweep' | 'select_demo_signal' | 'configure_demo_channel';
 
 export interface AgentToolDefinition {
   type: 'function';
@@ -153,6 +162,12 @@ export const agentToolDefinitions: readonly AgentToolDefinition[] = [
   { type: 'function', name: 'acquire_sweep', description: 'Apply the staged analyzer configuration and acquire exactly one complete sweep.', parameters: empty },
   { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the staged analyzer configuration and acquire serialized sweeps until explicitly stopped or a failure occurs.', parameters: empty },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.', parameters: empty },
+  { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, eight marker configurations/readings, peak-search criteria, and amplitude display scale with evidence labels.', parameters: empty },
+  { type: 'function', name: 'configure_marker', description: 'Configure one of eight host-derived markers, including trace assignment, fixed or peak tracking, normal, delta, or noise-density readout.', parameters: { type: 'object', properties: { id: { type: 'integer', minimum: 1, maximum: 8 }, enabled: { type: 'boolean' }, traceId: { type: 'integer', minimum: 1, maximum: 4 }, mode: { type: 'string', enum: ['normal', 'delta', 'noise-density'] }, frequencyHz: { type: 'integer', minimum: 0, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz }, tracking: { type: 'string', enum: ['fixed', 'peak'] }, referenceMarkerId: { type: 'integer', minimum: 1, maximum: 8 } }, required: ['id', 'enabled', 'traceId', 'mode', 'frequencyHz', 'tracking'], additionalProperties: false } },
+  { type: 'function', name: 'search_marker', description: 'Move a marker to the absolute peak, minimum, or next qualifying local peak left/right using the staged threshold and excursion criteria.', parameters: { type: 'object', properties: { markerId: { type: 'integer', minimum: 1, maximum: 8 }, action: { type: 'string', enum: ['peak', 'minimum', 'next-left', 'next-right'] } }, required: ['markerId', 'action'], additionalProperties: false } },
+  { type: 'function', name: 'configure_trace', description: 'Configure one of four host-derived simultaneous traces as Clear/Write, Max Hold, Min Hold, Average, View, or Blank.', parameters: { type: 'object', properties: { id: { type: 'integer', minimum: 1, maximum: 4 }, mode: { type: 'string', enum: ['clear-write', 'max-hold', 'min-hold', 'average', 'view', 'blank'] }, averageCount: { type: 'integer', minimum: 2, maximum: 100 } }, required: ['id', 'mode', 'averageCount'], additionalProperties: false } },
+  { type: 'function', name: 'reset_trace', description: 'Clear the accumulated memory for one host-derived trace.', parameters: { type: 'object', properties: { traceId: { type: 'integer', minimum: 1, maximum: 4 } }, required: ['traceId'], additionalProperties: false } },
+  { type: 'function', name: 'configure_spectrum_display', description: 'Configure the host spectrum amplitude axis reference level and dB per division. This does not claim firmware display readback.', parameters: { type: 'object', properties: { referenceLevelDbm: { type: 'number', minimum: -150, maximum: 30 }, decibelsPerDivision: { type: 'number', enum: [1, 2, 5, 10, 20] }, divisions: { type: 'integer', enum: [10] } }, required: ['referenceLevelDbm', 'decibelsPerDivision', 'divisions'], additionalProperties: false } },
   { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior.', parameters: detectionParameters },
   { type: 'function', name: 'configure_zero_span', description: 'Stage a power-versus-time zero-span capture. Zero span is detected envelope data, never I/Q.', parameters: zeroSpanParameters },
   { type: 'function', name: 'acquire_zero_span', description: 'Acquire one zero-span envelope using the staged configuration and classify only its envelope behavior.', parameters: empty },
@@ -161,7 +176,8 @@ export const agentToolDefinitions: readonly AgentToolDefinition[] = [
   { type: 'function', name: 'capture_device_screen', description: 'Capture the physical tinySA LCD as an exact 480×320 RGB565 frame and display it in Device.', parameters: empty },
   { type: 'function', name: 'remote_device_touch', description: 'Send one physical-screen touch gesture. Because firmware UI touch may reach RF controls, every gesture requires immediate human approval.', parameters: { type: 'object', properties: { x: { type: 'integer', minimum: 0, maximum: 479 }, y: { type: 'integer', minimum: 0, maximum: 319 }, gesture: { type: 'string', enum: ['tap', 'press', 'release'] } }, required: ['x', 'y', 'gesture'], additionalProperties: false } },
   { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with measurement and device provenance.', parameters: { type: 'object', properties: { format: { type: 'string', enum: ['csv', 'json'] } }, required: ['format'], additionalProperties: false } },
-  { type: 'function', name: 'select_demo_signal', description: 'Switch the attached Signal Lab byte source among CW, AM, FM, and LTE-like synthesized spectrum/envelope profiles. Available only in demo mode.', parameters: { type: 'object', properties: { profile: { type: 'string', enum: ['cw', 'am', 'fm', 'lte'] } }, required: ['profile'], additionalProperties: false } },
+  { type: 'function', name: 'select_demo_signal', description: 'Switch Signal Lab among visual CW/AM/FM or standards-derived GSM normal-burst, LTE E-TM1.1, NR-FR1-TM1.1, and Wi-Fi 6 HE SU spectrum projections. Qualification is always returned.', parameters: { type: 'object', properties: { profile: { type: 'string', enum: synthesizedSignalProfileSchema.options } }, required: ['profile'], additionalProperties: false } },
+  { type: 'function', name: 'configure_demo_channel', description: 'Configure the seeded Signal Lab channel as complex-Gaussian AWGN or frequency-selective correlated Rayleigh fading plus AWGN.', parameters: { type: 'object', properties: { model: { type: 'string', enum: ['awgn', 'rayleigh'] }, noiseFloorDbm: { type: 'number', minimum: -150, maximum: -30 }, seed: { type: 'integer', minimum: 1, maximum: 0xffff_ffff }, fadingRateHz: { type: 'number', minimum: 0.1, maximum: 100 } }, required: ['model', 'noiseFloorDbm', 'seed', 'fadingRateHz'], additionalProperties: false } },
 ];
 
 const observe = (name: AgentToolName): AgentToolPolicy => ({ name, risk: 'observe', approval: 'never' });
@@ -188,6 +204,12 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   acquire_sweep: operate('acquire_sweep'),
   start_continuous_sweeps: operate('start_continuous_sweeps'),
   stop_continuous_sweeps: operate('stop_continuous_sweeps'),
+  get_measurement_state: observe('get_measurement_state'),
+  configure_marker: operate('configure_marker'),
+  search_marker: operate('search_marker'),
+  configure_trace: operate('configure_trace'),
+  reset_trace: operate('reset_trace'),
+  configure_spectrum_display: operate('configure_spectrum_display'),
   configure_signal_detector: operate('configure_signal_detector'),
   configure_zero_span: operate('configure_zero_span'),
   acquire_zero_span: operate('acquire_zero_span'),
@@ -197,6 +219,7 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   remote_device_touch: { name: 'remote_device_touch', risk: 'high-impact', approval: 'at-action' },
   export_latest_sweep: operate('export_latest_sweep'),
   select_demo_signal: operate('select_demo_signal'),
+  configure_demo_channel: operate('configure_demo_channel'),
 };
 
 const schemas: Record<AgentToolName, z.ZodType> = {
@@ -221,6 +244,12 @@ const schemas: Record<AgentToolName, z.ZodType> = {
   acquire_sweep: z.object({}).strict(),
   start_continuous_sweeps: z.object({}).strict(),
   stop_continuous_sweeps: z.object({}).strict(),
+  get_measurement_state: z.object({}).strict(),
+  configure_marker: markerConfigurationSchema,
+  search_marker: z.object({ markerId: markerIdSchema, action: markerSearchActionSchema }).strict(),
+  configure_trace: traceConfigurationSchema,
+  reset_trace: z.object({ traceId: traceIdSchema }).strict(),
+  configure_spectrum_display: spectrumDisplayConfigurationSchema,
   configure_signal_detector: signalDetectionConfigSchema,
   configure_zero_span: zeroSpanConfigSchema,
   acquire_zero_span: z.object({}).strict(),
@@ -229,7 +258,8 @@ const schemas: Record<AgentToolName, z.ZodType> = {
   capture_device_screen: z.object({}).strict(),
   remote_device_touch: z.object({ x: z.number().int().min(0).max(479), y: z.number().int().min(0).max(319), gesture: z.enum(['tap', 'press', 'release']) }).strict(),
   export_latest_sweep: z.object({ format: z.enum(['csv', 'json']) }).strict(),
-  select_demo_signal: z.object({ profile: z.enum(['cw', 'am', 'fm', 'lte']) }).strict(),
+  select_demo_signal: z.object({ profile: synthesizedSignalProfileSchema }).strict(),
+  configure_demo_channel: replayChannelConfigurationSchema,
 };
 
 export function isAgentToolName(value: string): value is AgentToolName { return Object.hasOwn(agentToolPolicies, value); }

@@ -5,14 +5,14 @@
   "type": "module",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
+    "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/waveforms && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "npm run dev -w @tinysa/desktop",
     "dev:install-app": "node tools/dev-launcher/install.mjs",
     "check:launcher": "node --check tools/dev-launcher/main.cjs && node --check tools/dev-launcher/install.mjs",
-    "check": "npm run check:launcher && npm run typecheck && npm test && npm run build"
+    "check": "npm run check:launcher && npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "24.0.13",

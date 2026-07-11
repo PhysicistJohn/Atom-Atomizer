@@ -1,10 +1,26 @@
 import type {
   AnalysisModeDefinition,
   DetectedSignal,
+  MarkerConfiguration,
+  MarkerReading,
+  MarkerSearchAction,
+  MarkerSearchConfiguration,
   SignalDetectionConfig,
+  SpectrumDisplayConfiguration,
   Sweep,
+  TraceBankConfiguration,
+  TraceConfiguration,
+  TraceFrame,
+  TraceId,
   WaveformClassification,
   ZeroSpanCapture,
+} from '@tinysa/contracts';
+import {
+  markerConfigurationSchema,
+  markerSearchConfigurationSchema,
+  spectrumDisplayConfigurationSchema,
+  traceBankConfigurationSchema,
+  traceIdSchema,
 } from '@tinysa/contracts';
 
 export const analysisModes: readonly AnalysisModeDefinition[] = [
@@ -174,6 +190,198 @@ export function calculateSweepMetrics(sweep: Sweep): SweepMetrics {
     occupiedBandwidth99Hz: occupiedBandwidth(sweep, 0.99),
     crestFactorDb: sweep.powerDbm[peakIndex]! - meanDbm,
   };
+}
+
+interface TraceState {
+  configuration: TraceConfiguration;
+  frame?: TraceFrame;
+  averageWindow: readonly number[][];
+  accumulationMode?: Exclude<TraceConfiguration['mode'], 'view' | 'blank'>;
+}
+
+/** Four simultaneous display traces derived from complete host sweeps. No firmware-state claim is implied. */
+export class TraceAccumulator {
+  #configuration: TraceBankConfiguration;
+  #states = new Map<TraceId, TraceState>();
+
+  constructor(configuration: TraceBankConfiguration) {
+    this.#configuration = traceBankConfigurationSchema.parse(configuration);
+    for (const trace of this.#configuration) {
+      this.#states.set(trace.id, {
+        configuration: structuredClone(trace),
+        averageWindow: [],
+        accumulationMode: isPassiveTraceMode(trace.mode) ? undefined : trace.mode,
+      });
+    }
+  }
+
+  get configuration(): TraceBankConfiguration { return structuredClone(this.#configuration); }
+
+  configure(input: TraceBankConfiguration): void {
+    const configuration = traceBankConfigurationSchema.parse(input);
+    for (const trace of configuration) {
+      const previous = this.#states.get(trace.id);
+      if (!previous) {
+        this.#states.set(trace.id, {
+          configuration: structuredClone(trace),
+          averageWindow: [],
+          accumulationMode: isPassiveTraceMode(trace.mode) ? undefined : trace.mode,
+        });
+        continue;
+      }
+      const previousMode = previous.configuration.mode;
+      const modeChanged = previousMode !== trace.mode;
+      const averagingChanged = previous.configuration.averageCount !== trace.averageCount;
+      const nextIsPassive = isPassiveTraceMode(trace.mode);
+      const resumesRetainedMode = isPassiveTraceMode(previousMode) && previous.accumulationMode === trace.mode;
+      previous.configuration = structuredClone(trace);
+      if (modeChanged && nextIsPassive) {
+        if (previous.frame) previous.frame = { ...previous.frame, mode: trace.mode };
+      } else if ((modeChanged && !resumesRetainedMode) || (trace.mode === 'average' && averagingChanged)) {
+        previous.frame = undefined;
+        previous.averageWindow = [];
+      } else if (modeChanged && previous.frame) {
+        previous.frame = { ...previous.frame, mode: trace.mode };
+      }
+      if (!isPassiveTraceMode(trace.mode)) previous.accumulationMode = trace.mode;
+    }
+    this.#configuration = structuredClone(configuration);
+  }
+
+  reset(traceId?: TraceId): void {
+    if (traceId !== undefined) {
+      const id = traceIdSchema.parse(traceId);
+      const state = this.#states.get(id);
+      if (!state) throw new Error(`Trace ${id} is not configured`);
+      state.frame = undefined;
+      state.averageWindow = [];
+      return;
+    }
+    for (const state of this.#states.values()) {
+      state.frame = undefined;
+      state.averageWindow = [];
+    }
+  }
+
+  update(sweep: Sweep): readonly TraceFrame[] {
+    validateSweep(sweep);
+    for (const trace of this.#configuration) {
+      const state = this.#states.get(trace.id)!;
+      if (trace.mode === 'blank' || trace.mode === 'view') continue;
+      if (state.frame && !sameFrequencyGrid(state.frame.frequencyHz, sweep.frequencyHz)) {
+        state.frame = undefined;
+        state.averageWindow = [];
+      }
+      let powerDbm: readonly number[];
+      let sweepCount: number;
+      if (trace.mode === 'clear-write' || !state.frame) {
+        powerDbm = [...sweep.powerDbm];
+        sweepCount = 1;
+        state.averageWindow = trace.mode === 'average' ? [[...sweep.powerDbm]] : [];
+      } else if (trace.mode === 'max-hold') {
+        powerDbm = sweep.powerDbm.map((value, index) => Math.max(value, state.frame!.powerDbm[index]!));
+        sweepCount = state.frame.sweepCount + 1;
+      } else if (trace.mode === 'min-hold') {
+        powerDbm = sweep.powerDbm.map((value, index) => Math.min(value, state.frame!.powerDbm[index]!));
+        sweepCount = state.frame.sweepCount + 1;
+      } else if (trace.mode === 'average') {
+        state.averageWindow = [...state.averageWindow, [...sweep.powerDbm]].slice(-trace.averageCount);
+        powerDbm = averagePowerFrames(state.averageWindow);
+        sweepCount = state.averageWindow.length;
+      } else {
+        throw new Error(`Trace ${trace.id} entered unsupported mode ${trace.mode}`);
+      }
+      state.frame = {
+        traceId: trace.id,
+        mode: trace.mode,
+        frequencyHz: [...sweep.frequencyHz],
+        powerDbm,
+        sweepCount,
+        sourceSweepId: sweep.id,
+        evidence: 'host-derived',
+      };
+    }
+    return this.frames();
+  }
+
+  frames(): readonly TraceFrame[] {
+    return this.#configuration
+      .filter((trace) => trace.mode !== 'blank')
+      .map((trace) => this.#states.get(trace.id)?.frame)
+      .filter((frame): frame is TraceFrame => frame !== undefined)
+      .map((frame) => structuredClone(frame));
+  }
+}
+
+export function readMarkers(
+  markerInputs: readonly MarkerConfiguration[],
+  frames: readonly TraceFrame[],
+  resolutionBandwidthHz: number,
+): readonly MarkerReading[] {
+  if (!Number.isFinite(resolutionBandwidthHz) || resolutionBandwidthHz <= 0) throw new Error('Marker readings require a positive resolution bandwidth');
+  const markers = markerInputs.map((marker) => markerConfigurationSchema.parse(marker));
+  const frameByTrace = new Map(frames.map((frame) => [frame.traceId, frame]));
+  const readings = new Map<number, MarkerReading>();
+  for (const marker of markers) {
+    if (!marker.enabled) continue;
+    const frame = frameByTrace.get(marker.traceId);
+    if (!frame) continue;
+    const binIndex = marker.tracking === 'peak' ? maximumIndex(frame.powerDbm) : nearestFrequencyIndex(frame.frequencyHz, marker.frequencyHz);
+    const powerDbm = frame.powerDbm[binIndex]!;
+    readings.set(marker.id, {
+      markerId: marker.id,
+      traceId: marker.traceId,
+      mode: marker.mode,
+      binIndex,
+      frequencyHz: frame.frequencyHz[binIndex]!,
+      powerDbm,
+      ...(marker.mode === 'noise-density' ? { noiseDensityDbmHz: powerDbm - 10 * Math.log10(resolutionBandwidthHz) } : {}),
+      sourceSweepId: frame.sourceSweepId,
+      evidence: 'host-derived',
+    });
+  }
+  for (const marker of markers) {
+    if (marker.mode !== 'delta' || marker.referenceMarkerId === undefined) continue;
+    const reading = readings.get(marker.id);
+    const reference = readings.get(marker.referenceMarkerId);
+    if (!reading || !reference) continue;
+    readings.set(marker.id, {
+      ...reading,
+      deltaFrequencyHz: reading.frequencyHz - reference.frequencyHz,
+      deltaPowerDb: reading.powerDbm - reference.powerDbm,
+    });
+  }
+  return markers.map((marker) => readings.get(marker.id)).filter((reading): reading is MarkerReading => reading !== undefined);
+}
+
+export function searchMarker(
+  frame: TraceFrame,
+  currentFrequencyHz: number,
+  action: MarkerSearchAction,
+  searchInput: MarkerSearchConfiguration,
+): number {
+  const search = markerSearchConfigurationSchema.parse(searchInput);
+  if (!frame.frequencyHz.length || frame.frequencyHz.length !== frame.powerDbm.length) throw new Error('Marker search requires a complete trace frame');
+  if (action === 'peak') return frame.frequencyHz[maximumIndex(frame.powerDbm)]!;
+  if (action === 'minimum') return frame.frequencyHz[minimumIndex(frame.powerDbm)]!;
+  const peaks = localPeakIndices(frame.powerDbm, search);
+  const currentIndex = nearestFrequencyIndex(frame.frequencyHz, currentFrequencyHz);
+  const candidates = action === 'next-left'
+    ? peaks.filter((index) => index < currentIndex).sort((left, right) => right - left)
+    : peaks.filter((index) => index > currentIndex).sort((left, right) => left - right);
+  const match = candidates[0];
+  if (match === undefined) throw new Error(`No qualifying peak exists ${action === 'next-left' ? 'left' : 'right'} of the active marker`);
+  return frame.frequencyHz[match]!;
+}
+
+export function autoScaleSpectrum(sweep: Sweep): SpectrumDisplayConfiguration {
+  validateSweep(sweep);
+  const peak = Math.max(...sweep.powerDbm);
+  const floor = robustNoiseFloor(sweep.powerDbm);
+  const referenceLevelDbm = Math.min(30, Math.max(-150, Math.ceil((peak + 5) / 5) * 5));
+  const requiredRange = Math.max(10, referenceLevelDbm - (floor - 8));
+  const decibelsPerDivision = ([1, 2, 5, 10, 20] as const).find((scale) => scale * 10 >= requiredRange) ?? 20;
+  return spectrumDisplayConfigurationSchema.parse({ referenceLevelDbm, decibelsPerDivision, divisions: 10 });
 }
 
 export interface AnalysisModePlugin<Config, Input, Result> {
@@ -403,6 +611,51 @@ function dominantAutocorrelationLag(values: readonly number[]): number {
     if (correlation > best) { best = correlation; bestLag = lag; }
   }
   return best >= 0.45 ? bestLag : 0;
+}
+
+function sameFrequencyGrid(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((frequency, index) => frequency === right[index]);
+}
+
+function isPassiveTraceMode(mode: TraceConfiguration['mode']): mode is 'view' | 'blank' {
+  return mode === 'view' || mode === 'blank';
+}
+
+function averagePowerFrames(frames: readonly (readonly number[])[]): number[] {
+  if (!frames.length) throw new Error('Trace averaging requires at least one frame');
+  const points = frames[0]!.length;
+  if (frames.some((frame) => frame.length !== points)) throw new Error('Trace averaging requires identical point counts');
+  return Array.from({ length: points }, (_, index) => {
+    const averageMilliwatts = frames.reduce((total, frame) => total + dbmToMilliwatts(frame[index]!), 0) / frames.length;
+    return milliwattsToDbm(averageMilliwatts);
+  });
+}
+
+function maximumIndex(values: readonly number[]): number {
+  if (!values.length) throw new Error('Maximum search requires samples');
+  return values.reduce((best, value, index) => value > values[best]! ? index : best, 0);
+}
+
+function minimumIndex(values: readonly number[]): number {
+  if (!values.length) throw new Error('Minimum search requires samples');
+  return values.reduce((best, value, index) => value < values[best]! ? index : best, 0);
+}
+
+function nearestFrequencyIndex(frequencies: readonly number[], frequencyHz: number): number {
+  if (!frequencies.length || !Number.isFinite(frequencyHz)) throw new Error('Marker placement requires a finite frequency and a populated trace');
+  return frequencies.reduce((best, frequency, index) => Math.abs(frequency - frequencyHz) < Math.abs(frequencies[best]! - frequencyHz) ? index : best, 0);
+}
+
+function localPeakIndices(values: readonly number[], search: MarkerSearchConfiguration): number[] {
+  const peaks: number[] = [];
+  for (let index = 1; index < values.length - 1; index++) {
+    const value = values[index]!;
+    if (value < search.minimumLevelDbm || value <= values[index - 1]! || value < values[index + 1]!) continue;
+    const leftMinimum = Math.min(...values.slice(Math.max(0, index - 4), index));
+    const rightMinimum = Math.min(...values.slice(index + 1, Math.min(values.length, index + 5)));
+    if (value - Math.max(leftMinimum, rightMinimum) >= search.minimumExcursionDb) peaks.push(index);
+  }
+  return peaks;
 }
 
 function dbmToMilliwatts(value: number): number { return 10 ** (value / 10); }

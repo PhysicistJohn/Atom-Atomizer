@@ -14,6 +14,7 @@ import {
   type Sweep,
 } from '@tinysa/contracts';
 import { App } from './App.js';
+import { DEFAULT_REPLAY_CHANNEL, waveformCatalog, waveformDescriptor } from '@tinysa/waveforms';
 
 const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'tinySA simulator', product: 'tinySA4', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc' };
 const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: true } as const;
@@ -24,7 +25,7 @@ const capabilities: DeviceCapabilities = {
   generatorFrequency: { min: 1, max: 17_922_600_000, unit: 'Hz' }, generatorFundamentalMaximumHz: 6_300_000_000,
   generatorLevel: { min: -115, max: -18.5, step: 0.5, unit: 'dBm' }, rbwKhz: { min: 0.2, max: 850, unit: 'kHz' }, attenuationDb: { min: 0, max: 31, unit: 'dB' },
   sweepPoints: { min: 20, max: 450, unit: 'points' }, sweepSeconds: { min: 0.003, max: 60, unit: 'seconds' }, maxSweepPoints: 450,
-  screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, generatorReadback: false,
+  screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, markerCount: 8, traceCount: 4, firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
   modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'simulated', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'firmware-derived-awaiting-device',
 };
 const ready: DeviceSnapshot = { connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded', identity, capabilities };
@@ -33,6 +34,7 @@ const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 20, ac
 const powers = Array.from({ length: 20 }, (_, index) => index === 10 ? -50 : -90);
 const frequencies = Array.from({ length: 20 }, (_, index) => 88e6 + index * (20e6 / 19));
 const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity };
+const demoStatus = { available: false, active: false, playback: false, profile: 'cw' as const, profiles: waveformCatalog.map((entry) => entry.id), waveform: waveformDescriptor('cw'), catalog: waveformCatalog, channel: DEFAULT_REPLAY_CHANNEL };
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
@@ -56,13 +58,13 @@ beforeEach(() => {
     status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
     createRealtimeCall: vi.fn(), agentTurn: vi.fn(), computerScreenshot: vi.fn(), computerClick: vi.fn(), computerType: vi.fn(), computerKey: vi.fn(), computerScroll: vi.fn(),
   };
-  window.demoLab = { status: vi.fn().mockResolvedValue({ available: false, active: false, playback: false, profile: 'cw', profiles: ['cw', 'am', 'fm', 'lte'] }), select: vi.fn(), subscribe: vi.fn().mockReturnValue(vi.fn()) };
+  window.demoLab = { status: vi.fn().mockResolvedValue(demoStatus), select: vi.fn(), configureChannel: vi.fn(), subscribe: vi.fn().mockReturnValue(vi.fn()) };
 });
 
 describe('operator vertical slice', () => {
   it('starts continuous synthetic replay when Signal Lab owns the startup instrument', async () => {
     vi.mocked(window.tinySA.getSnapshot).mockResolvedValue(ready);
-    vi.mocked(window.demoLab.status).mockResolvedValue({ available: true, active: true, playback: false, profile: 'cw', profiles: ['cw', 'am', 'fm', 'lte'] });
+    vi.mocked(window.demoLab.status).mockResolvedValue({ ...demoStatus, available: true, active: true });
     render(<App/>);
     await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
     expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.startStreaming));
@@ -78,6 +80,11 @@ describe('operator vertical slice', () => {
     expect(navigation.textContent).not.toContain('Settings');
     expect(container.querySelector('.atomic-mark')).toBeTruthy();
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
+    for (const control of ['Markers', 'Traces', 'Display']) expect(screen.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Markers/i }));
+    expect(await screen.findByText(/SEARCH ACTIVE MARKER/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Traces/i }));
+    expect(await screen.findByText('TRACE 4')).toBeTruthy();
     await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('REASONING HIGH'));
     expect(container.querySelector('.atom-foot')?.textContent).toContain('VOICE BALLAD');
   });

@@ -1,8 +1,16 @@
-import type { DemoLabStatus, PortCandidate, SynthesizedSignalProfile } from '@tinysa/contracts';
+import {
+  replayChannelConfigurationSchema,
+  synthesizedSignalProfileSchema,
+  type DemoLabStatus,
+  type PortCandidate,
+  type ReplayChannelConfiguration,
+  type SynthesizedSignalProfile,
+} from '@tinysa/contracts';
 import type { ByteTransport, TransportEvent } from '@tinysa/device';
 import { FakeTinySaTransport } from '@tinysa/test-device';
+import { DEFAULT_REPLAY_CHANNEL, waveformCatalog, waveformDescriptor } from '@tinysa/waveforms';
 
-const PROFILES: readonly SynthesizedSignalProfile[] = ['cw', 'am', 'fm', 'lte'];
+const PROFILES: readonly SynthesizedSignalProfile[] = waveformCatalog.map((descriptor) => descriptor.id);
 
 /** Selects a real exact-USB device when present; otherwise exposes one explicit synthesized ZS407. */
 export class AutoDemoTransport implements ByteTransport {
@@ -15,7 +23,7 @@ export class AutoDemoTransport implements ByteTransport {
 
   constructor(private readonly physical: ByteTransport | undefined, forceDemo = false) {
     this.#demoAvailable = forceDemo;
-    this.demo = new FakeTinySaTransport({ chunkSize: 7, sweepLatencyMs: 110, signalProfile: 'cw', demoIdentity: true });
+    this.demo = new FakeTinySaTransport({ chunkSize: 7, sweepLatencyMs: 110, signalProfile: 'cw', replayChannel: DEFAULT_REPLAY_CHANNEL, demoIdentity: true });
     this.demo.onBytes((bytes) => { if (this.#active === this.demo) for (const listener of this.#bytes) listener(bytes); });
     this.demo.onEvent((event) => { if (this.#active === this.demo) for (const listener of this.#events) listener(event); });
     this.physical?.onBytes((bytes) => { if (this.#active === this.physical) for (const listener of this.#bytes) listener(bytes); });
@@ -55,7 +63,17 @@ export class AutoDemoTransport implements ByteTransport {
   onEvent(listener: (event: TransportEvent) => void): () => void { this.#events.add(listener); return () => this.#events.delete(listener); }
 
   status(): DemoLabStatus {
-    return { available: this.#demoAvailable, active: this.#active === this.demo, playback: this.#playback, profile: normalizeProfile(this.demo.signalProfile), profiles: PROFILES };
+    const profile = normalizeProfile(this.demo.signalProfile);
+    return {
+      available: this.#demoAvailable,
+      active: this.#active === this.demo,
+      playback: this.#playback,
+      profile,
+      profiles: PROFILES,
+      waveform: waveformDescriptor(profile),
+      catalog: waveformCatalog.map((descriptor) => structuredClone(descriptor)),
+      channel: this.demo.replayChannel,
+    };
   }
 
   setPlayback(streaming: boolean): DemoLabStatus {
@@ -68,9 +86,14 @@ export class AutoDemoTransport implements ByteTransport {
     this.demo.setSignalProfile(profile);
     return this.status();
   }
+
+  configureChannel(input: ReplayChannelConfiguration): DemoLabStatus {
+    if (!this.#demoAvailable) throw new Error('Signal Lab is unavailable while an exact physical ZS407 is detected');
+    this.demo.setReplayChannel(replayChannelConfigurationSchema.parse(input));
+    return this.status();
+  }
 }
 
 function normalizeProfile(profile: string): SynthesizedSignalProfile {
-  if (profile === 'cw' || profile === 'am' || profile === 'fm' || profile === 'lte') return profile;
-  throw new Error(`Signal Lab entered unsupported profile ${profile}`);
+  return synthesizedSignalProfileSchema.parse(profile);
 }

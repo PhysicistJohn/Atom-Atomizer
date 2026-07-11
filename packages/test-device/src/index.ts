@@ -3,9 +3,14 @@ import {
   TINYSA_USB_VENDOR_ID,
   ZS407_FIRMWARE_LIMITS,
   portCandidateSchema,
+  replayChannelConfigurationSchema,
+  synthesizedSignalProfileSchema,
   type PortCandidate,
+  type ReplayChannelConfiguration,
+  type SynthesizedSignalProfile,
 } from '@tinysa/contracts';
 import type { ByteTransport, TransportEvent } from '@tinysa/device';
+import { DEFAULT_REPLAY_CHANNEL, synthesizeSpectrum, synthesizeZeroSpan } from '@tinysa/waveforms';
 
 type ByteListener = (bytes: Uint8Array) => void;
 type EventListener = (event: TransportEvent) => void;
@@ -16,9 +21,10 @@ export interface FakeOptions {
   includeBootBanner?: boolean;
   batteryMillivolts?: number;
   signalProfile?: DemoSignalProfile;
+  replayChannel?: ReplayChannelConfiguration;
   demoIdentity?: boolean;
 }
-export type DemoSignalProfile = 'survey' | 'cw' | 'am' | 'fm' | 'lte';
+export type DemoSignalProfile = 'survey' | SynthesizedSignalProfile;
 
 const encoder = new TextEncoder();
 const PROMPT = encoder.encode('ch> ');
@@ -47,9 +53,11 @@ export class FakeTinySaTransport implements ByteTransport {
   #sweepTimeSeconds = 0;
   #sweepIndex = 0;
   #signalProfile: DemoSignalProfile;
+  #replayChannel: ReplayChannelConfiguration;
 
   constructor(private readonly options: FakeOptions = {}) {
     this.#signalProfile = options.signalProfile ?? 'survey';
+    this.#replayChannel = replayChannelConfigurationSchema.parse(options.replayChannel ?? DEFAULT_REPLAY_CHANNEL);
     this.port = portCandidateSchema.parse(options.demoIdentity ? {
       id: 'demo-zs407:ATOM-LAB:0483:5740',
       path: 'fake://atom-signal-lab',
@@ -72,9 +80,13 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   get signalProfile(): DemoSignalProfile { return this.#signalProfile; }
+  get replayChannel(): ReplayChannelConfiguration { return structuredClone(this.#replayChannel); }
   setSignalProfile(profile: DemoSignalProfile): void {
-    if (!['survey', 'cw', 'am', 'fm', 'lte'].includes(profile)) throw new Error(`Unsupported synthesized signal profile: ${profile}`);
+    if (profile !== 'survey') synthesizedSignalProfileSchema.parse(profile);
     this.#signalProfile = profile;
+  }
+  setReplayChannel(channel: ReplayChannelConfiguration): void {
+    this.#replayChannel = replayChannelConfigurationSchema.parse(channel);
   }
 
   async list(): Promise<PortCandidate[]> { return [this.port]; }
@@ -146,7 +158,7 @@ export class FakeTinySaTransport implements ByteTransport {
       case 'deviceid': return 'deviceid 407';
       case 'scan': return this.#textSweep(args);
       case 'scanraw': return this.#rawSweep(args);
-      case 'capture': return fakeScreen(this.#signalProfile, this.#sweepIndex);
+      case 'capture': return fakeScreen(this.#signalProfile, this.#replayChannel, this.#sweepIndex, this.#startHz, this.#stopHz);
       case 'freq':
       case 'level':
       case 'modulation':
@@ -290,115 +302,25 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #powers(startHz: number, stopHz: number, points: number): number[] {
-    if (startHz === stopHz) {
-      return Array.from({ length: points }, (_, index) => this.#zeroSpanPower(index));
-    }
-    return Array.from({ length: points }, (_, index) => {
-      const x = index / Math.max(1, points - 1);
-      const noise = captureLikeNoise(index, points, this.#sweepIndex);
-      if (this.#signalProfile === 'cw') return noise + 64 * Math.exp(-Math.pow((x - 0.5) / 0.006, 2));
-      if (this.#signalProfile === 'am') {
-        const carrier = 61 * Math.exp(-Math.pow((x - 0.5) / 0.005, 2));
-        const lower = 44 * Math.exp(-Math.pow((x - 0.445) / 0.006, 2));
-        const upper = 44 * Math.exp(-Math.pow((x - 0.555) / 0.006, 2));
-        return noise + Math.max(carrier, lower, upper);
-      }
-      if (this.#signalProfile === 'fm') {
-        let comb = 0;
-        for (let sideband = -5; sideband <= 5; sideband++) {
-          const height = 52 - Math.abs(sideband) * 4.6 + (Math.abs(sideband) % 2 ? 2 : 0);
-          comb = Math.max(comb, height * Math.exp(-Math.pow((x - (0.5 + sideband * 0.025)) / 0.008, 2)));
-        }
-        return noise + comb;
-      }
-      if (this.#signalProfile === 'lte') {
-        const left = 1 / (1 + Math.exp(-(x - 0.29) * 180));
-        const right = 1 / (1 + Math.exp((x - 0.71) * 180));
-        const occupied = left * right;
-        const ofdmTexture = 2.2 * Math.sin(index * 1.91 + this.#sweepIndex * 0.6) + 1.4 * Math.cos(index * 0.43);
-        return occupied > 0.01 ? -68 + 21 * (occupied - 1) + ofdmTexture : noise;
-      }
-      const peak1 = 54 * Math.exp(-Math.pow((x - 0.23) / 0.018, 2));
-      const peak2 = 39 * Math.exp(-Math.pow((x - 0.51) / 0.045, 2));
-      const peak3 = 47 * Math.exp(-Math.pow((x - 0.79) / 0.009, 2));
-      return noise + Math.max(peak1, peak2, peak3);
-    });
+    if (startHz === stopHz) return synthesizeZeroSpan({ profile: this.#signalProfile, points, sweepIndex: this.#sweepIndex, channel: this.#replayChannel });
+    return synthesizeSpectrum({ profile: this.#signalProfile, startHz, stopHz, points, sweepIndex: this.#sweepIndex, channel: this.#replayChannel });
   }
 
   #actualRbwHz(): number { return this.#rbwKhz === 'auto' ? 10_000 : this.#rbwKhz * 1_000; }
   #actualAttenuationDb(): number { return this.#attenuationDb === 'auto' ? 0 : this.#attenuationDb; }
 
-  #zeroSpanPower(index: number): number {
-    const phase = (index + this.#sweepIndex * 3) * Math.PI / 13;
-    const receiverNoise = 0.55 * smoothNoise(index / 3.5, this.#sweepIndex, 0x32a7f119)
-      + 0.22 * signedNoise(index, this.#sweepIndex, 0x68bc21eb);
-    if (this.#signalProfile === 'cw') return -52 + 0.35 * Math.sin(phase * 1.7) + receiverNoise;
-    if (this.#signalProfile === 'am') return -68 + 15 * Math.sin(phase) + receiverNoise;
-    if (this.#signalProfile === 'fm') return -56 + 0.5 * Math.sin(phase * 2.3) + receiverNoise;
-    if (this.#signalProfile === 'lte') return -66 + 3.8 * Math.sin(phase * 1.9) + 2.1 * Math.cos(phase * 4.1) + receiverNoise;
-    const envelope = 7 * Math.sin(phase);
-    const pulse = index % 47 < 5 ? 13 : 0;
-    return -82 + envelope + pulse + receiverNoise;
-  }
 }
 
-function captureLikeNoise(index: number, points: number, sweepIndex: number): number {
-  const x = index / Math.max(1, points - 1);
-  const slowDrift = smoothNoise(sweepIndex / 4, 0, 0x11d42a57) * 0.35;
-  const receiverShape = 1.35 * Math.sin(Math.PI * 2 * (x * 1.45 + 0.08 + sweepIndex * 0.002))
-    + 0.95 * Math.cos(Math.PI * 2 * (x * 3.7 - 0.19))
-    + 0.55 * Math.sin(Math.PI * 2 * (x * 9.2 + 0.31));
-  const stableRipple = 1.25 * smoothNoise(index / 6.5, 0, 0x4a39b70d);
-  const liveRipple = 0.9 * smoothNoise(index / 3.2, sweepIndex, 0x7c2e1f53);
-  const fineGrain = 0.48 * signedNoise(index, sweepIndex, 0x2b91d6af);
-  const edgeLift = 1.4 * Math.pow(Math.abs(x - 0.5) * 2, 1.7);
-  const stableSpurs = 3.8 * gaussian(x, 0.083, 0.0025)
-    + 2.7 * gaussian(x, 0.647, 0.0038)
-    + 4.4 * gaussian(x, 0.914, 0.0022);
-  return -108.7 + slowDrift + receiverShape + stableRipple + liveRipple + fineGrain + edgeLift + stableSpurs;
-}
-
-function smoothNoise(position: number, sweepIndex: number, salt: number): number {
-  const left = Math.floor(position);
-  const fraction = position - left;
-  const blend = fraction * fraction * (3 - 2 * fraction);
-  const start = signedNoise(left, sweepIndex, salt);
-  return start + (signedNoise(left + 1, sweepIndex, salt) - start) * blend;
-}
-
-function signedNoise(index: number, sweepIndex: number, salt: number): number {
-  let value = Math.imul(index + 1, 0x9e3779b1) ^ Math.imul(sweepIndex + 1, 0x85ebca77) ^ salt;
-  value ^= value >>> 16;
-  value = Math.imul(value, 0x7feb352d);
-  value ^= value >>> 15;
-  value = Math.imul(value, 0x846ca68b);
-  value ^= value >>> 16;
-  return (value >>> 0) / 0xffff_ffff * 2 - 1;
-}
-
-function gaussian(value: number, center: number, width: number): number {
-  return Math.exp(-Math.pow((value - center) / width, 2));
-}
-
-function fakeScreen(profile: DemoSignalProfile, sweepIndex = 0): Uint8Array {
+function fakeScreen(profile: DemoSignalProfile, channel: ReplayChannelConfiguration, sweepIndex: number, startHz: number, stopHz: number): Uint8Array {
   const width = ZS407_FIRMWARE_LIMITS.screenWidth;
   const height = ZS407_FIRMWARE_LIMITS.screenHeight;
   const pixels = new Uint8Array(width * height * 2);
+  const powerDbm = synthesizeSpectrum({ profile, startHz, stopHz, points: width, sweepIndex, channel });
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const grid = x % 60 === 0 || y % 40 === 0;
-      const normalized = x / width;
-      const shape = profile === 'cw'
-        ? 78 * Math.exp(-Math.pow((normalized - 0.5) / 0.018, 2))
-        : profile === 'am'
-          ? Math.max(72 * Math.exp(-Math.pow((normalized - 0.5) / 0.014, 2)), 49 * Math.exp(-Math.pow((normalized - 0.43) / 0.018, 2)), 49 * Math.exp(-Math.pow((normalized - 0.57) / 0.018, 2)))
-          : profile === 'fm'
-            ? Array.from({ length: 9 }, (_, index) => index - 4).reduce((peak, sideband) => Math.max(peak, (58 - Math.abs(sideband) * 5) * Math.exp(-Math.pow((normalized - (0.5 + sideband * 0.045)) / 0.016, 2))), 0)
-            : profile === 'lte'
-              ? (normalized > 0.3 && normalized < 0.7 ? 52 + 4 * Math.sin(x / 7) : 0)
-              : 42 * Math.exp(-Math.pow((x - 245) / 46, 2));
-      const floorTexture = captureLikeNoise(x, width, sweepIndex) + 108.7;
-      const traceY = 226 - Math.round(shape) - Math.round(floorTexture * 1.35);
+      const boundedPower = Math.min(-20, Math.max(-120, powerDbm[x]!));
+      const traceY = 282 - Math.round((boundedPower + 120) / 100 * 230);
       const trace = Math.abs(y - traceY) <= 1;
       const header = y < 34;
       const rgb565 = trace ? 0x7ff0 : header ? 0x10a3 : grid ? 0x2145 : 0x0861;
