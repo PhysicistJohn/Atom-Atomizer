@@ -14,6 +14,7 @@ import {
   type Sweep,
 } from '@tinysa/contracts';
 import { App } from './App.js';
+import { agentControlBinding } from '@tinysa/agent';
 
 const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc', transport: 'protocol-test-double', execution: 'protocol-test-double' };
 const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
@@ -100,6 +101,41 @@ describe('operator vertical slice', () => {
     expect(screen.getByRole('button', { name: /Marker 1, hidden, selected/i }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: /Marker M1 visibility/i }).textContent).toContain('Off');
     expect(container.querySelectorAll('.marker-selector button.enabled')).toHaveLength(0);
+  });
+
+  it('has no orphaned agent hooks across every first-class workspace and analysis view', async () => {
+    const { container } = render(<App/>);
+    const assertRenderedContracts = () => {
+      const controls = [...container.querySelectorAll<HTMLElement>('[data-agent-control]')];
+      expect(controls.length).toBeGreaterThan(0);
+      for (const control of controls) expect(() => agentControlBinding(control.dataset.agentControl ?? '')).not.toThrow();
+      const interactives = [...container.querySelectorAll<HTMLElement>('button,input,select,textarea,details')];
+      for (const interactive of interactives) expect(interactive.closest('[data-agent-control],[data-agent-exclusion]'), interactive.outerHTML.slice(0, 160)).toBeTruthy();
+    };
+    assertRenderedContracts();
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    await screen.findByRole('dialog', { name: /^Connect$/i });
+    assertRenderedContracts();
+    fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
+    for (const view of ['Waterfall', 'Channel', 'Time / STFT', 'Spectrum']) {
+      fireEvent.click(screen.getByRole('tab', { name: new RegExp(view.replace('/', '\\/'), 'i') }));
+      assertRenderedContracts();
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    assertRenderedContracts();
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    assertRenderedContracts();
+    const tabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
+    for (const panel of ['Traces', 'Display', 'Markers']) {
+      fireEvent.click(tabs.getByRole('button', { name: new RegExp(panel, 'i') }));
+      assertRenderedContracts();
+    }
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    for (const workspace of ['Detect', 'Classify', 'Generate', 'Device', 'Spectrum']) {
+      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(workspace, 'i') }));
+      assertRenderedContracts();
+    }
   });
 
   it('connects, configures, and acquires through the complete typed bridge', async () => {

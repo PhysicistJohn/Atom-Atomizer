@@ -581,6 +581,13 @@ export interface AnalysisApiV2 {
   classify(detection: DetectedSignal, sweep: Sweep): Promise<WaveformClassification>;
 }
 
+export const TINYSA_API_V2_METHODS = [
+  'listDevices', 'connect', 'disconnect', 'getSnapshot', 'configureAnalyzer', 'acquireSweep',
+  'startStreaming', 'stopStreaming', 'acquireZeroSpan', 'configureGenerator', 'setGeneratorOutput',
+  'readDiagnostics', 'captureScreen', 'touch', 'releaseTouch', 'exportSweep', 'subscribe',
+] as const;
+export type TinySaApiV2Method = typeof TINYSA_API_V2_METHODS[number];
+
 export interface TinySaApiV2 {
   readonly version: typeof API_VERSION;
   listDevices(): Promise<PortCandidate[]>;
@@ -601,5 +608,9 @@ export interface TinySaApiV2 {
   exportSweep(request: SweepExportRequest): Promise<SweepExportResult>;
   subscribe(listener: (event: DeviceEvent) => void): () => void;
 }
+
+type AssertNoApiMethodDrift<T extends never> = T;
+type _TinySaApiMethodsMissingFromRuntimeCatalog = AssertNoApiMethodDrift<Exclude<Exclude<keyof TinySaApiV2, 'version'>, TinySaApiV2Method>>;
+type _TinySaApiRuntimeCatalogUnknownMethods = AssertNoApiMethodDrift<Exclude<TinySaApiV2Method, Exclude<keyof TinySaApiV2, 'version'>>>;
 
 export type TinySaApiV1 = TinySaApiV2;

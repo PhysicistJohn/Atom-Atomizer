@@ -84,6 +84,16 @@ describe('trusted OpenAI gateway', () => {
     } finally { gateway.close(); }
   });
 
+  it('fails before a text turn when the API echo changes any sent session setting', async () => {
+    let socket: FakeRealtimeSocket | undefined;
+    const gateway = new OpenAiGateway({ socketFactory: () => {
+      socket = new FakeRealtimeSocket([], undefined, (session) => ({ ...session, reasoning: { effort: 'low' } }));
+      return socket as unknown as WebSocket;
+    } });
+    await expect(gateway.agentTurn({ prompt: 'Inspect.', applicationContext: '{}' })).rejects.toThrow(/session configuration mismatch/);
+    expect(socket?.sent.some((event) => event.type === 'conversation.item.create')).toBe(false);
+  });
+
   it('fails loudly when a conversation is unavailable without opening another path', async () => {
     const socketFactory = vi.fn(() => new FakeRealtimeSocket() as unknown as WebSocket);
     const fetchMock = vi.spyOn(globalThis, 'fetch');
@@ -116,7 +126,8 @@ class FakeRealtimeSocket extends EventEmitter {
 
   constructor(
     readonly outputs: unknown[][] = [[{ type: 'message', content: [{ type: 'output_text', text: 'Realtime ready.' }] }]],
-    readonly failure?: string
+    readonly failure?: string,
+    readonly transformSession: (session: Record<string, unknown>) => Record<string, unknown> = (session) => session,
   ) {
     super();
     queueMicrotask(() => {
@@ -128,6 +139,14 @@ class FakeRealtimeSocket extends EventEmitter {
   send(value: string): void {
     const event = JSON.parse(value) as Record<string, unknown>;
     this.sent.push(event);
+    if (event.type === 'session.update') {
+      const returned = this.transformSession(structuredClone(event.session as Record<string, unknown>));
+      queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({
+        type: 'session.updated',
+        session: { ...returned, id: 'sess_text_test', object: 'realtime.session' }
+      }))));
+      return;
+    }
     if (event.type !== 'response.create') return;
     if (this.failure) {
       queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ type: 'error', error: { message: this.failure } }))));

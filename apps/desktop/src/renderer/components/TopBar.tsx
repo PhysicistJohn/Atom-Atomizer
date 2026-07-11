@@ -11,10 +11,10 @@ export function TopBar({ snapshot, simulated, agentOpen, agentConfigured, onConn
     <div className="topbar-actions">
       {simulated && <span className="environment-badge">{connecting ? 'TWIN BOOTING' : 'DIGITAL TWIN'}</span>}
       {snapshot.generatorOutput !== 'off' && <span className={`top-rf-state ${snapshot.generatorOutput}`}>RF {snapshot.generatorOutput.toUpperCase()}</span>}
-      <button className={`connection-pill ${ready ? 'is-ready' : ''}`} onClick={onConnection} aria-haspopup="dialog">
+      <button data-agent-control="connection.open" className={`connection-pill ${ready ? 'is-ready' : ''}`} onClick={onConnection} aria-haspopup="dialog">
         <span className="status-dot"/>{connecting ? <LoaderCircle className="spin" size={15}/> : <Cable size={15}/>}<span><b>{ready ? snapshot.identity?.model ?? 'IDENTITY MISSING' : connecting ? twin ? 'Starting executable twin' : 'Identifying instrument' : 'No instrument'}</b><small>{ready ? snapshot.identity?.firmwareVersion : connecting ? twin ? 'Booting pinned firmware in Renode' : 'Verifying ZS407 identity' : 'Choose USB device'}</small></span><ChevronDown size={14}/>
       </button>
-      <button className={`atom-launch ${agentOpen?'active':''}`} onClick={onAgent} aria-label="Open Atom AI copilot"><span className="atom-launch-orb"><AtomicMark size={23} active={agentOpen}/></span><span><b>Atom</b><small>{agentConfigured ? 'Ready' : 'Needs key'}</small></span></button>
+      <button data-agent-control="atom.toggle" className={`atom-launch ${agentOpen?'active':''}`} onClick={onAgent} aria-label="Toggle Atom AI copilot"><span className="atom-launch-orb"><AtomicMark size={23} active={agentOpen}/></span><span><b>Atom</b><small>{agentConfigured ? 'Ready' : 'Needs key'}</small></span></button>
     </div>
   </header>;
 }

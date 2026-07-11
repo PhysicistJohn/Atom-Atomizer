@@ -56,7 +56,17 @@ import {
   searchMarker,
   type EnvelopeClassification,
 } from '@tinysa/analysis';
-import type { AgentToolName } from '@tinysa/agent';
+import {
+  ATOM_AGENT_MODEL,
+  ATOM_AGENT_VERSION,
+  agentApiCoverage,
+  agentControlBinding,
+  agentControlBindings,
+  agentToolDefinitions,
+  agentToolPolicies,
+  type AgentSemanticControlId,
+  type AgentToolName,
+} from '@tinysa/agent';
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
 import { ClassificationWorkspace } from './components/ClassificationWorkspace.js';
 import { ConnectionDialog } from './components/ConnectionDialog.js';
@@ -127,6 +137,7 @@ export function App() {
   const [zeroConfig, setZeroConfig] = useState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN));
   const [traceConfiguration, setTraceConfiguration] = useState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES));
   const [traceFrames, setTraceFrames] = useState<readonly TraceFrame[]>([]);
+  const [activeTraceId, setActiveTraceId] = useState<TraceId>(1);
   const [markers, setMarkers] = useState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS));
   const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
   const [markerSearchConfiguration, setMarkerSearchConfiguration] = useState<MarkerSearchConfiguration>(() => loadStored('marker-search', markerSearchConfigurationSchema.parse, DEFAULT_MARKER_SEARCH));
@@ -138,6 +149,7 @@ export function App() {
   const [history, setHistory] = useState<readonly Sweep[]>([]);
   const [detections, setDetections] = useState<readonly DetectedSignal[]>([]);
   const [classifications, setClassifications] = useState<readonly WaveformClassification[]>([]);
+  const [selectedClassificationId, setSelectedClassificationId] = useState<string>();
   const [zeroCapture, setZeroCapture] = useState<ZeroSpanCapture>();
   const [envelope, setEnvelope] = useState<EnvelopeClassification>();
   const [diagnostics, setDiagnostics] = useState<DeviceDiagnostics>();
@@ -192,6 +204,9 @@ export function App() {
   useEffect(() => saveStored('measurement-view', measurementView), [measurementView]);
   useEffect(() => saveStored('waterfall', waterfallConfiguration), [waterfallConfiguration]);
   useEffect(() => saveStored('channel-measurement', channelConfiguration), [channelConfiguration]);
+  useEffect(() => {
+    if (!selectedClassificationId || !detections.some((item) => item.id === selectedClassificationId)) setSelectedClassificationId(detections[0]?.id);
+  }, [detections, selectedClassificationId]);
   useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
   useEffect(() => {
     if (!notice) return;
@@ -267,6 +282,7 @@ export function App() {
   }
 
   async function disconnectDevice(): Promise<void> {
+    const execution = snapshot.identity?.execution;
     continuousRequested.current = false;
     setContinuous(false);
     setConnectionBusy(true);
@@ -278,7 +294,7 @@ export function App() {
       setAcquisition('idle');
       setDiagnostics(undefined);
       setScreenFrame(undefined);
-      setNotice('Instrument disconnected; physical RF state is no longer inferred');
+      setNotice(execution === 'physical' ? 'Physical instrument disconnected; RF state is no longer inferred' : execution === 'firmware-digital-twin' ? 'Executable twin disconnected and its Renode process terminated' : 'Instrument backend disconnected');
     } catch (value) {
       setError(errorMessage(value));
       throw value;
@@ -580,6 +596,15 @@ export function App() {
     configureDisplay(autoScaleSpectrum(sweep));
   }
 
+  function systemTopology() {
+    return {
+      atomizer: { owner: 'tinysa-atomizer', contractVersion: 3 },
+      instrument: snapshot.identity ? { execution: snapshot.identity.execution, transport: snapshot.identity.port.transport, usbIdentityVerified: snapshot.identity.usbIdentityVerified } : null,
+      firmwareTwin: { owner: 'tinysa-firmware', available: ports.some((port) => port.execution === 'firmware-digital-twin'), connected: snapshot.identity?.execution === 'firmware-digital-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
+      signalLab: { owner: 'tinysa-signal-lab', integration: 'reserved-not-connected' },
+    } as const;
+  }
+
   function applicationContext(): string {
     const channelMeasurement = evaluateAnalysis(() => requireChannelMeasurement());
     const envelopeStft = evaluateAnalysis(() => requireEnvelopeStft());
@@ -589,12 +614,7 @@ export function App() {
       acquisition,
       continuous,
       simulated,
-      topology: {
-        atomizer: { owner: 'tinysa-atomizer', contractVersion: 3 },
-        instrument: snapshot.identity ? { execution: snapshot.identity.execution, transport: snapshot.identity.port.transport, usbIdentityVerified: snapshot.identity.usbIdentityVerified } : null,
-        firmwareTwin: { available: ports.some((port) => port.execution === 'firmware-digital-twin'), connected: snapshot.identity?.execution === 'firmware-digital-twin' },
-        signalLab: { owner: 'tinysa-signal-lab', integration: 'reserved-not-connected' },
-      },
+      topology: systemTopology(),
       visibleError: error ?? null,
       snapshot,
       analyzer,
@@ -605,10 +625,12 @@ export function App() {
       latestSweep: sweep && metrics ? { id: sweep.id, sequence: sweep.sequence, capturedAt: sweep.capturedAt, rangeHz: [sweep.actualStartHz, sweep.actualStopHz], points: sweep.frequencyHz.length, source: sweep.source, elapsedMilliseconds: sweep.elapsedMilliseconds, metrics } : null,
       detections: detections.map(({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps }) => ({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps })),
       classifications: classifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
+      selectedClassificationId: selectedClassificationId ?? null,
       zeroSpan: zeroCapture && envelope ? { frequencyHz: zeroCapture.frequencyHz, samples: zeroCapture.powerDbm.length, samplePeriodSeconds: zeroCapture.samplePeriodSeconds, envelope } : null,
       measurement: {
         activeView: measurementView,
         traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
+        activeTraceId,
         markers: markerReadings,
         activeMarkerId,
         markerSearch: markerSearchConfiguration,
@@ -623,7 +645,15 @@ export function App() {
 
   async function executeAgentTool(name: AgentToolName, args: unknown): Promise<unknown> {
     switch (name) {
-      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length };
+      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length, topology: systemTopology(), agentSurfaceVersion: ATOM_AGENT_VERSION };
+      case 'get_system_topology': return systemTopology();
+      case 'get_agent_surface': return {
+        version: ATOM_AGENT_VERSION,
+        model: ATOM_AGENT_MODEL,
+        tools: agentToolDefinitions.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters, policy: agentToolPolicies[tool.name] })),
+        controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
+        apiCoverage: agentApiCoverage,
+      };
       case 'get_instrument_state': return snapshot;
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
       case 'get_detection_results': return detections;
@@ -642,19 +672,21 @@ export function App() {
         return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, simulated: next.identity.simulated, verification: next.verification };
       }
       case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: (await window.tinySA.getSnapshot()).connection };
-      case 'inspect_interface': return { activeWorkspace: workspace, activeMeasurementView: measurementView, controls: { 'workspace.spectrum': true, 'workspace.detection': true, 'workspace.classification': true, 'workspace.generator': snapshot.generatorOutput !== 'on' || workspace === 'generator', 'workspace.device': true, 'acquisition.single': connected && !busy, 'acquisition.continuous.start': connected && !busy, 'acquisition.continuous.stop': continuous, 'measurement.view.spectrum': workspace === 'spectrum', 'measurement.view.waterfall': workspace === 'spectrum', 'measurement.view.channel': workspace === 'spectrum', 'measurement.view.envelope-stft': workspace === 'spectrum', 'measurement.markers': workspace === 'spectrum', 'measurement.traces': workspace === 'spectrum', 'measurement.display': workspace === 'spectrum', 'connection.open': !connectionBusy, 'device.capture-screen': connected && !busy, 'atom.close': agentOpen } };
+      case 'inspect_interface': {
+        const rendered = inspectRenderedAgentControls();
+        return { activeWorkspace: workspace, activeMeasurementView: measurementView, controls: Object.fromEntries(rendered.map((control) => [control.controlId, control.enabled])), rendered };
+      }
       case 'computer_action': {
-        const control = (args as { controlId: string }).controlId;
-        if (control.startsWith('workspace.')) changeWorkspace(control.slice('workspace.'.length) as WorkspaceId);
-        else if (control.startsWith('measurement.view.')) changeMeasurementView(control.slice('measurement.view.'.length) as MeasurementViewId);
-        else if (control === 'acquisition.single') await acquire();
-        else if (control === 'acquisition.continuous.start') await startContinuous();
-        else if (control === 'acquisition.continuous.stop') await stopContinuous();
-        else if (control === 'connection.open') setConnectionOpen(true);
-        else if (control === 'device.capture-screen') await captureScreen();
-        else if (control === 'atom.close') setAgentOpen(false);
-        else throw new Error(`Unknown semantic control ${control}`);
-        return { activated: control };
+        const control = (args as { controlId: AgentSemanticControlId }).controlId;
+        const binding = agentControlBinding(control);
+        if (binding.risk === 'high-impact') throw new Error(`Semantic control ${control} is high-impact and requires its typed approval tool`);
+        const targets = [...document.querySelectorAll<HTMLElement>('[data-agent-control]')].filter((element) => element.dataset.agentControl === control);
+        if (targets.length !== 1) throw new Error(`Semantic control ${control} has ${targets.length} rendered targets; expected exactly one`);
+        const target = targets[0]!;
+        if (isDisabledControl(target)) throw new Error(`Semantic control ${control} is disabled`);
+        if (target instanceof HTMLDetailsElement) target.open = !target.open;
+        else target.click();
+        return { activated: control, preferredTool: binding.preferredTool, projection: binding.projection };
       }
       case 'computer_screenshot': return window.atomAgent.computerScreenshot();
       case 'computer_click': return window.atomAgent.computerClick(args as { x: number; y: number });
@@ -702,11 +734,24 @@ export function App() {
         setMeasurementView('envelope-stft');
         return result;
       }
+      case 'select_marker': {
+        const markerId = (args as { markerId: MarkerId }).markerId;
+        if (!markers.some((marker) => marker.id === markerId)) throw new Error(`Marker M${markerId} is unavailable`);
+        setActiveMarkerId(markerId);
+        setWorkspace('spectrum');
+        return { markerId, selected: true, evidence: 'ui-only' };
+      }
       case 'configure_marker': {
         const marker = markerConfigurationSchema.parse(args);
         configureMarker(marker);
         setWorkspace('spectrum');
         return { marker, evidence: 'host-derived' };
+      }
+      case 'configure_marker_search': {
+        const configuration = markerSearchConfigurationSchema.parse(args);
+        configureMarkerSearch(configuration);
+        setWorkspace('spectrum');
+        return { configuration, evidence: 'host-derived' };
       }
       case 'search_marker': {
         const value = args as { markerId: MarkerId; action: MarkerSearchAction };
@@ -718,6 +763,13 @@ export function App() {
         configureMarker({ ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' : 'fixed', frequencyHz });
         setWorkspace('spectrum');
         return { markerId: value.markerId, action: value.action, frequencyHz, evidence: 'host-derived' };
+      }
+      case 'select_trace': {
+        const traceId = (args as { traceId: TraceId }).traceId;
+        if (!traceConfiguration.some((trace) => trace.id === traceId)) throw new Error(`Trace ${traceId} is unavailable`);
+        setActiveTraceId(traceId);
+        setWorkspace('spectrum');
+        return { traceId, selected: true, evidence: 'ui-only' };
       }
       case 'configure_trace': {
         const trace = traceConfigurationSchema.parse(args);
@@ -737,11 +789,25 @@ export function App() {
         setWorkspace('spectrum');
         return { display, evidence: 'host-derived' };
       }
+      case 'auto_scale_spectrum_display': {
+        if (!sweep) throw new Error('Acquire a complete spectrum sweep before auto-scaling the display');
+        const display = autoScaleSpectrum(sweep);
+        configureDisplay(display);
+        setWorkspace('spectrum');
+        return { display, sweepId: sweep.id, evidence: 'host-derived-complete-sweep' };
+      }
       case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); setDetectionConfig(next); setWorkspace('detection'); return next; }
+      case 'select_classification_candidate': {
+        const detectionId = (args as { detectionId: string }).detectionId;
+        if (!detections.some((item) => item.id === detectionId)) throw new Error(`Detection ${detectionId} is no longer available`);
+        setSelectedClassificationId(detectionId);
+        setWorkspace('classification');
+        return { detectionId, selected: true, evidence: 'ui-only' };
+      }
       case 'configure_zero_span': { const next = zeroSpanConfigSchema.parse(args); setZeroConfig(next); setWorkspace('classification'); return next; }
       case 'acquire_zero_span': { const result = await acquireZeroSpan(); setWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result) }; }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); setGenerator(next); const configured = await configureGeneratorWith(next); setWorkspace('generator'); return configured.generator; }
-      case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; const next = await setOutput(enabled); return { enabled, verification: next.verification }; }
+      case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; const next = await setOutput(enabled); return { enabled, verification: next.verification, execution: next.identity?.execution ?? 'unknown' }; }
       case 'capture_device_screen': { const frame = await captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.format, capturedAt: frame.capturedAt }; }
       case 'remote_device_touch': {
         const value = args as ScreenPoint & { gesture: 'tap' | 'press' | 'release' };
@@ -753,13 +819,15 @@ export function App() {
       }
       case 'export_latest_sweep': return exportLatest((args as { format: 'csv' | 'json' }).format);
     }
+    const unreachable: never = name;
+    return unreachable;
   }
 
   const agent = useAtomAgent({ applicationContext, execute: executeAgentTool });
   const acquisitionActions = (continuous || (workspace !== 'generator' && workspace !== 'device')) ? <div className="acquisition-actions">
     {sweep && workspace !== 'generator' && workspace !== 'device' && <>
-      <button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button>
-      <button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button>
+      <button data-agent-control="export.csv" className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button>
+      <button data-agent-control="export.json" className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button>
     </>}
     {continuous
       ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop</button>
@@ -774,14 +842,14 @@ export function App() {
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
-      {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
-      {notice && <div className="global-notice" role="status"><span>{notice}</span><button onClick={() => setNotice(undefined)}>Dismiss</button></div>}
+      {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => setError(undefined)}>Dismiss</button></div>}
+      {notice && <div className="global-notice" role="status"><span>{notice}</span><button data-agent-control="notice.dismiss" onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {workspace === 'spectrum' && <MeasurementWorkspace
         acquisitionActions={acquisitionActions}
         view={measurementView} onView={changeMeasurementView}
         analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={setAnalyzer}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
-        traces={traceConfiguration} frames={traceFrames} markers={markers} readings={markerReadings}
+        traces={traceConfiguration} frames={traceFrames} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
         onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId}
         onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay}
@@ -792,11 +860,11 @@ export function App() {
         onZeroConfig={setZeroConfig} onStft={configureEnvelopeStft} onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
-      {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
+      {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} selectedId={selectedClassificationId} onSelectedId={setSelectedClassificationId} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
       {workspace === 'device' && <DeviceWorkspace snapshot={snapshot} diagnostics={diagnostics} frame={screenFrame} busy={busy} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTouch={(point) => void touchScreen(point)} onRelease={(point) => void releaseScreen(point)}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog
       ports={ports}
       selectedId={selectedPortId}
@@ -827,4 +895,27 @@ function errorMessage(value: unknown): string { return value instanceof Error ? 
 function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {
   try { return { ok: true, result: operation() }; }
   catch (value) { return { ok: false, error: errorMessage(value) }; }
+}
+
+function isDisabledControl(element: HTMLElement): boolean {
+  return element.getAttribute('aria-disabled') === 'true'
+    || element.classList.contains('disabled')
+    || element.matches(':disabled')
+    || Boolean(element.querySelector(':disabled'));
+}
+
+function inspectRenderedAgentControls() {
+  return [...document.querySelectorAll<HTMLElement>('[data-agent-control]')].map((element) => {
+    const controlId = element.dataset.agentControl;
+    if (!controlId) throw new Error('Rendered agent control is missing its control ID');
+    const binding = agentControlBinding(controlId);
+    return {
+      controlId,
+      enabled: !isDisabledControl(element),
+      risk: binding.risk,
+      preferredTool: binding.preferredTool,
+      projection: binding.projection,
+      guarantee: binding.guarantee,
+    };
+  });
 }

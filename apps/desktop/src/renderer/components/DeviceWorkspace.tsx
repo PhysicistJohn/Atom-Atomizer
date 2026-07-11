@@ -37,7 +37,7 @@ export function DeviceWorkspace({ snapshot, diagnostics, frame, busy, onRefresh,
         <Fact icon={<BatteryCharging/>} label="Battery" value={snapshot.telemetry ? `${(snapshot.telemetry.batteryMillivolts / 1_000).toFixed(2)} V` : '—'} detail={snapshot.telemetry ? `Device ID ${snapshot.telemetry.deviceId}` : 'Refresh diagnostics'}/>
         <Fact icon={<TerminalSquare/>} label="Shell surface" value={diagnostics ? `${diagnostics.commands.length} commands` : '—'} detail={snapshot.capabilities ? `${snapshot.capabilities.protocol.prompt} · CR terminated` : 'Not identified'}/>
       </div>
-      <div className="device-actions"><button className="secondary" disabled={!ready || busy} onClick={onRefresh}><RefreshCw size={14}/>Refresh diagnostics</button></div>
+      <div className="device-actions"><button data-agent-control="device.refresh-diagnostics" className="secondary" disabled={!ready || busy} onClick={onRefresh}><RefreshCw size={14}/>Refresh diagnostics</button></div>
     </section>
 
     <section className="remote-screen-panel">

@@ -1,12 +1,12 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 2.1.0
+Version: 3.0.0
 Model lock: `gpt-realtime-2.1-mini`  
 Reasoning lock: `high`  
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.95`  
-Updated: 2026-07-10
+Updated: 2026-07-11
 
 This document is normative. “Atom” is the application-layer AI inside TinySA Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
 
@@ -40,7 +40,8 @@ Realtime API                typed device + UI APIs
                                    |
                             command safety policy
                                    |
-                              tinySA USB CDC
+                    tinySA USB CDC or declared
+                    Firmware Renode bridge
 ```
 
 ### 2.1 Credential boundary
@@ -56,6 +57,18 @@ Realtime API                typed device + UI APIs
 ### 2.2 Network boundary
 
 Only trusted main may call OpenAI REST endpoints or open the text-agent WebSocket. Realtime voice media is carried by the renderer’s WebRTC peer after trusted session creation. No measurement data is transmitted merely because AI is configured; data is included only in an active user-initiated Atom turn/session and is minimized to the context necessary for the request.
+
+### 2.3 Trio topology boundary
+
+Atomizer owns operator intent, OpenAI credentials, tool policy, approvals, and orchestration. `TinySA_Firmware` owns the executable twin. `TinySA_SignalLab` owns stimulus intent and is currently `reserved-not-connected`. Atom must inspect topology before state-dependent claims and preserve these distinctions:
+
+| Execution | Transport | USB verified | USB transactions modeled |
+|---|---|---:|---:|
+| Physical ZS407 | `usb-cdc-acm` | Only after exact identity | Yes, by the real device |
+| Executable twin | `renode-monitor-bridge` | No | No |
+| Protocol test double | `protocol-test-double` | No | No; test-only |
+
+The byte-identical trio composition manifest is normative. Atom cannot activate the reserved SignalLab edge or describe the twin as USB.
 
 ## 3. Atom identity and behavior
 
@@ -102,7 +115,7 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 2. Renderer requests microphone permission and creates one `RTCPeerConnection`.
 3. Renderer adds one microphone track and one `oai-events` data channel.
 4. Renderer sends SDP through allow-listed IPC.
-5. Main validates size/shape and calls `/v1/realtime/calls` with the exact model, `high` reasoning, `ballad` voice, `server_vad` threshold `0.95`, Atom instructions and the governed voice-safe tool subset.
+5. Main validates size/shape and calls `/v1/realtime/calls` with the exact model, `high` reasoning, `ballad` voice, `server_vad` threshold `0.95`, Atom instructions and the identical complete text/voice tool catalog.
 6. Main returns SDP only; renderer sets the remote answer.
 7. The microphone track remains muted while the first `session.created` event is recursively compared with every setting in the exact object sent by main. API-supplied defaults and initial differences are logged separately.
 8. Renderer sends the identical shared configuration through `session.update` and starts a bounded ten-second acknowledgement timer.
@@ -112,13 +125,14 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 ### 5.2 Voice behavior
 
 - Server voice-activity detection uses activation threshold `0.95`, creates responses, and allows interruption.
-- Chromium is asked for echo cancellation, noise suppression and automatic gain control. Requested and applied `MediaStreamTrack` settings are emitted together in the console.
+- Chromium is required to apply echo cancellation, noise suppression and automatic gain control. Requested and applied `MediaStreamTrack` settings are emitted together; a missing or mismatched setting terminates startup rather than silently degrading voice capture.
 - `session.created` and every `session.updated` check emit every sent leaf, the full returned session, and every server-only/default setting in a collapsed console group.
 - Mic, peer connection, data channel and media tracks close on user stop, window close, session failure or component teardown.
 - User and assistant transcripts appear in the same Atom history used by text.
 - Partial assistant transcripts are not persisted as complete messages.
 - Function calls arriving on the data channel go through the identical validator, policy and approval path as text-agent calls.
-- Tool output is returned as `function_call_output`; Atom is then asked to continue.
+- Voice function chains are limited to eight calls per user speech turn; duplicate call IDs fail the session.
+- Tool output is returned as `function_call_output`; screenshots are additionally returned as explicitly untrusted Realtime image input before Atom continues.
 - The app never records raw microphone audio locally in v1.
 
 ## 6. Text agent transport contract
@@ -127,12 +141,14 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 
 1. Renderer creates a minimized application context snapshot and submits one typed `AgentTurnRequest` over named IPC.
 2. Main opens or continues the sole trusted text-only Realtime WebSocket using the exact model.
-3. Main sends `session.update` with `high` reasoning, then `conversation.item.create` and `response.create` with text output, Atom instructions, delimited application context and tool schemas.
-4. Main returns one `AgentTurnResult`: opaque conversation ID, fixed transport observation, assistant text and function-call name/arguments/call ID.
-5. Renderer validates each call against the local Zod schema and policy.
-6. Calls execute sequentially through the application host; no tool owns raw IPC or serial.
-7. Results return as Realtime `function_call_output` conversation items. Screenshots become Realtime image input.
-8. Loop ends on assistant response, explicit denial/failure, or eight bounded tool rounds.
+3. Main sends `session.update` with `high` reasoning, Atom instructions, delimited application context and the complete tool schemas, then waits up to ten seconds for `session.updated`.
+4. Main recursively compares every sent session leaf with the returned session, emits the sent/returned/default tables to the trusted console, and terminates the socket on any mismatch or timeout.
+5. Only after exact acknowledgement does main send `conversation.item.create` and `response.create` with text output.
+6. Main returns one `AgentTurnResult`: opaque conversation ID, fixed transport observation, assistant text and function-call name/arguments/call ID.
+7. Renderer validates each call against the local Zod schema and policy.
+8. Calls execute sequentially through the application host; no tool owns raw IPC or serial.
+9. Results return as Realtime `function_call_output` conversation items. Screenshots become explicitly untrusted Realtime image input.
+10. Loop ends on assistant response, explicit denial/failure, or eight bounded tool rounds.
 
 The gateway remembers at most four Realtime text conversations and expires idle conversations after five minutes. Renderer conversation IDs are opaque; API-specific objects, sockets and credentials stay in main. Text turns keep conversational continuity while Atom is open. A missing/expired conversation or any API failure stops with an explicit error; the gateway never opens a substitute conversation or replays a completed instrument operation.
 
@@ -146,7 +162,8 @@ Default context may include:
 - Simulation flag and visible error.
 - Device identity, firmware, capabilities, mode, RF output and verification.
 - Analyzer/generator/detector configuration.
-- Active measurement view; host trace bank; markers/readouts; amplitude display; waterfall/channel/STFT configurations and computed result/error; selected demo waveform qualification; and replay-channel state.
+- Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
+- Versioned Atomizer/Firmware/SignalLab topology, execution backend, transport, USB-verification state, and reserved edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
@@ -158,6 +175,8 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | Tool | Risk | Approval | Effect |
 |---|---|---|---|
 | `get_application_state` | Observe | Never | Reads route/acquisition/environment |
+| `get_system_topology` | Observe | Never | Reads the versioned trio, active execution, transport, and reserved SignalLab edge |
+| `get_agent_surface` | Observe | Never | Reads every tool policy and UI-control binding with projection and guarantee |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
 | `get_measurement_state` | Observe | Never | Reads the four trace modes, eight markers/readouts, searches, and host display scale |
@@ -174,7 +193,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
 | `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
-| `inspect_interface` | Observe | Never | Reads semantic controls and availability |
+| `inspect_interface` | Observe | Never | Derives rendered controls, availability, risk, preferred tool, projection, and guarantee from the live DOM |
 | `computer_action` | Operate | Never* | Activates an allow-listed TinySA Atomizer control |
 | `computer_screenshot` | Observe | Never | Captures only the TinySA Atomizer content area |
 | `computer_click` | Operate | Never* | Hit-tested screenshot-coordinate click inside the app |
@@ -183,24 +202,27 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `computer_scroll` | Operate | Never | Bounded scroll inside the app |
 | `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
 | `configure_analyzer` | Operate | Never | Changes staged analyzer settings only |
+| `select_marker` | Operate | Never | Selects one marker for editing without changing its configuration |
 | `configure_marker` | Operate | Never | Configures one of eight host-derived markers through the measurement reducer |
+| `configure_marker_search` | Operate | Never | Configures minimum level and local-peak excursion criteria |
 | `search_marker` | Operate | Never | Places the active marker using peak/min/next search and explicit thresholds |
+| `select_trace` | Operate | Never | Selects one trace for editing without changing its mode or accumulator |
 | `configure_trace` | Operate | Never | Configures one of four host-derived trace accumulators |
 | `reset_trace` | Operate | Never | Clears exactly one host trace accumulator |
 | `configure_spectrum_display` | Operate | Never | Changes the host reference level and dB/div projection |
+| `auto_scale_spectrum_display` | Operate | Never | Derives the display scale from the latest complete sweep or fails |
 | `acquire_sweep` | Operate | Never | Runs one analyzer acquisition |
 | `start_continuous_sweeps` | Operate | Never | Starts serialized service-owned acquisition |
 | `stop_continuous_sweeps` | Operate | Never | Stops after the in-flight firmware operation |
 | `configure_signal_detector` | Operate | Never | Changes detector and opens Detection |
+| `select_classification_candidate` | Operate | Never | Selects one current detected-signal result for visual inspection |
 | `configure_zero_span` | Operate | Never | Stages detected-power-versus-time capture settings |
 | `acquire_zero_span` | Operate | Never | Captures and characterizes one envelope |
 | `configure_generator` | Operate | Never | Commands output off and stages generator |
-| `set_rf_output` | High impact | At action | Enables/disables physical output |
+| `set_rf_output` | High impact | At action for enable | Enables/disables output on the connected execution backend and returns execution evidence |
 | `capture_device_screen` | Observe | Never | Reads and displays one exact RGB565 frame |
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
-| `select_demo_signal` | Operate | Never | Selects one of 79 closed visual/Release-19/HE Signal Lab profiles and its recommended range; returns qualification and source clause |
-| `configure_demo_channel` | Operate | Never | Changes the explicit AWGN/Rayleigh replay-channel schema |
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact are refused; the model must use the typed tool with action-time approval. Text, key and scroll inputs are bounded and remain targeted at TinySA Atomizer.
 
@@ -226,7 +248,7 @@ A feature is not complete when only its visual control exists.
 Atom’s computer use is confined to TinySA Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
 
 1. Electron captures only its own `BrowserWindow` content—never the desktop.
-2. The screenshot is normalized to application CSS coordinates and sent as image input on the active trusted text transport.
+2. The screenshot is normalized to application CSS coordinates and sent as explicitly untrusted image input on the active trusted Realtime text or voice transport.
 3. Atom returns bounded click/type/key/scroll function calls.
 4. Main validates coordinates/input and hit-tests the current app DOM.
 5. A high-impact target is blocked before activation and redirected to its typed approval tool.
@@ -245,7 +267,7 @@ Atom may complete safe preparatory work before asking. It requests approval imme
 - Relevant frequency/level/load state.
 - What will change.
 
-RF output enable always requires approval even if the original prompt requested it. Agent-driven physical-screen touch also requires approval because the firmware UI can reach generator controls. Disabling typed RF output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
+RF output enable always requires approval even if the original prompt requested it. Agent-driven connected-screen touch also requires approval because executable firmware UI can reach generator controls. The approval card states whether the target is physical hardware or the executable twin and never implies that the Renode bridge can radiate. Disabling typed RF output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
 
 ### 9.2 Non-bypass guarantees
 
@@ -349,10 +371,15 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-23:** Acquisition cannot proceed from a dialog-open state; Atom lists, connects, and verifies `ready` first.
 - **AI-24:** Voice and text sessions both send and retain `reasoning.effort = high`.
 - **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.95`.
-- **AI-26:** The microphone remains muted until every sent voice-session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
+- **AI-26:** Voice and text operation remains gated until every sent session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
 - **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
-- **AI-28:** Remote physical-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
-- **AI-29:** Every marker, trace, display, waveform, and replay-channel operation has a closed typed tool and returns its evidence/qualification state.
+- **AI-28:** Remote connected-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
+- **AI-29:** Every declared Atomizer UI hook resolves to exactly one typed tool contract, risk class, projection, executor, and guarantee; marker-search criteria and auto-scale have first-class tools.
+- **AI-30:** Text and voice receive identical tool definitions, including app-scoped screenshot and computer tools; screenshots are untrusted image data.
+- **AI-31:** Atom reports physical USB, executable-twin, protocol-test-double, and reserved SignalLab topology without conflation.
+- **AI-32:** Voice function chains are bounded to eight calls and duplicate call IDs terminate the session.
+- **AI-33:** Every runtime method in `TinySaApiV2` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
+- **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
 
 ## 16. Source traceability
 

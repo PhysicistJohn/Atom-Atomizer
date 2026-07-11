@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, agentToolDefinitions, createAtomRealtimeVoiceSessionConfig, validateAgentToolCall, verifyAtomRealtimeVoiceSession } from './index.js';
+import { TINYSA_API_V2_METHODS } from '@tinysa/contracts';
+import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, agentApiCoverage, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolPolicies, createAtomRealtimeVoiceSessionConfig, realtimeToolDefinitions, validateAgentToolCall, verifyAtomRealtimeVoiceSession } from './index.js';
 
 describe('Atom agent contracts',()=>{
   it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1-mini'));
@@ -24,6 +25,33 @@ describe('Atom agent contracts',()=>{
     expect(verification.checks).toEqual(expect.arrayContaining([expect.objectContaining({path:'session.audio.output.voice',sent:'ballad',returned:'marin',matches:false})]));
   });
   it('has unique, closed tool names',()=>expect(new Set(agentToolDefinitions.map(t=>t.name)).size).toBe(agentToolDefinitions.length));
+  it('exposes the identical complete tool surface to text and voice',()=>{
+    expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual(agentToolDefinitions.map(tool=>tool.name));
+    expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual(expect.arrayContaining(['computer_screenshot','computer_click','computer_type','computer_key','computer_scroll']));
+  });
+  it('binds every semantic and patterned UI hook to exactly one existing typed tool contract',()=>{
+    const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
+    expect(new Set(Object.keys(agentToolPolicies))).toEqual(tools);
+    for(const controlId of agentSemanticControlIds){
+      const binding=agentControlBinding(controlId);
+      expect(tools.has(binding.preferredTool)).toBe(true);
+      expect(binding.guarantee.length).toBeGreaterThan(20);
+      expect(binding.risk).not.toBe('high-impact');
+    }
+    for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
+    expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
+    expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
+  });
+  it('has an evidence and failure disposition for every TinySaApiV2 method',()=>{
+    expect(Object.keys(agentApiCoverage)).toEqual(TINYSA_API_V2_METHODS);
+    const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
+    for(const coverage of Object.values(agentApiCoverage)){
+      expect(coverage.tools.length).toBeGreaterThan(0);
+      for(const tool of coverage.tools)expect(tools.has(tool)).toBe(true);
+      expect(coverage.guarantee.length).toBeGreaterThan(20);
+      expect(coverage.failure.length).toBeGreaterThan(20);
+    }
+  });
   it('rejects unknown tools and malformed arguments',()=>{
     expect(()=>validateAgentToolCall({callId:'1',name:'raw_serial',arguments:'{}'})).toThrow(/Unknown/);
     expect(()=>validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{"startHz":2,"stopHz":1,"points":450,"rbwKhz":null,"attenuationDb":"auto"}'})).toThrow();
@@ -34,9 +62,13 @@ describe('Atom agent contracts',()=>{
     expect(()=>validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"/dev/cu.usbmodem"}'})).toThrow();
   });
   it('gives Atom closed marker, trace, display, and channel operations',()=>{
+    expect(validateAgentToolCall({callId:'0',name:'select_marker',arguments:'{"markerId":8}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'1',name:'configure_trace',arguments:'{"id":2,"mode":"max-hold","averageCount":8}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'1b',name:'select_trace',arguments:'{"traceId":4}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'2',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak"}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'4',name:'reset_trace',arguments:'{"traceId":5}'})).toThrow();
+    expect(validateAgentToolCall({callId:'5',name:'configure_marker_search',arguments:'{"minimumLevelDbm":-95,"minimumExcursionDb":8}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'6',name:'auto_scale_spectrum_display',arguments:'{}'}).policy.risk).toBe('operate');
   });
   it('gives Atom complete advanced-measurement hooks with closed evidence settings',()=>{
     expect(validateAgentToolCall({callId:'1',name:'set_measurement_view',arguments:'{"view":"waterfall"}'}).policy.risk).toBe('operate');
@@ -45,5 +77,6 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'4',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":16,"window":"hann","removeDc":true,"dynamicRangeDb":80}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'5',name:'get_channel_measurement_results',arguments:'{}'}).policy.risk).toBe('observe');
     expect(()=>validateAgentToolCall({callId:'6',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":128,"window":"hann","removeDc":true,"dynamicRangeDb":80}'})).toThrow();
+    expect(validateAgentToolCall({callId:'7',name:'select_classification_candidate',arguments:'{"detectionId":"signal-12"}'}).policy.risk).toBe('operate');
   });
 });

@@ -46,7 +46,7 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
         <EditableParameter label="Dynamic range" value={configuration.dynamicRangeDb} displayValue={`${configuration.dynamicRangeDb} dB`} unit="dB" minimum={20} maximum={120} step={1} controlId="stft.range" onCommit={(value) => onConfiguration({ ...configuration, dynamicRangeDb: Number(value) })}/>
         <ToggleParameter label="Remove envelope mean" value={configuration.removeDc} controlId="stft.remove-dc" onToggle={(removeDc) => onConfiguration({ ...configuration, removeDc })}/>
       </div>
-      <button className="primary full stft-acquire" disabled={captureUnavailable} onClick={onAcquire}><Play size={13} fill="currentColor"/>{captureLabel}</button>
+      <button data-agent-control="stft.capture" className="primary full stft-acquire" disabled={captureUnavailable} onClick={onAcquire}><Play size={13} fill="currentColor"/>{captureLabel}</button>
       <div className="channel-contract-note"><AudioWaveform size={14}/><p>Detected power only · no phase, I/Q, or EVM.</p></div>
     </aside>
   </section>;

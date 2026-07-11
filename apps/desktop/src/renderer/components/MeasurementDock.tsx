@@ -20,6 +20,8 @@ type Panel = 'markers' | 'traces' | 'display';
 export interface MeasurementDockProps {
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
+  activeTraceId: TraceId;
+  onActiveTrace(traceId: TraceId): void;
   markers: readonly MarkerConfiguration[];
   readings: readonly MarkerReading[];
   activeMarkerId: MarkerId;
@@ -37,7 +39,6 @@ export interface MeasurementDockProps {
 
 export function MeasurementDock(props: MeasurementDockProps) {
   const [panel, setPanel] = useState<Panel>('markers');
-  const [activeTraceId, setActiveTraceId] = useState<TraceId>(1);
   const activeMarker = props.markers.find((marker) => marker.id === props.activeMarkerId);
   if (!activeMarker) throw new Error(`Active marker M${props.activeMarkerId} does not exist`);
   const activeReading = props.readings.find((reading) => reading.markerId === props.activeMarkerId);
@@ -84,7 +85,7 @@ export function MeasurementDock(props: MeasurementDockProps) {
       </section>
     </div>}
 
-    {panel === 'traces' && <TracePanel {...props} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId}/>}
+    {panel === 'traces' && <TracePanel {...props}/>}
 
     {panel === 'display' && <div className="measurement-panel display-panel parameter-stack">
       <EditableParameter label="Reference level" value={props.display.referenceLevelDbm} displayValue={`${props.display.referenceLevelDbm} dBm`} unit="dBm" minimum={-150} maximum={30} controlId="display.reference-level" onCommit={(value) => props.onDisplay({ ...props.display, referenceLevelDbm: Number(value) })}/>
@@ -94,7 +95,7 @@ export function MeasurementDock(props: MeasurementDockProps) {
   </section>;
 }
 
-function TracePanel(props: MeasurementDockProps & { activeTraceId: TraceId; onActiveTrace(traceId: TraceId): void }) {
+function TracePanel(props: MeasurementDockProps) {
   const trace = props.traces.find((item) => item.id === props.activeTraceId);
   if (!trace) throw new Error(`Trace ${props.activeTraceId} does not exist`);
   const frame = props.frames.find((item) => item.traceId === trace.id);

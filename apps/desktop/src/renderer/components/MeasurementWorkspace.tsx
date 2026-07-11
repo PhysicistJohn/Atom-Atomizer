@@ -49,6 +49,8 @@ export interface MeasurementWorkspaceProps {
   acquisition: AcquisitionState;
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
+  activeTraceId: TraceId;
+  onActiveTrace(traceId: TraceId): void;
   markers: readonly MarkerConfiguration[];
   readings: readonly MarkerReading[];
   activeMarkerId: MarkerId;
@@ -103,7 +105,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     </header>
     <div className="measurement-stage">
       {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
-        {overlay === 'setup' ? <AnalyzerInspector config={props.analyzer} disabled={props.busy} onChange={props.onAnalyzer}/> : <MeasurementDock traces={props.traces} frames={props.frames} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>} 
+        {overlay === 'setup' ? <AnalyzerInspector config={props.analyzer} disabled={props.busy} onChange={props.onAnalyzer}/> : <MeasurementDock traces={props.traces} frames={props.frames} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>}
       </div>}
       <div className="measurement-stage-content" role="tabpanel">
         {props.view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
