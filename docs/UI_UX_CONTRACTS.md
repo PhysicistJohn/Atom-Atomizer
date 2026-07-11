@@ -31,6 +31,8 @@ No screen may obscure the answers to questions 1–3. Measurement views must ans
 | XP-06 | Recoverable interruption | Unplug, timeout, cancellation, window reload, and invalid input end in an actionable state without an indefinite spinner. |
 | XP-07 | Local and private | No remote font, asset, telemetry, inference, or account dependency exists in v1. |
 | XP-08 | Keyboard complete | Every core workflow is achievable without a pointer. |
+| XP-09 | Active functions | Every editable instrument value is a readable, full-row active function before it becomes an input. |
+| XP-10 | Chromatic restraint | Application chrome is neutral; color identifies selection, state, risk, Atom, or measured data rather than decorating every surface. |
 
 ## 2. Information architecture
 
@@ -72,6 +74,50 @@ When startup discovery completes successfully but contains no exact `0483:5740` 
 The replay channel is explicitly AWGN or Rayleigh. Seeded complex-Gaussian periodogram power evolves on every frame and combines with spatially correlated receiver ripple, broad passband shape, bounded sweep drift, edge lift, and stable low-level spurs. Rayleigh mode adds correlated frequency-selective signal fades with operator-controlled temporal rate. Replay cadence is explicitly paced so the UI animates naturally without an unbounded simulator loop.
 
 Every profile shows `VISUAL`, `STD-DERIVED`, or `CONFORMANCE-VALIDATED`, its allocation/timing projection, and exact source clause. Current cellular/WLAN entries are standards-derived power-spectrum/time projections, not bit-exact or conformance-validated I/Q; GSM and Wi-Fi retain their published Normal Burst/PPDU naming rather than invented test-model IDs. The FM visual fixture renders resolved sideband lines and may not elevate non-line channel-floor bins. Atom receives typed `select_demo_signal` and `configure_demo_channel` hooks. The app-only coordinate harness remains scoped to the main window. Exact qualification, algorithms, catalog membership, and admission gates are normative in `WAVEFORM_REPLAY_CONTRACT.md`.
+
+### 2.4 Active-function control surface
+
+Instrument settings use one shared `ParameterRow` contract across analyzer,
+marker, trace, display, detector, classifier, generator, waterfall, channel,
+STFT, and Signal Lab surfaces:
+
+1. A closed row exposes one label and one complete effective value at a minimum
+   44 px target height; main-app rows use 52 px.
+2. Numeric or free-form values do not render as permanently small input boxes.
+   Activating the full row reveals one focused, selected entry field plus an
+   explicit Apply action. Enter and Apply have identical commit semantics.
+3. Blank, non-finite, below-minimum, above-maximum, parse, schema, and domain
+   errors remain inside the open row. They never mutate application or device
+   state and are never replaced by a guessed value.
+4. Opening another value in the same parameter stack closes the previous
+   editor. A stack cannot become a spreadsheet of simultaneously open fields.
+5. Enumerated values make the whole row the selection target and always render
+   the current human label before activation. A current value without a closed
+   option is a programming error and fails loudly.
+6. Boolean rows expose both text (`On`/`Off`) and state treatment. Color alone
+   is insufficient.
+7. Settings are one value per row. `Advanced` may create one additional group;
+   deeper settings trees and side-by-side editable values are forbidden.
+8. Escape closes transient measurement drawers. Changing measurement view also
+   closes them; neither action changes configuration or acquisition state.
+9. Every row carries a stable agent-control identifier where the capability is
+   agent-operable. Visual, semantic-computer, and typed Atom operations converge
+   on the same validated application reducer.
+
+The visual system uses neutral graphite hierarchy and macOS system typography.
+System blue means selection/action, violet identifies Atom, amber/red retain
+caution and hazard semantics, and plot palettes remain free to encode RF data.
+Measured-data color must not tint general window chrome.
+
+Acceptance:
+
+- `UI-PAR-001`: current values remain readable with every editor closed.
+- `UI-PAR-002`: click, keyboard activation, Enter, and Apply follow one commit contract.
+- `UI-PAR-003`: invalid entry remains open with a specific inline error.
+- `UI-PAR-004`: only one editor per stack can be open.
+- `UI-PAR-005`: disabled rows cannot open and are visually consistent.
+- `UI-PAR-006`: all route and companion-window value controls are shared rows; raw route-local numeric/select controls are absent.
+- `UI-PAR-007`: reference screenshots show no truncated effective value, second-line chevron, horizontal overflow, or body scroll.
 
 ## 3. Global state contracts
 

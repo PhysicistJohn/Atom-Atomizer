@@ -92,12 +92,15 @@ into host trace math.
 
 ## UI and Atom contract
 
-The closed command bar always reports active marker count, visible trace count,
-scale, up to four live marker readouts, and `HOST MATH`. It lives inside the
-`Traces & markers` overlay of the bounded measurement stage. Opening Markers,
-Traces, or Display expands one surface at a time without changing document or
-stage height. The 1720 × 1040 reference viewport must have no clipped input,
-overlapping label, horizontal overflow, or workspace scroll with Atom open.
+The `Traces & markers` action opens one right-edge active-function drawer inside
+the bounded measurement stage. Its tab row always reports active marker count,
+visible trace count, and display scale. Markers shows one selected marker,
+its live readout, and search controls; Traces shows one selected trace; Display
+shows amplitude controls. Opening Markers, Traces, or Display replaces the
+current drawer surface without changing document or stage height. Values follow
+the shared one-value-per-row contract in `UI_UX_CONTRACTS.md`. The 1720 × 1040
+reference viewport must have no clipped input, overlapping label, horizontal
+overflow, or workspace scroll with Atom open.
 
 Atom receives typed tools for `get_measurement_state`, `configure_marker`,
 `search_marker`, `configure_trace`, `reset_trace`, and

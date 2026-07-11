@@ -68,7 +68,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
 | Atom | exact model, high reasoning, Ballad, VAD 0.95, voice/text, all feature hooks, screenshots, policies, approvals | live eval corpus, safety identifier policy, production credential storage |
-| UX | atomic precision visual system, five live workspaces, bounded measurement tabs/overlays, responsive Atom rail | screenshot review at minimum/scaled viewports and operator usability pass |
+| UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 
 ## Execution gates
 
