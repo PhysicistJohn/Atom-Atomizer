@@ -40,6 +40,20 @@ describe('firmware update human boundary', () => {
     expect(onFlash).toHaveBeenCalledOnce();
     assertNoOrphans(container);
   });
+
+  it('renders live DFU stage progress while the irreversible call is still running', () => {
+    render(<FirmwareUpdateDialog state={{
+      ...verified,
+      phase: 'flashing',
+      preparation,
+      writeDisposition: 'started',
+      writeStartedAt: '2026-07-11T22:00:01.000Z',
+      flashProgress: { stage: 'writing', percent: 67, stagePercent: 49, updatedAt: '2026-07-11T22:00:20.000Z' },
+    }} busy preflight={{}} onPreflight={vi.fn()} onDownload={vi.fn()} onPrepare={vi.fn()} onDetect={vi.fn()} onFlash={vi.fn()} onClose={vi.fn()}/>);
+    expect(screen.getByText('Writing firmware image · 49%')).toBeTruthy();
+    expect(screen.getByRole('progressbar', { name: /Firmware update progress/i }).getAttribute('aria-valuenow')).toBe('67');
+    expect(screen.getByText(/Keep USB and power connected/i)).toBeTruthy();
+  });
 });
 
 const preparation = {

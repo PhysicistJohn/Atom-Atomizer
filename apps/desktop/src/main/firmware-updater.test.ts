@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OEM_ZS407_FIRMWARE_RELEASE, OEM_ZS407_SELF_TEST_PROCEDURE, ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
-import { FIRMWARE_UPDATE_JOURNAL_FILENAME, FirmwareUpdater, inspectStm32DfuDevices, parseDfuUtilVersion, parseStm32DfuDevices, verifyFirmwareArtifact } from './firmware-updater.js';
+import { FIRMWARE_UPDATE_JOURNAL_FILENAME, FirmwareUpdater, inspectStm32DfuDevices, parseDfuTransferProgress, parseDfuUtilVersion, parseStm32DfuDevices, verifyFirmwareArtifact } from './firmware-updater.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))));
@@ -13,6 +13,13 @@ describe('fail-closed firmware updater primitives', () => {
     expect(parseDfuUtilVersion('dfu-util 0.11')).toBe('0.11');
     expect(() => parseDfuUtilVersion('dfu-util 0.10')).toThrow(/requires 0.11/);
     expect(() => parseDfuUtilVersion('unknown tool')).toThrow(/missing/);
+  });
+
+  it('extracts the latest erase or download percentage from dfu-util carriage-return output', () => {
+    expect(parseDfuTransferProgress('\rErase   [====]  16% 30720 bytes')).toEqual({ operation: 'erase', percent: 16 });
+    expect(parseDfuTransferProgress('\rErase [=====] 100% 185704 bytes\rDownload [=] 4% 8192 bytes')).toEqual({ operation: 'download', percent: 4 });
+    expect(parseDfuTransferProgress('Download done.\nFile downloaded successfully')).toBeUndefined();
+    expect(parseDfuTransferProgress('\rDownload [=====] 101% 185704 bytes')).toBeUndefined();
   });
 
   it('recognizes only STM32 DFU alt-zero internal flash', () => {

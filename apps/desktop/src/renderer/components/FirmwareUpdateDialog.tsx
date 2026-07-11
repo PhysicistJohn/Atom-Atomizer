@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { AlertTriangle, Check, Download, ExternalLink, LoaderCircle, ShieldCheck, Terminal, Usb, X, Zap } from 'lucide-react';
 import { OEM_ZS407_SELF_TEST_PROCEDURE, type FirmwareUpdatePreflight, type FirmwareUpdateState } from '@tinysa/contracts';
 
@@ -79,7 +80,7 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
 
         {(state.phase === 'flashing' || state.phase === 'reconnecting') && <Stage icon={<LoaderCircle className="spin"/>} title={state.phase === 'flashing' ? 'Writing firmware—do not disconnect' : 'Write complete—verifying reboot'}>
           <p>{state.phase === 'flashing' ? 'dfu-util is writing the exact pinned image to 0x08000000. The application is locked at this boundary.' : 'The write completed once. Atomizer will not repeat it; it is waiting for the serial device to return and prove the target firmware identity.'}</p>
-          <div className="firmware-wait"><i/><i/><i/></div>
+          <FirmwareProgress state={state}/>
         </Stage>}
 
         {state.phase === 'completed' && <Stage icon={<Check/>} title="Firmware verified after reboot">
@@ -109,3 +110,27 @@ function Step({ label, active, complete }: { label: string; active: boolean; com
 function Stage({ icon, title, children, danger = false }: { icon: React.ReactNode; title: string; children: React.ReactNode; danger?: boolean }) { return <div className={`firmware-stage-content ${danger ? 'danger' : ''}`}><div className="firmware-stage-title"><span>{icon}</span><h3>{title}</h3></div>{children}</div>; }
 function SafetyCheck({ checked, onChange, label }: { checked: boolean; onChange(value: boolean): void; label: string }) { return <label className="firmware-check" data-agent-exclusion="human-safety-attestation"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)}/><i>{checked ? <Check size={11}/> : null}</i><span>{label}</span></label>; }
 function FirmwareFacts({ state }: { state: FirmwareUpdateState }) { return <div className="firmware-facts"><span><small>SIZE</small><strong>{state.target.sizeBytes.toLocaleString()} bytes</strong></span><span><small>REVISION</small><strong>{state.target.revision}</strong></span><span><small>SHA-256</small><strong>{state.target.sha256.slice(0, 12)}…</strong></span></div>; }
+
+function FirmwareProgress({ state }: { state: FirmwareUpdateState }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [state.phase, state.writeStartedAt]);
+  const progress = state.flashProgress;
+  const percent = progress?.percent ?? (state.phase === 'reconnecting' ? 98 : 0);
+  const elapsedSeconds = state.writeStartedAt ? Math.max(0, Math.floor((now - Date.parse(state.writeStartedAt)) / 1_000)) : 0;
+  const label = progress ? {
+    preparing: 'Preparing verified transfer',
+    erasing: `Erasing internal flash · ${progress.stagePercent ?? 0}%`,
+    writing: `Writing firmware image · ${progress.stagePercent ?? 0}%`,
+    'verifying-reboot': 'Verifying reboot and USB identity',
+    complete: 'Firmware and reboot verified',
+  }[progress.stage] : state.phase === 'reconnecting' ? 'Verifying reboot and USB identity' : 'Starting verified transfer';
+  return <div className="firmware-live-progress">
+    <div className="firmware-progress-copy"><strong>{label}</strong><span>{elapsedSeconds} s elapsed · Keep USB and power connected</span></div>
+    <div className="firmware-progress-track" role="progressbar" aria-label="Firmware update progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><i style={{ width: `${Math.max(2, percent)}%` }}/></div>
+    <div className="firmware-progress-meta"><span>VERIFIED IMAGE</span><strong>{percent}%</strong><span>{state.phase === 'reconnecting' ? 'POST-WRITE CHECK' : 'DFU TRANSFER'}</span></div>
+  </div>;
+}

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -46,7 +46,7 @@ export class FirmwareUpdater {
     await this.#loadJournal();
     this.#synchronizeDevice();
     if (this.#state.phase === 'available' && !this.#state.artifact) await this.#inspectCachedArtifact();
-    await this.#inspectDfuUtility();
+    if (this.#state.phase !== 'flashing' && this.#state.phase !== 'reconnecting') await this.#inspectDfuUtility();
     return structuredClone(this.#state);
   }
 
@@ -78,8 +78,10 @@ export class FirmwareUpdater {
       };
       return structuredClone(this.#state);
     } catch (value) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-      throw await this.#fail(`Firmware download verification failed: ${message(value)}`);
+      let cleanupFailure: unknown;
+      try { await rm(temporaryPath, { force: true }); } catch (cleanupValue) { cleanupFailure = cleanupValue; }
+      const cleanup = cleanupFailure ? `. Temporary artifact cleanup also failed: ${message(cleanupFailure)}` : '';
+      throw await this.#fail(`Firmware download verification failed: ${message(value)}${cleanup}`);
     }
   }
 
@@ -163,22 +165,51 @@ export class FirmwareUpdater {
       const utility = await this.#requireDfuUtility();
       verifyFirmwareArtifact(new Uint8Array(await readFile(this.#artifactPath)));
       const writeStartedAt = new Date().toISOString();
-      this.#state = { ...this.#state, phase: 'flashing', writeDisposition: 'started', writeStartedAt, error: undefined };
+      this.#state = {
+        ...this.#state,
+        phase: 'flashing',
+        writeDisposition: 'started',
+        writeStartedAt,
+        flashProgress: { stage: 'preparing', percent: 0, updatedAt: writeStartedAt },
+        error: undefined,
+      };
       await this.#persistJournal();
       await this.#writeResultAudit('write-started', { preparationId: preparation.id, writeStartedAt });
-      const result = await runExecutable(utility, ['-d', '0483:df11', '-a', '0', '-s', '0x08000000:leave', '-D', this.#artifactPath], 120_000);
+      const result = await runDfuExecutable(
+        utility,
+        ['-d', '0483:df11', '-a', '0', '-s', '0x08000000:leave', '-D', this.#artifactPath],
+        120_000,
+        (progress) => {
+          const stage = progress.operation === 'erase' ? 'erasing' : 'writing';
+          const percent = progress.operation === 'erase'
+            ? Math.round(progress.percent * 0.4)
+            : 40 + Math.round(progress.percent * 0.55);
+          this.#state = {
+            ...this.#state,
+            flashProgress: { stage, percent, stagePercent: progress.percent, updatedAt: new Date().toISOString() },
+          };
+        },
+      );
       const output = `${result.stdout}\n${result.stderr}`;
       if (!DFU_CONFIRMATION_OUTPUT.test(output)) throw new Error('dfu-util exited without its successful-download confirmation');
       const writeCompletedAt = new Date().toISOString();
-      this.#state = { ...this.#state, phase: 'reconnecting', writeDisposition: 'completed', writeCompletedAt };
+      this.#state = {
+        ...this.#state,
+        phase: 'reconnecting',
+        writeDisposition: 'completed',
+        writeCompletedAt,
+        flashProgress: { stage: 'verifying-reboot', percent: 98, stagePercent: 100, updatedAt: writeCompletedAt },
+      };
       await this.#persistJournal();
       await this.#writeResultAudit('write-complete', { preparationId: preparation.id, writeCompletedAt, output: bounded(output) });
 
       const candidate = await this.#waitForOnePhysicalDevice();
       const connected = await this.device.connect(candidate);
       if (connected.identity?.firmwareReportedRevision !== OEM_ZS407_FIRMWARE_RELEASE.revision || connected.identity.firmwareSourceCommit !== OEM_ZS407_FIRMWARE_RELEASE.sourceCommit) {
-        await this.device.disconnect().catch(() => undefined);
-        throw new Error(`Post-flash identity is ${connected.identity?.firmwareVersion ?? 'missing'}, expected ${OEM_ZS407_FIRMWARE_RELEASE.version}`);
+        const identityError = `Post-flash identity is ${connected.identity?.firmwareVersion ?? 'missing'}, expected ${OEM_ZS407_FIRMWARE_RELEASE.version}`;
+        try { await this.device.disconnect(); }
+        catch (disconnectFailure) { throw new Error(`${identityError}. Disconnect also failed: ${message(disconnectFailure)}`, { cause: disconnectFailure }); }
+        throw new Error(identityError);
       }
       const completedAt = new Date().toISOString();
       this.#state = {
@@ -186,6 +217,7 @@ export class FirmwareUpdater {
         phase: 'completed',
         updateAvailable: false,
         current: { version: connected.identity.firmwareVersion, revision: connected.identity.firmwareReportedRevision, sourceCommit: connected.identity.firmwareSourceCommit },
+        flashProgress: { stage: 'complete', percent: 100, stagePercent: 100, updatedAt: completedAt },
         completedAt,
         error: undefined,
       };
@@ -253,7 +285,8 @@ export class FirmwareUpdater {
       const directory = await open(this.cacheDirectory, 'r');
       try { await directory.sync(); } finally { await directory.close(); }
     } catch (value) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      try { await rm(temporaryPath, { force: true }); }
+      catch (cleanupFailure) { throw new Error(`${message(value)}. Temporary journal cleanup also failed: ${message(cleanupFailure)}`, { cause: value }); }
       throw value;
     }
   }
@@ -376,6 +409,20 @@ export function parseDfuUtilVersion(output: string): string {
   return version;
 }
 
+export interface DfuTransferProgress {
+  operation: 'erase' | 'download';
+  percent: number;
+}
+
+export function parseDfuTransferProgress(output: string): DfuTransferProgress | undefined {
+  const matches = [...output.matchAll(/(?:^|[\r\n])(Erase|Download)\s+\[[^\]]*\]\s+(\d{1,3})%/gim)];
+  const match = matches.at(-1);
+  if (!match) return undefined;
+  const percent = Number(match[2]);
+  if (!Number.isInteger(percent) || percent < 0 || percent > 100) return undefined;
+  return { operation: match[1]!.toLowerCase() as DfuTransferProgress['operation'], percent };
+}
+
 async function locateDfuUtility(): Promise<string | undefined> {
   const explicit = process.env.TINYSA_DFU_UTIL?.trim();
   if (explicit) {
@@ -397,6 +444,61 @@ function runExecutable(file: string, args: readonly string[], timeout: number): 
     execFile(file, [...args], { timeout, maxBuffer: 2 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
       if (error) reject(new Error(`${file} ${args.join(' ')} failed: ${bounded(stderr || stdout || error.message)}`, { cause: error }));
       else resolve({ stdout, stderr });
+    });
+  });
+}
+
+function runDfuExecutable(
+  file: string,
+  args: readonly string[],
+  timeout: number,
+  onProgress: (progress: DfuTransferProgress) => void,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, [...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let progressTail = '';
+    let lastProgress = '';
+    let settled = false;
+    const timer = setTimeout(() => fail(new Error(`${file} ${args.join(' ')} timed out after ${timeout} ms`)), timeout);
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+      reject(error);
+    };
+    const consume = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      if (stream === 'stdout') stdout += text;
+      else stderr += text;
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 2 * 1024 * 1024) {
+        fail(new Error('dfu-util output exceeded the 2 MiB safety bound'));
+        return;
+      }
+      progressTail = `${progressTail}${text}`.slice(-8_192);
+      const progress = parseDfuTransferProgress(progressTail);
+      const key = progress ? `${progress.operation}:${progress.percent}` : '';
+      if (progress && key !== lastProgress) {
+        lastProgress = key;
+        onProgress(progress);
+      }
+    };
+
+    child.stdout.on('data', (chunk: Buffer) => consume('stdout', chunk));
+    child.stderr.on('data', (chunk: Buffer) => consume('stderr', chunk));
+    child.once('error', (error) => fail(new Error(`${file} ${args.join(' ')} could not start: ${message(error)}`, { cause: error })));
+    child.once('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`${file} ${args.join(' ')} failed with code ${String(code)} signal ${signal ?? 'none'}: ${bounded(stderr || stdout)}`));
+        return;
+      }
+      resolve({ stdout, stderr });
     });
   });
 }

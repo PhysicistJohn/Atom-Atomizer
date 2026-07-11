@@ -248,7 +248,7 @@ export function App() {
           if (!state.dfuUtility.available) return;
           setFirmwareUpdate(await window.tinySA.detectDfuDevice());
         })
-        .catch(async () => setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState()))
+        .catch(async (value) => refreshFirmwareStateAfterFailure(`Automatic DFU detection failed: ${errorMessage(value)}`))
         .finally(() => { firmwareDfuPollBusy.current = false; });
     }, 1_500);
     return () => window.clearInterval(poll);
@@ -277,8 +277,7 @@ export function App() {
         setFirmwareUpdate(state);
       }
     } catch (value) {
-      setError(`Firmware update inspection failed: ${errorMessage(value)}`);
-      setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => undefined));
+      await refreshFirmwareStateAfterFailure(`Firmware update inspection failed: ${errorMessage(value)}`);
     } finally { setFirmwareUpdateBusy(false); }
   }
 
@@ -291,7 +290,7 @@ export function App() {
   async function downloadFirmwareUpdate(): Promise<void> {
     setFirmwareUpdateBusy(true);
     try { setFirmwareUpdate(await window.tinySA.downloadFirmwareUpdate()); }
-    catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    catch (value) { await refreshFirmwareStateAfterFailure(errorMessage(value)); }
     finally { setFirmwareUpdateBusy(false); }
   }
 
@@ -301,26 +300,62 @@ export function App() {
     try {
       setFirmwareUpdate(await window.tinySA.prepareFirmwareUpdate(firmwarePreflight as FirmwareUpdatePreflight));
       acceptSnapshot(await window.tinySA.getSnapshot());
-    } catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    } catch (value) { await refreshFirmwareStateAfterFailure(errorMessage(value)); }
     finally { setFirmwareUpdateBusy(false); }
   }
 
   async function detectDfuDevice(): Promise<void> {
     setFirmwareUpdateBusy(true);
     try { setFirmwareUpdate(await window.tinySA.detectDfuDevice()); }
-    catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    catch (value) { await refreshFirmwareStateAfterFailure(errorMessage(value)); }
     finally { setFirmwareUpdateBusy(false); }
+  }
+
+  async function refreshFirmwareStateAfterFailure(operationError: string): Promise<void> {
+    try {
+      setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState());
+      setError(operationError);
+    } catch (refreshFailure) {
+      setError(`${operationError}. Firmware state refresh also failed: ${errorMessage(refreshFailure)}`);
+    }
   }
 
   async function flashFirmwareUpdate(): Promise<void> {
     const preparationId = firmwareUpdate?.preparation?.id;
     if (!preparationId) throw new Error('Firmware flash has no preparation record');
     setFirmwareUpdateBusy(true);
+    let pollingActive = true;
+    let pollInFlight = false;
+    let pollFailureReported = false;
+    const refreshProgress = async () => {
+      if (!pollingActive || pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const state = await window.tinySA.getFirmwareUpdateState();
+        if (pollingActive) setFirmwareUpdate(state);
+      } catch (value) {
+        if (pollingActive && !pollFailureReported) {
+          pollFailureReported = true;
+          setError(`Firmware progress channel failed. Do not disconnect the unit: ${errorMessage(value)}`);
+        }
+      } finally { pollInFlight = false; }
+    };
+    const poll = window.setInterval(() => void refreshProgress(), 200);
+    void refreshProgress();
     try {
-      setFirmwareUpdate(await window.tinySA.flashFirmwareUpdate({ preparationId, confirmation: 'FLASH VERIFIED OEM FIRMWARE' }));
+      const operation = window.tinySA.flashFirmwareUpdate({ preparationId, confirmation: 'FLASH VERIFIED OEM FIRMWARE' });
+      const completed = await operation;
+      pollingActive = false;
+      setFirmwareUpdate(completed);
       acceptSnapshot(await window.tinySA.getSnapshot());
-    } catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
-    finally { setFirmwareUpdateBusy(false); }
+    } catch (value) {
+      pollingActive = false;
+      await refreshFirmwareStateAfterFailure(errorMessage(value));
+    } finally {
+      pollingActive = false;
+      window.clearInterval(poll);
+      setFirmwareUpdateBusy(false);
+    }
   }
 
   function prepareFirmwareUpdateFromUi(event: React.MouseEvent<HTMLButtonElement>): void {

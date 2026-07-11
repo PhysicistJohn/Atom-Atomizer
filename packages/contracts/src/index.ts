@@ -614,6 +614,8 @@ export const firmwareUpdatePhaseSchema = z.enum([
 export type FirmwareUpdatePhase = z.infer<typeof firmwareUpdatePhaseSchema>;
 export const firmwareWriteDispositionSchema = z.enum(['not-started', 'started', 'completed', 'indeterminate']);
 export type FirmwareWriteDisposition = z.infer<typeof firmwareWriteDispositionSchema>;
+export const firmwareFlashProgressStageSchema = z.enum(['preparing', 'erasing', 'writing', 'verifying-reboot', 'complete']);
+export type FirmwareFlashProgressStage = z.infer<typeof firmwareFlashProgressStageSchema>;
 const supportedZs407FirmwareRevisionSchema = z.enum(['c5dd31f', 'c979386']);
 const firmwareSourceCommitSchema = z.union([
   z.literal(FIRMWARE_SOURCE_COMMIT),
@@ -643,13 +645,13 @@ export const firmwareUpdateStateSchema = z.object({
   artifact: z.object({
     sizeBytes: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sizeBytes),
     sha256: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sha256),
-    verifiedAt: z.string().min(1),
+    verifiedAt: z.string().datetime(),
   }).strict().optional(),
   dfuUtility: z.object({ available: z.boolean(), version: z.string().min(1).optional() }).strict(),
   dfuDevice: z.object({ detected: z.boolean(), count: z.number().int().nonnegative() }).strict(),
   preparation: z.object({
     id: z.string().uuid(),
-    preparedAt: z.string().min(1),
+    preparedAt: z.string().datetime(),
     batteryMillivolts: z.number().int().positive(),
     deviceId: z.number().int().nonnegative(),
     screenSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -659,9 +661,15 @@ export const firmwareUpdateStateSchema = z.object({
     rfPortsDisconnected: z.literal(true),
   }).strict().optional(),
   writeDisposition: firmwareWriteDispositionSchema,
-  writeStartedAt: z.string().min(1).optional(),
-  writeCompletedAt: z.string().min(1).optional(),
-  completedAt: z.string().min(1).optional(),
+  writeStartedAt: z.string().datetime().optional(),
+  writeCompletedAt: z.string().datetime().optional(),
+  flashProgress: z.object({
+    stage: firmwareFlashProgressStageSchema,
+    percent: z.number().int().min(0).max(100),
+    stagePercent: z.number().int().min(0).max(100).optional(),
+    updatedAt: z.string().datetime(),
+  }).strict().optional(),
+  completedAt: z.string().datetime().optional(),
   error: z.string().min(1).optional(),
 }).strict().superRefine((state, context) => {
   const issue = (message: string) => context.addIssue({ code: 'custom', message });
@@ -672,12 +680,27 @@ export const firmwareUpdateStateSchema = z.object({
   if (['flashing', 'reconnecting', 'completed'].includes(state.phase) && state.writeDisposition === 'not-started') issue(`${state.phase} requires durable write-attempt evidence`);
   if (state.phase === 'completed' && (state.writeDisposition !== 'completed' || !state.completedAt)) issue('Completed firmware state requires a completed write and post-reboot timestamp');
   if (state.phase === 'ready-to-flash' && (!state.dfuDevice.detected || state.dfuDevice.count !== 1)) issue('Ready-to-flash requires exactly one detected DFU target');
+  if (state.writeStartedAt && state.writeCompletedAt && Date.parse(state.writeCompletedAt) < Date.parse(state.writeStartedAt)) issue('Firmware write completion cannot precede write start');
+  if (state.writeCompletedAt && state.completedAt && Date.parse(state.completedAt) < Date.parse(state.writeCompletedAt)) issue('Post-reboot completion cannot precede firmware write completion');
+  const progress = state.flashProgress;
+  if (!progress) return;
+  if (state.writeDisposition === 'not-started' || !state.writeStartedAt) issue('Flash progress requires durable write-start evidence');
+  if (state.writeStartedAt && Date.parse(progress.updatedAt) < Date.parse(state.writeStartedAt)) issue('Flash progress cannot precede firmware write start');
+  if (!['flashing', 'reconnecting', 'completed', 'failed'].includes(state.phase)) issue('Flash progress is legal only after a write attempt begins');
+  if (state.phase === 'flashing' && !['preparing', 'erasing', 'writing'].includes(progress.stage)) issue('Flashing may report only preparing, erasing, or writing progress');
+  if (state.phase === 'reconnecting' && progress.stage !== 'verifying-reboot') issue('Reconnecting requires verifying-reboot progress');
+  if (state.phase === 'completed' && progress.stage !== 'complete') issue('Completed firmware state requires complete progress');
+  if (progress.stage === 'preparing' && (progress.percent !== 0 || progress.stagePercent !== undefined)) issue('Preparing progress must be zero without a stage percentage');
+  if (progress.stage === 'erasing' && (progress.percent > 40 || progress.stagePercent === undefined)) issue('Erasing progress requires a stage percentage and cannot exceed 40 percent overall');
+  if (progress.stage === 'writing' && (progress.percent < 40 || progress.percent > 95 || progress.stagePercent === undefined)) issue('Writing progress requires a stage percentage and must remain within 40–95 percent overall');
+  if (progress.stage === 'verifying-reboot' && (progress.percent !== 98 || progress.stagePercent !== 100)) issue('Verifying-reboot progress must be the exact post-write checkpoint');
+  if (progress.stage === 'complete' && (progress.percent !== 100 || progress.stagePercent !== 100)) issue('Complete progress must be exactly 100 percent');
 });
 export type FirmwareUpdateState = z.infer<typeof firmwareUpdateStateSchema>;
 export const firmwareUpdateJournalSchema = z.object({
   schemaVersion: z.literal(1),
   targetVersion: z.literal(OEM_ZS407_FIRMWARE_RELEASE.version),
-  writtenAt: z.string().min(1),
+  writtenAt: z.string().datetime(),
   state: firmwareUpdateStateSchema,
 }).strict();
 export type FirmwareUpdateJournal = z.infer<typeof firmwareUpdateJournalSchema>;

@@ -92,6 +92,14 @@ describe('domain units and firmware-derived validation', () => {
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'flashing' }).success).toBe(false);
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, writeDisposition: 'started' }).success).toBe(false);
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'completed', writeDisposition: 'completed', writeStartedAt: 't1', writeCompletedAt: 't2' }).success).toBe(false);
+    const flashing = {
+      ...idle, phase: 'flashing', writeDisposition: 'started', writeStartedAt: '2026-07-11T22:00:01.000Z',
+      flashProgress: { stage: 'writing', percent: 67, stagePercent: 49, updatedAt: '2026-07-11T22:00:20.000Z' },
+    } as const;
+    expect(firmwareUpdateStateSchema.safeParse(flashing).success).toBe(true);
+    expect(firmwareUpdateStateSchema.safeParse({ ...flashing, flashProgress: { ...flashing.flashProgress, percent: 101 } }).success).toBe(false);
+    expect(firmwareUpdateStateSchema.safeParse({ ...flashing, flashProgress: { ...flashing.flashProgress, stage: 'verifying-reboot' } }).success).toBe(false);
+    expect(firmwareUpdateStateSchema.safeParse({ ...idle, flashProgress: flashing.flashProgress }).success).toBe(false);
   });
   it('binds firmware preflight to the exact ZS407 CAL-to-RF self-test procedure', () => {
     const preflight = {

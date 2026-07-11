@@ -32,8 +32,8 @@ export function AnalyzerInspector({ config, disabled, onChange }: { config: Anal
 
   return <aside className="inspector inspector-setup">
     <fieldset disabled={disabled} className="acquisition-dock parameter-stack">
-      <EditableParameter label="Start frequency" value={formatFrequency(config.startHz)} displayValue={formatFrequency(config.startHz)} type="text" controlId="analyzer.start" disabled={disabled} onCommit={(value) => updateFrequency('startHz', value)}/>
-      <EditableParameter label="Stop frequency" value={formatFrequency(config.stopHz)} displayValue={formatFrequency(config.stopHz)} type="text" controlId="analyzer.stop" disabled={disabled} onCommit={(value) => updateFrequency('stopHz', value)}/>
+      <EditableParameter label="Start frequency" value={config.startHz} displayValue={formatFrequency(config.startHz)} unit="Hz" minimum={ZS407_FIRMWARE_LIMITS.analyzerMinimumHz} maximum={config.stopHz - 1} step={1} controlId="analyzer.start" disabled={disabled} onCommit={(value) => updateFrequency('startHz', value)}/>
+      <EditableParameter label="Stop frequency" value={config.stopHz} displayValue={formatFrequency(config.stopHz)} unit="Hz" minimum={config.startHz + 1} maximum={ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz} step={1} controlId="analyzer.stop" disabled={disabled} onCommit={(value) => updateFrequency('stopHz', value)}/>
       <div className="range-summary" aria-label="Derived frequency range">
         <span><small>Center</small><strong>{formatFrequency((config.startHz + config.stopHz) / 2)}</strong></span>
         <span><small>Span</small><strong>{formatFrequency(config.stopHz - config.startHz)}</strong></span>

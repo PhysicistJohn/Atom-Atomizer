@@ -14,11 +14,34 @@ describe('parameter-row contract', () => {
     expect(details?.open).toBe(false);
     fireEvent.click(screen.getByLabelText('Edit Center'));
     expect(details?.open).toBe(true);
-    const input = within(details!).getByRole('spinbutton', { name: 'Center' });
-    fireEvent.change(input, { target: { value: '100000000' } });
-    fireEvent.click(within(details!).getByRole('button', { name: /Apply/i }));
+    const input = within(details!).getByRole('textbox', { name: 'Center' }) as HTMLInputElement;
+    expect(input.value).toBe('98');
+    fireEvent.change(input, { target: { value: '100' } });
+    fireEvent.click(within(details!).getByRole('button', { name: /^Apply MHz$/i }));
     expect(commit).toHaveBeenCalledWith('100000000');
     expect(details?.open).toBe(false);
+  });
+
+  it('supports X-Series-style digit entry terminated by a frequency unit', () => {
+    const commit = vi.fn();
+    const { container } = render(<EditableParameter label="Stop frequency" value={108_000_000} displayValue="108 MHz" unit="Hz" minimum={1} maximum={17_922_600_000} step={1} controlId="analyzer.stop" onCommit={commit}/>);
+    fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
+    const dialog = screen.getByRole('dialog', { name: /Stop frequency numeric entry/i });
+    for (const interactive of dialog.querySelectorAll<HTMLElement>('button,input')) expect(interactive.closest('[data-agent-control]')).toBeTruthy();
+    for (const digit of ['9', '1', '5']) fireEvent.click(within(dialog).getByRole('button', { name: digit }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Apply MHz$/i }));
+    expect(commit).toHaveBeenCalledWith('915000000');
+    expect(container.querySelector('details')?.open).toBe(false);
+  });
+
+  it('selects a readable sub-second unit and commits its base seconds exactly', () => {
+    const commit = vi.fn();
+    render(<EditableParameter label="Capture time" value={0.05} unit="s" minimum={0.003} maximum={60} step={0.001} onCommit={commit}/>);
+    fireEvent.click(screen.getByLabelText('Edit Capture time'));
+    const input = screen.getByRole('textbox', { name: 'Capture time' }) as HTMLInputElement;
+    expect(input.value).toBe('50');
+    fireEvent.click(screen.getByRole('button', { name: /^Apply ms$/i }));
+    expect(commit).toHaveBeenCalledWith('0.05');
   });
 
   it('rejects out-of-range entry without silently changing the value', () => {
@@ -26,9 +49,40 @@ describe('parameter-row contract', () => {
     const { container } = render(<EditableParameter label="Points" value={450} minimum={20} maximum={450} onCommit={commit}/>);
     const details = container.querySelector('details')!;
     fireEvent.click(screen.getByLabelText('Edit Points'));
-    fireEvent.change(within(details).getByRole('spinbutton', { name: 'Points' }), { target: { value: '451' } });
-    fireEvent.click(within(details).getByRole('button', { name: /Apply/i }));
+    fireEvent.change(within(details).getByRole('textbox', { name: 'Points' }), { target: { value: '451' } });
+    fireEvent.click(details.querySelector<HTMLButtonElement>('.numeric-apply')!);
     expect(screen.getByRole('alert').textContent).toContain('at most 450');
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps button keyboard activation distinct from input Enter', () => {
+    const commit = vi.fn();
+    const { container } = render(<EditableParameter label="Frequency" value={98_000_000} unit="Hz" onCommit={commit}/>);
+    fireEvent.click(screen.getByLabelText('Edit Frequency'));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Enter' });
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Frequency' }), { key: 'Enter' });
+    expect(commit).toHaveBeenCalledWith('98000000');
+    expect(container.querySelector('details')?.open).toBe(false);
+  });
+
+  it('traps modal focus and restores it on Escape without committing', () => {
+    const commit = vi.fn();
+    render(<EditableParameter label="Frequency" value={98_000_000} unit="Hz" onCommit={commit}/>);
+    const origin = screen.getByLabelText('Edit Frequency');
+    fireEvent.click(origin);
+    const dialog = screen.getByRole('dialog', { name: /Frequency numeric entry/i });
+    const buttons = within(dialog).getAllByRole('button');
+    const first = buttons[0]!;
+    const last = buttons.at(-1)!;
+    last.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /Frequency numeric entry/i })).toBeNull();
+    expect(document.activeElement).toBe(origin);
     expect(commit).not.toHaveBeenCalled();
   });
 
