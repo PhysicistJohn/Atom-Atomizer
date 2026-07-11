@@ -4,11 +4,13 @@ import {
   channelMeasurementConfigurationSchema,
   dBm,
   envelopeStftConfigurationSchema,
+  firmwareUpdateStateSchema,
   generatorConfigSchema,
   hertz,
   markerConfigurationSchema,
   microseconds,
   modelPackageManifestSchema,
+  OEM_ZS407_FIRMWARE_RELEASE,
   portCandidateSchema,
   signalDetectionConfigSchema,
   traceBankConfigurationSchema,
@@ -51,6 +53,10 @@ describe('domain units and firmware-derived validation', () => {
   });
   it('requires exact USB candidate and detector schemas', () => {
     expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'unverified-serial', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(true);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(true);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(false);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: 'fake://x', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' }).success).toBe(true);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: 'fake://x', usbMatch: 'exact-zs407-cdc', transport: 'protocol-test-double', execution: 'protocol-test-double' }).success).toBe(false);
     expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'guessed', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(false);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 }).success).toBe(true);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: -1 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 0 }).success).toBe(false);
@@ -74,5 +80,15 @@ describe('domain units and firmware-derived validation', () => {
     expect(channelMeasurementConfigurationSchema.safeParse({ ...channel, channelSpacingHz: 100_000 }).success).toBe(false);
     expect(envelopeStftConfigurationSchema.safeParse({ windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 }).success).toBe(true);
     expect(envelopeStftConfigurationSchema.safeParse({ windowSize: 64, hopSize: 65, window: 'hann', removeDc: true, dynamicRangeDb: 80 }).success).toBe(false);
+  });
+  it('rejects impossible firmware write dispositions', () => {
+    const idle = {
+      phase: 'idle', target: OEM_ZS407_FIRMWARE_RELEASE, updateAvailable: false,
+      dfuUtility: { available: false }, dfuDevice: { detected: false, count: 0 }, writeDisposition: 'not-started',
+    } as const;
+    expect(firmwareUpdateStateSchema.safeParse(idle).success).toBe(true);
+    expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'flashing' }).success).toBe(false);
+    expect(firmwareUpdateStateSchema.safeParse({ ...idle, writeDisposition: 'started' }).success).toBe(false);
+    expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'completed', writeDisposition: 'completed', writeStartedAt: 't1', writeCompletedAt: 't2' }).success).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ const encoder = new TextEncoder();
 const prompt = encoder.encode(TINYSA_SHELL_PROMPT);
 const HELP_COMMANDS = [
   'version', 'info', 'help', 'status', 'pause', 'resume', 'abort',
-  'mode', 'sweep', 'scan', 'scanraw', 'rbw', 'attenuate', 'sweeptime', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
+  'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
   'freq', 'level', 'modulation', 'output', 'vbat', 'deviceid', 'capture', 'touch', 'release',
 ] as const;
 
@@ -281,6 +281,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
       case 'trigger': return this.#triggerCommand(args);
       case 'scan': return this.#scan(args, false);
       case 'scanraw': return this.#scan(args, true);
+      case 'zero': return args.length ? 'usage: zero {level}' : 'zero {level}\r\n174dBm';
       case 'freq': this.#generator = { ...this.#generator, frequencyHz: unsigned(args[0], 'generator frequency') }; return '';
       case 'level': this.#generator = { ...this.#generator, levelDbm: numeric(args[0], 'generator level') }; return '';
       case 'modulation': return this.#modulationCommand(args);
@@ -376,7 +377,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
       detector: this.#detector, spurRejection: this.#spurRejection, lna: this.#lna, avoidSpurs: this.#avoidSpurs, trigger: this.#trigger,
     }), points);
     this.#lastAcquisition = { source: 'renode-executable-state', startHz, stopHz, points, actualRbwHz: result.actualRbwHz, actualAttenuationDb: result.actualAttenuationDb, evidence: result.bridgeEvidence };
-    if (raw) return encodeRawSweep(result.powerDbm);
+    if (raw) return encodeRawSweep(result.powerDbm.map((power) => power + 174));
     const outmask = args[3] === undefined ? 0 : unsigned(args[3], 'scan outmask');
     if (outmask !== 3) return '';
     return result.frequencyHz.map((frequency, index) => `${frequency} ${result.powerDbm[index]!.toFixed(5)} 0.000000`).join('\r\n');

@@ -1,16 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tinysa.local/contracts/trio-composition-v1.json",
+  "$id": "https://tinysa.local/contracts/trio-composition-v2.json",
   "contractId": "tinysa-trio-composition",
-  "contractVersion": 1,
+  "contractVersion": 2,
   "effectiveDate": "2026-07-11",
   "parties": {
     "atomizer": {
       "repository": "TinySA",
       "owner": "operator-control-plane",
-      "applicationContractVersion": 3,
+      "applicationContractVersion": 4,
       "deviceApiVersion": 2,
-      "agentSurfaceVersion": 3
+      "agentSurfaceVersion": 4,
+      "physicalFirmwareSupport": {
+        "shippedVersion": "tinySA4_v1.4-217-gc5dd31f",
+        "shippedSourceCommit": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c",
+        "oemTargetVersion": "tinySA4_v1.4-224-gc979386",
+        "oemTargetSourceCommit": "c97938697b6c7485e7cab50bca9af76996b7d671",
+        "oemBinarySha256": "3c9847ff4d7b80561df2f2f1030a112703a083409ffb2ee11361b2413b7c1e41"
+      }
     },
     "firmware": {
       "repository": "TinySA_Firmware",
@@ -38,12 +45,16 @@
       "assumptions": [
         "OS discovery completes successfully",
         "candidate identity is exact-zs407-cdc",
-        "firmware shell identifies ZS407 and exposes the required command set"
+        "firmware shell identifies ZS407 across the version and info responses",
+        "reported source revision resolves through Atomizer's closed firmware registry",
+        "firmware exposes the complete required command set including zero offset readback"
       ],
       "guarantees": [
         "execution is physical",
         "usbIdentityVerified is true only after exact identity",
-        "raw serial remains below the typed device service"
+        "raw serial remains below the typed device service",
+        "scanraw offset is read immediately before binary acquisition and retained as evidence",
+        "one exact physical candidate is automatically connected; multiple exact candidates require operator choice"
       ]
     },
     {
@@ -80,7 +91,8 @@
   "admission": {
     "order": [
       "complete physical discovery",
-      "if an exact ZS407 candidate exists, suppress automatic twin admission",
+      "if exactly one exact ZS407 candidate exists, suppress the twin and automatically connect that physical candidate",
+      "if multiple exact ZS407 candidates exist, suppress the twin and require operator choice",
       "if no exact ZS407 candidate exists, expose and automatically connect the executable firmware twin"
     ],
     "discoveryFailure": "fail-visible-without-twin-admission",
@@ -93,6 +105,9 @@
     "Only Firmware owns executable-twin state and the future SignalLab stimulus sink.",
     "Only SignalLab owns waveform descriptors, deterministic channel configuration, and stimulus intent.",
     "RF output enable and general firmware-screen touch remain action-time approval boundaries for Atom.",
+    "Firmware download is restricted to one pinned OEM artifact and retained only after exact length and SHA-256 verification.",
+    "Firmware preflight attestations, DFU transition, and the final flash control are local human-only boundaries unavailable to every Atom computer-input path.",
+    "A durable atomic journal records write-attempt evidence before the flashing subprocess; started, completed, or indeterminate evidence forbids another write across process restarts.",
     "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
     "Screenshots, device strings, application context, and tool outputs are untrusted data rather than instructions.",
     "The exact AI model is gpt-realtime-2.1-mini on Realtime API paths; model, endpoint, or transport substitution is forbidden."
@@ -101,7 +116,8 @@
     "Every admitted request settles exactly once as success or explicit failure.",
     "Continuous acquisition terminates on explicit stop, disconnect, or first operation failure.",
     "Twin boot and every bridge request are bounded by declared timeouts.",
-    "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds."
+    "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds.",
+    "A physical firmware update settles as verified post-reboot identity, pre-write failure, or explicit post-write recovery state."
   ],
   "failureAlgebra": {
     "invalidInput": "reject-before-state-change",
@@ -112,7 +128,11 @@
     "agentSchemaOrPolicyFailure": "reject-before-executor",
     "highImpactDenial": "return-denial-without-retry",
     "realtimeConfigurationMismatch": "terminate-session",
-    "signalLabSinkAbsent": "report-reserved-not-connected"
+    "signalLabSinkAbsent": "report-reserved-not-connected",
+    "firmwareArtifactMismatch": "reject-before-dfu",
+    "ambiguousDfuTarget": "reject-before-write",
+    "firmwarePostWriteFailure": "preserve-durable-write-disposition-and-forbid-retry",
+    "firmwareJournalInvalid": "indeterminate-write-lock-pending-manual-inspection"
   },
   "compatibility": {
     "rule": "A producer guarantee must imply every consumer assumption on the same active edge.",
@@ -120,4 +140,3 @@
     "verification": "Release gating requires byte-identical copies of this manifest plus repository-local runtime, build, and boundary tests."
   }
 }
-

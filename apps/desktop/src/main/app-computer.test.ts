@@ -18,9 +18,21 @@ describe('app-scoped computer harness',()=>{
     await expect(harness.click(win as never,1200,20)).rejects.toThrow(/outside/);
     const result=await harness.click(win as never,10,20);expect(result.ok).toBe(false);
     expect(String(webContents.executeJavaScript.mock.calls[0]?.[0])).toContain('data-agent-risk');
+    expect(String(webContents.executeJavaScript.mock.calls[0]?.[0])).toContain('data-agent-exclusion');
   });
-  it('allows only declared keys',()=>{
+  it('allows only declared keys',async()=>{
     const {win,webContents}=fakeWindow();const harness=new AppComputerHarness();
-    expect(()=>harness.key(win as never,'DELETE')).toThrow(/allow-listed/);harness.key(win as never,'ENTER');expect(webContents.sendInputEvent).toHaveBeenCalledTimes(2);
+    await expect(harness.key(win as never,'DELETE')).rejects.toThrow(/allow-listed/);await harness.key(win as never,'ENTER');expect(webContents.sendInputEvent).toHaveBeenCalledTimes(2);
+  });
+  it('blocks click, type, key, and scroll paths at local human-only boundaries',async()=>{
+    const {win,webContents}=fakeWindow();const harness=new AppComputerHarness();
+    webContents.executeJavaScript.mockResolvedValueOnce({ok:false,action:'click',target:'firmware.flash',reason:'local human-only boundary'});
+    expect(await harness.click(win as never,10,20)).toMatchObject({ok:false,target:'firmware.flash'});
+    webContents.executeJavaScript.mockResolvedValue({target:'firmware.flash',blockedReason:'local human-only boundary'});
+    expect(await harness.type(win as never,'FLASH')).toMatchObject({ok:false,target:'firmware.flash'});
+    expect(await harness.key(win as never,'ENTER')).toMatchObject({ok:false,target:'firmware.flash'});
+    expect(await harness.scroll(win as never,10,20,0,100)).toMatchObject({ok:false,target:'firmware.flash'});
+    expect(webContents.insertText).not.toHaveBeenCalled();
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
   });
 });

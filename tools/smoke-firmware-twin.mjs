@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const firmwareRoot = resolve(root, '../TinySA_Firmware');
-const manifest = JSON.parse(await readFile(resolve(root, 'contracts/trio-composition-v1.json'), 'utf8'));
+const manifest = JSON.parse(await readFile(resolve(root, 'contracts/trio-composition-v2.json'), 'utf8'));
 const declared = manifest.parties.firmware;
 const child = spawn(process.execPath, [resolve(firmwareRoot, 'tools/atomizer-twin-bridge.mjs')], {
   cwd: firmwareRoot,

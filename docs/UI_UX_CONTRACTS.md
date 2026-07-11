@@ -1,7 +1,7 @@
 # TinySA Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
-Version: 2.1.0
+Version: 2.2.0
 Updated: 2026-07-11
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
@@ -40,7 +40,7 @@ No screen may obscure the answers to questions 1–3. Measurement views must ans
 
 The frame contains five regions:
 
-- **Top bar:** product identity, environment badge, instrument connection control, and Atom entry point.
+- **Top bar:** product identity, environment/update badges, instrument connection control, and Atom entry point.
 - **Primary navigation:** only implemented Observe, Analyze, and Generate destinations; unfinished destinations are not rendered as dead affordances.
 - **Workspace:** route-specific header, actions, errors, connection guidance, content and inspector.
 - **Status bar:** connection, device/firmware, trace state, verification state, API version.
@@ -63,15 +63,30 @@ Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a det
 | Detection | WS-DET | Find and inspect emissions | Core |
 | Classification | WS-CLS | Characterize spectral morphology and zero-span envelope evidence | Experimental core; validated modulation/protocol model gated |
 | Generator | WS-GEN | Configure and deliberately enable RF output | Software core; physical qualification pending |
-| Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical qualification pending |
+| Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical diagnostics/capture accepted, touch qualification pending |
 
 Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum now contains a bounded four-view measurement stage, 50-sweep history, and native CSV/JSON export.
 
 ### 2.3 Executable twin and separate SignalLab
 
-Startup completes physical discovery before choosing an execution backend. An exact `0483:5740` ZS407 suppresses automatic twin admission. When no exact ZS407 exists, main exposes and automatically connects the sibling Firmware repository's pinned executable Renode twin. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. Discovery failure or twin boot/evidence failure is a visible error; no synthesized or test backend is substituted.
+Startup completes physical discovery before choosing an execution backend. Exactly one `0483:5740` ZS407 suppresses the twin and is automatically connected through identity, firmware-source, and command-catalog admission. Multiple exact devices suppress the twin and open operator selection. When no exact ZS407 exists, main exposes and automatically connects the sibling Firmware repository's pinned executable Renode twin. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. Discovery, identity/source, or twin boot/evidence failure is visible; no synthesized or test backend is substituted.
 
 SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither launches it nor imports its state. The future `SignalLabStimulusIntent -> Firmware stimulus sink` edge is displayed to Atom as `reserved-not-connected`. Activating it requires a new coordinated trio contract; current UI must not expose dead SignalLab controls or claim that its 79-profile catalog is feeding the instrument.
+
+### 2.3.1 Firmware update flow
+
+An admitted older supported physical revision opens one centered, no-scroll firmware dialog while the pinned artifact downloads and verifies. The dialog uses a four-stage route—Verify, Preflight, DFU, Flash—and always shows installed versus target version. Only the current stage’s content is rendered; the operator never navigates a long wizard page.
+
+- Verified artifact size and hash are visible before preflight.
+- Pre-update self-test, configuration disposition, and disconnected RF ports are explicit local human attestations.
+- DFU guidance shows the exact power/jog sequence, tooling version, and `0483:df11` identity.
+- Flash uses red hazard treatment, names the irreversible action, and remains disabled until one exact target exists.
+- Flashing locks close/navigation and says not to disconnect.
+- Reconnecting distinguishes “write complete” from “post-reboot verified.”
+- A post-write failure says not to flash again and preserves recovery evidence.
+- No updater stage scrolls at the 1720×1040 reference window.
+
+The top-bar update affordance reopens the staged flow. Atom may open, inspect, download, and detect through typed tools. Safety attestations and the final flash button carry explicit agent exclusions; coordinate computer use cannot click them.
 
 ### 2.4 Active-function control surface
 
@@ -343,9 +358,10 @@ Cable loss, transition timeout or unverified reconnect results in `unknown`. The
 
 | Component | Inputs | Outputs | Required states | Test focus |
 |---|---|---|---|---|
-| `TopBar` | snapshot, environment, Atom state | open connection/Atom | disconnected, ready, simulated, RF global state | identity truncation, keyboard, status text |
+| `TopBar` | snapshot, environment, Atom/update state | open connection/update/Atom | disconnected, ready, simulated, update ready, RF global state | identity truncation, keyboard, status text |
 | `Sidebar` | route, output state, capabilities | route intent | active, unavailable, RF on/unknown | guarded navigation, current page |
 | `ConnectionDialog` | candidates, selection, busy, error | refresh/select/connect/disconnect/close | empty, list, connecting, connected, failed | focus trap/restore, duplicate submit |
+| `FirmwareUpdateDialog` | closed updater state, preflight attestations, busy | download/prepare/detect/flash/close intents | available, downloading, verified, awaiting DFU, ready, flashing, reconnecting, complete, failed | no scroll, hash visibility, exclusions, one-shot copy, disabled states |
 | `SpectrumPlot` | trace frames, markers, detections, busy, freshness, display | marker placement intents | empty, loading, live, stale | exact bins, multi-trace overlay, markers, axes, resize, performance |
 | `MeasurementWorkspace` | active view, sweep/history, channel/STFT configs, measurement controls | view/config/acquisition intents | spectrum, waterfall, channel, envelope STFT, overlays | fixed height, no scroll, view persistence, Atom parity |
 | `WaterfallView` | coherent sweep history, color/depth config | validated config intent | empty, populated, grid exclusions | bounded memory, canvas fidelity, scale labels |
@@ -546,7 +562,7 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Navigation/global RF | `components/Sidebar.tsx` |
 | Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `EnvelopeStftView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
 | Execution admission | `packages/tinysa/src/digital-twin-transport.ts`, `apps/desktop/src/main/main.ts` |
-| Trio/SignalLab topology | `contracts/trio-composition-v1.json`, `packages/agent/src/index.ts` |
+| Trio/SignalLab topology | `contracts/trio-composition-v2.json`, `packages/agent/src/index.ts` |
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Generator | `components/GeneratorWorkspace.tsx`, `packages/tinysa` |

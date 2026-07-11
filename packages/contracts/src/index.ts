@@ -2,6 +2,28 @@ import { z } from 'zod';
 
 export const API_VERSION = 2 as const;
 export const FIRMWARE_SOURCE_COMMIT = 'c97938697b6c7485e7cab50bca9af76996b7d671' as const;
+export const ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT = 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c' as const;
+export const DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT = 'd12bd826555eee51505542a55fd184ade5817d58' as const;
+export const SUPPORTED_ZS407_FIRMWARE_REVISIONS = Object.freeze({
+  c5dd31f: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+  c979386: FIRMWARE_SOURCE_COMMIT,
+} as const);
+export type SupportedZs407FirmwareRevision = keyof typeof SUPPORTED_ZS407_FIRMWARE_REVISIONS;
+export type FirmwareSourceCommit =
+  | typeof FIRMWARE_SOURCE_COMMIT
+  | typeof ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT
+  | typeof DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT;
+export const OEM_ZS407_FIRMWARE_RELEASE = Object.freeze({
+  product: 'tinySA Ultra / Ultra+',
+  version: 'tinySA4_v1.4-224-gc979386',
+  revision: 'c979386' as const,
+  sourceCommit: FIRMWARE_SOURCE_COMMIT,
+  publishedAt: '2026-05-06T11:33:12.000Z',
+  downloadUrl: 'http://dfu.tinydevices.org/tinySA4/DFU/tinySA4_v1.4-224-gc979386.bin',
+  sha256: '3c9847ff4d7b80561df2f2f1030a112703a083409ffb2ee11361b2413b7c1e41',
+  sizeBytes: 185_704,
+  transportIntegrity: 'pinned-sha256' as const,
+});
 export const TINYSA_USB_VENDOR_ID = '0483' as const;
 export const TINYSA_USB_PRODUCT_ID = '5740' as const;
 export const TINYSA_SHELL_PROMPT = 'ch> ' as const;
@@ -47,13 +69,13 @@ export const instrumentTransportKindSchema = z.enum(['usb-cdc-acm', 'renode-moni
 export type InstrumentTransportKind = z.infer<typeof instrumentTransportKindSchema>;
 export const executionEnvironmentSchema = z.enum(['physical', 'firmware-digital-twin', 'protocol-test-double']);
 export type ExecutionEnvironment = z.infer<typeof executionEnvironmentSchema>;
-export const usbMatchSchema = z.enum(['exact-zs407-cdc', 'unverified-serial', 'firmware-digital-twin']);
+export const usbMatchSchema = z.enum(['exact-zs407-cdc', 'unverified-serial', 'firmware-digital-twin', 'protocol-test-double']);
 export type UsbMatch = z.infer<typeof usbMatchSchema>;
 export const digitalTwinProvenanceSchema = z.object({
   contractVersion: z.literal(1),
   bridge: z.literal('renode-monitor-v1'),
   firmwareRelease: z.literal('lab-v0.2.0-protocol'),
-  repositoryCommit: z.literal('d12bd826555eee51505542a55fd184ade5817d58'),
+  repositoryCommit: z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
   firmwareBinarySha256: z.literal('a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7'),
   usbTransactionsModeled: z.literal(false),
   bootEvidence: z.string().startsWith('ZS407_TWIN_BOOT=PASS').optional(),
@@ -76,8 +98,16 @@ export const portCandidateSchema = z.object({
   if (twin !== (candidate.transport === 'renode-monitor-bridge') || twin !== (candidate.usbMatch === 'firmware-digital-twin') || twin !== Boolean(candidate.digitalTwin)) {
     context.addIssue({ code: 'custom', message: 'Digital-twin execution, transport, match label, and provenance must agree' });
   }
-  if (candidate.execution === 'physical' && candidate.transport !== 'usb-cdc-acm') context.addIssue({ code: 'custom', message: 'Physical candidates require USB CDC transport' });
-  if (candidate.execution === 'protocol-test-double' && candidate.transport !== 'protocol-test-double') context.addIssue({ code: 'custom', message: 'Protocol test doubles require their explicit transport label' });
+  if (candidate.execution === 'physical') {
+    if (candidate.transport !== 'usb-cdc-acm') context.addIssue({ code: 'custom', message: 'Physical candidates require USB CDC transport' });
+    if (candidate.usbMatch !== 'exact-zs407-cdc' && candidate.usbMatch !== 'unverified-serial') context.addIssue({ code: 'custom', message: 'Physical candidates require a physical USB match label' });
+    if (candidate.usbMatch === 'exact-zs407-cdc' && (candidate.vendorId?.toLowerCase() !== TINYSA_USB_VENDOR_ID || candidate.productId?.toLowerCase() !== TINYSA_USB_PRODUCT_ID)) {
+      context.addIssue({ code: 'custom', message: 'Exact ZS407 candidates require the exact 0483:5740 USB identifiers' });
+    }
+  }
+  if (candidate.execution === 'protocol-test-double' && (candidate.transport !== 'protocol-test-double' || candidate.usbMatch !== 'protocol-test-double')) {
+    context.addIssue({ code: 'custom', message: 'Protocol test doubles require their explicit transport and match labels' });
+  }
 });
 export type PortCandidate = z.infer<typeof portCandidateSchema>;
 
@@ -85,7 +115,8 @@ export interface DeviceIdentity {
   model: string;
   hardwareVersion: string;
   firmwareVersion: string;
-  firmwareSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
+  firmwareReportedRevision?: SupportedZs407FirmwareRevision;
+  firmwareSourceCommit: FirmwareSourceCommit;
   port: PortCandidate;
   simulated: boolean;
   usbIdentityVerified: boolean;
@@ -129,6 +160,7 @@ export interface DeviceCapabilities {
   remoteTouch: boolean;
   streaming: boolean;
   rawSweep: boolean;
+  rawSweepOffsetReadback: boolean;
   markerCount: 8;
   traceCount: 4;
   firmwareMarkers: boolean;
@@ -137,8 +169,9 @@ export interface DeviceCapabilities {
   modulation: readonly ('off' | 'am' | 'fm')[];
   commands: readonly string[];
   evidence: CapabilityEvidence;
-  firmwareSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
-  qualification: 'firmware-derived-awaiting-device' | 'executable-twin-observed' | 'protocol-test-only';
+  firmwareSourceCommit: FirmwareSourceCommit;
+  hostContractSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
+  qualification: 'device-observed-awaiting-rf-qualification' | 'executable-twin-observed' | 'protocol-test-only';
 }
 
 export type Verification = 'commanded' | 'verified' | 'unknown' | 'stale';
@@ -435,6 +468,7 @@ export interface Sweep {
   actualRbwHz: number;
   actualAttenuationDb: number;
   source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state';
+  rawSweepOffsetDb?: number;
   complete: true;
   identity: DeviceIdentity;
 }
@@ -466,6 +500,7 @@ export interface DeviceDiagnostics {
   firmwareVersionResponse: string;
   infoLines: readonly string[];
   commands: readonly string[];
+  rawSweepOffsetDb: number;
   analyzerReadback: AnalyzerReadback;
   telemetry: DeviceTelemetry;
   capturedAt: string;
@@ -564,6 +599,91 @@ export type SweepExportResult =
   | { status: 'saved'; path: string; format: 'csv' | 'json'; bytesWritten: number }
   | { status: 'cancelled'; format: 'csv' | 'json' };
 
+export const firmwareUpdatePhaseSchema = z.enum([
+  'idle', 'available', 'downloading', 'verified', 'awaiting-dfu', 'ready-to-flash',
+  'flashing', 'reconnecting', 'completed', 'up-to-date', 'failed',
+]);
+export type FirmwareUpdatePhase = z.infer<typeof firmwareUpdatePhaseSchema>;
+export const firmwareWriteDispositionSchema = z.enum(['not-started', 'started', 'completed', 'indeterminate']);
+export type FirmwareWriteDisposition = z.infer<typeof firmwareWriteDispositionSchema>;
+const supportedZs407FirmwareRevisionSchema = z.enum(['c5dd31f', 'c979386']);
+const firmwareSourceCommitSchema = z.union([
+  z.literal(FIRMWARE_SOURCE_COMMIT),
+  z.literal(ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT),
+  z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
+]);
+const oemZs407FirmwareReleaseSchema = z.object({
+  product: z.literal(OEM_ZS407_FIRMWARE_RELEASE.product),
+  version: z.literal(OEM_ZS407_FIRMWARE_RELEASE.version),
+  revision: z.literal(OEM_ZS407_FIRMWARE_RELEASE.revision),
+  sourceCommit: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sourceCommit),
+  publishedAt: z.literal(OEM_ZS407_FIRMWARE_RELEASE.publishedAt),
+  downloadUrl: z.literal(OEM_ZS407_FIRMWARE_RELEASE.downloadUrl),
+  sha256: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sha256),
+  sizeBytes: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sizeBytes),
+  transportIntegrity: z.literal(OEM_ZS407_FIRMWARE_RELEASE.transportIntegrity),
+}).strict();
+export const firmwareUpdateStateSchema = z.object({
+  phase: firmwareUpdatePhaseSchema,
+  target: oemZs407FirmwareReleaseSchema,
+  updateAvailable: z.boolean(),
+  current: z.object({
+    version: z.string().min(1),
+    revision: supportedZs407FirmwareRevisionSchema.optional(),
+    sourceCommit: firmwareSourceCommitSchema,
+  }).strict().optional(),
+  artifact: z.object({
+    sizeBytes: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sizeBytes),
+    sha256: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sha256),
+    verifiedAt: z.string().min(1),
+  }).strict().optional(),
+  dfuUtility: z.object({ available: z.boolean(), version: z.string().min(1).optional() }).strict(),
+  dfuDevice: z.object({ detected: z.boolean(), count: z.number().int().nonnegative() }).strict(),
+  preparation: z.object({
+    id: z.string().uuid(),
+    preparedAt: z.string().min(1),
+    batteryMillivolts: z.number().int().positive(),
+    deviceId: z.number().int().nonnegative(),
+    screenSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    selfTestPassed: z.literal(true),
+    configurationDisposition: z.enum(['new-device-unchanged', 'backup-complete-and-recalibration-accepted']),
+    rfPortsDisconnected: z.literal(true),
+  }).strict().optional(),
+  writeDisposition: firmwareWriteDispositionSchema,
+  writeStartedAt: z.string().min(1).optional(),
+  writeCompletedAt: z.string().min(1).optional(),
+  completedAt: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+}).strict().superRefine((state, context) => {
+  const issue = (message: string) => context.addIssue({ code: 'custom', message });
+  if (state.writeDisposition === 'not-started' && (state.writeStartedAt || state.writeCompletedAt)) issue('A not-started write cannot have write timestamps');
+  if (state.writeDisposition === 'started' && (!state.writeStartedAt || state.writeCompletedAt)) issue('A started write requires only writeStartedAt');
+  if (state.writeDisposition === 'completed' && (!state.writeStartedAt || !state.writeCompletedAt)) issue('A completed write requires both write timestamps');
+  if (state.writeDisposition === 'indeterminate' && state.phase !== 'failed') issue('An indeterminate write disposition must remain failed');
+  if (['flashing', 'reconnecting', 'completed'].includes(state.phase) && state.writeDisposition === 'not-started') issue(`${state.phase} requires durable write-attempt evidence`);
+  if (state.phase === 'completed' && (state.writeDisposition !== 'completed' || !state.completedAt)) issue('Completed firmware state requires a completed write and post-reboot timestamp');
+  if (state.phase === 'ready-to-flash' && (!state.dfuDevice.detected || state.dfuDevice.count !== 1)) issue('Ready-to-flash requires exactly one detected DFU target');
+});
+export type FirmwareUpdateState = z.infer<typeof firmwareUpdateStateSchema>;
+export const firmwareUpdateJournalSchema = z.object({
+  schemaVersion: z.literal(1),
+  targetVersion: z.literal(OEM_ZS407_FIRMWARE_RELEASE.version),
+  writtenAt: z.string().min(1),
+  state: firmwareUpdateStateSchema,
+}).strict();
+export type FirmwareUpdateJournal = z.infer<typeof firmwareUpdateJournalSchema>;
+export const firmwareUpdatePreflightSchema = z.object({
+  selfTestPassed: z.literal(true),
+  configurationDisposition: z.enum(['new-device-unchanged', 'backup-complete-and-recalibration-accepted']),
+  rfPortsDisconnected: z.literal(true),
+}).strict();
+export type FirmwareUpdatePreflight = z.infer<typeof firmwareUpdatePreflightSchema>;
+export const firmwareFlashRequestSchema = z.object({
+  preparationId: z.string().uuid(),
+  confirmation: z.literal('FLASH VERIFIED OEM FIRMWARE'),
+}).strict();
+export type FirmwareFlashRequest = z.infer<typeof firmwareFlashRequestSchema>;
+
 export type DeviceErrorCode = 'not-connected' | 'unsupported' | 'invalid-state' | 'invalid-request' | 'timeout' | 'cancelled' | 'transport' | 'protocol' | 'identity-mismatch';
 export interface DeviceError { code: DeviceErrorCode; message: string; operationId?: string; recoverable: boolean; }
 export type DeviceEvent =
@@ -584,7 +704,9 @@ export interface AnalysisApiV2 {
 export const TINYSA_API_V2_METHODS = [
   'listDevices', 'connect', 'disconnect', 'getSnapshot', 'configureAnalyzer', 'acquireSweep',
   'startStreaming', 'stopStreaming', 'acquireZeroSpan', 'configureGenerator', 'setGeneratorOutput',
-  'readDiagnostics', 'captureScreen', 'touch', 'releaseTouch', 'exportSweep', 'subscribe',
+  'readDiagnostics', 'captureScreen', 'touch', 'releaseTouch', 'exportSweep',
+  'getFirmwareUpdateState', 'downloadFirmwareUpdate', 'prepareFirmwareUpdate', 'detectDfuDevice', 'flashFirmwareUpdate',
+  'subscribe',
 ] as const;
 export type TinySaApiV2Method = typeof TINYSA_API_V2_METHODS[number];
 
@@ -606,6 +728,11 @@ export interface TinySaApiV2 {
   touch(point: ScreenPoint): Promise<void>;
   releaseTouch(point?: ScreenPoint): Promise<void>;
   exportSweep(request: SweepExportRequest): Promise<SweepExportResult>;
+  getFirmwareUpdateState(): Promise<FirmwareUpdateState>;
+  downloadFirmwareUpdate(): Promise<FirmwareUpdateState>;
+  prepareFirmwareUpdate(preflight: FirmwareUpdatePreflight): Promise<FirmwareUpdateState>;
+  detectDfuDevice(): Promise<FirmwareUpdateState>;
+  flashFirmwareUpdate(request: FirmwareFlashRequest): Promise<FirmwareUpdateState>;
   subscribe(listener: (event: DeviceEvent) => void): () => void;
 }
 

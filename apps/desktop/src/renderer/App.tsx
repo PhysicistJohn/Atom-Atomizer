@@ -20,6 +20,8 @@ import {
   type DeviceEvent,
   type DeviceSnapshot,
   type DetectedSignal,
+  type FirmwareUpdatePreflight,
+  type FirmwareUpdateState,
   type GeneratorConfig,
   type EnvelopeStftConfiguration,
   type MarkerConfiguration,
@@ -72,6 +74,7 @@ import { ClassificationWorkspace } from './components/ClassificationWorkspace.js
 import { ConnectionDialog } from './components/ConnectionDialog.js';
 import { DetectionWorkspace } from './components/DetectionWorkspace.js';
 import { DeviceWorkspace } from './components/DeviceWorkspace.js';
+import { FirmwareUpdateDialog } from './components/FirmwareUpdateDialog.js';
 import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
 import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
@@ -158,6 +161,10 @@ export function App() {
   const [continuous, setContinuous] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [firmwareUpdate, setFirmwareUpdate] = useState<FirmwareUpdateState>();
+  const [firmwareUpdateOpen, setFirmwareUpdateOpen] = useState(false);
+  const [firmwareUpdateBusy, setFirmwareUpdateBusy] = useState(false);
+  const [firmwarePreflight, setFirmwarePreflight] = useState<Partial<FirmwareUpdatePreflight>>({});
 
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
@@ -167,6 +174,8 @@ export function App() {
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const continuousRequested = useRef(false);
   const analysisSequence = useRef(0);
+  const firmwareRevisionChecked = useRef<string | undefined>(undefined);
+  const firmwareDfuPollBusy = useRef(false);
 
   const connected = snapshot.connection === 'ready';
   const transportBusy = snapshot.connection === 'connecting' || snapshot.connection === 'identifying' || snapshot.connection === 'disconnecting';
@@ -219,6 +228,30 @@ export function App() {
     setDetections([]);
     setClassifications([]);
   }, [detectionConfig]);
+  useEffect(() => {
+    const identity = snapshot.identity;
+    if (snapshot.connection !== 'ready' || identity?.execution !== 'physical' || !identity.usbIdentityVerified) return;
+    const key = `${identity.port.id}:${identity.firmwareVersion}`;
+    if (firmwareRevisionChecked.current === key) return;
+    firmwareRevisionChecked.current = key;
+    void inspectAndAutoDownloadFirmwareUpdate();
+  }, [snapshot.connection, snapshot.identity?.firmwareVersion, snapshot.identity?.port.id]);
+  useEffect(() => {
+    if (firmwareUpdate?.phase !== 'awaiting-dfu') return;
+    const poll = window.setInterval(() => {
+      if (firmwareDfuPollBusy.current) return;
+      firmwareDfuPollBusy.current = true;
+      void window.tinySA.getFirmwareUpdateState()
+        .then(async (state) => {
+          setFirmwareUpdate(state);
+          if (!state.dfuUtility.available) return;
+          setFirmwareUpdate(await window.tinySA.detectDfuDevice());
+        })
+        .catch(async () => setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState()))
+        .finally(() => { firmwareDfuPollBusy.current = false; });
+    }, 1_500);
+    return () => window.clearInterval(poll);
+  }, [firmwareUpdate?.phase]);
 
   async function initialize(): Promise<void> {
     try {
@@ -229,6 +262,74 @@ export function App() {
     } catch (value) {
       setError(errorMessage(value));
     }
+  }
+
+  async function inspectAndAutoDownloadFirmwareUpdate(): Promise<void> {
+    try {
+      let state = await window.tinySA.getFirmwareUpdateState();
+      setFirmwareUpdate(state);
+      if (!state.updateAvailable) return;
+      setFirmwareUpdateOpen(true);
+      if (state.phase === 'available') {
+        setFirmwareUpdateBusy(true);
+        state = await window.tinySA.downloadFirmwareUpdate();
+        setFirmwareUpdate(state);
+      }
+    } catch (value) {
+      setError(`Firmware update inspection failed: ${errorMessage(value)}`);
+      setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => undefined));
+    } finally { setFirmwareUpdateBusy(false); }
+  }
+
+  async function openFirmwareUpdate(): Promise<void> {
+    setFirmwareUpdateOpen(true);
+    try { setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState()); }
+    catch (value) { setError(`Firmware update status failed: ${errorMessage(value)}`); }
+  }
+
+  async function downloadFirmwareUpdate(): Promise<void> {
+    setFirmwareUpdateBusy(true);
+    try { setFirmwareUpdate(await window.tinySA.downloadFirmwareUpdate()); }
+    catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    finally { setFirmwareUpdateBusy(false); }
+  }
+
+  async function prepareFirmwareUpdate(): Promise<void> {
+    if (firmwarePreflight.selfTestPassed !== true || firmwarePreflight.rfPortsDisconnected !== true || !firmwarePreflight.configurationDisposition) throw new Error('Firmware preflight attestations are incomplete');
+    setFirmwareUpdateBusy(true);
+    try {
+      setFirmwareUpdate(await window.tinySA.prepareFirmwareUpdate(firmwarePreflight as FirmwareUpdatePreflight));
+      acceptSnapshot(await window.tinySA.getSnapshot());
+    } catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    finally { setFirmwareUpdateBusy(false); }
+  }
+
+  async function detectDfuDevice(): Promise<void> {
+    setFirmwareUpdateBusy(true);
+    try { setFirmwareUpdate(await window.tinySA.detectDfuDevice()); }
+    catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    finally { setFirmwareUpdateBusy(false); }
+  }
+
+  async function flashFirmwareUpdate(): Promise<void> {
+    const preparationId = firmwareUpdate?.preparation?.id;
+    if (!preparationId) throw new Error('Firmware flash has no preparation record');
+    setFirmwareUpdateBusy(true);
+    try {
+      setFirmwareUpdate(await window.tinySA.flashFirmwareUpdate({ preparationId, confirmation: 'FLASH VERIFIED OEM FIRMWARE' }));
+      acceptSnapshot(await window.tinySA.getSnapshot());
+    } catch (value) { setError(errorMessage(value)); setFirmwareUpdate(await window.tinySA.getFirmwareUpdateState().catch(() => firmwareUpdate)); }
+    finally { setFirmwareUpdateBusy(false); }
+  }
+
+  function prepareFirmwareUpdateFromUi(event: React.MouseEvent<HTMLButtonElement>): void {
+    if (!event.nativeEvent.isTrusted) { setError('Firmware preflight requires a direct local human action'); return; }
+    void prepareFirmwareUpdate();
+  }
+
+  function flashFirmwareUpdateFromUi(event: React.MouseEvent<HTMLButtonElement>): void {
+    if (!event.nativeEvent.isTrusted) { setError('Firmware flashing requires a direct local human action'); return; }
+    void flashFirmwareUpdate();
   }
 
   function handleDeviceEvent(event: DeviceEvent): void {
@@ -640,12 +741,13 @@ export function App() {
         envelopeStft: { configuration: stftConfiguration, analysis: envelopeStft },
         evidence: 'host-derived',
       },
+      firmwareUpdate: firmwareUpdate ?? null,
     });
   }
 
   async function executeAgentTool(name: AgentToolName, args: unknown): Promise<unknown> {
     switch (name) {
-      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length, topology: systemTopology(), agentSurfaceVersion: ATOM_AGENT_VERSION };
+      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length, topology: systemTopology(), firmwareUpdate: firmwareUpdate ?? null, agentSurfaceVersion: ATOM_AGENT_VERSION };
       case 'get_system_topology': return systemTopology();
       case 'get_agent_surface': return {
         version: ATOM_AGENT_VERSION,
@@ -659,6 +761,10 @@ export function App() {
       case 'get_detection_results': return detections;
       case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
       case 'read_device_diagnostics': return refreshDiagnostics();
+      case 'get_firmware_update_status': { const state = await window.tinySA.getFirmwareUpdateState(); setFirmwareUpdate(state); return state; }
+      case 'open_firmware_update': { const state = await window.tinySA.getFirmwareUpdateState(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return { opened: true, state }; }
+      case 'download_firmware_update': { const state = await window.tinySA.downloadFirmwareUpdate(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return state; }
+      case 'detect_firmware_dfu': { const state = await window.tinySA.detectDfuDevice(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return state; }
       case 'list_connection_candidates': return ports.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, execution: port.execution, transport: port.transport, simulated: port.execution !== 'physical', selected: port.id === selectedPortId }));
       case 'connect_device': {
         const candidateId = (args as { candidateId: string }).candidateId;
@@ -838,7 +944,7 @@ export function App() {
   </div> : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
-    <TopBar snapshot={snapshot} simulated={simulated} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
+    <TopBar snapshot={snapshot} simulated={simulated} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} firmwareUpdateAvailable={Boolean(firmwareUpdate?.updateAvailable)} onConnection={() => setConnectionOpen(true)} onFirmwareUpdate={() => void openFirmwareUpdate()} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
@@ -877,6 +983,7 @@ export function App() {
       onDisconnect={() => void disconnect()}
       onClose={() => setConnectionOpen(false)}
     />}
+    {firmwareUpdateOpen && firmwareUpdate && <FirmwareUpdateDialog state={firmwareUpdate} busy={firmwareUpdateBusy} preflight={firmwarePreflight} onPreflight={setFirmwarePreflight} onDownload={() => void downloadFirmwareUpdate()} onPrepare={prepareFirmwareUpdateFromUi} onDetect={() => void detectDfuDevice()} onFlash={flashFirmwareUpdateFromUi} onClose={() => setFirmwareUpdateOpen(false)}/>}
   </main>;
 }
 

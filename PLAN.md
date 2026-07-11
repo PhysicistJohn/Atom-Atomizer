@@ -1,7 +1,7 @@
 # TinySA Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: device API 2, Atom surface 3, trio composition 1
+Contract/API version: device API 2, Atom surface 4, trio composition 2
 Updated: 2026-07-11
 Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
 
@@ -43,7 +43,7 @@ No layer may substitute a lower layer after failure. In particular, typed comman
 - Screen capture is exactly 480×320 RGB565 little-endian: 307,200 bytes.
 - tinySA4 firmware defines four trace slots and eight marker slots; complete simultaneous desktop trace/marker state is host-derived and labeled rather than inferred from incomplete shell readback.
 - `scan … 3` returns text frequency/power/reserved rows.
-- `scanraw` returns brace-framed, marker-prefixed signed int16 dB×32 samples.
+- `scanraw` returns brace-framed, marker-prefixed signed int16 Q5 values after adding the device-configurable offset reported by `zero`; the host reads, subtracts, and records that offset for every raw sweep.
 - Analyzer range, points, actual RBW, attenuation, and status have query/readback paths.
 - Generator configuration and physical output have no dependable readback and remain commanded/unknown.
 - Zero span is detected power versus time, never I/Q.
@@ -57,13 +57,13 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, Atom surface v3, byte-identical trio composition v1, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
-| USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
-| Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
+| Contracts | strict API v2, Atom surface v4, byte-identical trio composition v2, physical/OEM firmware provenance, updater, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
+| USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
+| Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
 | Executable Firmware twin | physical-first admission; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
 | Separate SignalLab | independent repository/app; 79 closed profiles; seeded AWGN/Rayleigh; versioned stimulus intent | Firmware-owned sink remains reserved-not-connected until coordinated trio contract v2 |
-| Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
+| Device service | closed shipped/OEM revision registry, cross-response ZS407 identity, capability catalog, analyzer readback, physically consistent text/raw sweeps, diagnostics, screen/touch, safe generator | complete physical timing, fault, touch, RF and recovery matrices |
 | Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
 | Spectrum | one no-scroll four-view stage; analyzer/trigger controls; four traces; eight markers/search/delta/noise; amplitude scaling; Spectrum; coherent Waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; detected-envelope Time/STFT; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
 | Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
@@ -71,7 +71,8 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
-| Atom | exact model, high reasoning, Ballad, VAD 0.95, identical voice/text tools, live DOM control topology, screenshots, policies, contextual approvals, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
+| Firmware update | pinned OEM download, exact byte/hash verification, private cache, audited human preflight, dfu-util 0.11/0483:df11 admission, one-shot write state, post-reboot identity verification | install prerequisite, physical pre/post self-test and first write/recovery evidence |
+| Atom | exact model, high reasoning, Ballad, VAD 0.95, identical voice/text tools, live DOM control topology, screenshots, policies, contextual approvals, updater observation/preparation boundary, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
 | UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 
 ## Execution gates
@@ -87,9 +88,9 @@ Evidence:
 - `npm run build`
 - simulator walkthrough for connect, text/raw sweep, continuous stop, detection persistence, morphology result, zero span, generator-off configuration, diagnostics, screen/touch, export, and Atom tool calls
 
-### Gate B — ordered ZS407 characterization
+### Gate B — physical ZS407 characterization
 
-Begins when the unit arrives. Record exact USB descriptors, `version`, `info`, `help`, boot behavior, and sanitized byte transcripts before changing the host profile.
+Active. The delivered unit is admitted with exact descriptors, shipped-version/source resolution, `info`-borne ZS407 identity, complete `help`, battery/device readback, mutually consistent 101-point text/raw FM-band sweeps, a device-observed 174 dB raw offset, and an exact 307,200-byte screen frame. See `docs/PHYSICAL_ZS407_CHARACTERIZATION.md`. The remaining experiments below are still required before Gate B closes.
 
 Required experiments:
 
@@ -143,8 +144,8 @@ Every application capability ships with a domain contract, closed agent schema, 
 2. Expand fault fixtures and parser fuzz/property tests.
 3. Add durable versioned session persistence, sweep comparison, and import validation.
 4. Add zoom and editable limit lines only after measured renderer throughput; keep waterfall, channel, envelope-STFT, marker, and trace behavior green at 450 points/50 frames.
-5. Run the physical characterization protocol immediately when the ZS407 arrives.
+5. Continue the physical characterization matrix from the recorded receive-only baseline; do not repeat already accepted identity/raw-offset work without a regression reason.
 6. Build the RF capture corpus only after hardware/session provenance is stable.
 7. Freeze platform support, packaging, credential storage, and release policy after hardware Gate B.
 
-DFU, calibration writes, unrestricted raw console, SD deletion, cloud accounts, telemetry, remote network control, multi-device orchestration, and silent auto-update remain excluded until separately contracted.
+Calibration writes, unrestricted raw console, SD deletion, cloud accounts, telemetry, remote network control, and multi-device orchestration remain excluded until separately contracted. DFU is limited to `docs/FIRMWARE_UPDATE_CONTRACT.md`: content-addressed OEM download may be automatic, but preflight and flash are explicit local human boundaries. Silent firmware installation remains forbidden.

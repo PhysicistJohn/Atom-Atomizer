@@ -38,5 +38,5 @@ class StubTransport implements ByteTransport {
 }
 
 function physicalCandidate(id: string, usbMatch: 'exact-zs407-cdc' | 'unverified-serial'): PortCandidate {
-  return { id, path: `/dev/${id}`, usbMatch, transport: 'usb-cdc-acm', execution: 'physical' };
+  return { id, path: `/dev/${id}`, ...(usbMatch === 'exact-zs407-cdc' ? { vendorId: '0483', productId: '5740' } : {}), usbMatch, transport: 'usb-cdc-acm', execution: 'physical' };
 }

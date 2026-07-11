@@ -106,6 +106,20 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
   font: 8px var(--mono);
   letter-spacing: .11em;
 }
+.firmware-update-launch {
+  height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border: 1px solid rgba(10,132,255,.23);
+  border-radius: 12px;
+  color: var(--energy-bright);
+  background: rgba(10,132,255,.055);
+}
+.firmware-update-launch > span { display: flex; flex-direction: column; text-align: left; }
+.firmware-update-launch b { color: var(--ink); font-size: 9px; font-weight: 620; }
+.firmware-update-launch small { margin-top: 2px; color: var(--energy); font: 7px var(--mono); }
 .connection-pill {
   width: 242px;
   min-height: 43px;
@@ -597,6 +611,80 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .connected-state h3 { margin: 14px 0 5px; }
 .connected-state .danger-outline { margin-top: 15px; }
 .danger-outline { height: 36px; padding: 0 14px; border: 1px solid rgba(255,126,114,.3); color: #ffaaa2; background: transparent; font-size: 9px; }
+
+/* Content-addressed physical firmware update flow. */
+.firmware-backdrop { z-index: 60; background: rgba(2,3,5,.78); backdrop-filter: blur(24px) saturate(90%); }
+.firmware-dialog {
+  width: min(680px, calc(100vw - 52px));
+  min-height: 585px;
+  max-height: calc(100vh - 52px);
+  display: grid;
+  grid-template-rows: 74px 55px 68px minmax(0,1fr) 34px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 26px;
+  background: linear-gradient(155deg, rgba(27,28,33,.99), rgba(15,16,20,.995) 58%, rgba(10,11,14,.998));
+  box-shadow: 0 45px 150px rgba(0,0,0,.72), inset 0 1px rgba(255,255,255,.055);
+}
+.firmware-head { display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--line); }
+.firmware-head > div { display: flex; align-items: center; gap: 12px; }
+.firmware-head > div > span:last-child { display: flex; flex-direction: column; }
+.firmware-head h2 { margin: 3px 0 0; font-size: 20px; font-weight: 610; letter-spacing: -.03em; }
+.firmware-head small { color: var(--energy); font: 7px var(--mono); letter-spacing: .12em; }
+.firmware-icon { width: 39px; height: 39px; display: grid; place-items: center; border: 1px solid rgba(10,132,255,.2); border-radius: 12px; color: var(--energy-bright); background: rgba(10,132,255,.07); }
+.firmware-route { display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; padding: 0 32px; border-bottom: 1px solid rgba(255,255,255,.055); }
+.firmware-route > div { position: relative; display: flex; align-items: center; gap: 7px; color: var(--quiet); font: 8px var(--mono); }
+.firmware-route > div:not(:last-child)::after { content: ""; height: 1px; position: absolute; left: 26px; right: 10px; top: 8px; background: rgba(255,255,255,.08); }
+.firmware-route i { width: 17px; height: 17px; z-index: 1; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.12); border-radius: 50%; background: #18191d; }
+.firmware-route .active { color: var(--ink); }
+.firmware-route .active i { border-color: var(--energy); box-shadow: 0 0 0 4px rgba(10,132,255,.08); }
+.firmware-route .complete { color: var(--energy-bright); }
+.firmware-route .complete i { border-color: var(--energy); color: #fff; background: var(--energy); }
+.firmware-route .complete:not(:last-child)::after { background: rgba(10,132,255,.34); }
+.firmware-release-card { margin: 11px 22px; display: grid; grid-template-columns: 1fr 24px 1fr; align-items: center; padding: 11px 15px; border: 1px solid rgba(255,255,255,.075); border-radius: 14px; background: rgba(255,255,255,.018); }
+.firmware-release-card > div { min-width: 0; display: flex; flex-direction: column; }
+.firmware-release-card > span { color: var(--quiet); text-align: center; }
+.firmware-release-card small { color: var(--quiet); font: 7px var(--mono); letter-spacing: .1em; }
+.firmware-release-card strong { overflow: hidden; margin-top: 4px; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.firmware-stage { min-height: 0; padding: 9px 28px 18px; display: grid; place-items: center; }
+.firmware-stage-content { width: 100%; max-width: 590px; display: flex; flex-direction: column; align-items: stretch; }
+.firmware-stage-title { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.firmware-stage-title > span { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid rgba(10,132,255,.18); border-radius: 11px; color: var(--energy-bright); background: rgba(10,132,255,.055); }
+.firmware-stage-title > span svg { width: 17px; height: 17px; }
+.firmware-stage-title h3 { margin: 0; font-size: 15px; font-weight: 610; letter-spacing: -.015em; }
+.firmware-stage-content > p { margin: 0 0 13px; color: var(--muted); font-size: 10px; line-height: 1.62; }
+.firmware-stage-content > p code, .firmware-stage-content li code { color: var(--energy-bright); font: 9px var(--mono); }
+.firmware-stage-content > ol { margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 7px 22px; counter-reset: firmware-step; list-style: none; }
+.firmware-stage-content > ol li { min-height: 28px; display: grid; grid-template-columns: 20px 1fr; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 9px; line-height: 1.4; counter-increment: firmware-step; }
+.firmware-stage-content > ol li::before { content: counter(firmware-step); width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted); font: 7px var(--mono); }
+.firmware-facts { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 15px; }
+.firmware-facts span { padding: 10px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); }
+.firmware-facts small { color: var(--quiet); font: 6px var(--mono); letter-spacing: .09em; }
+.firmware-facts strong { margin-top: 4px; font: 9px var(--mono); }
+.firmware-primary { height: 38px; align-self: flex-end; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 15px; border-radius: 10px; font-size: 9px; }
+.firmware-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.firmware-check, .firmware-checks > label:last-child { min-height: 42px; display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); font-size: 9px; }
+.firmware-check input { position: absolute; opacity: 0; pointer-events: none; }
+.firmware-check i { width: 17px; height: 17px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 5px; color: #fff; background: rgba(255,255,255,.02); }
+.firmware-check input:checked + i { border-color: var(--energy); background: var(--energy); }
+.firmware-checks > label:last-child { grid-column: 1 / 3; justify-content: space-between; }
+.firmware-checks select { height: 28px; min-width: 265px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: #1c1d21; font-size: 8px; }
+.firmware-proof { min-height: 31px; display: grid; grid-template-columns: 16px auto 1fr; align-items: center; gap: 6px; margin-bottom: 11px; padding: 0 9px; border: 1px solid rgba(10,132,255,.14); border-radius: 9px; color: var(--energy-bright); background: rgba(10,132,255,.035); font-size: 8px; }
+.firmware-proof code { overflow: hidden; color: var(--muted); font: 7px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.firmware-prerequisite, .flash-boundary, .firmware-complete { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; padding: 11px; border: 1px solid rgba(255,214,10,.18); border-radius: 11px; color: var(--amber); background: rgba(255,214,10,.035); }
+.firmware-prerequisite.good, .firmware-complete { border-color: rgba(10,132,255,.18); color: var(--energy-bright); background: rgba(10,132,255,.035); }
+.firmware-prerequisite span, .flash-boundary span, .firmware-complete span { display: flex; flex-direction: column; }
+.firmware-prerequisite strong, .flash-boundary strong, .firmware-complete strong { color: var(--ink); font-size: 9px; }
+.firmware-prerequisite small, .flash-boundary small, .firmware-complete small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.firmware-prerequisite code { color: var(--ink-soft); font: 8px var(--mono); }
+.flash-boundary { border-color: rgba(255,69,58,.22); color: var(--red); background: rgba(255,69,58,.045); }
+.danger-fill { border: 1px solid rgba(255,118,109,.28); color: #fff; background: linear-gradient(145deg, #b6322c, #7e211d); }
+.firmware-stage-content.danger .firmware-stage-title > span { border-color: rgba(255,69,58,.22); color: var(--red); background: rgba(255,69,58,.05); }
+.firmware-wait { height: 90px; display: flex; align-items: center; justify-content: center; gap: 7px; }
+.firmware-wait i { width: 7px; height: 7px; border-radius: 50%; background: var(--energy); animation: firmware-pulse 1.2s ease-in-out infinite; }
+.firmware-wait i:nth-child(2) { animation-delay: .15s; }.firmware-wait i:nth-child(3) { animation-delay: .3s; }
+.firmware-foot { display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-top: 1px solid rgba(255,255,255,.055); color: #51545b; font: 6px var(--mono); letter-spacing: .08em; }
+@keyframes firmware-pulse { 0%,100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-5px); } }
 
 /* V2 instrument surfaces: one exact contract, progressively disclosed. */
 .global-notice {

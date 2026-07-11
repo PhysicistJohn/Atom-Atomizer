@@ -36,7 +36,7 @@ const identity: DeviceIdentity = {
     path: 'simulator://zs407',
     vendorId: '0483',
     productId: '5740',
-    usbMatch: 'exact-zs407-cdc',
+    usbMatch: 'protocol-test-double',
     transport: 'protocol-test-double',
     execution: 'protocol-test-double',
   },

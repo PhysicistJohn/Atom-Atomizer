@@ -1,11 +1,13 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: active execution baseline, API v2, trio composition v1, 2026-07-11
+Status: active execution baseline, API v2, trio composition v2, 2026-07-11
 Companion: [PLAN.md](./PLAN.md)
 
-Trio authority: [contracts/trio-composition-v1.json](./contracts/trio-composition-v1.json)
+Trio authority: [contracts/trio-composition-v2.json](./contracts/trio-composition-v2.json)
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
+Physical evidence: [docs/PHYSICAL_ZS407_CHARACTERIZATION.md](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
+Firmware update authority: [docs/FIRMWARE_UPDATE_CONTRACT.md](./docs/FIRMWARE_UPDATE_CONTRACT.md)
 Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 Advanced-measurement authority: [docs/ADVANCED_MEASUREMENTS_CONTRACT.md](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 Stimulus authority: sibling `../TinySA_SignalLab/CONTRACTS.md` (current sink is reserved, not connected)
@@ -18,7 +20,7 @@ Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
 
 Deliver a production-quality Electron desktop application that wholly operates one tinySA Ultra+ ZS407 over verified USB to the extent exposed by its installed firmware, or the explicitly labeled executable Firmware twin when no exact physical candidate exists. The product includes analyzer and generator control, measurement visualization, remote screen/touch, exports, governed Atom operation, automated tests, and operating documentation.
 
-The software baseline is no longer based on wiki guesses. Host protocol v2 is derived from sibling firmware commit `c97938697b6c7485e7cab50bca9af76996b7d671`. Source-derived framing, commands, limits, screen shape, and readback semantics are frozen in the protocol contract. The ordered unit still gates physical timing, shipped-version variance, RF accuracy, cable-loss behavior, and final safety qualification.
+The host baseline is derived from sibling firmware commit `c97938697b6c7485e7cab50bca9af76996b7d671`. The delivered unit runs supported shipped revision `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c`; its exact USB/identity/command evidence, receive-only text/raw sweeps, raw-offset variance, battery telemetry, and LCD byte shape are recorded. Remaining physical timing, fault, RF, touch, update, and metrology work stays explicitly unqualified.
 
 ### Contract form
 
@@ -31,16 +33,16 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 - One genuine ZS407 is supplied for development and preferably a second for regression/recovery testing.
 - Target platforms are current supported macOS, Windows 11, and one named Linux LTS distribution; final versions are frozen in WP-01.
 - v1 is local-first, single-device, English-language, and has no account, cloud backend, telemetry, browser build, mobile build, or network control.
-- Normal transport is USB CDC serial. Firmware update/DFU is excluded from v1.
+- Normal transport is USB CDC serial. Firmware update/DFU is permitted only through the separately governed content-addressed, human-confirmed update contract; raw/generic DFU remains excluded.
 - TypeScript is used throughout application code. Electron hosts a sandboxed React renderer; serial access stays in the main process.
 - Public protocol behavior may be implemented cleanly. GPL code is not copied or linked unless the owner explicitly chooses a compatible distribution license after legal review.
 - Every application capability has an agent-hook disposition in the same package. The exact Atom model, transport, approval, and no-substitution rules are normative rather than optional integration work.
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v3, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
+The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v4, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
 
-Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. Exact physical ZS407 discovery suppresses automatic twin admission; discovery failure and twin boot/evidence failure are visible and never activate another backend.
+Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. One exact physical ZS407 suppresses the twin and is automatically admitted; multiple exact devices require selection; no exact device admits the twin. Discovery/identity/source/boot/evidence failure is visible and never activates another backend.
 
 SignalLab is an independent repository and application. It owns 79 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Its Firmware sink is `reserved-not-connected`; Atomizer has no SignalLab tools or hidden process coupling. Activating that future edge requires a coordinated contract-version change in all three repositories.
 
@@ -51,10 +53,16 @@ Work-package status is therefore interpreted as follows:
 | Package group | Current status |
 |---|---|
 | WP-00, WP-02 through WP-10, WP-15, WP-16, WP-18 through WP-20 | Active vertical slice with automated evidence |
-| WP-01, WP-13 | Firmware-source phase accepted; physical ZS407 phase blocked only on unit arrival |
+| WP-01, WP-13 | Initial physical receive-only phase accepted; full timing/fault/RF/update matrices active |
 | WP-11, WP-12 | Partial: export/diagnostics implemented; durable sessions/support bundle remain |
 | WP-17 | Hardware/data gated; no validated modulation or protocol classifier claim |
 | WP-14, WP-21 | Release qualification pending |
+
+### Firmware-update change-control addendum
+
+The updater is an explicit expansion of WP-01 identity/provenance, WP-06 device lifecycle, WP-10 Electron integration, WP-13 hardware qualification, WP-14 release safety, and WP-20 Atom governance. Its only accepted target is the pinned OEM Ultra/Ultra+ binary declared in `packages/contracts` and `docs/FIRMWARE_UPDATE_CONTRACT.md`.
+
+Artifact download and verification may occur automatically after an older supported physical revision is admitted. Self-test/configuration/RF-disconnection attestations, CDC teardown for DFU, and the final firmware write remain local human boundaries. `dfu-util` version, STM32 DFU VID/PID, alternate, target name, candidate cardinality, artifact re-hash, durable pre-subprocess write-attempt evidence, and post-reboot identity are mandatory gates. Atom can observe, explain, download, and detect; every computer-input path rejects attest and flash boundaries. Started, completed, or indeterminate journal evidence forbids another write across process restarts.
 
 ### Global definition of done
 

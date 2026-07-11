@@ -1,7 +1,7 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 3.0.0
+Version: 4.0.0
 Model lock: `gpt-realtime-2.1-mini`  
 Reasoning lock: `high`  
 Voice lock: `ballad`  
@@ -165,6 +165,7 @@ Default context may include:
 - Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
 - Versioned Atomizer/Firmware/SignalLab topology, execution backend, transport, USB-verification state, and reserved edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
+- Firmware update phase, installed/target provenance, artifact verification, DFU tooling/target state, preparation evidence, and one-shot write evidence.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
 
@@ -190,6 +191,10 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
 | `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
+| `get_firmware_update_status` | Observe | Never | Reads installed/target provenance, artifact, DFU, preparation, and write evidence |
+| `open_firmware_update` | Operate | Never | Opens the staged updater without disconnecting or writing |
+| `download_firmware_update` | Operate | Never | Downloads only the pinned OEM artifact and verifies length/hash; never enters DFU |
+| `detect_firmware_dfu` | Observe | Never | Detects exactly one known STM32 internal-flash interface after human preparation |
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
 | `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
@@ -224,7 +229,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
 
-Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact are refused; the model must use the typed tool with action-time approval. Text, key and scroll inputs are bounded and remain targeted at TinySA Atomizer.
+Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only. Text, key, and scroll inputs are bounded, reject focused/pointed human-only boundaries, and remain targeted at TinySA Atomizer.
 
 ### 7.2 Every-feature hook rule
 
@@ -269,11 +274,15 @@ Atom may complete safe preparatory work before asking. It requests approval imme
 
 RF output enable always requires approval even if the original prompt requested it. Agent-driven connected-screen touch also requires approval because executable firmware UI can reach generator controls. The approval card states whether the target is physical hardware or the executable twin and never implies that the Renode bridge can radiate. Disabling typed RF output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
 
+Firmware update is stricter than ordinary action-time approval. Atom can explain, open, download/verify, and observe DFU. It cannot attest that a physical self-test passed, claim RF cables were removed, choose configuration disposition, disconnect the unit for DFU, or submit the flash literal. Those controls require a trusted direct local UI event and are excluded from semantic, coordinate, type, key, and scroll computer use.
+
 ### 9.2 Non-bypass guarantees
 
 - Model output cannot change policy.
 - Rephrasing, voice, either text transport, computer action and future automation all use the same policy table.
-- Raw serial, calibration, reset, SD deletion, DFU and unrestricted filesystem/network tools are absent.
+- Raw serial, calibration, reset, SD deletion, generic DFU, arbitrary firmware selection, and unrestricted filesystem/network tools are absent.
+- The pinned updater exposes no Atom tool for preflight preparation or flash; every computer-input path rejects either boundary.
+- A schema-validated atomic journal records write-attempt evidence before `dfu-util` starts; started, completed, or indeterminate evidence forbids a repeated write across process restarts.
 - Tool descriptions are guidance; host validation and policy are authority.
 - Disconnect while RF output may be on results in `unknown`; Atom must say it may still be emitting.
 
@@ -380,6 +389,10 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-32:** Voice function chains are bounded to eight calls and duplicate call IDs terminate the session.
 - **AI-33:** Every runtime method in `TinySaApiV2` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
 - **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
+- **AI-35:** Atom can read/open/download/detect the pinned updater but has no executor for human preflight attestations or flash.
+- **AI-36:** Computer actions fail closed on firmware preparation and flash controls.
+- **AI-37:** Every firmware-updater API method maps to a typed Atom operation or the machine-checked `human-safety-boundary` projection.
+- **AI-38:** Atom treats durable `writeDisposition=started|completed|indeterminate` as irreversible no-repeat evidence and never recommends or attempts another flash.
 
 ## 16. Source traceability
 

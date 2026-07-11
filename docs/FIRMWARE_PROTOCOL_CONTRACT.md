@@ -2,9 +2,10 @@
 
 Status: implementation baseline
 
-Version: 2.0.0
+Version: 2.1.0
 
-Firmware source: `c97938697b6c7485e7cab50bca9af76996b7d671`
+Host baseline source: `c97938697b6c7485e7cab50bca9af76996b7d671`
+Observed shipped source: `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c`
 
 Target: tinySA Ultra+ ZS407 (`hwid` 103)
 
@@ -32,9 +33,17 @@ The following are source facts:
 - ZS407 identity is reported as hardware `V0.5.4`, `+ ZS407`, `hwid` 103 and the
   MAX2871 path in this source baseline.
 
-The following still require the ordered unit:
+The delivered unit has established:
 
-- the exact `version`, `info`, USB serial and descriptor strings shipped;
+- exact macOS CDC path, `0483:5740`, manufacturer `tinysa.org`, serial `400`;
+- shipped `version`, `info`, 77-command `help`, battery and device-ID responses;
+- ZS407 product evidence in `info` when the shipped hardware line omits the model;
+- mutually consistent 101-point text and raw receive sweeps;
+- configurable raw-sweep offset readback of 174 dB;
+- exact 307,200-byte LCD capture.
+
+The following still require physical qualification:
+
 - sustainable command and sweep cadence;
 - whether host serial stacks deliver the boot banner before the first command;
 - command behavior during cable loss and long-running acquisition;
@@ -69,7 +78,7 @@ Atomizer requires these commands after `help` capability discovery:
 | --- | --- |
 | identity | `version`, `info`, `help` |
 | lifecycle | `status`, `pause`, `resume`, `abort` |
-| analyzer | `mode`, `sweep`, `scan`, `scanraw`, `rbw`, `attenuate`, `spur`, `avoid`, `lna`, `trigger`, `calc`, `trace`, `marker` |
+| analyzer | `mode`, `sweep`, `scan`, `scanraw`, `zero`, `rbw`, `attenuate`, `sweeptime`, `spur`, `avoid`, `lna`, `trigger`, `calc`, `trace`, `marker` |
 | generator | `mode`, `freq`, `level`, `modulation`, `output` |
 | diagnostics | `vbat`, `deviceid`, `capture` |
 | remote panel | `touch`, `release` |
@@ -79,14 +88,31 @@ an alternate spelling or older protocol.
 
 ## Identity
 
-`version` returns the firmware identifier on the first line. For tinySA4 it also
-returns a line shaped like:
+`version` returns the firmware identifier on the first line and a hardware line.
+The host baseline may return:
 
 ```text
 HW Version:V0.5.4 + ZS407 max2871
 ```
 
-Atomizer accepts only a ZS407 identity for a physical production session. The
+The delivered `v1.4-217` unit instead returns:
+
+```text
+tinySA4_v1.4-217-gc5dd31f
+HW Version:V0.5.4 max2871
+```
+
+and `info` begins with exact product evidence:
+
+```text
+tinySA ULTRA+ ZS407
+```
+
+Atomizer accepts only exact `0483:5740` physical USB, `tinySA4_` firmware, a
+hardware line, strict ZS407 evidence across `version` and `info`, a reported
+revision in the closed source registry, and the complete command surface. The
+registry currently resolves `c5dd31f` to the shipped full commit and `c979386`
+to the pinned OEM/host full commit. Unknown revisions fail as unsupported. The
 test-only protocol double may return the same shell identity but must preserve
 `execution=protocol-test-double`, `usbIdentityVerified=false`, and test-only
 qualification. The executable Firmware twin preserves
@@ -107,7 +133,7 @@ identification loudly.
 | attenuation command | 0–31 dB integer or `auto` |
 | requested sweep time | 3 ms–60 s, or firmware minimum via zero |
 | display | 480×320 RGB565 little-endian |
-| raw RSSI representation | signed 16-bit little-endian, dB × 32 |
+| raw RSSI representation | signed 16-bit little-endian Q5 of `powerDbm + ext_zero_level` |
 
 The harmonic ceiling is command-addressable firmware behavior, not an RF accuracy
 claim. The UI marks all ranges above the normal/Ultra transitions as
@@ -189,12 +215,18 @@ source and completeness with every sweep.
 `scanraw <startHz> <stopHz> <points> 0` emits:
 
 ```text
-"{" ("x" int16_le_db_x32){points} "}" "ch> "
+"{" ("x" int16_le_q5_offset_db){points} "}" "ch> "
 ```
 
 The parser validates every marker and the exact point count. Binary payloads use
 fixed length and cannot be delimited by searching for prompt bytes inside sample
-data.
+data. The firmware adds configurable `config.ext_zero_level` before encoding;
+the delivered ZS407 default is 174 dB. Atomizer queries `zero` immediately before
+each raw sweep, parses its integer `dBm` readback, divides samples by 32,
+subtracts the observed offset, and records `rawSweepOffsetDb` with the sweep. It
+does not mutate the device offset. Raw frequency points follow firmware’s
+`(stop-start)/points` step, so the last raw point is one step below requested
+stop; the actual frequency grid is retained rather than relabeled.
 
 ### Zero span
 
@@ -231,6 +263,7 @@ and can reach RF controls; agent-driven remote touch is therefore high impact.
 | analyzer range/points | `sweep` | verified |
 | actual RBW | `rbw` query output | observed |
 | actual attenuation | `attenuate` query output | observed |
+| raw sweep offset | `zero` query output immediately before transfer | observed and retained per raw sweep |
 | marker/trace slot counts | pinned firmware constants and `help` support | capability-derived |
 | simultaneous desktop trace frames | complete acquired sweeps | host-derived |
 | desktop marker readouts/search | assigned host trace frames | host-derived |
@@ -247,10 +280,12 @@ and can reach RF controls; agent-driven remote touch is therefore high impact.
 - `FW-PROTO-003`: overlong commands fail before transport write.
 - `FW-PROTO-004`: command timeout faults the session and cancels queued work.
 - `FW-PROTO-005`: `scan` rejects missing, extra, non-finite or non-monotonic rows.
-- `FW-PROTO-006`: `scanraw` validates braces, sample markers and dB×32 decoding.
+- `FW-PROTO-006`: `scanraw` validates braces, sample markers, Q5 decoding, the immediate `zero` offset readback, subtraction, and retained offset provenance.
 - `FW-PROTO-007`: screen capture consumes exactly 307,200 bytes before prompt.
 - `FW-PROTO-008`: physical identity without ZS407 fails connection.
 - `FW-PROTO-009`: generator configuration begins and ends muted.
 - `FW-PROTO-010`: disconnect while output may be active yields `unknown` RF state.
 - `FW-PROTO-011`: capability discovery requires both `trace` and `marker` and reports four/eight slots.
 - `FW-PROTO-012`: desktop trace/marker projections remain labeled host-derived and never impersonate firmware readback.
+- `FW-PROTO-013`: the shipped hardware line plus strict `info` product line admits ZS407; either response without sufficient model evidence rejects.
+- `FW-PROTO-014`: unknown firmware source revisions reject instead of inheriting the host baseline provenance.

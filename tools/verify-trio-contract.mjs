@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const parent = resolve(root, '..');
 const copies = [
-  resolve(root, 'contracts/trio-composition-v1.json'),
-  resolve(parent, 'TinySA_Firmware/contracts/trio-composition-v1.json'),
-  resolve(parent, 'TinySA_SignalLab/contracts/trio-composition-v1.json'),
+  resolve(root, 'contracts/trio-composition-v2.json'),
+  resolve(parent, 'TinySA_Firmware/contracts/trio-composition-v2.json'),
+  resolve(parent, 'TinySA_SignalLab/contracts/trio-composition-v2.json'),
 ];
 const bytes = await Promise.all(copies.map((path) => readFile(path)));
 for (let index = 1; index < bytes.length; index++) {
@@ -16,10 +16,10 @@ for (let index = 1; index < bytes.length; index++) {
 
 const trio = JSON.parse(bytes[0].toString('utf8'));
 assertEqual(trio.contractId, 'tinysa-trio-composition', 'contractId');
-assertEqual(trio.contractVersion, 1, 'contractVersion');
-assertEqual(trio.parties.atomizer.applicationContractVersion, 3, 'Atomizer application contract');
+assertEqual(trio.contractVersion, 2, 'contractVersion');
+assertEqual(trio.parties.atomizer.applicationContractVersion, 4, 'Atomizer application contract');
 assertEqual(trio.parties.atomizer.deviceApiVersion, 2, 'device API');
-assertEqual(trio.parties.atomizer.agentSurfaceVersion, 3, 'Atom surface');
+assertEqual(trio.parties.atomizer.agentSurfaceVersion, 4, 'Atom surface');
 assertEqual(trio.parties.signalLab.stimulusContractVersion, 1, 'SignalLab contract');
 assertEqual(trio.parties.signalLab.closedProfileCount, 79, 'SignalLab profile count');
 assertEqual(trio.parties.signalLab.sinkStatus, 'reserved-not-connected', 'SignalLab sink');
@@ -35,8 +35,12 @@ assertEqual(twin.invariants.usbTransactionsModeled, false, 'bridge USB modeling'
 
 const agentSource = await readFile(resolve(root, 'packages/agent/src/index.ts'), 'utf8');
 requireSource(agentSource, "export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1-mini'", 'exact Atom model');
-requireSource(agentSource, 'export const ATOM_AGENT_VERSION = 3', 'Atom surface version');
+requireSource(agentSource, 'export const ATOM_AGENT_VERSION = 4', 'Atom surface version');
 requireSource(agentSource, 'export const realtimeToolDefinitions = agentToolDefinitions', 'identical voice/text tool surface');
+const contractSource = await readFile(resolve(root, 'packages/contracts/src/index.ts'), 'utf8');
+requireSource(contractSource, trio.parties.atomizer.physicalFirmwareSupport.shippedSourceCommit, 'shipped physical firmware source');
+requireSource(contractSource, trio.parties.atomizer.physicalFirmwareSupport.oemTargetSourceCommit, 'OEM target firmware source');
+requireSource(contractSource, trio.parties.atomizer.physicalFirmwareSupport.oemBinarySha256, 'OEM target firmware artifact');
 
 const signalLabSource = await readFile(resolve(parent, 'TinySA_SignalLab/src/contracts.ts'), 'utf8');
 requireSource(signalLabSource, 'export const SIGNAL_LAB_CONTRACT_VERSION = 1', 'SignalLab source contract version');
@@ -59,4 +63,3 @@ function assertEqual(actual, expected, label) {
 function requireSource(source, needle, label) {
   if (!source.includes(needle)) throw new Error(`${label} is not represented in source`);
 }
-

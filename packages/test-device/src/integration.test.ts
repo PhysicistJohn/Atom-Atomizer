@@ -69,6 +69,8 @@ describe('device service against byte-level simulator', () => {
     const raw = await device.acquireSweep();
     expect(raw.source).toBe('scanraw-binary');
     expect(raw.powerDbm).toHaveLength(64);
+    expect(raw.rawSweepOffsetDb).toBe(174);
+    expect(Math.max(...raw.powerDbm)).toBeLessThan(0);
     const capture = await device.acquireZeroSpan(zeroSpan);
     expect(capture.frequencyHz).toBe(433_920_000);
     expect(capture.powerDbm).toHaveLength(64);

@@ -15,6 +15,8 @@ export interface FakeOptions {
   sweepLatencyMs?: number;
   includeBootBanner?: boolean;
   batteryMillivolts?: number;
+  versionResponse?: string;
+  infoResponse?: string;
 }
 
 const encoder = new TextEncoder();
@@ -44,6 +46,7 @@ export class FakeTinySaTransport implements ByteTransport {
   #attenuationDb: number | 'auto' = 'auto';
   #sweepTimeSeconds = 0;
   #sweepIndex = 0;
+  #rawSweepOffsetDb = 174;
 
   constructor(private readonly options: FakeOptions = {}) {
     this.port = portCandidateSchema.parse({
@@ -54,7 +57,7 @@ export class FakeTinySaTransport implements ByteTransport {
       serialNumber: 'SIM-407',
       vendorId: TINYSA_USB_VENDOR_ID,
       productId: TINYSA_USB_PRODUCT_ID,
-      usbMatch: 'exact-zs407-cdc',
+      usbMatch: 'protocol-test-double',
       transport: 'protocol-test-double',
       execution: 'protocol-test-double',
     });
@@ -116,8 +119,8 @@ export class FakeTinySaTransport implements ByteTransport {
   #response(command: string): string | Uint8Array {
     const [name, ...args] = command.split(/\s+/);
     switch (name) {
-      case 'version': return 'tinySA4_v1.4-224-gc979386\r\nHW Version:V0.5.4 + ZS407 max2871';
-      case 'info': return 'tinySA4 + ZS407\r\nVersion: tinySA4_v1.4-224-gc979386\r\nPlatform: STM32F303';
+      case 'version': return this.options.versionResponse ?? 'tinySA4_v1.4-224-gc979386\r\nHW Version:V0.5.4 + ZS407 max2871';
+      case 'info': return this.options.infoResponse ?? 'tinySA4 + ZS407\r\nVersion: tinySA4_v1.4-224-gc979386\r\nPlatform: STM32F303';
       case 'help': return `commands: ${HELP_COMMANDS.slice(0, 40).join(' ')}\r\nOther commands: ${HELP_COMMANDS.slice(40).join(' ')}`;
       case 'output': return this.#outputCommand(args);
       case 'mode': return this.#modeCommand(args);
@@ -130,6 +133,7 @@ export class FakeTinySaTransport implements ByteTransport {
       case 'deviceid': return 'deviceid 407';
       case 'scan': return this.#textSweep(args);
       case 'scanraw': return this.#rawSweep(args);
+      case 'zero': return this.#zeroCommand(args);
       case 'capture': return fakeScreen(this.#sweepIndex, this.#startHz, this.#stopHz);
       case 'freq':
       case 'level':
@@ -262,7 +266,7 @@ export class FakeTinySaTransport implements ByteTransport {
     const payload = new Uint8Array(2 + points * 3);
     payload[0] = 0x7b;
     values.forEach((power, index) => {
-      const signed = Math.round(power * ZS407_FIRMWARE_LIMITS.rawRssiDivisor);
+      const signed = Math.round((power + this.#rawSweepOffsetDb) * ZS407_FIRMWARE_LIMITS.rawRssiDivisor);
       const encoded = signed < 0 ? signed + 0x1_0000 : signed;
       const offset = 1 + index * 3;
       payload[offset] = 0x78;
@@ -271,6 +275,13 @@ export class FakeTinySaTransport implements ByteTransport {
     });
     payload[payload.length - 1] = 0x7d;
     return payload;
+  }
+
+  #zeroCommand(args: string[]): string {
+    if (args.length === 0) return `zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
+    if (args.length !== 1 || !/^-?\d+$/.test(args[0]!)) return `zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
+    this.#rawSweepOffsetDb = Number(args[0]);
+    return '';
   }
 
   #powers(startHz: number, stopHz: number, points: number): number[] {

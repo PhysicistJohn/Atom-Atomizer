@@ -1,5 +1,7 @@
 import {
+  DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
+  SUPPORTED_ZS407_FIRMWARE_REVISIONS,
   TINYSA_SHELL_PROMPT,
   TINYSA_USB_PRODUCT_ID,
   TINYSA_USB_VENDOR_ID,
@@ -22,6 +24,7 @@ import {
   type PortCandidate,
   type ScreenFrame,
   type ScreenPoint,
+  type SupportedZs407FirmwareRevision,
   type Sweep,
   type SweepStatus,
   type ZeroSpanCapture,
@@ -32,7 +35,7 @@ import type { ByteTransport, TransportEvent } from './transport.js';
 
 const REQUIRED_COMMANDS = [
   'version', 'info', 'help', 'status', 'pause', 'resume', 'abort',
-  'mode', 'sweep', 'scan', 'scanraw', 'rbw', 'attenuate', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
+  'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
   'freq', 'level', 'modulation', 'output', 'vbat', 'deviceid', 'capture', 'touch', 'release',
 ] as const;
 const SCREEN_BYTES = ZS407_FIRMWARE_LIMITS.screenWidth * ZS407_FIRMWARE_LIMITS.screenHeight * 2;
@@ -86,6 +89,7 @@ export class TinySaDeviceService {
       this.#scheduler = new CommandScheduler(this.transport, { onFault: (error) => this.#handleSchedulerFault(error) });
       this.#set({ ...this.#snapshot, connection: 'identifying' });
 
+      await this.#command('output off');
       this.#versionResponse = await this.#scheduler.execute('version', 10_000);
       this.#infoResponse = await this.#scheduler.execute('info', 10_000);
       const help = await this.#scheduler.execute('help', 10_000);
@@ -210,9 +214,12 @@ export class TinySaDeviceService {
       let frequencyHz: number[];
       let powerDbm: readonly number[];
       let source: Sweep['source'];
+      let rawSweepOffsetDb: number | undefined;
       if (config.acquisitionFormat === 'raw') {
+        rawSweepOffsetDb = parseRawSweepOffset(await scheduler.execute('zero', 10_000));
         const command = `scanraw ${config.startHz} ${config.stopHz} ${config.points} 0`;
-        powerDbm = await scheduler.executeRawSweep(command, config.points, timeoutMs);
+        const offsetValues = await scheduler.executeRawSweep(command, config.points, timeoutMs);
+        powerDbm = offsetValues.map((value) => value - rawSweepOffsetDb!);
         frequencyHz = rawSweepFrequencies(config.startHz, config.stopHz, config.points);
         source = 'scanraw-binary';
       } else {
@@ -242,6 +249,7 @@ export class TinySaDeviceService {
         actualRbwHz: transportEvidence?.actualRbwHz ?? analyzer.readback.actualRbwHz,
         actualAttenuationDb: transportEvidence?.actualAttenuationDb ?? analyzer.readback.attenuationDb,
         source,
+        ...(rawSweepOffsetDb === undefined ? {} : { rawSweepOffsetDb }),
         complete: true,
         identity,
       };
@@ -393,6 +401,7 @@ export class TinySaDeviceService {
       const help = await this.#ready().execute('help', 10_000);
       const commands = parseHelpCommands(help);
       requireCommands(commands);
+      const rawSweepOffsetDb = parseRawSweepOffset(await this.#ready().execute('zero', 10_000));
       const analyzerReadback = await this.#readAnalyzerReadback();
       const telemetry = await this.#readTelemetry(analyzerReadback.sweepStatus);
       const diagnostics: DeviceDiagnostics = {
@@ -400,6 +409,7 @@ export class TinySaDeviceService {
         firmwareVersionResponse: version,
         infoLines: nonEmptyLines(info),
         commands,
+        rawSweepOffsetDb,
         analyzerReadback,
         telemetry,
         capturedAt: new Date().toISOString(),
@@ -608,6 +618,7 @@ function buildCapabilities(commands: readonly string[], identity: DeviceIdentity
     remoteTouch: commands.includes('touch') && commands.includes('release'),
     streaming: commands.includes('scan'),
     rawSweep: commands.includes('scanraw'),
+    rawSweepOffsetReadback: commands.includes('zero'),
     markerCount: 8,
     traceCount: 4,
     firmwareMarkers: commands.includes('marker'),
@@ -615,9 +626,10 @@ function buildCapabilities(commands: readonly string[], identity: DeviceIdentity
     generatorReadback: false,
     modulation: ['off', 'am', 'fm'],
     commands: [...commands],
-    evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'firmware-source',
-    firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT,
-    qualification: twin ? 'executable-twin-observed' : testDouble ? 'protocol-test-only' : 'firmware-derived-awaiting-device',
+    evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'device-observed',
+    firmwareSourceCommit: identity.firmwareSourceCommit,
+    hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
+    qualification: twin ? 'executable-twin-observed' : testDouble ? 'protocol-test-only' : 'device-observed-awaiting-rf-qualification',
   };
 }
 
@@ -629,28 +641,50 @@ function parseIdentity(versionResponse: string, infoResponse: string, port: Port
   if (!firmwareVersion || !/^tinySA4_/i.test(firmwareVersion)) {
     throw new TinySaDeviceError('identity-mismatch', 'Connected serial device did not identify as tinySA4 firmware', false);
   }
-  if (!hardwareLine || !/ZS407/i.test(hardwareLine)) {
-    throw new TinySaDeviceError('identity-mismatch', `Connected tinySA4 is not a ZS407: ${hardwareLine ?? 'hardware line missing'}`, false);
-  }
   if (!infoLines.length || !infoLines.some((line) => /tinySA/i.test(line))) {
     throw new TinySaDeviceError('identity-mismatch', 'tinySA info response is incomplete', false);
+  }
+  const infoIdentifiesZs407 = infoLines.some((line) => /^tinySA\s+ULTRA\+\s+ZS407$/i.test(line));
+  if (!hardwareLine || (!/ZS407/i.test(hardwareLine) && !infoIdentifiesZs407)) {
+    throw new TinySaDeviceError('identity-mismatch', `Connected tinySA4 is not a ZS407: ${hardwareLine ?? 'hardware line missing'}`, false);
+  }
+  if (port.execution === 'physical' && port.usbMatch !== 'exact-zs407-cdc') {
+    throw new TinySaDeviceError('identity-mismatch', 'Physical production sessions require exact 0483:5740 USB identity', false);
   }
   const hardwareVersion = hardwareLine.replace(/^HW Version:\s*/i, '').trim();
   if (port.execution === 'firmware-digital-twin' && !port.digitalTwin?.bootEvidence) {
     throw new TinySaDeviceError('identity-mismatch', 'Digital twin did not provide executable boot evidence', false);
   }
+  const provenance = resolveFirmwareProvenance(firmwareVersion, port);
   const simulated = port.execution !== 'physical';
   return {
     model: 'tinySA Ultra+ ZS407',
     hardwareVersion,
     firmwareVersion,
-    firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT,
+    ...provenance,
     port,
     simulated,
     usbIdentityVerified: port.execution === 'physical' && port.usbMatch === 'exact-zs407-cdc',
     execution: port.execution,
     ...(port.digitalTwin ? { digitalTwin: port.digitalTwin } : {}),
   };
+}
+
+function resolveFirmwareProvenance(
+  firmwareVersion: string,
+  port: PortCandidate,
+): Pick<DeviceIdentity, 'firmwareSourceCommit' | 'firmwareReportedRevision'> {
+  if (port.execution === 'firmware-digital-twin') {
+    if (port.digitalTwin?.repositoryCommit !== DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT) {
+      throw new TinySaDeviceError('identity-mismatch', 'Digital twin firmware source does not match its contract', false);
+    }
+    return { firmwareSourceCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT };
+  }
+  const revision = firmwareVersion.match(/-g([0-9a-f]{7,40})(?:\b|$)/i)?.[1]?.toLowerCase();
+  if (!revision) throw new TinySaDeviceError('unsupported', `Firmware ${firmwareVersion} did not report a source revision`, false);
+  const firmwareSourceCommit = SUPPORTED_ZS407_FIRMWARE_REVISIONS[revision as SupportedZs407FirmwareRevision];
+  if (!firmwareSourceCommit) throw new TinySaDeviceError('unsupported', `Firmware revision ${revision} is outside Atomizer's closed support registry`, false);
+  return { firmwareReportedRevision: revision as SupportedZs407FirmwareRevision, firmwareSourceCommit };
 }
 
 function assertTransportEvidence(
@@ -718,6 +752,13 @@ function parseAttenuation(response: string): number {
   const line = [...lines].reverse().find((candidate) => /^-?\d+(?:\.\d+)?$/.test(candidate));
   const value = Number(line);
   if (!Number.isFinite(value) || value < 0 || value > 31.5) throw new TinySaDeviceError('protocol', `Malformed attenuation readback: ${response}`, false);
+  return value;
+}
+
+function parseRawSweepOffset(response: string): number {
+  const line = [...nonEmptyLines(response)].reverse().find((candidate) => /^-?\d+\s*dBm$/i.test(candidate));
+  const value = Number(line?.replace(/\s*dBm$/i, ''));
+  if (!Number.isInteger(value) || value < -300 || value > 300) throw new TinySaDeviceError('protocol', `Malformed scanraw offset readback: ${response}`, false);
   return value;
 }
 

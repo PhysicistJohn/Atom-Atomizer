@@ -10,7 +10,7 @@ The live system is deliberately split into three independently versioned reposit
 | `TinySA_Firmware` | Pinned executable Renode twin and bridge | Active Atomizer producer |
 | `TinySA_SignalLab` | Waveform descriptors, seeded channel models, stimulus intent | Reserved; no sink is connected yet |
 
-The normative composition is byte-identical in all three repositories at [trio-composition-v1.json](./contracts/trio-composition-v1.json). Physical USB and the Renode monitor bridge are never represented as the same transport or evidence class.
+The normative composition is byte-identical in all three repositories at [trio-composition-v2.json](./contracts/trio-composition-v2.json). Physical USB and the Renode monitor bridge are never represented as the same transport or evidence class.
 
 ## Run
 
@@ -20,6 +20,7 @@ Requirements:
 - The sibling Firmware repository at `../TinySA_Firmware`.
 - Renode and the pinned Firmware twin dependencies declared by that repository.
 - `../TinySA_SignalLab` only when running the separate SignalLab application.
+- `dfu-util` 0.11 only when performing a physical firmware update (`brew install dfu-util` on this development Mac).
 
 ```bash
 npm install
@@ -30,9 +31,10 @@ npm run dev
 Startup follows one closed admission rule:
 
 1. Complete physical USB discovery.
-2. If an exact ZS407 CDC candidate exists, suppress automatic twin admission and let the operator connect it.
-3. If no exact ZS407 exists, expose and automatically connect the executable twin from `../TinySA_Firmware`.
-4. A discovery error or twin boot/evidence mismatch is visible and terminal for that admission attempt. It never activates a test double or synthetic replacement.
+2. If exactly one exact ZS407 CDC candidate exists, suppress the twin and automatically connect the physical unit through the strict identity/source/command gate.
+3. If multiple exact candidates exist, suppress the twin and require operator choice.
+4. If no exact ZS407 exists, expose and automatically connect the executable twin from `../TinySA_Firmware`.
+5. A discovery, identity, unsupported-firmware, or twin boot/evidence error is visible and terminal for that admission attempt. It never activates a test double or synthetic replacement.
 
 The executable twin boots the pinned `lab-v0.2.0-protocol` firmware in Renode. Its sweeps, LCD framebuffer, touch behavior, and generator state come from executable firmware. Its transport is `renode-monitor-bridge`; USB transactions are explicitly not modeled.
 
@@ -64,21 +66,23 @@ Both paths use the identical closed tool catalog, `reasoning.effort: high`, and 
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
-Atom’s application surface is contract version 3:
+Atom’s application surface is contract version 4:
 
 - Every declared UI hook resolves to exactly one preferred typed tool, risk class, evidence projection, executor, and guarantee.
 - The same validator, policy table, action-time approval, and executor serve voice and text.
 - App screenshots are treated as untrusted image data.
 - Coordinate actions are confined to the Atomizer window and fail closed on high-impact DOM targets.
 - RF-output enable and general firmware-screen touch require immediate human approval.
+- Firmware status, pinned download, and DFU detection are first-class tools; preflight attestations and the one-shot flash control are explicit local human-only exclusions.
 - Tool loops are bounded to eight operations.
 - Unknown tools, malformed arguments, missing evidence, duplicate Realtime calls, and unavailable conversations fail visibly without retry or reroute.
 
 ## Implemented instrument surface
 
 - Exact ZS407 USB-shell framing and serialized command scheduling.
-- Physical-first discovery with executable-firmware twin admission.
+- Unique-device physical auto-admission with a closed shipped/OEM firmware registry and executable-twin admission only when no exact device exists.
 - Analyzer configuration, readback, single/continuous spectrum acquisition, raw/text transfers, and zero span.
+- Device-observed `scanraw` offset readback and provenance-preserving Q5 decoding.
 - Spectrum, coherent waterfall, channel power/PSD/ACP/ACLR/OBW, and detected-envelope STFT.
 - Four host traces: Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset.
 - Eight markers: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
@@ -88,12 +92,13 @@ Atom’s application surface is contract version 3:
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.
 - Sandboxed Electron renderer, allow-listed preload IPC, app-scoped computer harness, and exact-model Atom gateway.
+- Content-addressed OEM updater with automatic download, private cache, audited preflight, exact STM32 DFU admission, one-shot write semantics, post-reboot identity verification, and human-only flash authority.
 
 ## Safety and evidence boundary
 
 Generator configuration and physical output do not have dependable firmware readback. They remain labeled `commanded`; uncertain transport loss makes RF state `unknown`. Software is not a hardware interlock.
 
-The firmware’s addressable frequency limits are not claims of calibrated performance. The ordered physical ZS407 is still required to qualify shipped-firmware variance, RF accuracy, timing, high-frequency behavior, and cable-loss safety.
+The delivered physical ZS407 is admitted and has passed initial receive-only text/raw sweep, diagnostics, and exact LCD-byte validation. This is not RF calibration or complete Gate B qualification; timing matrices, cable-loss cases, touch, high-frequency behavior, generator behavior, metrology, and the physical firmware write remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
 
 Zero span is detected power versus time, not I/Q. Envelope STFT cannot establish phase, EVM, symbols, or protocol identity. Standards-derived SignalLab profiles are visual resource/timing projections unless separately backed by immutable conformance evidence.
 
@@ -114,7 +119,7 @@ npm run check:firmware-twin
 npm run release:trio
 ```
 
-`check:trio-contract` requires byte-identical manifests and reconciles Atomizer, Firmware bridge, pinned firmware evidence, and SignalLab contract versions. `check:firmware-twin` boots Renode, checks the exact ready declaration, runs a real firmware sweep, captures the LCD, and verifies generator output returns off.
+`check:trio-contract` requires byte-identical v2 manifests and reconciles Atomizer, physical/OEM firmware evidence, Firmware bridge, and SignalLab contract versions. `check:firmware-twin` boots Renode, checks the exact ready declaration, runs a real firmware sweep, captures the LCD, and verifies generator output returns off.
 
 ## Workspace map
 
@@ -136,9 +141,11 @@ This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkou
 
 ## Normative contracts
 
-- [Trio composition](./contracts/trio-composition-v1.json)
+- [Trio composition](./contracts/trio-composition-v2.json)
 - [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
+- [Physical ZS407 characterization](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
+- [Firmware update](./docs/FIRMWARE_UPDATE_CONTRACT.md)
 - [Markers, traces, display, and trigger](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 - [Waterfall, channel measurements, OBW/ACP, and envelope STFT](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 - [UI and UX](./docs/UI_UX_CONTRACTS.md)

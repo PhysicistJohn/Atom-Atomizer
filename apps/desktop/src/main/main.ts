@@ -8,6 +8,8 @@ import { config as loadEnv } from 'dotenv';
 import {
   API_VERSION,
   analyzerConfigSchema,
+  firmwareFlashRequestSchema,
+  firmwareUpdatePreflightSchema,
   generatorConfigSchema,
   portCandidateSchema,
   screenPointSchema,
@@ -20,6 +22,8 @@ import { OpenAiGateway } from './ai-gateway.js';
 import type { AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
+import { selectStartupInstrument } from './startup-admission.js';
+import { FirmwareUpdater } from './firmware-updater.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
@@ -32,6 +36,7 @@ const ai = new OpenAiGateway();
 const computer = new AppComputerHarness();
 let mainWindow: BrowserWindow | undefined;
 app.setName('TinySA Atomizer');
+const firmwareUpdater = new FirmwareUpdater(join(app.getPath('userData'), 'firmware'), device);
 
 function registerIpc(): void {
   ipcMain.handle('tinysa:list', () => device.listDevices());
@@ -65,6 +70,11 @@ function registerIpc(): void {
     await writeFile(selection.filePath, content, { encoding: 'utf8', flag: 'w' });
     return { status: 'saved' as const, path: selection.filePath, format: request.format, bytesWritten: Buffer.byteLength(content) };
   });
+  ipcMain.handle('tinysa:firmware:state', () => firmwareUpdater.state());
+  ipcMain.handle('tinysa:firmware:download', () => firmwareUpdater.download());
+  ipcMain.handle('tinysa:firmware:prepare', (_event, value: unknown) => firmwareUpdater.prepare(firmwareUpdatePreflightSchema.parse(value)));
+  ipcMain.handle('tinysa:firmware:detect-dfu', () => firmwareUpdater.detectDfu());
+  ipcMain.handle('tinysa:firmware:flash', (_event, value: unknown) => firmwareUpdater.flash(firmwareFlashRequestSchema.parse(value)));
   ipcMain.handle('ai:status', () => ai.status());
   ipcMain.handle('ai:realtime:call', (_event, sdp: unknown) => { if(typeof sdp!=='string')throw new TypeError('sdp must be a string');return ai.createRealtimeCall(sdp); });
   ipcMain.handle('ai:agent:turn', (_event, request: unknown) => ai.agentTurn(validateAgentTurnRequest(request)));
@@ -116,12 +126,12 @@ async function createWindow(): Promise<void> {
   else await win.loadFile(join(here, '../renderer/index.html'));
 }
 
-async function connectDefaultDigitalTwin(): Promise<void> {
+async function connectDefaultInstrument(): Promise<void> {
   try {
     const candidates = await device.listDevices();
-    const twin = candidates.find((candidate) => candidate.execution === 'firmware-digital-twin');
-    if (!twin) return;
-    await device.connect(twin);
+    const candidate = selectStartupInstrument(candidates);
+    if (!candidate) return;
+    await device.connect(candidate);
   }
   catch (error) {
     const message = `Default instrument admission failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -137,7 +147,7 @@ device.subscribe((event: DeviceEvent) => {
 });
 app.whenReady().then(async () => {
   await createWindow();
-  void connectDefaultDigitalTwin();
+  void connectDefaultInstrument();
 }).catch((error) => {
   console.error('TinySA Atomizer startup failed', error);
   app.exit(1);

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_VERSION,
   FIRMWARE_SOURCE_COMMIT,
+  OEM_ZS407_FIRMWARE_RELEASE,
   TINYSA_SHELL_PROMPT,
   TINYSA_USB_PRODUCT_ID,
   TINYSA_USB_VENDOR_ID,
@@ -16,7 +17,7 @@ import {
 import { App } from './App.js';
 import { agentControlBinding } from '@tinysa/agent';
 
-const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc', transport: 'protocol-test-double', execution: 'protocol-test-double' };
+const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' };
 const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
 const capabilities: DeviceCapabilities = {
   profile: 'tinySA4-zs407',
@@ -25,8 +26,8 @@ const capabilities: DeviceCapabilities = {
   generatorFrequency: { min: 1, max: 17_922_600_000, unit: 'Hz' }, generatorFundamentalMaximumHz: 6_300_000_000,
   generatorLevel: { min: -115, max: -18.5, step: 0.5, unit: 'dBm' }, rbwKhz: { min: 0.2, max: 850, unit: 'kHz' }, attenuationDb: { min: 0, max: 31, unit: 'dB' },
   sweepPoints: { min: 20, max: 450, unit: 'points' }, sweepSeconds: { min: 0.003, max: 60, unit: 'seconds' }, maxSweepPoints: 450,
-  screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, markerCount: 8, traceCount: 4, firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
-  modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'protocol-test-double', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'protocol-test-only',
+  screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, rawSweepOffsetReadback: true, markerCount: 8, traceCount: 4, firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
+  modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'protocol-test-double', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'protocol-test-only',
 };
 const ready: DeviceSnapshot = { connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded', identity, capabilities };
 const disconnected: DeviceSnapshot = { connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale' };
@@ -55,6 +56,8 @@ beforeEach(() => {
     configureGenerator: vi.fn().mockResolvedValue({ ...ready, mode: 'generator' }),
     setGeneratorOutput: vi.fn().mockResolvedValue({ ...ready, mode: 'generator', generatorOutput: 'on' }),
     readDiagnostics: vi.fn(), captureScreen: vi.fn(), touch: vi.fn(), releaseTouch: vi.fn(), exportSweep: vi.fn(),
+    getFirmwareUpdateState: vi.fn().mockResolvedValue({ phase: 'idle', target: OEM_ZS407_FIRMWARE_RELEASE, updateAvailable: false, dfuUtility: { available: false }, dfuDevice: { detected: false, count: 0 }, writeDisposition: 'not-started' }),
+    downloadFirmwareUpdate: vi.fn(), prepareFirmwareUpdate: vi.fn(), detectDfuDevice: vi.fn(), flashFirmwareUpdate: vi.fn(),
     subscribe: vi.fn().mockReturnValue(vi.fn()),
   };
   window.atomAgent = {

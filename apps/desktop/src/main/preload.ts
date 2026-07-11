@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AnalyzerConfig,
   DeviceEvent,
+  FirmwareFlashRequest,
+  FirmwareUpdatePreflight,
   GeneratorConfig,
   PortCandidate,
   ScreenPoint,
@@ -31,6 +33,11 @@ contextBridge.exposeInMainWorld('tinySA', {
   touch: (point: ScreenPoint) => ipcRenderer.invoke('tinysa:screen:touch', point),
   releaseTouch: (point?: ScreenPoint) => ipcRenderer.invoke('tinysa:screen:release', point),
   exportSweep: (request: SweepExportRequest) => ipcRenderer.invoke('tinysa:sweep:export', request),
+  getFirmwareUpdateState: () => ipcRenderer.invoke('tinysa:firmware:state'),
+  downloadFirmwareUpdate: () => ipcRenderer.invoke('tinysa:firmware:download'),
+  prepareFirmwareUpdate: (preflight: FirmwareUpdatePreflight) => ipcRenderer.invoke('tinysa:firmware:prepare', preflight),
+  detectDfuDevice: () => ipcRenderer.invoke('tinysa:firmware:detect-dfu'),
+  flashFirmwareUpdate: (request: FirmwareFlashRequest) => ipcRenderer.invoke('tinysa:firmware:flash', request),
   subscribe: (listener: (event: DeviceEvent) => void) => {
     const channel = `tinysa:event:v${API_VERSION}`;
     const wrapped = (_event: Electron.IpcRendererEvent, value: DeviceEvent) => listener(value);

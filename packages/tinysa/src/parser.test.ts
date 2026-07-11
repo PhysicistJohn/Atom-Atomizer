@@ -31,11 +31,11 @@ describe('firmware response parsing', () => {
     expect(response?.value).toEqual(binary);
   });
 
-  it('validates and decodes signed dB x32 raw sweep points', () => {
+  it('validates and decodes signed dB x32 raw values before the device-reported offset is removed', () => {
     const payload = new Uint8Array(2 + 20 * 3); payload[0] = 0x7b; payload[payload.length - 1] = 0x7d;
-    for (let index = 0; index < 20; index++) { const offset = 1 + index * 3; payload[offset] = 0x78; payload[offset + 1] = 0x80; payload[offset + 2] = 0xf4; }
+    for (let index = 0; index < 20; index++) { const offset = 1 + index * 3; payload[offset] = 0x78; payload[offset + 1] = 0x40; payload[offset + 2] = 0x0a; }
     const response = extractRawSweepResponse(concat(encode('scanraw 1 2 20 0\r\n'), payload, encode('ch> ')), 'scanraw 1 2 20 0', 20);
-    expect(response?.value).toEqual(Array(20).fill(-92));
+    expect(response?.value).toEqual(Array(20).fill(82));
     const malformed = payload.slice(); malformed[4] = 0x79;
     expect(() => extractRawSweepResponse(concat(encode('scanraw 1 2 20 0\r\n'), malformed, encode('ch> ')), 'scanraw 1 2 20 0', 20)).toThrow(/point 1/i);
   });
