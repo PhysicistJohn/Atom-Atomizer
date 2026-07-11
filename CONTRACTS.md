@@ -53,7 +53,7 @@ Work-package status is therefore interpreted as follows:
 | Package group | Current status |
 |---|---|
 | WP-00, WP-02 through WP-10, WP-15, WP-16, WP-18 through WP-20 | Active vertical slice with automated evidence |
-| WP-01, WP-13 | Initial physical receive-only phase accepted; full timing/fault/RF/update matrices active |
+| WP-01, WP-13 | Initial physical receive-only phase and one guarded OEM update accepted; full timing/fault/RF matrices active |
 | WP-11, WP-12 | Partial: export/diagnostics implemented; durable sessions/support bundle remain |
 | WP-17 | Hardware/data gated; no validated modulation or protocol classifier claim |
 | WP-14, WP-21 | Release qualification pending |

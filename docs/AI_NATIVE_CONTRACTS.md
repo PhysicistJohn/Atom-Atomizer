@@ -165,7 +165,7 @@ Default context may include:
 - Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
 - Versioned Atomizer/Firmware/SignalLab topology, execution backend, transport, USB-verification state, and reserved edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
-- Firmware update phase, installed/target provenance, artifact verification, DFU tooling/target state, preparation evidence, and one-shot write evidence.
+- Firmware update phase, installed/target provenance, artifact verification, DFU tooling/target state, preparation evidence, one-shot write evidence, and live stage/percentage when a write is active.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
 
@@ -230,6 +230,8 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only. Text, key, and scroll inputs are bounded, reject focused/pointed human-only boundaries, and remain targeted at TinySA Atomizer.
+
+Transient numeric-entry panels inherit the originating row's stable `data-agent-control` policy boundary. Their field, keypad, unit terminators, and close/apply controls are therefore inspectable and cannot become ungoverned DOM targets. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
 ### 7.2 Every-feature hook rule
 

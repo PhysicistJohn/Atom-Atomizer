@@ -82,6 +82,7 @@ An admitted older supported physical revision opens one centered, no-scroll firm
 - DFU guidance shows the exact power/jog sequence, tooling version, and `0483:df11` identity.
 - Flash uses red hazard treatment, names the irreversible action, and remains disabled until one exact target exists.
 - Flashing locks close/navigation and says not to disconnect.
+- Flashing shows the actual dfu-util erase/download stage percentage, a bounded overall projection, and elapsed time; it never substitutes an animated wait or time-derived fake percentage.
 - Reconnecting distinguishes “write complete” from “post-reboot verified.”
 - A post-write failure says not to flash again and preserves recovery evidence.
 - No updater stage scrolls at the 1720×1040 reference window.
@@ -97,25 +98,35 @@ and STFT surfaces:
 1. A closed row exposes one label and one complete effective value at a minimum
    44 px target height; main-app rows use 52 px.
 2. Numeric or free-form values do not render as permanently small input boxes.
-   Activating the full row reveals one focused, selected entry field plus an
-   explicit Apply action. Enter and Apply have identical commit semantics.
-3. Blank, non-finite, below-minimum, above-maximum, parse, schema, and domain
+   Activating the full row opens one centered, no-scroll numeric-entry panel.
+   It exposes a large selected field, touch-sized decimal keypad, bounds, and
+   explicit Apply/Cancel actions. Focus stays inside the panel and returns to
+   the originating row on commit, Cancel, backdrop dismissal, or Escape.
+3. Frequency entry is stored and validated as integer Hz. The panel selects a
+   readable current scale and exposes `GHz`, `MHz`, `kHz`, and `Hz` unit
+   terminators. Choosing a terminator converts, validates, commits once, and
+   closes; Enter in the entry field commits with the selected unit. Unitless
+   settings use an explicit Enter terminator. Button keyboard activation keeps
+   its native meaning and cannot accidentally invoke the field's Enter path.
+4. Blank, non-finite, below-minimum, above-maximum, parse, schema, and domain
    errors remain inside the open row. They never mutate application or device
    state and are never replaced by a guessed value.
-4. Opening another value in the same parameter stack closes the previous
+5. Opening another value in the same parameter stack closes the previous
    editor. A stack cannot become a spreadsheet of simultaneously open fields.
-5. Enumerated values make the whole row the selection target and always render
+6. Enumerated values make the whole row the selection target and always render
    the current human label before activation. A current value without a closed
    option is a programming error and fails loudly.
-6. Boolean rows expose both text (`On`/`Off`) and state treatment. Color alone
+7. Boolean rows expose both text (`On`/`Off`) and state treatment. Color alone
    is insufficient.
-7. Settings are one value per row. `Advanced` may create one additional group;
+8. Settings are one value per row. `Advanced` may create one additional group;
    deeper settings trees and side-by-side editable values are forbidden.
-8. Escape closes transient measurement drawers. Changing measurement view also
+9. Escape closes transient measurement drawers. Changing measurement view also
    closes them; neither action changes configuration or acquisition state.
-9. Every row carries a stable agent-control identifier where the capability is
+10. Every row carries a stable agent-control identifier where the capability is
    agent-operable. Visual, semantic-computer, and typed Atom operations converge
-   on the same validated application reducer.
+   on the same validated application reducer. Every transient keypad/input
+   control remains inside that same policy-bearing hook; no modal control is an
+   orphan. Atom still prefers the exact typed configuration tool.
 
 The visual system uses neutral graphite hierarchy and macOS system typography.
 System blue means selection/action, violet identifies Atom, amber/red retain
@@ -131,6 +142,10 @@ Acceptance:
 - `UI-PAR-005`: disabled rows cannot open and are visually consistent.
 - `UI-PAR-006`: all Atomizer route value controls are shared rows; raw route-local numeric/select controls are absent.
 - `UI-PAR-007`: reference screenshots show no truncated effective value, second-line chevron, horizontal overflow, or body scroll.
+- `UI-PAR-008`: `915` followed by the `MHz` terminator commits exactly `915000000` Hz once; invalid bounds/steps remain open and uncommitted.
+- `UI-PAR-009`: numeric-panel focus is trapped and restored; Escape and Cancel do not mutate configuration.
+
+The unit-terminator interaction follows established X-Series active-function behavior without copying vendor visual trade dress. Primary references: Keysight X-Series User's and Programmer's Guide, https://www.keysight.com/mg/en/assets/9018-04190/user-manuals/9018-04190.pdf, and Keysight X-Series Getting Started Guide, https://www.keysight.com/my/en/assets/9018-01478/quick-start-guides/9018-01478.pdf.
 
 ## 3. Global state contracts
 

@@ -1,6 +1,6 @@
 # Physical ZS407 characterization record
 
-Status: partial receive-only acceptance
+Status: partial receive-only and firmware-update acceptance
 Observed: 2026-07-11
 Host: macOS, USB CDC ACM
 
@@ -16,8 +16,10 @@ This record separates facts observed on the delivered unit from source-derived l
 | USB serial | `400` |
 | Product identity | `tinySA ULTRA+ ZS407` from `info` |
 | Hardware line | `HW Version:V0.5.4 max2871` |
-| Firmware | `tinySA4_v1.4-217-gc5dd31f` |
-| Resolved source | `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c` |
+| Initial firmware | `tinySA4_v1.4-217-gc5dd31f` |
+| Initial resolved source | `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c` |
+| Current verified firmware | `tinySA4_v1.4-224-gc979386` |
+| Current resolved source | `c97938697b6c7485e7cab50bca9af76996b7d671` |
 | Build time | `Dec 17 2025 - 10:50:40` |
 | MCU/platform | STM32F303xC, ARMv7E-M Cortex-M4F |
 | Shell commands observed | 77; all required Atomizer commands present |
@@ -28,7 +30,7 @@ The shipped `version` hardware line does not contain `ZS407`. The exact product 
 
 ## Receive-only transaction evidence
 
-The first command on every session was `output off`. No generator configuration, RF enable, firmware touch, calibration write, reset, DFU transition, or flash command was issued.
+During the receive-only qualification, the first command on every session was `output off`. No generator configuration, RF enable, firmware touch, calibration write, reset, DFU transition, or flash command was issued in those sessions. The separately governed update transaction is recorded below.
 
 | Check | Result |
 | --- | --- |
@@ -66,7 +68,7 @@ The current OEM Ultra/Ultra+ directory publishes `tinySA4_v1.4-224-gc979386.bin`
 | Size | 185,704 bytes |
 | SHA-256 | `3c9847ff4d7b80561df2f2f1030a112703a083409ffb2ee11361b2413b7c1e41` |
 
-Atomizer downloaded and verified this exact artifact into its private application cache. No preflight attestation, DFU transition, or flash has occurred. The OEM procedure and the updater’s additional fail-closed rules are captured in [FIRMWARE_UPDATE_CONTRACT.md](./FIRMWARE_UPDATE_CONTRACT.md).
+Atomizer downloaded and verified this exact artifact into its private application cache. After the required local-human preflight and DFU transition, one write started at `2026-07-11T23:24:37.404Z`, completed at `2026-07-11T23:25:15.429Z`, and passed post-reboot identity at `2026-07-11T23:25:17.966Z`. The durable final state is `completed`; the returned source is the exact pinned `c97938697b6c7485e7cab50bca9af76996b7d671`. The OEM procedure, one-shot rule, and evidence semantics are captured in [FIRMWARE_UPDATE_CONTRACT.md](./FIRMWARE_UPDATE_CONTRACT.md).
 
 ## Still unqualified
 
@@ -77,6 +79,6 @@ Atomizer downloaded and verified this exact artifact into its private applicatio
 - Manual RBW/attenuation edge cases and high-frequency transitions.
 - RF amplitude/frequency accuracy, DANL, phase noise, compression, harmonics, spurs, generator paths, modulation, and loads.
 - Pre- and post-update self-test equivalence.
-- The physical firmware write and recovery path.
+- Power-loss, cable-loss, host-crash, and recovery behavior during a future authorized update transaction.
 
 These remain explicit release gates. Source-addressable ranges and successful shell commands are not substitutes for RF metrology.

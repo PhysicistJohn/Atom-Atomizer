@@ -98,7 +98,7 @@ Atom’s application surface is contract version 4:
 
 Generator configuration and physical output do not have dependable firmware readback. They remain labeled `commanded`; uncertain transport loss makes RF state `unknown`. Software is not a hardware interlock.
 
-The delivered physical ZS407 is admitted and has passed initial receive-only text/raw sweep, diagnostics, and exact LCD-byte validation. This is not RF calibration or complete Gate B qualification; timing matrices, cable-loss cases, touch, high-frequency behavior, generator behavior, metrology, and the physical firmware write remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
+The delivered physical ZS407 is admitted, has passed initial receive-only text/raw sweep, diagnostics, and exact LCD-byte validation, and completed one guarded update to the pinned `c979386` OEM firmware with post-reboot identity verification. This is not RF calibration or complete Gate B qualification; timing matrices, destructive update-fault cases, cable-loss cases, touch, high-frequency behavior, generator behavior, and metrology remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
 
 Zero span is detected power versus time, not I/Q. Envelope STFT cannot establish phase, EVM, symbols, or protocol identity. Standards-derived SignalLab profiles are visual resource/timing projections unless separately backed by immutable conformance evidence.
 

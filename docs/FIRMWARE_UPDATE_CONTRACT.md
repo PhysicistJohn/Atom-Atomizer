@@ -1,7 +1,7 @@
 # ZS407 firmware update contract
 
-Status: implementation baseline; physical write not yet performed
-Version: 1.0.1
+Status: implementation baseline; one physical write and reboot identity accepted
+Version: 1.1.0
 Updated: 2026-07-11
 
 This contract governs Atomizer’s updater for one verified physical tinySA Ultra+ ZS407. It does not create a generic firmware browser or accept “latest” by filename, directory order, redirect, or server metadata.
@@ -99,9 +99,17 @@ dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave -D <verified artifact>
 
 Immediately before starting `dfu-util`, Atomizer atomically records `writeDisposition=started` and `writeStartedAt`, then writes an exclusive-create intent audit. If the process, host, tool, or journal fails after that point, completion is conservatively unknown and no code path may issue the write again. Exit status alone is insufficient; output must contain dfu-util’s successful-download confirmation. Atomizer then persists `writeDisposition=completed` and `writeCompletedAt` before post-write verification.
 
+While that single subprocess is active, Atomizer parses dfu-util's carriage-return progress records rather than inventing a time estimate. The closed progress projection is `preparing=0%`, erase `0–40%`, download `40–95%`, reboot verification `98%`, and identity-complete `100%`; erase/download also carry the exact stage percentage reported by dfu-util. The dialog displays stage, overall percentage, elapsed time, and an uninterrupted USB/power warning. A renderer progress-channel failure is surfaced immediately and never triggers, cancels, or repeats the irreversible subprocess.
+
 The device must reappear as exactly one `0483:5740` physical candidate within 30 seconds and pass normal identity admission as revision `c979386`. Otherwise the state explicitly says the write completed but verification failed and forbids another flash. Recovery follows the OEM Ultra/Ultra+ jog-button procedure, not an automatic retry.
 
 Post-reboot identity proves only that the expected firmware returned over exact USB. It does not prove RF performance or configuration compatibility. Completion instructs the human to power-cycle, follow the OEM `CONFIG/MORE/CLEAR CONFIG 1234` guidance, and run the post-update self-test; Atomizer does not automate those physical/configuration actions.
+
+## Accepted physical transaction
+
+The delivered ZS407 completed one human-authorized transaction on 2026-07-11. Durable evidence records `writeStartedAt=2026-07-11T23:24:37.404Z`, `writeCompletedAt=2026-07-11T23:25:15.429Z`, and final completion at `2026-07-11T23:25:17.966Z`. The write therefore occupied 38.025 seconds; exact USB admission then returned the pinned `tinySA4_v1.4-224-gc979386` / `c97938697b6c7485e7cab50bca9af76996b7d671` identity. The journal is `completed`, so the one-shot guard forbids using this transaction as permission to flash again.
+
+The build used for that transaction displayed an indeterminate wait animation during the write. This was an observability defect, not a second write or an uncertain outcome: subprocess output, timestamps, success confirmation, and post-reboot identity all completed. The current implementation replaces that wait with the contracted live parser and is covered by recorded-output parser, state-schema, renderer, and accessibility tests. It is intentionally not re-qualified by performing another unnecessary physical write.
 
 ## Atom boundary
 
@@ -127,6 +135,8 @@ Atom, coordinate computer use, keyboard/type/scroll computer paths, and semantic
 - Durable write-attempt evidence is committed before the subprocess starts and blocks repeat writes across app crashes or restarts.
 - Invalid durable journal evidence fails with an indeterminate write lock rather than resetting the transaction.
 - Completion requires post-reboot exact USB, ZS407 identity, and pinned source revision.
+- Live progress is derived only from dfu-util stage records; impossible stage/phase/percentage combinations fail schema validation.
+- A progress-channel failure is visible and cannot cause a write retry.
 - All updater API methods have Atom coverage or an explicit machine-checked human-safety-boundary disposition.
 
 OEM references:
