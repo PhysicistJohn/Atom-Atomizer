@@ -16,6 +16,21 @@ The simulator appears as a ZS407 and produces a repeatable 450-point trace. With
 
 To activate the native Atom copilot, copy `.env.example` to `.env` and set `OPENAI_KEY`. The key is loaded only by Electron main. Voice uses Realtime WebRTC; text, tools, and app-window computer control use one trusted Realtime WebSocket. Both are locked to `gpt-realtime-2.1-mini` with `high` reasoning effort. There is no alternate model, API, transport, alias, effort downgrade, or automatic retry path: a failure is shown and execution stops.
 
+### macOS Dock development app
+
+```bash
+npm run dev:install-app
+```
+
+This installs `~/Applications/TinySA Atomizer Dev.app`, adds its Atom icon to the
+Dock, binds it to this checkout, and launches it. A cold launch rebuilds shared
+packages plus Electron main/preload before starting Vite. Renderer edits update via
+HMR; quit and reopen the Dock app to load main, preload, or shared-package edits.
+The explicit simulator/USB and port contract lives in
+[`tools/dev-launcher/config.json`](./tools/dev-launcher/config.json), with launcher
+details and failure-log location in
+[`tools/dev-launcher/README.md`](./tools/dev-launcher/README.md).
+
 ## Workspace map
 
 - `apps/desktop`: hardened Electron main/preload and React instrument UI.
