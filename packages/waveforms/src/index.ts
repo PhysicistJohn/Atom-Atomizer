@@ -1,11 +1,14 @@
 import {
   replayChannelConfigurationSchema,
   synthesizedSignalProfileSchema,
-  waveformDescriptorSchema,
   type ReplayChannelConfiguration,
   type SynthesizedSignalProfile,
   type WaveformDescriptor,
+  type WaveformProjection,
 } from '@tinysa/contracts';
+import { waveformDescriptor } from './catalog.js';
+
+export { requireConformanceValidated, suggestedAnalyzerRange, waveformCatalog, waveformDescriptor } from './catalog.js';
 
 export type ReplayProfile = SynthesizedSignalProfile | 'survey';
 
@@ -25,61 +28,6 @@ export interface ZeroSpanSynthesisInput {
   channel: ReplayChannelConfiguration;
 }
 
-const visualStandard = {
-  organization: 'TinySA Atomizer' as const,
-  specification: 'Synthetic replay contract',
-  clause: 'Visual laboratory profiles',
-  revision: '2.1',
-  url: 'https://tinysa.org/wiki/',
-};
-
-export const waveformCatalog: readonly WaveformDescriptor[] = [
-  {
-    id: 'cw', label: 'CW carrier', family: 'tone', model: 'Unmodulated carrier', qualification: 'visual',
-    centerHz: 98_000_000, occupiedBandwidthHz: 5_000, recommendedSpanHz: 2_000_000,
-    standard: visualStandard,
-    disclosure: 'Deterministic unmodulated carrier for interaction and marker testing; not a calibrated RF source.',
-  },
-  {
-    id: 'am', label: 'AM replay', family: 'analog', model: 'AM · time-compressed envelope', qualification: 'visual',
-    centerHz: 98_000_000, occupiedBandwidthHz: 60_000, recommendedSpanHz: 500_000,
-    standard: visualStandard,
-    disclosure: 'Carrier and symmetric sidebands use a time-compressed amplitude cycle so modulation is visible sweep to sweep.',
-  },
-  {
-    id: 'fm', label: 'FM replay', family: 'analog', model: 'FM · ±75 kHz deviation', qualification: 'visual',
-    centerHz: 98_000_000, occupiedBandwidthHz: 200_000, recommendedSpanHz: 500_000,
-    standard: visualStandard,
-    disclosure: 'Instantaneous carrier energy traverses a time-compressed ±75 kHz deviation with a residual occupied comb.',
-  },
-  {
-    id: 'gsm-normal-burst', label: 'GSM normal burst', family: 'geran', model: 'GMSK normal-burst spectrum projection', qualification: 'standards-derived',
-    centerHz: 947_400_000, occupiedBandwidthHz: 200_000, recommendedSpanHz: 2_000_000,
-    standard: { organization: '3GPP', specification: 'TS 45.002', clause: 'Clause 5 · normal burst', revision: '18.0.0', url: 'https://www.3gpp.org/DynaReport/45002.htm' },
-    disclosure: 'Standards-derived GMSK occupancy and time-slot replay; it is not a bit-exact or conformance-validated I/Q vector.',
-  },
-  {
-    id: 'lte-etm1.1', label: 'LTE E-TM1.1', family: 'e-utra', model: 'E-UTRA Test Model 1.1 · 20 MHz', qualification: 'standards-derived',
-    centerHz: 1_840_000_000, occupiedBandwidthHz: 18_000_000, recommendedSpanHz: 30_000_000,
-    standard: { organization: '3GPP', specification: 'TS 36.141', clause: 'Clause 6.1.1 · E-TM1.1', revision: '13.11.0', url: 'https://www.etsi.org/deliver/etsi_ts/136100_136199/136141/13.11.00_60/ts_136141v131100p.pdf' },
-    disclosure: 'Standards-derived full-allocation OFDM spectrum projection; no conformance claim is made without a validated I/Q asset.',
-  },
-  {
-    id: 'nr-fr1-tm1.1', label: '5G NR TM1.1', family: 'nr', model: 'NR-FR1-TM1.1 · 100 MHz · 30 kHz SCS', qualification: 'standards-derived',
-    centerHz: 3_500_000_000, occupiedBandwidthHz: 98_280_000, recommendedSpanHz: 120_000_000,
-    standard: { organization: '3GPP', specification: 'TS 38.141-1', clause: 'Table 4.9.2.2.1-1 · NR-FR1-TM1.1', revision: '18.8.0', url: 'https://www.etsi.org/deliver/etsi_TS/138100_138199/13814101/18.08.00_60/ts_13814101v180800p.pdf' },
-    disclosure: 'Standards-derived 273-RB full-allocation spectrum projection; no conformance claim is made without a validated I/Q asset.',
-  },
-  {
-    id: 'wifi6-he-su', label: 'Wi-Fi 6 HE SU', family: 'wlan', model: '802.11ax HE SU PPDU · 20 MHz', qualification: 'standards-derived',
-    centerHz: 5_180_000_000, occupiedBandwidthHz: 18_906_250, recommendedSpanHz: 30_000_000,
-    standard: { organization: 'IEEE', specification: 'IEEE 802.11ax-2021', clause: 'HE single-user PPDU', revision: '2021', url: 'https://standards.ieee.org/ieee/802.11ax/7180/' },
-    disclosure: 'Standards-derived occupied-tone and burst projection. IEEE defines PPDUs rather than a named conformance test model; this is not a validated packet I/Q vector.',
-  },
-].map((descriptor) => waveformDescriptorSchema.parse(descriptor));
-
-const descriptorById = new Map(waveformCatalog.map((descriptor) => [descriptor.id, descriptor]));
-
 export const DEFAULT_REPLAY_CHANNEL: ReplayChannelConfiguration = replayChannelConfigurationSchema.parse({
   model: 'awgn',
   noiseFloorDbm: -108,
@@ -87,35 +35,11 @@ export const DEFAULT_REPLAY_CHANNEL: ReplayChannelConfiguration = replayChannelC
   fadingRateHz: 2,
 });
 
-export function waveformDescriptor(profile: SynthesizedSignalProfile): WaveformDescriptor {
-  const descriptor = descriptorById.get(synthesizedSignalProfileSchema.parse(profile));
-  if (!descriptor) throw new Error(`Waveform catalog is missing ${profile}`);
-  return structuredClone(descriptor);
-}
-
-export function suggestedAnalyzerRange(descriptor: WaveformDescriptor): { startHz: number; stopHz: number } {
-  waveformDescriptorSchema.parse(descriptor);
-  const startHz = Math.round(descriptor.centerHz - descriptor.recommendedSpanHz / 2);
-  const stopHz = Math.round(descriptor.centerHz + descriptor.recommendedSpanHz / 2);
-  if (startHz < 0) throw new Error(`Waveform ${descriptor.id} recommends a negative start frequency`);
-  return { startHz, stopHz };
-}
-
-export function requireConformanceValidated(profile: SynthesizedSignalProfile): WaveformDescriptor {
-  const descriptor = waveformDescriptor(profile);
-  if (descriptor.qualification !== 'conformance-validated' || !descriptor.assetSha256) {
-    throw new Error(`${descriptor.label} is ${descriptor.qualification}; a conformance-validated I/Q asset is not installed`);
-  }
-  return descriptor;
-}
-
 export function synthesizeSpectrum(input: SpectrumSynthesisInput): number[] {
   validateSpectrumInput(input);
   const channel = replayChannelConfigurationSchema.parse(input.channel);
   return Array.from({ length: input.points }, (_, index) => {
-    const frequencyHz = input.points === 1
-      ? input.startHz
-      : input.startHz + (input.stopHz - input.startHz) * index / (input.points - 1);
+    const frequencyHz = input.startHz + (input.stopHz - input.startHz) * index / (input.points - 1);
     const noiseDbm = receiverNoiseDbm(index, input.points, input.sweepIndex, channel);
     const signalDbm = signalPowerDbm(input.profile, frequencyHz, index, input);
     if (!Number.isFinite(signalDbm)) return noiseDbm;
@@ -130,25 +54,11 @@ export function synthesizeZeroSpan(input: ZeroSpanSynthesisInput): number[] {
   if (!Number.isInteger(input.points) || input.points < 1) throw new Error('Zero-span synthesis requires a positive integer point count');
   if (!Number.isInteger(input.sweepIndex) || input.sweepIndex < 0) throw new Error('Zero-span synthesis requires a non-negative integer sweep index');
   const channel = replayChannelConfigurationSchema.parse(input.channel);
+  const descriptor = input.profile === 'survey' ? undefined : waveformDescriptor(input.profile);
   return Array.from({ length: input.points }, (_, index) => {
     const phase = (index + input.sweepIndex * 3) * Math.PI / 13;
     const normalized = index / Math.max(1, input.points - 1);
-    let signalDbm: number;
-    switch (input.profile) {
-      case 'cw': signalDbm = -52 + 0.25 * Math.sin(phase * 1.7); break;
-      case 'am': signalDbm = -68 + 15 * Math.sin(phase); break;
-      case 'fm': signalDbm = -56 + 0.35 * Math.sin(phase * 2.3); break;
-      case 'gsm-normal-burst': signalDbm = ((index + input.sweepIndex * 7) % 104) < 13 ? -55 : -118; break;
-      case 'lte-etm1.1': signalDbm = -65 + 2.4 * smoothNoise(index / 2.5, input.sweepIndex, channel.seed ^ 0x1e7e); break;
-      case 'nr-fr1-tm1.1': signalDbm = -64 + 3.1 * smoothNoise(index / 2.1, input.sweepIndex, channel.seed ^ 0x5a11); break;
-      case 'wifi6-he-su': signalDbm = ((index + input.sweepIndex * 11) % 89) < 58 ? -61 + 2 * Math.sin(phase * 2.7) : -118; break;
-      case 'survey': {
-        const envelope = 7 * Math.sin(phase);
-        signalDbm = -82 + envelope + (index % 47 < 5 ? 13 : 0);
-        break;
-      }
-      default: assertNever(input.profile);
-    }
+    const signalDbm = zeroSpanSignalDbm(input.profile, descriptor, index, input.sweepIndex, phase);
     const noiseDbm = channel.noiseFloorDbm + awgnPeriodogramDb(index, input.sweepIndex, channel.seed);
     const fadingDb = channel.model === 'rayleigh'
       ? rayleighFadingDb(index, input.points, input.sweepIndex + normalized, channel)
@@ -167,45 +77,98 @@ function signalPowerDbm(profile: ReplayProfile, frequencyHz: number, index: numb
       bellDbm(-61, normalized - 0.79, 0.009),
     ]);
   }
-  const descriptor = descriptorById.get(profile);
-  if (!descriptor) throw new Error(`Waveform catalog is missing ${profile}`);
+  const descriptor = waveformDescriptor(profile);
   const offsetHz = frequencyHz - descriptor.centerHz;
   const binWidthHz = spanHz / Math.max(1, input.points - 1);
-  switch (profile) {
-    case 'cw': return bellDbm(-48, offsetHz, Math.max(2_000, binWidthHz * 1.2));
-    case 'am': {
-      const envelope = 0.5 + 0.5 * Math.sin(input.sweepIndex * 0.45);
-      return combineManyDbm([
-        bellDbm(-54 + 6 * envelope, offsetHz, Math.max(1_800, binWidthHz * 1.1)),
-        bellDbm(-76 + 12 * envelope, offsetHz - 25_000, Math.max(2_000, binWidthHz * 1.2)),
-        bellDbm(-76 + 12 * envelope, offsetHz + 25_000, Math.max(2_000, binWidthHz * 1.2)),
-      ]);
-    }
-    case 'fm': {
-      const instantaneousOffset = 75_000 * Math.sin(input.sweepIndex * 0.34);
-      const carrier = bellDbm(-50, offsetHz - instantaneousOffset, Math.max(2_500, binWidthHz * 1.35));
-      const occupied = Math.abs(offsetHz) <= 105_000
-        ? -76 + 2.2 * Math.cos(offsetHz / 8_000 + input.sweepIndex * 0.2)
-        : Number.NEGATIVE_INFINITY;
-      return combineDbm(carrier, occupied);
-    }
-    case 'gsm-normal-burst': {
-      const slotActive = input.sweepIndex % 8 < 2;
-      const peak = slotActive ? -55 : -80;
-      return peak - 11.5 * (offsetHz / 100_000) ** 2;
-    }
-    case 'lte-etm1.1': return ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, -64, 15_000, input.sweepIndex, 0x36_141);
-    case 'nr-fr1-tm1.1': return ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, -63, 30_000, input.sweepIndex, 0x38_141);
-    case 'wifi6-he-su': {
-      if (input.sweepIndex % 9 >= 7) return Number.NEGATIVE_INFINITY;
-      const projected = ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, -61, 78_125, input.sweepIndex, 0x80_211);
-      return Math.abs(offsetHz) < 78_125 ? projected - 12 : projected;
-    }
-    default: return assertNever(profile);
+  if (profile === 'cw') return bellDbm(-48, offsetHz, Math.max(2_000, binWidthHz * 1.2));
+  if (profile === 'am') {
+    const envelope = 0.5 + 0.5 * Math.sin(input.sweepIndex * 0.45);
+    return combineManyDbm([
+      bellDbm(-54 + 6 * envelope, offsetHz, Math.max(1_800, binWidthHz * 1.1)),
+      bellDbm(-76 + 12 * envelope, offsetHz - 25_000, Math.max(2_000, binWidthHz * 1.2)),
+      bellDbm(-76 + 12 * envelope, offsetHz + 25_000, Math.max(2_000, binWidthHz * 1.2)),
+    ]);
   }
+  if (profile === 'fm') return fmProjection(offsetHz, binWidthHz, input.sweepIndex);
+  return standardsProjection(descriptor, offsetHz, binWidthHz, input.sweepIndex);
 }
 
-function ofdmProjection(offsetHz: number, occupiedBandwidthHz: number, plateauDbm: number, subcarrierSpacingHz: number, sweepIndex: number, salt: number): number {
+function fmProjection(offsetHz: number, binWidthHz: number, sweepIndex: number): number {
+  const instantaneousOffset = 75_000 * Math.sin(sweepIndex * 0.34);
+  const lineWidthHz = Math.max(1_800, binWidthHz * 1.2);
+  const carrier = bellDbm(-50, offsetHz - instantaneousOffset, Math.max(2_500, binWidthHz * 1.35));
+  const resolvedSidebands = [-3, -2, -1, 1, 2, 3].map((order) => {
+    const breathing = 1.2 * Math.sin(sweepIndex * 0.29 + order * 0.8);
+    return bellDbm(-80 - Math.abs(order) * 3 + breathing, offsetHz - order * 25_000, lineWidthHz);
+  });
+  return combineManyDbm([carrier, ...resolvedSidebands]);
+}
+
+function standardsProjection(descriptor: WaveformDescriptor, offsetHz: number, binWidthHz: number, sweepIndex: number): number {
+  if (!transmissionActive(descriptor.projection.timing, sweepIndex)) return Number.NEGATIVE_INFINITY;
+  if (descriptor.family === 'geran') return geranProjection(descriptor, offsetHz, sweepIndex);
+  if (descriptor.family === 'wlan') return wlanProjection(descriptor, offsetHz, sweepIndex);
+  if (descriptor.family !== 'e-utra' && descriptor.family !== 'nr') throw new Error(`No standards projection exists for ${descriptor.id}`);
+  return cellularProjection(descriptor, offsetHz, binWidthHz, sweepIndex);
+}
+
+function geranProjection(descriptor: WaveformDescriptor, offsetHz: number, sweepIndex: number): number {
+  const half = descriptor.occupiedBandwidthHz / 2;
+  if (Math.abs(offsetHz) > half * 2.4) return Number.NEGATIVE_INFINITY;
+  const modulationBroadening = modulationTexture(descriptor.projection.modulation);
+  const normalized = offsetHz / half;
+  const main = -55 - (descriptor.projection.modulation === 'gmsk' ? 11.5 : 8.5) * normalized ** 2;
+  const structured = 0.7 * modulationBroadening * Math.cos(offsetHz / 18_000 + sweepIndex * 0.21);
+  return main + structured;
+}
+
+function cellularProjection(descriptor: WaveformDescriptor, offsetHz: number, binWidthHz: number, sweepIndex: number): number {
+  const spacingHz = descriptor.projection.subcarrierSpacingHz;
+  if (!spacingHz) throw new Error(`${descriptor.id} is missing subcarrier spacing`);
+  const textureScale = modulationTexture(descriptor.projection.modulation);
+  if (descriptor.projection.allocation === 'narrowband') {
+    return ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, -65, spacingHz, sweepIndex, hashText(descriptor.id), textureScale);
+  }
+  if (descriptor.projection.allocation === 'single-prb') {
+    const fullGridHz = descriptor.family === 'e-utra' ? 18_000_000 : 98_280_000;
+    const positions = [-0.38, -0.19, 0, 0.21, 0.39];
+    const prbCenterHz = positions[sweepIndex % positions.length]! * fullGridHz;
+    const prbWidthHz = spacingHz * 12;
+    const measuredPrb = ofdmProjection(offsetHz - prbCenterHz, prbWidthHz, -62, spacingHz, sweepIndex, hashText(descriptor.id), textureScale);
+    const physicalChannels = ofdmProjection(offsetHz, fullGridHz, -96, spacingHz, sweepIndex, hashText(`${descriptor.id}:control`), 0.4);
+    return combineDbm(measuredPrb, physicalChannels);
+  }
+  const base = ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, descriptor.family === 'e-utra' ? -64 : -63, spacingHz, sweepIndex, hashText(descriptor.id), textureScale);
+  if (descriptor.projection.allocation !== 'boosted' || !Number.isFinite(base)) return base;
+  const rbWidthHz = spacingHz * 12;
+  const rbIndex = Math.floor((offsetHz + descriptor.occupiedBandwidthHz / 2) / rbWidthHz);
+  const boost = (rbIndex + sweepIndex) % 4 === 0 ? 3 : -1.25;
+  return base + boost;
+}
+
+function wlanProjection(descriptor: WaveformDescriptor, offsetHz: number, sweepIndex: number): number {
+  const spacingHz = descriptor.projection.subcarrierSpacingHz;
+  if (!spacingHz) throw new Error(`${descriptor.id} is missing subcarrier spacing`);
+  let projected = ofdmProjection(offsetHz, descriptor.occupiedBandwidthHz, -61, spacingHz, sweepIndex, hashText(descriptor.id), 1);
+  if (!Number.isFinite(projected)) return projected;
+  if (descriptor.projection.allocation === 'multi-ru') {
+    const normalized = offsetHz / (descriptor.occupiedBandwidthHz / 2);
+    const resourceStep = Math.floor((normalized + 1) * 4);
+    projected += resourceStep % 2 === 0 ? 1.8 : -2.2;
+  }
+  if (Math.abs(offsetHz) < spacingHz) projected -= 12;
+  return projected;
+}
+
+function ofdmProjection(
+  offsetHz: number,
+  occupiedBandwidthHz: number,
+  plateauDbm: number,
+  subcarrierSpacingHz: number,
+  sweepIndex: number,
+  salt: number,
+  textureScale: number,
+): number {
   const half = occupiedBandwidthHz / 2;
   const distance = Math.abs(offsetHz);
   if (distance > half + occupiedBandwidthHz * 0.12) return Number.NEGATIVE_INFINITY;
@@ -215,9 +178,65 @@ function ofdmProjection(offsetHz: number, occupiedBandwidthHz: number, plateauDb
   }
   const edgeTaper = distance > half * 0.965 ? -4 * (distance - half * 0.965) / (half * 0.035) : 0;
   const subcarrierPhase = offsetHz / subcarrierSpacingHz;
-  const texture = 0.85 * Math.sin(subcarrierPhase * 0.37 + sweepIndex * 0.41 + salt)
-    + 0.55 * Math.cos(subcarrierPhase * 0.11 - sweepIndex * 0.23);
+  const texture = textureScale * (
+    0.85 * Math.sin(subcarrierPhase * 0.37 + sweepIndex * 0.41 + salt)
+    + 0.55 * Math.cos(subcarrierPhase * 0.11 - sweepIndex * 0.23)
+  );
   return plateauDbm + edgeTaper + texture;
+}
+
+function zeroSpanSignalDbm(
+  profile: ReplayProfile,
+  descriptor: WaveformDescriptor | undefined,
+  index: number,
+  sweepIndex: number,
+  phase: number,
+): number {
+  if (profile === 'survey') return -82 + 7 * Math.sin(phase) + (index % 47 < 5 ? 13 : 0);
+  if (profile === 'cw') return -52 + 0.25 * Math.sin(phase * 1.7);
+  if (profile === 'am') return -68 + 15 * Math.sin(phase);
+  if (profile === 'fm') return -56 + 0.35 * Math.sin(phase * 2.3);
+  if (!descriptor) throw new Error(`Waveform descriptor is missing for ${profile}`);
+  if (descriptor.family === 'geran') return ((index + sweepIndex * 7) % 104) < 13 ? -55 : -118;
+  if (descriptor.family === 'wlan') return wlanZeroSpan(descriptor.id, index, sweepIndex, phase);
+  const timing = descriptor.projection.timing;
+  if (!transmissionActiveAtSample(timing, index, sweepIndex)) return -118;
+  const allocationOffset = descriptor.projection.allocation === 'single-prb' ? -13 : descriptor.projection.allocation === 'narrowband' ? -8 : 0;
+  const texture = 2.2 + modulationTexture(descriptor.projection.modulation) * 0.7;
+  return -64 + allocationOffset + texture * smoothNoise(index / 2.5, sweepIndex, hashText(descriptor.id));
+}
+
+function wlanZeroSpan(profile: SynthesizedSignalProfile, index: number, sweepIndex: number, phase: number): number {
+  const coordinate = index + sweepIndex * 11;
+  if (profile === 'wifi6-he-er-su') return coordinate % 113 < 84 ? -65 + 1.4 * Math.sin(phase) : -118;
+  if (profile === 'wifi6-he-mu') return coordinate % 97 < 72 ? -60 + 3 * smoothNoise(index / 3, sweepIndex, 0x6d75) : -118;
+  if (profile === 'wifi6-he-tb') return coordinate % 89 >= 27 && coordinate % 89 < 63 ? -62 + 2.5 * Math.sin(phase * 2.7) : -118;
+  return coordinate % 89 < 58 ? -61 + 2 * Math.sin(phase * 2.7) : -118;
+}
+
+function transmissionActive(timing: WaveformProjection['timing'], sweepIndex: number): boolean {
+  if (timing === 'burst') return sweepIndex % 9 < 7;
+  if (timing === 'sbfd-du') return sweepIndex % 2 === 0;
+  if (timing === 'sbfd-ud') return sweepIndex % 2 === 1;
+  if (timing === 'sbfd-dud') return sweepIndex % 3 !== 1;
+  return true;
+}
+
+function transmissionActiveAtSample(timing: WaveformProjection['timing'], index: number, sweepIndex: number): boolean {
+  const coordinate = index + sweepIndex * 3;
+  if (timing === 'subslot') return coordinate % 14 < 4;
+  if (timing === 'slot') return coordinate % 28 < 14;
+  if (timing === 'sbfd-du') return coordinate % 28 < 14;
+  if (timing === 'sbfd-ud') return coordinate % 28 >= 14;
+  if (timing === 'sbfd-dud') { const symbol = coordinate % 42; return symbol < 14 || symbol >= 28; }
+  return true;
+}
+
+function modulationTexture(modulation: WaveformProjection['modulation']): number {
+  return ({
+    unmodulated: 0, am: 0.2, fm: 0.3, gmsk: 0.3, qpsk: 0.55, aqpsk: 0.65, '8psk': 0.72,
+    '16qam': 0.8, '32qam': 0.85, '64qam': 0.9, '256qam': 1.05, '1024qam': 1.2, 'ofdm-mixed': 1, 'he-ofdm': 1,
+  })[modulation];
 }
 
 function receiverNoiseDbm(index: number, points: number, sweepIndex: number, channel: ReplayChannelConfiguration): number {
@@ -319,7 +338,12 @@ function validateSpectrumInput(input: SpectrumSynthesisInput): void {
   if (input.profile !== 'survey') synthesizedSignalProfileSchema.parse(input.profile);
 }
 
+function hashText(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
+  return hash | 0;
+}
+
 function smootherStep(value: number): number { return value * value * (3 - 2 * value); }
 function lerp(start: number, stop: number, amount: number): number { return start + (stop - start) * amount; }
 function clamp(value: number, minimum: number, maximum: number): number { return Math.min(maximum, Math.max(minimum, value)); }
-function assertNever(value: never): never { throw new Error(`Unsupported waveform profile: ${String(value)}`); }

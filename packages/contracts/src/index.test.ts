@@ -59,7 +59,8 @@ describe('domain units and firmware-derived validation', () => {
     expect(modelPackageManifestSchema.safeParse({ schemaVersion: 1, modelId: 'm', version: '1', assetSha256: 'not-a-hash' }).success).toBe(false);
   });
   it('closes the Signal Lab profile vocabulary', () => {
-    expect(synthesizedSignalProfileSchema.options).toEqual(['cw', 'am', 'fm', 'gsm-normal-burst', 'lte-etm1.1', 'nr-fr1-tm1.1', 'wifi6-he-su']);
+    expect(synthesizedSignalProfileSchema.options).toHaveLength(79);
+    expect(synthesizedSignalProfileSchema.options).toEqual(expect.arrayContaining(['lte-setm3.3-2', 'nr-fr1-tm3.3-sbfd-dud', 'wifi6-he-tb']));
     expect(synthesizedSignalProfileSchema.safeParse('wifi').success).toBe(false);
   });
   it('closes trace, marker, and replay-channel contracts', () => {
@@ -72,7 +73,7 @@ describe('domain units and firmware-derived validation', () => {
     expect(replayChannelConfigurationSchema.safeParse({ model: 'rayleigh', noiseFloorDbm: -108, seed: 407, fadingRateHz: 2 }).success).toBe(true);
   });
   it('requires hashed evidence before a waveform can claim conformance validation', () => {
-    const descriptor = { id: 'lte-etm1.1', label: 'LTE', family: 'e-utra', model: 'E-TM1.1', qualification: 'conformance-validated', centerHz: 1_840_000_000, occupiedBandwidthHz: 18_000_000, recommendedSpanHz: 30_000_000, standard: { organization: '3GPP', specification: 'TS 36.141', clause: '6.1.1', revision: '13.11.0', url: 'https://www.3gpp.org/' }, disclosure: 'Validated asset.' };
+    const descriptor = { id: 'lte-etm1.1', label: 'LTE', family: 'e-utra', model: 'E-TM1.1', qualification: 'conformance-validated', centerHz: 1_840_000_000, occupiedBandwidthHz: 18_000_000, recommendedSpanHz: 30_000_000, projection: { allocation: 'full', modulation: 'qpsk', timing: 'frame', subcarrierSpacingHz: 15_000, nominalResourceBlocks: 100 }, standard: { organization: '3GPP', specification: 'TS 36.141', clause: '6.1.1', revision: '19.1.0', url: 'https://www.3gpp.org/' }, disclosure: 'Validated asset.' };
     expect(waveformDescriptorSchema.safeParse(descriptor).success).toBe(false);
     expect(waveformDescriptorSchema.safeParse({ ...descriptor, assetSha256: 'a'.repeat(64) }).success).toBe(true);
   });

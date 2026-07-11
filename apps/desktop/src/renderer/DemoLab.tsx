@@ -1,25 +1,34 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Activity, AudioLines, Boxes, Grid3X3, RadioTower, Waves, Wifi } from 'lucide-react';
-import type { DemoLabStatus, ReplayChannelConfiguration, SynthesizedSignalProfile } from '@tinysa/contracts';
+import type { DemoLabStatus, ReplayChannelConfiguration, SynthesizedSignalProfile, WaveformDescriptor } from '@tinysa/contracts';
 
-const signals = [
-  { id: 'cw' as const, label: 'CW', detail: 'Unmodulated carrier', icon: RadioTower },
-  { id: 'am' as const, label: 'AM', detail: 'Breathing sidebands', icon: Activity },
-  { id: 'fm' as const, label: 'FM', detail: '±75 kHz deviation', icon: Waves },
-  { id: 'gsm-normal-burst' as const, label: 'GSM', detail: 'GMSK normal burst', icon: AudioLines },
-  { id: 'lte-etm1.1' as const, label: 'LTE E-TM1.1', detail: '20 MHz full allocation', icon: Grid3X3 },
-  { id: 'nr-fr1-tm1.1' as const, label: '5G NR TM1.1', detail: '100 MHz · 30 kHz SCS', icon: Boxes },
-  { id: 'wifi6-he-su' as const, label: 'Wi-Fi 6 HE SU', detail: '20 MHz burst PPDU', icon: Wifi },
+type CatalogGroup = 'lab' | 'geran' | 'e-utra' | 'nr' | 'wlan';
+
+const groups: readonly { id: CatalogGroup; label: string }[] = [
+  { id: 'lab', label: 'LAB' },
+  { id: 'geran', label: 'GSM' },
+  { id: 'e-utra', label: 'LTE' },
+  { id: 'nr', label: '5G NR' },
+  { id: 'wlan', label: 'WI-FI' },
 ];
+
+const labIcons = { cw: RadioTower, am: Activity, fm: Waves } as const;
 
 export function DemoLab() {
   const [status, setStatus] = useState<DemoLabStatus>();
+  const [group, setGroup] = useState<CatalogGroup>('lab');
+  const [browseId, setBrowseId] = useState<SynthesizedSignalProfile>('cw');
   const [switching, setSwitching] = useState<string>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    const unsubscribe = window.demoLab.subscribe(setStatus);
-    void window.demoLab.status().then(setStatus).catch((value) => setError(message(value)));
+    const apply = (next: DemoLabStatus) => {
+      setStatus(next);
+      setBrowseId(next.profile);
+      setGroup(catalogGroup(next.waveform));
+    };
+    const unsubscribe = window.demoLab.subscribe(apply);
+    void window.demoLab.status().then(apply).catch((value) => setError(message(value)));
     return unsubscribe;
   }, []);
 
@@ -39,16 +48,39 @@ export function DemoLab() {
     finally { setSwitching(undefined); }
   }
 
+  const groupCatalog = useMemo(() => status?.catalog.filter((descriptor) => catalogGroup(descriptor) === group) ?? [], [group, status?.catalog]);
+  const browsed = groupCatalog.find((descriptor) => descriptor.id === browseId) ?? groupCatalog[0];
   const channel = status?.channel;
+
+  function chooseGroup(next: CatalogGroup): void {
+    setGroup(next);
+    const first = status?.catalog.find((descriptor) => catalogGroup(descriptor) === next);
+    if (!first) throw new Error(`Signal Lab catalog group ${next} is empty`);
+    const target = status?.profile && catalogGroup(status.waveform) === next ? status.profile : first.id;
+    setBrowseId(target);
+    if (target !== status?.profile) void select(target);
+  }
+
+  function chooseProfile(profile: SynthesizedSignalProfile): void {
+    setBrowseId(profile);
+    void select(profile);
+  }
+
   return <main className="demo-lab">
     <header><div className="demo-orbit"><i/><i/><i/><b/></div><div><small>TINYSA ATOMIZER</small><strong>Signal Lab</strong></div><span><i/>{status?.playback ? 'LIVE' : 'ATTACHED'}</span></header>
-    <section className="demo-copy"><span>QUALIFIED SYNTHETIC REPLAY</span><h1>Choose a waveform</h1><p>Standard-derived spectrum projections and visual lab signals stream through the byte-level ZS407 simulator.</p></section>
-    <section className="signal-switcher" aria-label="Synthesized waveform profile">{signals.map((signal) => {
-      const Icon = signal.icon;
-      const active = status?.profile === signal.id;
-      const descriptor = status?.catalog.find((entry) => entry.id === signal.id);
-      return <button key={signal.id} className={active ? 'active' : ''} disabled={!status?.active || Boolean(switching)} onClick={() => void select(signal.id)} title={descriptor?.disclosure}><span><Icon size={17}/></span><span><strong>{signal.label}</strong><small>{switching === signal.id ? 'Switching…' : signal.detail}</small><em>{descriptor?.qualification === 'standards-derived' ? 'STD-DERIVED' : 'VISUAL'}</em></span><i>{active && <b/>}</i></button>;
-    })}</section>
+    <section className="demo-copy"><span>QUALIFIED SYNTHETIC REPLAY</span><h1>Waveform library</h1><p>Every published in-scope model is selectable. Standards-derived spectrum and timing projections stream through the byte-level ZS407 simulator.</p></section>
+    <section className="profile-catalog" aria-label="Synthesized waveform catalog">
+      <nav className="catalog-tabs" aria-label="Waveform families">{groups.map((item) => {
+        const count = status?.catalog.filter((descriptor) => catalogGroup(descriptor) === item.id).length ?? 0;
+        return <button key={item.id} className={group === item.id ? 'active' : ''} onClick={() => chooseGroup(item.id)}><span>{item.label}</span><small>{count}</small></button>;
+      })}</nav>
+      {group === 'lab' ? <div className="lab-signals">{groupCatalog.map((descriptor) => {
+        const Icon = labIcons[descriptor.id as keyof typeof labIcons];
+        if (!Icon) throw new Error(`Visual lab profile ${descriptor.id} has no icon contract`);
+        const active = status?.profile === descriptor.id;
+        return <button key={descriptor.id} className={active ? 'active' : ''} disabled={!status?.active || Boolean(switching)} onClick={() => chooseProfile(descriptor.id)} title={descriptor.disclosure}><span><Icon size={18}/></span><strong>{descriptor.label.replace(' replay', '')}</strong><small>{descriptor.model}</small><i>{active && <b/>}</i></button>;
+      })}</div> : browsed ? <ProfileBrowser descriptor={browsed} catalog={groupCatalog} active={status?.profile === browsed.id} switching={switching === browsed.id} disabled={!status?.active || Boolean(switching)} onSelect={chooseProfile}/> : <div className="catalog-missing">CATALOG GROUP MISSING</div>}
+    </section>
     <section className="channel-model">
       <div><span>CHANNEL MODEL</span><small>SEEDED · REPRODUCIBLE</small></div>
       <div className="channel-buttons"><button className={channel?.model === 'awgn' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'awgn' })}>AWGN</button><button className={channel?.model === 'rayleigh' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'rayleigh' })}>Rayleigh</button></div>
@@ -57,8 +89,36 @@ export function DemoLab() {
       <p>{channel?.model === 'rayleigh' ? 'Frequency-selective correlated complex fading plus AWGN.' : 'Complex Gaussian periodogram noise plus receiver-shape artifacts.'}</p>
     </section>
     {error && <div className="demo-error" role="alert">{error}</div>}
-    <footer><span>{status?.active ? status.playback ? 'SYNTHETIC REPLAY LIVE' : 'REPLAY PAUSED' : 'DEMO STANDBY'}</span><span>{status?.waveform.qualification.toUpperCase() ?? 'NO PROFILE'} · SEED {channel?.seed ?? '—'}</span></footer>
+    <footer><span>{status?.active ? status.playback ? 'SYNTHETIC REPLAY LIVE' : 'REPLAY PAUSED' : 'DEMO STANDBY'}</span><span>{status?.waveform.qualification.toUpperCase() ?? 'NO PROFILE'} · {status?.waveform.model.split(' · ')[0] ?? '—'}</span></footer>
   </main>;
+}
+
+function ProfileBrowser({ descriptor, catalog, active, switching, disabled, onSelect }: {
+  descriptor: WaveformDescriptor;
+  catalog: readonly WaveformDescriptor[];
+  active: boolean;
+  switching: boolean;
+  disabled: boolean;
+  onSelect(profile: SynthesizedSignalProfile): void;
+}) {
+  const Icon = descriptor.family === 'geran' ? AudioLines : descriptor.family === 'e-utra' ? Grid3X3 : descriptor.family === 'nr' ? Boxes : Wifi;
+  return <div className="profile-browser">
+    <label><span>MODEL</span><select aria-label={`${familyLabel(descriptor)} waveform model`} value={descriptor.id} disabled={disabled} onChange={(event) => onSelect(event.target.value as SynthesizedSignalProfile)}>{catalog.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</select></label>
+    <article className={active ? 'active' : ''} title={descriptor.disclosure}>
+      <span className="profile-icon"><Icon size={21}/></span>
+      <div><small>{descriptor.qualification === 'standards-derived' ? 'STD-DERIVED' : 'VISUAL'}</small><h2>{descriptor.label}</h2><p>{switching ? 'Switching model…' : descriptor.model}</p></div>
+      <i>{active && <b/>}</i>
+      <dl><div><dt>ALLOCATION</dt><dd>{descriptor.projection.allocation.replace('-', ' ').toUpperCase()}</dd></div><div><dt>TIMING</dt><dd>{descriptor.projection.timing.replace('sbfd-', 'SBFD ').toUpperCase()}</dd></div><div><dt>SOURCE</dt><dd>{descriptor.standard.clause}</dd></div></dl>
+    </article>
+  </div>;
+}
+
+function catalogGroup(descriptor: WaveformDescriptor): CatalogGroup {
+  return descriptor.family === 'tone' || descriptor.family === 'analog' ? 'lab' : descriptor.family;
+}
+
+function familyLabel(descriptor: WaveformDescriptor): string {
+  return ({ geran: 'GSM', 'e-utra': 'LTE', nr: '5G NR', wlan: 'Wi-Fi', tone: 'Lab', analog: 'Lab' })[descriptor.family];
 }
 
 function message(value: unknown): string { return value instanceof Error ? value.message : String(value); }

@@ -18,5 +18,10 @@ export function TopBar({ snapshot, simulated, demoProfile, agentOpen, agentConfi
 }
 
 function demoLabel(profile: SynthesizedSignalProfile): string {
-  return ({ cw: 'CW', am: 'AM', fm: 'FM', 'gsm-normal-burst': 'GSM', 'lte-etm1.1': 'LTE E-TM1.1', 'nr-fr1-tm1.1': 'NR-TM1.1', 'wifi6-he-su': 'WI-FI 6 HE' })[profile];
+  if (profile === 'cw' || profile === 'am' || profile === 'fm') return profile.toUpperCase();
+  if (profile.startsWith('gsm-')) return `GSM · ${profile.replace('gsm-', '').replace('-normal-burst', '').toUpperCase()}`;
+  if (profile.startsWith('lte-')) return `LTE · ${profile.slice(4).toUpperCase()}`;
+  if (profile.startsWith('nr-')) return `5G · ${profile.slice(3).toUpperCase()}`;
+  if (profile.startsWith('wifi6-')) return `WI-FI 6 · ${profile.slice(6).toUpperCase()}`;
+  throw new Error(`Signal Lab profile ${profile} has no top-bar label`);
 }
