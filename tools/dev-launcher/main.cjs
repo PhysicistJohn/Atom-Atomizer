@@ -10,7 +10,7 @@ const { pathToFileURL } = require('node:url');
 const { inspect } = require('node:util');
 
 const APP_NAME = 'TinySA Atomizer Dev';
-const LAUNCHER_CONTRACT_VERSION = 1;
+const LAUNCHER_CONTRACT_VERSION = 2;
 const LOG_FILE = join(homedir(), 'Library', 'Logs', `${APP_NAME}.log`);
 const STARTUP_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 150;
@@ -69,19 +69,21 @@ function loadContract() {
   const runtimeFile = join(repoRoot, 'tools', 'dev-launcher', 'config.json');
   const runtime = requireExactObject(
     readJson(runtimeFile, 'Development runtime contract'),
-    ['contractVersion', 'deviceMode', 'port'],
+    ['contractVersion', 'firmwareRepository', 'instrumentPolicy', 'port'],
     'Development runtime contract',
   );
   if (runtime.contractVersion !== LAUNCHER_CONTRACT_VERSION) {
     throw new Error(`Development runtime contract version must be ${LAUNCHER_CONTRACT_VERSION}`);
   }
-  if (runtime.deviceMode !== 'simulator' && runtime.deviceMode !== 'usb') {
-    throw new TypeError('deviceMode must be exactly "simulator" or "usb"');
+  if (runtime.instrumentPolicy !== 'physical-first-executable-twin') {
+    throw new TypeError('instrumentPolicy must be exactly "physical-first-executable-twin"');
   }
+  if (typeof runtime.firmwareRepository !== 'string' || !runtime.firmwareRepository || runtime.firmwareRepository.startsWith('/')) throw new TypeError('firmwareRepository must be a non-empty path relative to the Atomizer repository');
   if (!Number.isInteger(runtime.port) || runtime.port < 1024 || runtime.port > 65535) {
     throw new TypeError('port must be an integer from 1024 through 65535');
   }
 
+  const firmwareRepository = resolve(repoRoot, runtime.firmwareRepository);
   const requiredPaths = [
     'package.json',
     '.env',
@@ -96,10 +98,13 @@ function loadContract() {
     const absolutePath = join(repoRoot, relativePath);
     if (!existsSync(absolutePath)) throw new Error(`Required development file is missing: ${absolutePath}`);
   }
+  const bridge = join(firmwareRepository, 'tools', 'run-atomizer-twin-bridge.sh');
+  if (!existsSync(bridge)) throw new Error(`Required executable Firmware twin bridge is missing: ${bridge}`);
 
   return Object.freeze({
     repoRoot,
-    deviceMode: runtime.deviceMode,
+    instrumentPolicy: runtime.instrumentPolicy,
+    firmwareRepository,
     port: runtime.port,
     devServerUrl: `http://localhost:${runtime.port}`,
   });
@@ -227,8 +232,8 @@ async function launch() {
   process.env.NODE_ENV = 'development';
   process.env.VITE_DEV_SERVER_URL = contract.devServerUrl;
   process.env.TINYSA_ENV_FILE = join(contract.repoRoot, '.env');
-  if (contract.deviceMode === 'simulator') process.env.TINYSA_SIMULATOR = '1';
-  else delete process.env.TINYSA_SIMULATOR;
+  process.env.TINYSA_FIRMWARE_REPO = contract.firmwareRepository;
+  delete process.env.TINYSA_SIMULATOR;
 
   buildDevelopmentEntries(contract);
   await startVite(contract);
@@ -238,7 +243,7 @@ async function launch() {
   app.dock.setIcon(icon);
 
   const mainEntry = join(contract.repoRoot, 'apps', 'desktop', 'dist', 'main', 'main.js');
-  log('ELECTRON', `Importing ${mainEntry} in ${contract.deviceMode} mode`);
+  log('ELECTRON', `Importing ${mainEntry} with ${contract.instrumentPolicy}`);
   await import(pathToFileURL(mainEntry).href);
 }
 

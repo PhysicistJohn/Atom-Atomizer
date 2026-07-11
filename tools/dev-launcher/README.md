@@ -9,10 +9,12 @@ port in `config.json`, and then imports the freshly built main process. Renderer
 changes use Vite HMR while the app is open. Main, preload, and shared-package changes
 take effect after quitting and reopening the Dock app.
 
-`config.json` is the runtime contract. Use `"deviceMode": "simulator"` while no
-instrument is connected. Change it to `"usb"` after the tinySA arrives. Unknown
-keys, invalid values, a missing `.env`, a build failure, or an occupied port aborts
-startup with a visible error and writes details to
+`config.json` is the runtime contract. It pins
+`"instrumentPolicy": "physical-first-executable-twin"` and the sibling Firmware
+repository. Every launch completes USB discovery first: an exact physical ZS407
+suppresses the twin; otherwise Atomizer boots and connects the pinned executable
+Renode twin. Discovery, bridge, evidence, build, missing `.env`, or occupied-port
+failure aborts visibly and writes details to
 `~/Library/Logs/TinySA Atomizer Dev.log`.
 
 Rerun the installer after changing the launcher itself, moving the checkout, or

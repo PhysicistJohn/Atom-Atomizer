@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const APP_NAME = 'TinySA Atomizer Dev';
 const BUNDLE_ID = 'org.tinysa.atomizer.dev';
-const CONTRACT_VERSION = 1;
+const CONTRACT_VERSION = 2;
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const sourceApp = join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app');

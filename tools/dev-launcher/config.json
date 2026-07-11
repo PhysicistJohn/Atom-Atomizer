@@ -1,5 +1,6 @@
 {
-  "contractVersion": 1,
-  "deviceMode": "simulator",
+  "contractVersion": 2,
+  "instrumentPolicy": "physical-first-executable-twin",
+  "firmwareRepository": "../TinySA_Firmware",
   "port": 5173
 }
