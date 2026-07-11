@@ -43,8 +43,22 @@ export const microseconds = (value: number): Microseconds => {
   return value as Microseconds;
 };
 
-export const usbMatchSchema = z.enum(['exact-zs407-cdc', 'unverified-serial']);
+export const instrumentTransportKindSchema = z.enum(['usb-cdc-acm', 'renode-monitor-bridge', 'protocol-test-double']);
+export type InstrumentTransportKind = z.infer<typeof instrumentTransportKindSchema>;
+export const executionEnvironmentSchema = z.enum(['physical', 'firmware-digital-twin', 'protocol-test-double']);
+export type ExecutionEnvironment = z.infer<typeof executionEnvironmentSchema>;
+export const usbMatchSchema = z.enum(['exact-zs407-cdc', 'unverified-serial', 'firmware-digital-twin']);
 export type UsbMatch = z.infer<typeof usbMatchSchema>;
+export const digitalTwinProvenanceSchema = z.object({
+  contractVersion: z.literal(1),
+  bridge: z.literal('renode-monitor-v1'),
+  firmwareRelease: z.literal('lab-v0.2.0-protocol'),
+  repositoryCommit: z.literal('d12bd826555eee51505542a55fd184ade5817d58'),
+  firmwareBinarySha256: z.literal('a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7'),
+  usbTransactionsModeled: z.literal(false),
+  bootEvidence: z.string().startsWith('ZS407_TWIN_BOOT=PASS').optional(),
+}).strict();
+export type DigitalTwinProvenance = z.infer<typeof digitalTwinProvenanceSchema>;
 export const portCandidateSchema = z.object({
   id: z.string().min(1),
   path: z.string().min(1),
@@ -54,7 +68,17 @@ export const portCandidateSchema = z.object({
   vendorId: z.string().regex(/^[a-f0-9]{4}$/i).optional(),
   productId: z.string().regex(/^[a-f0-9]{4}$/i).optional(),
   usbMatch: usbMatchSchema,
-}).strict();
+  transport: instrumentTransportKindSchema,
+  execution: executionEnvironmentSchema,
+  digitalTwin: digitalTwinProvenanceSchema.optional(),
+}).strict().superRefine((candidate, context) => {
+  const twin = candidate.execution === 'firmware-digital-twin';
+  if (twin !== (candidate.transport === 'renode-monitor-bridge') || twin !== (candidate.usbMatch === 'firmware-digital-twin') || twin !== Boolean(candidate.digitalTwin)) {
+    context.addIssue({ code: 'custom', message: 'Digital-twin execution, transport, match label, and provenance must agree' });
+  }
+  if (candidate.execution === 'physical' && candidate.transport !== 'usb-cdc-acm') context.addIssue({ code: 'custom', message: 'Physical candidates require USB CDC transport' });
+  if (candidate.execution === 'protocol-test-double' && candidate.transport !== 'protocol-test-double') context.addIssue({ code: 'custom', message: 'Protocol test doubles require their explicit transport label' });
+});
 export type PortCandidate = z.infer<typeof portCandidateSchema>;
 
 export interface DeviceIdentity {
@@ -65,6 +89,8 @@ export interface DeviceIdentity {
   port: PortCandidate;
   simulated: boolean;
   usbIdentityVerified: boolean;
+  execution: ExecutionEnvironment;
+  digitalTwin?: DigitalTwinProvenance;
 }
 
 export interface NumericRange {
@@ -73,17 +99,19 @@ export interface NumericRange {
   step?: number;
   unit: 'Hz' | 'kHz' | 'dBm' | 'dB' | 'points' | 'seconds' | 'percent' | 'mV';
 }
-export type CapabilityEvidence = 'firmware-source' | 'device-observed' | 'simulated';
+export type CapabilityEvidence = 'firmware-source' | 'device-observed' | 'firmware-executed-twin' | 'protocol-test-double';
 export interface DeviceCapabilities {
   profile: 'tinySA4-zs407';
   protocol: {
-    transport: 'usb-cdc-acm';
-    vendorId: typeof TINYSA_USB_VENDOR_ID;
-    productId: typeof TINYSA_USB_PRODUCT_ID;
+    transport: InstrumentTransportKind;
+    vendorId?: typeof TINYSA_USB_VENDOR_ID;
+    productId?: typeof TINYSA_USB_PRODUCT_ID;
     prompt: typeof TINYSA_SHELL_PROMPT;
     commandTerminator: '\r';
     echoesCommands: true;
     maximumCommandCharacters: 47;
+    usbTransactionsModeled: boolean;
+    bridgeContractVersion?: 1;
   };
   analyzerFrequency: NumericRange;
   analyzerNormalMaximumHz: number;
@@ -110,7 +138,7 @@ export interface DeviceCapabilities {
   commands: readonly string[];
   evidence: CapabilityEvidence;
   firmwareSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
-  qualification: 'firmware-derived-awaiting-device';
+  qualification: 'firmware-derived-awaiting-device' | 'executable-twin-observed' | 'protocol-test-only';
 }
 
 export type Verification = 'commanded' | 'verified' | 'unknown' | 'stale';
@@ -378,6 +406,7 @@ export interface DeviceFault {
 }
 export interface DeviceSnapshot {
   connection: ConnectionState;
+  pendingPort?: PortCandidate;
   mode: OperatingMode;
   generatorOutput: GeneratorOutputState;
   verification: Verification;
@@ -405,7 +434,7 @@ export interface Sweep {
   actualStopHz: number;
   actualRbwHz: number;
   actualAttenuationDb: number;
-  source: 'scan-text' | 'scanraw-binary';
+  source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state';
   complete: true;
   identity: DeviceIdentity;
 }
@@ -421,7 +450,7 @@ export interface ZeroSpanCapture {
   requested: ZeroSpanConfig;
   actualRbwHz: number;
   actualAttenuationDb: number;
-  source: 'scan-text';
+  source: 'scan-text' | 'renode-executable-state';
   complete: true;
   identity: DeviceIdentity;
 }

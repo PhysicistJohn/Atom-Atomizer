@@ -80,7 +80,7 @@ export class TinySaDeviceService {
   async connect(input: PortCandidate): Promise<DeviceSnapshot> {
     const port = portCandidateSchema.parse(input);
     if (this.#snapshot.connection !== 'disconnected') throw new TinySaDeviceError('invalid-state', 'Device is already active', false);
-    this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown' });
+    this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown', pendingPort: port });
     try {
       await this.transport.open(port);
       this.#scheduler = new CommandScheduler(this.transport, { onFault: (error) => this.#handleSchedulerFault(error) });
@@ -104,7 +104,7 @@ export class TinySaDeviceService {
         generatorOutput: 'off',
         verification: 'commanded',
         identity,
-        capabilities: buildCapabilities(this.#commands, identity.simulated),
+        capabilities: buildCapabilities(this.#commands, identity),
         sessionId: crypto.randomUUID(),
         connectedAt: now,
         lastOperationAt: now,
@@ -221,6 +221,9 @@ export class TinySaDeviceService {
         ({ frequencyHz, powerDbm } = parseTextSweep(output, config.points));
         source = 'scan-text';
       }
+      const transportEvidence = this.transport.consumeAcquisitionMetadata();
+      assertTransportEvidence(identity, config.startHz, config.stopHz, config.points, transportEvidence);
+      if (transportEvidence) source = transportEvidence.source;
       const elapsedMilliseconds = performance.now() - started;
       const first = frequencyHz[0];
       const last = frequencyHz.at(-1);
@@ -236,8 +239,8 @@ export class TinySaDeviceService {
         requested: config,
         actualStartHz: first,
         actualStopHz: last,
-        actualRbwHz: analyzer.readback.actualRbwHz,
-        actualAttenuationDb: analyzer.readback.attenuationDb,
+        actualRbwHz: transportEvidence?.actualRbwHz ?? analyzer.readback.actualRbwHz,
+        actualAttenuationDb: transportEvidence?.actualAttenuationDb ?? analyzer.readback.attenuationDb,
         source,
         complete: true,
         identity,
@@ -291,6 +294,8 @@ export class TinySaDeviceService {
       const output = await scheduler.execute(`scan ${config.frequencyHz} ${config.frequencyHz} ${config.points} 3`, sweepTimeout(config.sweepTimeSeconds));
       assertFirmwareSuccess(output, 'zero-span scan');
       const rows = parseTextSweep(output, config.points);
+      const transportEvidence = this.transport.consumeAcquisitionMetadata();
+      assertTransportEvidence(identity, config.frequencyHz, config.frequencyHz, config.points, transportEvidence);
       if (rows.frequencyHz.some((frequency) => frequency !== config.frequencyHz)) {
         throw new TinySaDeviceError('protocol', 'Zero-span response contained a different frequency', false);
       }
@@ -306,9 +311,9 @@ export class TinySaDeviceService {
         samplePeriodSeconds: elapsedMilliseconds / 1_000 / config.points,
         powerDbm: rows.powerDbm,
         requested: config,
-        actualRbwHz: readback.actualRbwHz,
-        actualAttenuationDb: readback.attenuationDb,
-        source: 'scan-text',
+        actualRbwHz: transportEvidence?.actualRbwHz ?? readback.actualRbwHz,
+        actualAttenuationDb: transportEvidence?.actualAttenuationDb ?? readback.attenuationDb,
+        source: transportEvidence?.source ?? 'scan-text',
         complete: true,
         identity,
       };
@@ -572,17 +577,20 @@ function disconnectedSnapshot(): DeviceSnapshot {
   return { connection: 'disconnected', mode: 'idle', generatorOutput: 'unknown', verification: 'stale' };
 }
 
-function buildCapabilities(commands: readonly string[], simulated: boolean): DeviceCapabilities {
+function buildCapabilities(commands: readonly string[], identity: DeviceIdentity): DeviceCapabilities {
+  const twin = identity.execution === 'firmware-digital-twin';
+  const testDouble = identity.execution === 'protocol-test-double';
   return {
     profile: 'tinySA4-zs407',
     protocol: {
-      transport: 'usb-cdc-acm',
-      vendorId: TINYSA_USB_VENDOR_ID,
-      productId: TINYSA_USB_PRODUCT_ID,
+      ...(identity.execution === 'physical' ? { vendorId: TINYSA_USB_VENDOR_ID, productId: TINYSA_USB_PRODUCT_ID } : {}),
+      transport: identity.port.transport,
       prompt: TINYSA_SHELL_PROMPT,
       commandTerminator: '\r',
       echoesCommands: true,
       maximumCommandCharacters: 47,
+      usbTransactionsModeled: identity.execution === 'physical',
+      ...(twin ? { bridgeContractVersion: 1 as const } : {}),
     },
     analyzerFrequency: { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz, unit: 'Hz' },
     analyzerNormalMaximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
@@ -607,9 +615,9 @@ function buildCapabilities(commands: readonly string[], simulated: boolean): Dev
     generatorReadback: false,
     modulation: ['off', 'am', 'fm'],
     commands: [...commands],
-    evidence: simulated ? 'simulated' : 'firmware-source',
+    evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'firmware-source',
     firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT,
-    qualification: 'firmware-derived-awaiting-device',
+    qualification: twin ? 'executable-twin-observed' : testDouble ? 'protocol-test-only' : 'firmware-derived-awaiting-device',
   };
 }
 
@@ -628,7 +636,10 @@ function parseIdentity(versionResponse: string, infoResponse: string, port: Port
     throw new TinySaDeviceError('identity-mismatch', 'tinySA info response is incomplete', false);
   }
   const hardwareVersion = hardwareLine.replace(/^HW Version:\s*/i, '').trim();
-  const simulated = port.path.startsWith('fake://');
+  if (port.execution === 'firmware-digital-twin' && !port.digitalTwin?.bootEvidence) {
+    throw new TinySaDeviceError('identity-mismatch', 'Digital twin did not provide executable boot evidence', false);
+  }
+  const simulated = port.execution !== 'physical';
   return {
     model: 'tinySA Ultra+ ZS407',
     hardwareVersion,
@@ -636,8 +647,28 @@ function parseIdentity(versionResponse: string, infoResponse: string, port: Port
     firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT,
     port,
     simulated,
-    usbIdentityVerified: simulated || port.usbMatch === 'exact-zs407-cdc',
+    usbIdentityVerified: port.execution === 'physical' && port.usbMatch === 'exact-zs407-cdc',
+    execution: port.execution,
+    ...(port.digitalTwin ? { digitalTwin: port.digitalTwin } : {}),
   };
+}
+
+function assertTransportEvidence(
+  identity: DeviceIdentity,
+  startHz: number,
+  stopHz: number,
+  points: number,
+  evidence: import('./transport.js').TransportAcquisitionMetadata | undefined,
+): void {
+  if (identity.execution === 'firmware-digital-twin' && !evidence) throw new TinySaDeviceError('protocol', 'Digital twin sweep omitted executable-state evidence', false);
+  if (identity.execution !== 'firmware-digital-twin' && evidence) throw new TinySaDeviceError('protocol', 'Non-twin transport returned digital-twin evidence', false);
+  if (!evidence) return;
+  if (evidence.startHz !== startHz || evidence.stopHz !== stopHz || evidence.points !== points) {
+    throw new TinySaDeviceError('protocol', `Digital twin evidence ${evidence.startHz}..${evidence.stopHz}/${evidence.points} does not match ${startHz}..${stopHz}/${points}`, false);
+  }
+  if (!Number.isFinite(evidence.actualRbwHz) || evidence.actualRbwHz <= 0 || !Number.isFinite(evidence.actualAttenuationDb)) {
+    throw new TinySaDeviceError('protocol', 'Digital twin evidence contains invalid measurement metadata', false);
+  }
 }
 
 function parseHelpCommands(response: string): readonly string[] {

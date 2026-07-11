@@ -28,6 +28,7 @@ const HELP_COMMANDS = [
 ] as const;
 
 export class FakeTinySaTransport implements ByteTransport {
+  readonly kind = 'protocol-test-double' as const;
   readonly port: PortCandidate;
   readonly writes: string[] = [];
   #bytes = new Set<ByteListener>();
@@ -54,6 +55,8 @@ export class FakeTinySaTransport implements ByteTransport {
       vendorId: TINYSA_USB_VENDOR_ID,
       productId: TINYSA_USB_PRODUCT_ID,
       usbMatch: 'exact-zs407-cdc',
+      transport: 'protocol-test-double',
+      execution: 'protocol-test-double',
     });
   }
 
@@ -75,6 +78,7 @@ export class FakeTinySaTransport implements ByteTransport {
 
   onBytes(listener: ByteListener): () => void { this.#bytes.add(listener); return () => this.#bytes.delete(listener); }
   onEvent(listener: EventListener): () => void { this.#events.add(listener); return () => this.#events.delete(listener); }
+  consumeAcquisitionMetadata(): undefined { return undefined; }
 
   async write(bytes: Uint8Array): Promise<void> {
     if (!this.#open) throw new Error('Fake ZS407 port is closed');

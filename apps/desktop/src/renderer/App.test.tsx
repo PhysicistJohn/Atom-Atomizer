@@ -15,17 +15,17 @@ import {
 } from '@tinysa/contracts';
 import { App } from './App.js';
 
-const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'tinySA simulator', product: 'tinySA4', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc' };
-const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: true } as const;
+const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc', transport: 'protocol-test-double', execution: 'protocol-test-double' };
+const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
 const capabilities: DeviceCapabilities = {
   profile: 'tinySA4-zs407',
-  protocol: { transport: 'usb-cdc-acm', vendorId: TINYSA_USB_VENDOR_ID, productId: TINYSA_USB_PRODUCT_ID, prompt: TINYSA_SHELL_PROMPT, commandTerminator: '\r', echoesCommands: true, maximumCommandCharacters: 47 },
+  protocol: { transport: 'protocol-test-double', prompt: TINYSA_SHELL_PROMPT, commandTerminator: '\r', echoesCommands: true, maximumCommandCharacters: 47, usbTransactionsModeled: false },
   analyzerFrequency: { min: 0, max: 17_922_600_000, unit: 'Hz' }, analyzerNormalMaximumHz: 900_000_000, analyzerUltraTransitionHz: 7_370_100_000,
   generatorFrequency: { min: 1, max: 17_922_600_000, unit: 'Hz' }, generatorFundamentalMaximumHz: 6_300_000_000,
   generatorLevel: { min: -115, max: -18.5, step: 0.5, unit: 'dBm' }, rbwKhz: { min: 0.2, max: 850, unit: 'kHz' }, attenuationDb: { min: 0, max: 31, unit: 'dB' },
   sweepPoints: { min: 20, max: 450, unit: 'points' }, sweepSeconds: { min: 0.003, max: 60, unit: 'seconds' }, maxSweepPoints: 450,
   screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, markerCount: 8, traceCount: 4, firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
-  modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'simulated', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'firmware-derived-awaiting-device',
+  modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'protocol-test-double', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'protocol-test-only',
 };
 const ready: DeviceSnapshot = { connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded', identity, capabilities };
 const disconnected: DeviceSnapshot = { connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale' };
@@ -107,7 +107,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /tinySA simulator/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
     fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));

@@ -157,9 +157,10 @@ export function App() {
   const analysisSequence = useRef(0);
 
   const connected = snapshot.connection === 'ready';
+  const transportBusy = snapshot.connection === 'connecting' || snapshot.connection === 'identifying' || snapshot.connection === 'disconnecting';
   const operationBusy = acquisition === 'configuring' || acquisition === 'acquiring' || acquisition === 'streaming';
-  const busy = connectionBusy || operationBusy;
-  const simulated = snapshot.identity?.simulated ?? ports.some((port) => port.path.startsWith('fake://'));
+  const busy = connectionBusy || transportBusy || operationBusy;
+  const simulated = snapshot.identity?.execution === 'firmware-digital-twin' || snapshot.identity?.execution === 'protocol-test-double' || snapshot.pendingPort?.execution === 'firmware-digital-twin';
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
   const markerReadings = useMemo(() => readMarkers(markers, traceFrames, sweep?.actualRbwHz ?? 10_000), [markers, traceFrames, sweep?.actualRbwHz]);
 
@@ -588,6 +589,12 @@ export function App() {
       acquisition,
       continuous,
       simulated,
+      topology: {
+        atomizer: { owner: 'tinysa-atomizer', contractVersion: 3 },
+        instrument: snapshot.identity ? { execution: snapshot.identity.execution, transport: snapshot.identity.port.transport, usbIdentityVerified: snapshot.identity.usbIdentityVerified } : null,
+        firmwareTwin: { available: ports.some((port) => port.execution === 'firmware-digital-twin'), connected: snapshot.identity?.execution === 'firmware-digital-twin' },
+        signalLab: { owner: 'tinysa-signal-lab', integration: 'reserved-not-connected' },
+      },
       visibleError: error ?? null,
       snapshot,
       analyzer,
@@ -622,7 +629,7 @@ export function App() {
       case 'get_detection_results': return detections;
       case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
       case 'read_device_diagnostics': return refreshDiagnostics();
-      case 'list_connection_candidates': return ports.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, simulated: port.path.startsWith('fake://'), selected: port.id === selectedPortId }));
+      case 'list_connection_candidates': return ports.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, execution: port.execution, transport: port.transport, simulated: port.execution !== 'physical', selected: port.id === selectedPortId }));
       case 'connect_device': {
         const candidateId = (args as { candidateId: string }).candidateId;
         const match = /^candidate-([1-9][0-9]*)$/.exec(candidateId);

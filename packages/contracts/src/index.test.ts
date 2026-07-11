@@ -50,8 +50,8 @@ describe('domain units and firmware-derived validation', () => {
     expect(generatorConfigSchema.safeParse({ ...base, path: 'normal', frequencyHz: 6_300_000_001 }).success).toBe(false);
   });
   it('requires exact USB candidate and detector schemas', () => {
-    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'unverified-serial' }).success).toBe(true);
-    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'guessed' }).success).toBe(false);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'unverified-serial', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(true);
+    expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'guessed', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(false);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 }).success).toBe(true);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: -1 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 0 }).success).toBe(false);
   });

@@ -38,6 +38,7 @@ describe('device fail-loud lifecycle', () => {
 });
 
 class FailDisconnectOutputOffTransport implements ByteTransport {
+  readonly kind = 'protocol-test-double' as const;
   readonly #inner = new FakeTinySaTransport();
   #outputOffCount = 0;
   get port(): PortCandidate { return this.#inner.port; }
@@ -51,4 +52,5 @@ class FailDisconnectOutputOffTransport implements ByteTransport {
   }
   onBytes(listener: (bytes: Uint8Array) => void): () => void { return this.#inner.onBytes(listener); }
   onEvent(listener: (event: TransportEvent) => void): () => void { return this.#inner.onEvent(listener); }
+  consumeAcquisitionMetadata() { return this.#inner.consumeAcquisitionMetadata(); }
 }

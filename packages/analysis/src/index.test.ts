@@ -37,9 +37,12 @@ const identity: DeviceIdentity = {
     vendorId: '0483',
     productId: '5740',
     usbMatch: 'exact-zs407-cdc',
+    transport: 'protocol-test-double',
+    execution: 'protocol-test-double',
   },
   simulated: true,
-  usbIdentityVerified: true,
+  usbIdentityVerified: false,
+  execution: 'protocol-test-double',
 };
 
 const analyzer: AnalyzerConfig = {

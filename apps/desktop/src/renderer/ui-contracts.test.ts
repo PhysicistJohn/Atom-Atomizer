@@ -7,7 +7,7 @@ describe('UI safety and selection contracts', () => {
     expect(() => assertWorkspaceTransition('generator', 'spectrum', 'off')).not.toThrow();
   });
   it('uses the selected port and falls back deterministically', () => {
-    const state: DesktopUiState = { workspace:'spectrum',connectionPanel:'closed',acquisition:'idle',snapshot:DISCONNECTED_SNAPSHOT,ports:[{ id:'one',path:'one',usbMatch:'unverified-serial' },{ id:'two',path:'two',usbMatch:'unverified-serial' }],selectedPortId:'two',analyzer:DEFAULT_ANALYZER,generator:DEFAULT_GENERATOR };
+    const state: DesktopUiState = { workspace:'spectrum',connectionPanel:'closed',acquisition:'idle',snapshot:DISCONNECTED_SNAPSHOT,ports:[{ id:'one',path:'one',usbMatch:'unverified-serial',transport:'usb-cdc-acm',execution:'physical' },{ id:'two',path:'two',usbMatch:'unverified-serial',transport:'usb-cdc-acm',execution:'physical' }],selectedPortId:'two',analyzer:DEFAULT_ANALYZER,generator:DEFAULT_GENERATOR };
     expect(selectedPort(state)?.id).toBe('two');
     expect(selectedPort({ ...state, selectedPortId:'missing' })).toBeUndefined();
   });

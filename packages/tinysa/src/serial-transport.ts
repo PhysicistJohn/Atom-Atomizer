@@ -3,6 +3,7 @@ import { TINYSA_USB_PRODUCT_ID, TINYSA_USB_VENDOR_ID, portCandidateSchema, type 
 import type { ByteTransport, TransportEvent } from './transport.js';
 
 export class NodeSerialTransport implements ByteTransport {
+  readonly kind = 'usb-cdc-acm' as const;
   #port?: SerialPort; #bytes = new Set<(bytes: Uint8Array) => void>(); #events = new Set<(event: TransportEvent) => void>();
   async list(): Promise<PortCandidate[]> {
     const candidates = (await SerialPort.list()).map((port) => {
@@ -17,6 +18,8 @@ export class NodeSerialTransport implements ByteTransport {
         ...(vendorId ? { vendorId } : {}),
         ...(productId ? { productId } : {}),
         usbMatch: exact ? 'exact-zs407-cdc' : 'unverified-serial',
+        transport: 'usb-cdc-acm',
+        execution: 'physical',
       });
     });
     return candidates.sort((left, right) => Number(right.usbMatch === 'exact-zs407-cdc') - Number(left.usbMatch === 'exact-zs407-cdc') || left.path.localeCompare(right.path));
@@ -48,6 +51,7 @@ export class NodeSerialTransport implements ByteTransport {
   }
   onBytes(listener: (bytes: Uint8Array) => void): () => void { this.#bytes.add(listener); return () => this.#bytes.delete(listener); }
   onEvent(listener: (event: TransportEvent) => void): () => void { this.#events.add(listener); return () => this.#events.delete(listener); }
+  consumeAcquisitionMetadata(): undefined { return undefined; }
 }
 
 function normalizeUsbId(value: string | undefined): string | undefined {

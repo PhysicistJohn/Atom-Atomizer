@@ -34,6 +34,7 @@ describe('CommandScheduler', () => {
 });
 
 class SilentTransport implements ByteTransport {
+  readonly kind = 'protocol-test-double' as const;
   writes = 0;
   list() { return Promise.resolve([]); }
   open() { return Promise.resolve(); }
@@ -41,4 +42,5 @@ class SilentTransport implements ByteTransport {
   write() { this.writes++; return Promise.resolve(); }
   onBytes() { return () => {}; }
   onEvent(_listener: (event: TransportEvent) => void) { return () => {}; }
+  consumeAcquisitionMetadata(): undefined { return undefined; }
 }

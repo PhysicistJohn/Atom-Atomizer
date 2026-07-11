@@ -15,7 +15,7 @@ import {
   zeroSpanConfigSchema,
   type DeviceEvent,
 } from '@tinysa/contracts';
-import { TinySaDeviceService, NodeSerialTransport } from '@tinysa/device';
+import { TinySaDeviceService, NodeSerialTransport, PhysicalOrTwinTransport, RenodeDigitalTwinTransport } from '@tinysa/device';
 import { OpenAiGateway } from './ai-gateway.js';
 import type { AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
@@ -25,7 +25,8 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
   if(candidate&&existsSync(candidate)){loadEnv({path:candidate,quiet:true});break;}
 }
-const transport = new NodeSerialTransport();
+const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../TinySA_Firmware'));
+const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));
 const device = new TinySaDeviceService(transport);
 const ai = new OpenAiGateway();
 const computer = new AppComputerHarness();
@@ -115,6 +116,18 @@ async function createWindow(): Promise<void> {
   else await win.loadFile(join(here, '../renderer/index.html'));
 }
 
+async function connectDefaultDigitalTwin(): Promise<void> {
+  const candidates = await device.listDevices();
+  const twin = candidates.find((candidate) => candidate.execution === 'firmware-digital-twin');
+  if (!twin) return;
+  try { await device.connect(twin); }
+  catch (error) {
+    const message = `Executable digital twin startup failed: ${error instanceof Error ? error.message : String(error)}`;
+    console.error(message, error);
+    mainWindow?.webContents.send(`tinysa:event:v${API_VERSION}`, { type: 'error', error: { code: 'transport', message, recoverable: false } } satisfies DeviceEvent);
+  }
+}
+
 registerIpc();
 device.subscribe((event: DeviceEvent) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -122,6 +135,7 @@ device.subscribe((event: DeviceEvent) => {
 });
 app.whenReady().then(async () => {
   await createWindow();
+  void connectDefaultDigitalTwin();
 }).catch((error) => {
   console.error('TinySA Atomizer startup failed', error);
   app.exit(1);
