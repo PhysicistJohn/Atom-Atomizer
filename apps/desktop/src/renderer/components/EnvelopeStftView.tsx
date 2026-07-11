@@ -20,11 +20,11 @@ export interface EnvelopeStftViewProps {
 export function EnvelopeStftView({ zeroConfig, capture, configuration, connected, streaming, busy, onZeroConfig, onConfiguration, onAcquire }: EnvelopeStftViewProps) {
   const analysis = useMemo(() => evaluate(capture, configuration), [capture, configuration]);
   const captureUnavailable = !connected || busy;
-  const captureLabel = !connected ? 'Connect an instrument' : streaming ? 'Stop replay to capture' : busy ? 'Wait for current operation' : 'Acquire zero span';
+  const captureLabel = !connected ? 'Connect an instrument' : streaming ? 'Stop acquisition first' : busy ? 'Wait for current operation' : 'Acquire zero span';
   return <section className="envelope-stft-view" aria-label="Detected-envelope STFT">
     <div className="stft-visual">
       <header className="analysis-view-head">
-        <div><span className="view-glyph"><AudioWaveform size={15}/></span><span><strong>Envelope time / frequency</strong><small>ZERO-SPAN DETECTED POWER · NOT I/Q</small></span></div>
+        <div><span className="view-glyph"><AudioWaveform size={15}/></span><strong>Detected envelope · not I/Q</strong></div>
         {analysis.result && <div className="stft-peak"><small>DOMINANT ENVELOPE RATE</small><strong>{formatFrequency(analysis.result.peakModulationFrequencyHz)}</strong></div>}
       </header>
       <EnvelopeTrace capture={capture}/>
@@ -32,7 +32,7 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
       {analysis.error && <div className="measurement-error stft-error" role="alert"><strong>STFT unavailable</strong><span>{analysis.error}</span></div>}
     </div>
     <aside className="stft-console">
-      <div className="channel-console-title"><span><ScanLine size={14}/></span><div><strong>Time capture</strong><small>SCALAR DETECTOR EVIDENCE</small></div></div>
+      <div className="channel-console-title"><span><ScanLine size={14}/></span><strong>Capture</strong></div>
       <div className="stft-form">
         <label className="wide"><span>Tuned frequency</span><div><input type="number" min="0" step="1" value={zeroConfig.frequencyHz} onChange={(event) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(event.target.value) })}/><em>Hz</em></div></label>
         <label><span>Samples</span><input type="number" min="20" max="450" step="1" value={zeroConfig.points} onChange={(event) => onZeroConfig({ ...zeroConfig, points: Number(event.target.value) })}/></label>
@@ -46,7 +46,7 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
         <label className="dc-control"><input type="checkbox" checked={configuration.removeDc} onChange={(event) => onConfiguration({ ...configuration, removeDc: event.target.checked })}/><span>Remove mean envelope (DC)</span></label>
       </div>
       <button className="primary full stft-acquire" disabled={captureUnavailable} onClick={onAcquire}><Play size={13} fill="currentColor"/>{captureLabel}</button>
-      <div className="channel-contract-note"><AudioWaveform size={14}/><p>This STFT reveals modulation rates in detected power. It cannot recover carrier phase, complex symbols, EVM, or RF-frequency I/Q content.</p></div>
+      <div className="channel-contract-note"><AudioWaveform size={14}/><p>Detected power only · no phase, I/Q, or EVM.</p></div>
     </aside>
   </section>;
 }
@@ -54,7 +54,7 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
 function EnvelopeTrace({ capture }: { capture?: ZeroSpanCapture }) {
   const width = 1000;
   const height = 122;
-  if (!capture) return <div className="envelope-trace compact"><div className="analysis-empty"><AudioWaveform size={20}/><strong>No zero-span capture</strong><span>Acquire detected power over time to reveal periodic envelope structure.</span></div></div>;
+  if (!capture) return <div className="envelope-trace compact"><div className="analysis-empty"><AudioWaveform size={20}/><strong>No zero-span capture</strong></div></div>;
   const maximum = Math.max(...capture.powerDbm);
   const minimum = Math.min(...capture.powerDbm);
   const range = Math.max(1, maximum - minimum);
@@ -69,7 +69,7 @@ function EnvelopeTrace({ capture }: { capture?: ZeroSpanCapture }) {
 function StftHeatmap({ capture, result, configuration }: { capture?: ZeroSpanCapture; result?: EnvelopeStftResult; configuration: EnvelopeStftConfiguration }) {
   const width = 1000;
   const height = 300;
-  if (!capture || !result) return <div className="stft-heatmap empty"><span>ENVELOPE STFT WILL APPEAR HERE</span></div>;
+  if (!capture || !result) return <div className="stft-heatmap empty"><span>No STFT</span></div>;
   const frameWidth = width / result.frames.length;
   const binHeight = height / result.modulationFrequencyHz.length;
   return <div className="stft-heatmap">

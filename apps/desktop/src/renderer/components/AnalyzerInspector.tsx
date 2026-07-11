@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRight, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { ArrowRight, ChevronDown } from 'lucide-react';
 import { ZS407_FIRMWARE_LIMITS, type AnalyzerConfig } from '@tinysa/contracts';
 import { formatFrequency, parseFrequency } from '../format.js';
 
@@ -17,8 +17,7 @@ export function AnalyzerInspector({ config, disabled, onChange }: { config: Anal
   };
   const harmonicRange = config.stopHz > ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz;
 
-  return <aside className="inspector">
-    <div className="inspector-head"><div><SlidersHorizontal size={16}/><span>Sweep setup</span></div><small>FIRMWARE-VERIFIED</small></div>
+  return <aside className="inspector inspector-setup">
     <fieldset disabled={disabled} className="acquisition-dock">
       <div className="frequency-window">
         <label><span>Start</span><input data-agent-control="analyzer.start" aria-invalid={Boolean(frequencyError)} key={`start-${config.startHz}`} defaultValue={formatFrequency(config.startHz)} onBlur={(event) => updateFrequency('startHz', event.target.value)}/></label>
@@ -32,7 +31,7 @@ export function AnalyzerInspector({ config, disabled, onChange }: { config: Anal
       <div className="quick-ranges" aria-label="Frequency presets"><button type="button" onClick={() => onChange({ ...config, startHz: 88e6, stopHz: 108e6 })}>FM</button><button type="button" onClick={() => onChange({ ...config, startHz: 2.4e9, stopHz: 2.5e9 })}>2.4G</button><button type="button" onClick={() => onChange({ ...config, startHz: 5.15e9, stopHz: 5.85e9 })}>5G</button></div>
     </fieldset>
     <details className="advanced-sweep">
-      <summary><ChevronDown size={13}/>Acquisition physics <span>{config.detector} · {config.attenuationDb === 'auto' ? 'auto attenuation' : `${config.attenuationDb} dB`}</span></summary>
+      <summary><ChevronDown size={13}/>Advanced <span>{config.detector} · {config.attenuationDb === 'auto' ? 'auto attenuation' : `${config.attenuationDb} dB`}</span></summary>
       <fieldset disabled={disabled}>
         <label><span>Attenuation</span><select value={config.attenuationDb} onChange={(event) => onChange({ ...config, attenuationDb: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option>{typeof config.attenuationDb === 'number' && ![0, 10, 20, 30, 31].includes(config.attenuationDb) && <option value={config.attenuationDb}>{config.attenuationDb} dB · custom</option>}<option value="0">0 dB</option><option value="10">10 dB</option><option value="20">20 dB</option><option value="30">30 dB</option><option value="31">31 dB</option></select></label>
         <label><span>Sweep time</span><select value={config.sweepTimeSeconds} onChange={(event) => onChange({ ...config, sweepTimeSeconds: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option>{typeof config.sweepTimeSeconds === 'number' && ![0.05, 0.1, 0.5, 1].includes(config.sweepTimeSeconds) && <option value={config.sweepTimeSeconds}>{config.sweepTimeSeconds} s · custom</option>}<option value="0.05">50 ms</option><option value="0.1">100 ms</option><option value="0.5">500 ms</option><option value="1">1 second</option></select></label>

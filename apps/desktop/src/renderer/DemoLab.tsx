@@ -67,8 +67,7 @@ export function DemoLab() {
   }
 
   return <main className="demo-lab">
-    <header><div className="demo-orbit"><i/><i/><i/><b/></div><div><small>TINYSA ATOMIZER</small><strong>Signal Lab</strong></div><span><i/>{status?.playback ? 'LIVE' : 'ATTACHED'}</span></header>
-    <section className="demo-copy"><span>QUALIFIED SYNTHETIC REPLAY</span><h1>Waveform library</h1><p>Every published in-scope model is selectable. Standards-derived spectrum and timing projections stream through the byte-level ZS407 simulator.</p></section>
+    <header><div className="demo-orbit"><i/><i/><i/><b/></div><strong>Signal Lab</strong><span><i/>{status?.playback ? 'LIVE' : 'PAUSED'}</span></header>
     <section className="profile-catalog" aria-label="Synthesized waveform catalog">
       <nav className="catalog-tabs" aria-label="Waveform families">{groups.map((item) => {
         const count = status?.catalog.filter((descriptor) => catalogGroup(descriptor) === item.id).length ?? 0;
@@ -79,17 +78,17 @@ export function DemoLab() {
         if (!Icon) throw new Error(`Visual lab profile ${descriptor.id} has no icon contract`);
         const active = status?.profile === descriptor.id;
         return <button key={descriptor.id} className={active ? 'active' : ''} disabled={!status?.active || Boolean(switching)} onClick={() => chooseProfile(descriptor.id)} title={descriptor.disclosure}><span><Icon size={18}/></span><strong>{descriptor.label.replace(' replay', '')}</strong><small>{descriptor.model}</small><i>{active && <b/>}</i></button>;
-      })}</div> : browsed ? <ProfileBrowser descriptor={browsed} catalog={groupCatalog} active={status?.profile === browsed.id} switching={switching === browsed.id} disabled={!status?.active || Boolean(switching)} onSelect={chooseProfile}/> : <div className="catalog-missing">CATALOG GROUP MISSING</div>}
+      })}</div> : <ProfileBrowser descriptor={requireDescriptor(browsed, group)} catalog={groupCatalog} active={status?.profile === browsed?.id} switching={switching === browsed?.id} disabled={!status?.active || Boolean(switching)} onSelect={chooseProfile}/>}
     </section>
     <section className="channel-model">
-      <div><span>CHANNEL MODEL</span><small>SEEDED · REPRODUCIBLE</small></div>
+      <div><span>Channel</span></div>
       <div className="channel-buttons"><button className={channel?.model === 'awgn' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'awgn' })}>AWGN</button><button className={channel?.model === 'rayleigh' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'rayleigh' })}>Rayleigh</button></div>
       <label><span>Noise floor</span><input type="range" min="-130" max="-60" step="1" value={channel?.noiseFloorDbm ?? -108} disabled={!channel || Boolean(switching)} onChange={(event) => channel && void configureChannel({ ...channel, noiseFloorDbm: Number(event.target.value) })}/><output>{channel?.noiseFloorDbm ?? -108} dBm</output></label>
       {channel?.model === 'rayleigh' && <label><span>Fading rate</span><input type="range" min="0.1" max="20" step="0.1" value={channel.fadingRateHz} disabled={Boolean(switching)} onChange={(event) => void configureChannel({ ...channel, fadingRateHz: Number(event.target.value) })}/><output>{channel.fadingRateHz.toFixed(1)} Hz</output></label>}
-      <p>{channel?.model === 'rayleigh' ? 'Frequency-selective correlated complex fading plus AWGN.' : 'Complex Gaussian periodogram noise plus receiver-shape artifacts.'}</p>
+      <p>{channel?.model === 'rayleigh' ? 'Rayleigh fading + AWGN' : 'AWGN + receiver ripple'}</p>
     </section>
     {error && <div className="demo-error" role="alert">{error}</div>}
-    <footer><span>{status?.active ? status.playback ? 'SYNTHETIC REPLAY LIVE' : 'REPLAY PAUSED' : 'DEMO STANDBY'}</span><span>{status?.waveform.qualification.toUpperCase() ?? 'NO PROFILE'} · {status?.waveform.model.split(' · ')[0] ?? '—'}</span></footer>
+    <footer><span>{status?.waveform.qualification.toUpperCase() ?? 'NO PROFILE'} · {status?.waveform.model.split(' · ')[0] ?? '—'}</span></footer>
   </main>;
 }
 
@@ -103,7 +102,7 @@ function ProfileBrowser({ descriptor, catalog, active, switching, disabled, onSe
 }) {
   const Icon = descriptor.family === 'geran' ? AudioLines : descriptor.family === 'e-utra' ? Grid3X3 : descriptor.family === 'nr' ? Boxes : Wifi;
   return <div className="profile-browser">
-    <label><span>MODEL</span><select aria-label={`${familyLabel(descriptor)} waveform model`} value={descriptor.id} disabled={disabled} onChange={(event) => onSelect(event.target.value as SynthesizedSignalProfile)}>{catalog.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</select></label>
+    <label><select aria-label={`${familyLabel(descriptor)} waveform model`} value={descriptor.id} disabled={disabled} onChange={(event) => onSelect(event.target.value as SynthesizedSignalProfile)}>{catalog.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</select></label>
     <article className={active ? 'active' : ''} title={descriptor.disclosure}>
       <span className="profile-icon"><Icon size={21}/></span>
       <div><small>{descriptor.qualification === 'standards-derived' ? 'STD-DERIVED' : 'VISUAL'}</small><h2>{descriptor.label}</h2><p>{switching ? 'Switching model…' : descriptor.model}</p></div>
@@ -119,6 +118,11 @@ function catalogGroup(descriptor: WaveformDescriptor): CatalogGroup {
 
 function familyLabel(descriptor: WaveformDescriptor): string {
   return ({ geran: 'GSM', 'e-utra': 'LTE', nr: '5G NR', wlan: 'Wi-Fi', tone: 'Lab', analog: 'Lab' })[descriptor.family];
+}
+
+function requireDescriptor(descriptor: WaveformDescriptor | undefined, group: CatalogGroup): WaveformDescriptor {
+  if (!descriptor) throw new Error(`Signal Lab catalog group ${group} has no waveform descriptor`);
+  return descriptor;
 }
 
 function message(value: unknown): string { return value instanceof Error ? value.message : String(value); }

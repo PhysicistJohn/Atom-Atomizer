@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { History, Layers3 } from 'lucide-react';
+import { History } from 'lucide-react';
 import type { Sweep, WaterfallConfiguration } from '@tinysa/contracts';
 import { formatFrequency } from '../format.js';
 
@@ -54,8 +54,7 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
   }, [compatible, configuration]);
 
   return <section className="waterfall-view" aria-label="Sweep-history waterfall">
-    <header className="analysis-view-head">
-      <div><span className="view-glyph"><Layers3 size={15}/></span><span><strong>Frequency occupancy</strong><small>SWEEP HISTORY · NEWEST AT TOP</small></span></div>
+    <header className="analysis-view-head control-only">
       <div className="view-head-controls">
         <label><span>Floor</span><div><input aria-label="Waterfall floor dBm" type="number" min="-174" max="29" value={configuration.floorDbm} onChange={(event) => onConfiguration({ ...configuration, floorDbm: Number(event.target.value) })}/><em>dBm</em></div></label>
         <label><span>Ceiling</span><div><input aria-label="Waterfall ceiling dBm" type="number" min="-173" max="30" value={configuration.ceilingDbm} onChange={(event) => onConfiguration({ ...configuration, ceilingDbm: Number(event.target.value) })}/><em>dBm</em></div></label>
@@ -65,10 +64,10 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
     <div className="waterfall-canvas-shell">
       <div className="waterfall-y-axis"><span>NOW</span><span>−{configuration.historyDepth - 1}</span><em>SWEEP AGE</em></div>
       <canvas ref={canvas} width="1200" height="560" aria-label="Measured power by frequency and sweep time"/>
-      {!reference && <div className="analysis-empty"><History size={22}/><strong>No coherent sweep history</strong><span>Run continuous acquisition to build a frequency-time record.</span></div>}
+      {!reference && <div className="analysis-empty"><History size={22}/><strong>No history</strong><span>Run to build sweep history.</span></div>}
       <div className="waterfall-scale"><span>{configuration.floorDbm} dBm</span><i/><span>{configuration.ceilingDbm} dBm</span></div>
     </div>
-    <footer className="analysis-axis-footer"><span>{reference ? formatFrequency(reference.actualStartHz) : 'START'}</span><span>{compatible.length} / {configuration.historyDepth} COHERENT SWEEPS{rejected ? ` · ${rejected} GRID CHANGE${rejected === 1 ? '' : 'S'} EXCLUDED` : ''}</span><span>{reference ? formatFrequency(reference.actualStopHz) : 'STOP'}</span></footer>
+    <footer className="analysis-axis-footer"><span>{reference ? formatFrequency(reference.actualStartHz) : 'START'}</span><span>{compatible.length} / {configuration.historyDepth} COHERENT{rejected ? ` · ${rejected} GRID CHANGE${rejected === 1 ? '' : 'S'} EXCLUDED` : ''}</span><span>{reference ? formatFrequency(reference.actualStopHz) : 'STOP'}</span></footer>
   </section>;
 }
 

@@ -72,7 +72,7 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
     expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.startStreaming));
-    expect(await screen.findByRole('button', { name: /Stop replay/i })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
   });
 
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
@@ -87,9 +87,9 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Waterfall/i }));
     expect(await screen.findByLabelText(/Measured power by frequency and sweep time/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: /Channel/i }));
-    expect(await screen.findByText(/Channel definition/i)).toBeTruthy();
+    expect(await screen.findByText(/Channel setup/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: /Time \/ STFT/i }));
-    expect(await screen.findByText(/Time capture/i)).toBeTruthy();
+    expect(await screen.findByText(/^Capture$/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: /^Spectrum/i }));
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
@@ -97,22 +97,22 @@ describe('operator vertical slice', () => {
     const measurementTabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
     for (const control of ['Markers', 'Traces', 'Display']) expect(measurementTabs.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
     fireEvent.click(measurementTabs.getByRole('button', { name: /Markers/i }));
-    expect(await screen.findByText(/SEARCH ACTIVE MARKER/i)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Peak$/i })).toBeTruthy();
     fireEvent.click(measurementTabs.getByRole('button', { name: /Traces/i }));
     expect(await screen.findByText('TRACE 4')).toBeTruthy();
-    await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('REASONING HIGH'));
-    expect(container.querySelector('.atom-foot')?.textContent).toContain('VOICE BALLAD');
+    await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('HIGH'));
+    expect(container.querySelector('.atom-foot')?.textContent).toContain('BALLAD');
   });
 
   it('connects, configures, and acquires through the complete typed bridge', async () => {
     render(<App/>);
     await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    await screen.findByRole('dialog', { name: /USB connection/i });
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
     fireEvent.click(screen.getByRole('button', { name: /tinySA simulator/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Connect instrument/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
-    fireEvent.click(screen.getByRole('button', { name: /Single sweep/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
     expect(await screen.findByLabelText('Measured power by frequency')).toBeTruthy();
     expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.acquireSweep));

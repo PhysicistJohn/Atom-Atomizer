@@ -11,7 +11,7 @@ export interface AtomAgentHost {
 export function useAtomAgent(host: AtomAgentHost) {
   const hostRef=useRef(host);hostRef.current=host;
   const [status,setStatus]=useState<AgentStatus>(); const [state,setState]=useState<AgentConnectionState>('idle');
-  const [messages,setMessages]=useState<AgentMessage[]>([{id:'welcome',role:'assistant',text:'I’m Atom. I can configure the analyzer, run sweeps, inspect detections, explain RF behavior, and safely operate the generator with your approval.',createdAt:new Date().toISOString(),status:'complete'}]);
+  const [messages,setMessages]=useState<AgentMessage[]>([{id:'welcome',role:'assistant',text:'Ask about the trace or tell me what to measure.',createdAt:new Date().toISOString(),status:'complete'}]);
   const [approval,setApproval]=useState<AgentApprovalRequest>();
   const approvalResolver=useRef<((approved:boolean)=>void)|undefined>(undefined); const pc=useRef<RTCPeerConnection|undefined>(undefined); const dc=useRef<RTCDataChannel|undefined>(undefined); const media=useRef<MediaStream|undefined>(undefined); const voiceVerificationTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined); const assistantDraft=useRef(''); const textConversation=useRef<string|undefined>(undefined);
 

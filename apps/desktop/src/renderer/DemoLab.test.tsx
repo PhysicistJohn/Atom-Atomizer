@@ -20,7 +20,7 @@ describe('Signal Lab window', () => {
   it('offers visual and standards-derived profiles plus explicit channel models', async () => {
     render(<DemoLab/>);
     await waitFor(() => expect(window.demoLab.status).toHaveBeenCalledOnce());
-    expect(await screen.findByText('SYNTHETIC REPLAY LIVE')).toBeTruthy();
+    expect(await screen.findByText('LIVE')).toBeTruthy();
     for (const label of ['CW carrier', 'AM', 'FM']) expect(screen.getByRole('button', { name: new RegExp(label, 'i') })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /LTE/i }));
     const lte = screen.getByLabelText(/LTE waveform model/i) as HTMLSelectElement;

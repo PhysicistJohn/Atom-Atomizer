@@ -35,6 +35,7 @@ import { WaterfallView } from './WaterfallView.js';
 type Overlay = 'setup' | 'controls';
 
 export interface MeasurementWorkspaceProps {
+  acquisitionActions: ReactNode;
   view: MeasurementViewId;
   onView(view: MeasurementViewId): void;
   analyzer: AnalyzerConfig;
@@ -81,14 +82,17 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   return <section className="measurement-workspace">
     <header className="measurement-viewbar">
       <div className="measurement-view-tabs" role="tablist" aria-label="Spectrum analysis views">
-        <ViewTab id="spectrum" label="Spectrum" detail="TRACE" icon={<Activity size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="waterfall" label="Waterfall" detail={`${props.history.length} SWEEPS`} icon={<Layers3 size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="channel" label="Channel" detail="CHP · ACP · OBW" icon={<BarChart3 size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="envelope-stft" label="Time / STFT" detail="ENVELOPE" icon={<AudioWaveform size={14}/>} active={props.view} onView={props.onView}/>
+        <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={props.onView}/>
+        <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={props.onView}/>
+        <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={props.onView}/>
+        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} onView={props.onView}/>
       </div>
-      <div className="measurement-view-actions">
-        <button className={overlay === 'setup' ? 'active' : ''} onClick={() => toggleOverlay('setup')} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>Sweep setup</span></button>
-        <button className={overlay === 'controls' ? 'active' : ''} onClick={() => toggleOverlay('controls')} data-agent-control="measurement.controls"><Crosshair size={14}/><span>Traces & markers</span></button>
+      <div className="measurement-view-utilities">
+        <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
+        <div className="measurement-view-actions">
+          <button className={overlay === 'setup' ? 'active' : ''} onClick={() => toggleOverlay('setup')} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>Sweep setup</span></button>
+          <button className={overlay === 'controls' ? 'active' : ''} onClick={() => toggleOverlay('controls')} data-agent-control="measurement.controls"><Crosshair size={14}/><span>Traces & markers</span></button>
+        </div>
       </div>
     </header>
     <div className="measurement-stage">
@@ -105,22 +109,22 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   </section>;
 }
 
-function ViewTab({ id, label, detail, icon, active, onView }: { id: MeasurementViewId; label: string; detail: string; icon: ReactNode; active: MeasurementViewId; onView(view: MeasurementViewId): void }) {
-  return <button role="tab" aria-selected={active === id} className={active === id ? 'active' : ''} onClick={() => onView(id)} data-agent-control={`measurement.view.${id}`}>{icon}<span><strong>{label}</strong><small>{detail}</small></span></button>;
+function ViewTab({ id, label, icon, active, onView }: { id: MeasurementViewId; label: string; icon: ReactNode; active: MeasurementViewId; onView(view: MeasurementViewId): void }) {
+  return <button role="tab" aria-selected={active === id} className={active === id ? 'active' : ''} onClick={() => onView(id)} data-agent-control={`measurement.view.${id}`}>{icon}<strong>{label}</strong></button>;
 }
 
 function MetricStrip({ sweep, detections, acquisition, historyCount }: { sweep?: Sweep; detections: number; acquisition: AcquisitionState; historyCount: number }) {
   const metrics = sweep ? calculateSweepMetrics(sweep) : undefined;
   return <section className="metric-strip compact-metrics">
-    <Metric icon={<Zap size={13}/>} accent="mint" label="Peak" value={metrics ? formatLevel(metrics.peakDbm) : '—'} detail={metrics ? formatFrequency(metrics.peakHz) : 'NO TRACE'}/>
-    <Metric icon={<Square size={12}/>} label="Robust floor" value={metrics ? formatLevel(metrics.noiseFloorDbm) : '—'} detail="MEDIAN ESTIMATE"/>
-    <Metric icon={<RadioTower size={13}/>} accent="amber" label="Tracked" value={String(detections).padStart(2, '0')} detail="ACTIVE EMISSIONS"/>
-    <Metric icon={<BarChart3 size={13}/>} label="OBW · 99%" value={metrics ? formatFrequency(metrics.occupiedBandwidth99Hz) : '—'} detail="ROBUST-FLOOR VIEW"/>
-    <Metric icon={<Clock3 size={13}/>} label="Acquisition" value={sweep ? `${sweep.elapsedMilliseconds.toFixed(0)} ms` : acquisition.toUpperCase()} detail={sweep ? `${sweep.frequencyHz.length} POINTS` : 'IDLE'}/>
-    <Metric icon={<Repeat2 size={13}/>} label="History" value={`${historyCount} / 50`} detail={sweep ? `${formatFrequency(sweep.actualStartHz)} — ${formatFrequency(sweep.actualStopHz)}` : 'NO RANGE'}/>
+    <Metric icon={<Zap size={13}/>} accent="mint" label="Peak" value={metrics ? formatLevel(metrics.peakDbm) : '—'} detail={metrics ? formatFrequency(metrics.peakHz) : undefined}/>
+    <Metric icon={<Square size={12}/>} label="Robust floor" value={metrics ? formatLevel(metrics.noiseFloorDbm) : '—'}/>
+    <Metric icon={<RadioTower size={13}/>} accent="amber" label="Tracked" value={String(detections).padStart(2, '0')}/>
+    <Metric icon={<BarChart3 size={13}/>} label="OBW · 99%" value={metrics ? formatFrequency(metrics.occupiedBandwidth99Hz) : '—'}/>
+    <Metric icon={<Clock3 size={13}/>} label="Sweep" value={sweep ? `${sweep.elapsedMilliseconds.toFixed(0)} ms` : acquisition.toUpperCase()} detail={sweep ? `${sweep.frequencyHz.length} points` : undefined}/>
+    <Metric icon={<Repeat2 size={13}/>} label="History" value={`${historyCount} / 50`}/>
   </section>;
 }
 
-function Metric({ icon, accent = '', label, value, detail }: { icon: ReactNode; accent?: string; label: string; value: string; detail: string }) {
-  return <div><span className={`metric-icon ${accent}`}>{icon}</span><span><small>{label}</small><strong>{value}</strong><em>{detail}</em></span></div>;
+function Metric({ icon, accent = '', label, value, detail }: { icon: ReactNode; accent?: string; label: string; value: string; detail?: string }) {
+  return <div><span className={`metric-icon ${accent}`}>{icon}</span><span><small>{label}</small><strong>{value}</strong>{detail && <em>{detail}</em>}</span></div>;
 }

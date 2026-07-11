@@ -45,14 +45,6 @@ export const DISCONNECTED_SNAPSHOT: DeviceSnapshot = {
   connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale'
 };
 
-export const workspaceCopy: Record<WorkspaceId, { eyebrow: string; title: string; description: string }> = {
-  spectrum: { eyebrow: 'OBSERVE / SPECTRUM', title: 'Spectrum analyzer', description: 'Inspect the RF landscape with precise, provenance-preserving sweeps.' },
-  detection: { eyebrow: 'ANALYZE / DETECTION', title: 'Signal detection', description: 'Surface emissions using an adaptive noise floor and contiguous event segmentation.' },
-  classification: { eyebrow: 'ANALYZE / CLASSIFICATION', title: 'Waveform classification', description: 'Characterize spectral shape and detected-power envelopes with ranked evidence and explicit unknowns.' },
-  generator: { eyebrow: 'GENERATE / OUTPUT', title: 'Signal generator', description: 'Configure RF output deliberately with visible state and bounded controls.' },
-  device: { eyebrow: 'INSTRUMENT / DEVICE', title: 'Device console', description: 'Inspect firmware provenance, telemetry, and the physical screen through governed remote control.' },
-};
-
 export function assertWorkspaceTransition(from: WorkspaceId, to: WorkspaceId, generatorOutput: DeviceSnapshot['generatorOutput']): void {
   if (from === 'generator' && to !== 'generator' && generatorOutput === 'on') {
     throw new Error('Disable RF output before leaving the generator workspace');

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, Download, LoaderCircle, Play, RadioTower, Repeat2, StopCircle } from 'lucide-react';
+import { CircleAlert, Download, LoaderCircle, Play, Repeat2, StopCircle } from 'lucide-react';
 import {
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
@@ -69,7 +69,7 @@ import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
 import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
-import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, DISCONNECTED_SNAPSHOT, type AcquisitionState, type WorkspaceId, workspaceCopy } from './ui-contracts.js';
+import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, DISCONNECTED_SNAPSHOT, type AcquisitionState, type WorkspaceId } from './ui-contracts.js';
 import { useAtomAgent } from './useAtomAgent.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
@@ -218,6 +218,11 @@ export function App() {
   useEffect(() => saveStored('waterfall', waterfallConfiguration), [waterfallConfiguration]);
   useEffect(() => saveStored('channel-measurement', channelConfiguration), [channelConfiguration]);
   useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(undefined), 4_000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
   useEffect(() => {
     detector.current.configure(detectionConfig);
     tracker.current.configure(detectionConfig);
@@ -815,17 +820,28 @@ export function App() {
   }
 
   const agent = useAtomAgent({ applicationContext, execute: executeAgentTool });
-  const copy = workspaceCopy[workspace];
+  const acquisitionActions = (continuous || (workspace !== 'generator' && workspace !== 'device')) ? <div className="acquisition-actions">
+    {sweep && workspace !== 'generator' && workspace !== 'device' && <>
+      <button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button>
+      <button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button>
+    </>}
+    {continuous
+      ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop</button>
+      : <>
+        <button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button>
+        <button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single'}</button>
+      </>}
+  </div> : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
     <TopBar snapshot={snapshot} simulated={simulated} demoProfile={demoStatus?.active ? demoStatus.profile : undefined} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
-      <div className="workspace-header"><div><span className="workspace-kicker">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.description}</p></div>{(continuous || (workspace !== 'generator' && workspace !== 'device')) && <div className="acquisition-actions">{sweep && <><button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button><button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button></>}{continuous ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop replay</button> : <><button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button><button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single sweep'}</button></>}</div>}</div>
+      {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button onClick={() => setNotice(undefined)}>Dismiss</button></div>}
-      {!connected && <div className="connection-banner"><div><RadioTower size={17}/><span><strong>No instrument connected</strong><small>Connect an exact ZS407 USB CDC device or the byte-level simulator to enable controls.</small></span></div><button className="text-button" onClick={() => setConnectionOpen(true)}>Choose device</button></div>}
       {workspace === 'spectrum' && <MeasurementWorkspace
+        acquisitionActions={acquisitionActions}
         view={measurementView} onView={changeMeasurementView}
         analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={setAnalyzer}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
@@ -844,7 +860,6 @@ export function App() {
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
       {workspace === 'device' && <DeviceWorkspace snapshot={snapshot} diagnostics={diagnostics} frame={screenFrame} busy={busy} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTouch={(point) => void touchScreen(point)} onRelease={(point) => void releaseScreen(point)}/>}
     </section>
-    <footer className="statusbar"><div><span className={`footer-dot ${connected ? 'ready' : ''}`}/>{connected ? `${snapshot.identity?.model} · ${snapshot.identity?.firmwareVersion}` : snapshot.connection.toUpperCase()}</div><div>{snapshot.generatorOutput !== 'off' && <span className={`rf-global ${snapshot.generatorOutput}`}>RF {snapshot.generatorOutput.toUpperCase()}</span>}<span>{sweep ? `${sweep.frequencyHz.length} POINTS · ${sweep.source.toUpperCase()}` : 'NO TRACE'}</span><span>{snapshot.verification.toUpperCase()}</span><span>API V{window.tinySA.version}</span></div></footer>
     <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog
       ports={ports}

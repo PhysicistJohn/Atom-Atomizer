@@ -12,17 +12,17 @@ export function GeneratorWorkspace({ config, snapshot, busy, onChange, onApply, 
   return <div className="generator-layout">
     <section className={`rf-stage ${on ? 'is-on' : ''} ${unknown ? 'is-unknown' : ''}`}>
       <div className="rf-halo"><Radio size={36}/><span/><span/><span/></div>
-      <span className="section-kicker">RF OUTPUT STATE</span>
+      <span className="rf-state-label">RF output</span>
       <h2>{snapshot.generatorOutput.toUpperCase()}</h2>
-      <p>{on ? 'Energy may be present at the connected RF output.' : unknown ? 'Software cannot establish whether the physical output is emitting. Inspect the device and connection.' : 'Output is commanded off. Software is not a physical interlock.'}</p>
+      <p>{on ? 'Energy may be present at the RF connector.' : unknown ? 'Physical output state is unknown. Inspect the instrument and connection.' : 'Commanded off · not a physical interlock.'}</p>
       <button data-agent-control="generator.rf-output" data-agent-risk="high-impact" className={`output-control ${on ? 'stop' : 'start'}`} disabled={!ready || busy || unknown || !valid} onClick={() => onOutput(!on)}><Power size={17}/>{on ? 'Disable RF output' : 'Enable RF output'}</button>
     </section>
 
     <section className="generator-controls">
-      <div className="panel-header"><div><Waves size={14}/>OUTPUT CONFIGURATION</div><span>COMMANDED · NO READBACK</span></div>
+      <div className="panel-header"><div><Waves size={14}/>Settings</div><span>COMMANDED · NO READBACK</span></div>
       <div className="generator-form">
         <label><span>Frequency</span><div className="large-input"><input data-agent-control="generator.frequency" type="number" min="1" max={maximumHz} value={config.frequencyHz} onChange={(event) => onChange({ ...config, frequencyHz: Number(event.target.value) })}/><em>Hz</em></div><small>{formatFrequency(config.frequencyHz)} · max {formatFrequency(maximumHz)}</small></label>
-        <label><span>Output level</span><div className="large-input"><input data-agent-control="generator.level" type="number" min={ZS407_FIRMWARE_LIMITS.generatorMinimumDbm} max={ZS407_FIRMWARE_LIMITS.generatorMaximumDbm} step="0.5" value={config.levelDbm} onChange={(event) => onChange({ ...config, levelDbm: Number(event.target.value) })}/><em>dBm</em></div><small>Nominal firmware command range</small></label>
+        <label><span>Output level</span><div className="large-input"><input data-agent-control="generator.level" type="number" min={ZS407_FIRMWARE_LIMITS.generatorMinimumDbm} max={ZS407_FIRMWARE_LIMITS.generatorMaximumDbm} step="0.5" value={config.levelDbm} onChange={(event) => onChange({ ...config, levelDbm: Number(event.target.value) })}/><em>dBm</em></div></label>
         <label><span>RF path</span><select value={config.path} onChange={(event) => onChange({ ...config, path: event.target.value as GeneratorConfig['path'] })}><option value="normal">Fundamental · ≤ 6.3 GHz</option><option value="mixer">Mixer / harmonic · ≤ 17.9226 GHz</option></select></label>
         <label><span>Modulation</span><select value={config.modulation} onChange={(event) => onChange({ ...config, modulation: event.target.value as GeneratorConfig['modulation'] })}><option value="off">Unmodulated</option><option value="am">Amplitude modulation</option><option value="fm">Frequency modulation</option></select></label>
         {config.modulation !== 'off' && <label><span>Modulation rate</span><div className="large-input small"><input type="number" min="1" max={config.modulation === 'fm' ? 3_500 : 10_000} value={config.modulationFrequencyHz} onChange={(event) => onChange({ ...config, modulationFrequencyHz: Number(event.target.value) })}/><em>Hz</em></div></label>}
@@ -33,6 +33,6 @@ export function GeneratorWorkspace({ config, snapshot, busy, onChange, onApply, 
       </div>
     </section>
 
-    <section className="safety-panel"><div><ShieldCheck size={18}/><span><strong>Safety contract active</strong><small>Mode changes mute output; reconnect never restores RF-on</small></span></div><ul><li><AlertTriangle size={13}/>Verify attenuation and load before enabling.</li><li><AlertTriangle size={13}/>Frequency, level, path and modulation have no reliable firmware readback.</li><li><AlertTriangle size={13}/>Mixer/harmonic output requires physical characterization.</li></ul></section>
+    <section className="safety-panel"><div><ShieldCheck size={18}/><strong>Before enabling</strong></div><ul><li><AlertTriangle size={13}/>Verify load and attenuation.</li><li><AlertTriangle size={13}/>Harmonic output is unqualified.</li></ul></section>
   </div>;
 }
