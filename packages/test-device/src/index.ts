@@ -3,14 +3,9 @@ import {
   TINYSA_USB_VENDOR_ID,
   ZS407_FIRMWARE_LIMITS,
   portCandidateSchema,
-  replayChannelConfigurationSchema,
-  synthesizedSignalProfileSchema,
   type PortCandidate,
-  type ReplayChannelConfiguration,
-  type SynthesizedSignalProfile,
 } from '@tinysa/contracts';
 import type { ByteTransport, TransportEvent } from '@tinysa/device';
-import { DEFAULT_REPLAY_CHANNEL, synthesizeSpectrum, synthesizeZeroSpan } from '@tinysa/waveforms';
 
 type ByteListener = (bytes: Uint8Array) => void;
 type EventListener = (event: TransportEvent) => void;
@@ -20,11 +15,7 @@ export interface FakeOptions {
   sweepLatencyMs?: number;
   includeBootBanner?: boolean;
   batteryMillivolts?: number;
-  signalProfile?: DemoSignalProfile;
-  replayChannel?: ReplayChannelConfiguration;
-  demoIdentity?: boolean;
 }
-export type DemoSignalProfile = 'survey' | SynthesizedSignalProfile;
 
 const encoder = new TextEncoder();
 const PROMPT = encoder.encode('ch> ');
@@ -52,41 +43,18 @@ export class FakeTinySaTransport implements ByteTransport {
   #attenuationDb: number | 'auto' = 'auto';
   #sweepTimeSeconds = 0;
   #sweepIndex = 0;
-  #signalProfile: DemoSignalProfile;
-  #replayChannel: ReplayChannelConfiguration;
 
   constructor(private readonly options: FakeOptions = {}) {
-    this.#signalProfile = options.signalProfile ?? 'survey';
-    this.#replayChannel = replayChannelConfigurationSchema.parse(options.replayChannel ?? DEFAULT_REPLAY_CHANNEL);
-    this.port = portCandidateSchema.parse(options.demoIdentity ? {
-      id: 'demo-zs407:ATOM-LAB:0483:5740',
-      path: 'fake://atom-signal-lab',
-      manufacturer: 'TinySA Atomizer',
-      product: 'Signal Lab · Synthesized ZS407',
-      serialNumber: 'ATOM-LAB',
-      vendorId: TINYSA_USB_VENDOR_ID,
-      productId: TINYSA_USB_PRODUCT_ID,
-      usbMatch: 'exact-zs407-cdc',
-    } : {
+    this.port = portCandidateSchema.parse({
       id: 'fake-zs407:SIM-407:0483:5740',
       path: 'fake://zs407',
-      manufacturer: 'tinysa.org',
-      product: 'tinySA4',
+      manufacturer: 'TinySA test fixture',
+      product: 'Protocol-only ZS407 test double',
       serialNumber: 'SIM-407',
       vendorId: TINYSA_USB_VENDOR_ID,
       productId: TINYSA_USB_PRODUCT_ID,
       usbMatch: 'exact-zs407-cdc',
     });
-  }
-
-  get signalProfile(): DemoSignalProfile { return this.#signalProfile; }
-  get replayChannel(): ReplayChannelConfiguration { return structuredClone(this.#replayChannel); }
-  setSignalProfile(profile: DemoSignalProfile): void {
-    if (profile !== 'survey') synthesizedSignalProfileSchema.parse(profile);
-    this.#signalProfile = profile;
-  }
-  setReplayChannel(channel: ReplayChannelConfiguration): void {
-    this.#replayChannel = replayChannelConfigurationSchema.parse(channel);
   }
 
   async list(): Promise<PortCandidate[]> { return [this.port]; }
@@ -158,7 +126,7 @@ export class FakeTinySaTransport implements ByteTransport {
       case 'deviceid': return 'deviceid 407';
       case 'scan': return this.#textSweep(args);
       case 'scanraw': return this.#rawSweep(args);
-      case 'capture': return fakeScreen(this.#signalProfile, this.#replayChannel, this.#sweepIndex, this.#startHz, this.#stopHz);
+      case 'capture': return fakeScreen(this.#sweepIndex, this.#startHz, this.#stopHz);
       case 'freq':
       case 'level':
       case 'modulation':
@@ -302,8 +270,7 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #powers(startHz: number, stopHz: number, points: number): number[] {
-    if (startHz === stopHz) return synthesizeZeroSpan({ profile: this.#signalProfile, points, sweepIndex: this.#sweepIndex, channel: this.#replayChannel });
-    return synthesizeSpectrum({ profile: this.#signalProfile, startHz, stopHz, points, sweepIndex: this.#sweepIndex, channel: this.#replayChannel });
+    return protocolFixturePowers(startHz, stopHz, points, this.#sweepIndex);
   }
 
   #actualRbwHz(): number { return this.#rbwKhz === 'auto' ? 10_000 : this.#rbwKhz * 1_000; }
@@ -311,11 +278,11 @@ export class FakeTinySaTransport implements ByteTransport {
 
 }
 
-function fakeScreen(profile: DemoSignalProfile, channel: ReplayChannelConfiguration, sweepIndex: number, startHz: number, stopHz: number): Uint8Array {
+function fakeScreen(sweepIndex: number, startHz: number, stopHz: number): Uint8Array {
   const width = ZS407_FIRMWARE_LIMITS.screenWidth;
   const height = ZS407_FIRMWARE_LIMITS.screenHeight;
   const pixels = new Uint8Array(width * height * 2);
-  const powerDbm = synthesizeSpectrum({ profile, startHz, stopHz, points: width, sweepIndex, channel });
+  const powerDbm = protocolFixturePowers(startHz, stopHz, width, sweepIndex);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const grid = x % 60 === 0 || y % 40 === 0;
@@ -330,6 +297,19 @@ function fakeScreen(profile: DemoSignalProfile, channel: ReplayChannelConfigurat
     }
   }
   return pixels;
+}
+
+function protocolFixturePowers(startHz: number, stopHz: number, points: number, sweepIndex: number): number[] {
+  if (!Number.isInteger(points) || points < 1) throw new Error('Protocol fixture requires a positive point count');
+  const center = (startHz + stopHz) / 2;
+  const width = Math.max(1, Math.abs(stopHz - startHz) / 30);
+  return Array.from({ length: points }, (_, index) => {
+    const frequency = points === 1 ? startHz : startHz + (stopHz - startHz) * index / (points - 1);
+    const noise = -108 + 1.7 * Math.sin(index * 1.618 + sweepIndex * 0.31) + 0.9 * Math.cos(index * 0.47 - sweepIndex * 0.19);
+    const signal = -49 - 4.342944819 * ((frequency - center) / width) ** 2;
+    const maximum = Math.max(noise, signal);
+    return maximum + 10 * Math.log10(10 ** ((noise - maximum) / 10) + 10 ** ((signal - maximum) / 10));
+  });
 }
 
 function strictInteger(value: string | undefined, label: string): number {

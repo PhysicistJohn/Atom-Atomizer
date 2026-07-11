@@ -48,13 +48,3 @@ contextBridge.exposeInMainWorld('atomAgent', {
   computerKey: (key:string) => ipcRenderer.invoke('ai:computer:key', key),
   computerScroll: (value:{x:number;y:number;deltaX:number;deltaY:number}) => ipcRenderer.invoke('ai:computer:scroll', value)
 });
-contextBridge.exposeInMainWorld('demoLab', {
-  status: () => ipcRenderer.invoke('demo:status'),
-  select: (profile: import('@tinysa/contracts').SynthesizedSignalProfile) => ipcRenderer.invoke('demo:select', profile),
-  configureChannel: (config: import('@tinysa/contracts').ReplayChannelConfiguration) => ipcRenderer.invoke('demo:channel', config),
-  subscribe: (listener: (status: import('@tinysa/contracts').DemoLabStatus) => void) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, status: import('@tinysa/contracts').DemoLabStatus) => listener(status);
-    ipcRenderer.on('demo:status', wrapped);
-    return () => ipcRenderer.removeListener('demo:status', wrapped);
-  },
-});

@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/waveforms && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
+    "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "npm run build:main && concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "npm run build:main && vite build",
-    "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron && tsup src/main/demo-preload.ts --format cjs --out-dir dist/main --external electron",
+    "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
@@ -15,8 +15,6 @@
     "@tinysa/analysis": "*",
     "@tinysa/contracts": "*",
     "@tinysa/device": "*",
-    "@tinysa/test-device": "*",
-    "@tinysa/waveforms": "*",
     "dotenv": "17.4.2",
     "lucide-react": "1.24.0",
     "react": "19.2.7",

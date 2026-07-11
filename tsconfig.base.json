@@ -14,8 +14,7 @@
       "@tinysa/device": ["packages/tinysa/src/index.ts"],
       "@tinysa/test-device": ["packages/test-device/src/index.ts"],
       "@tinysa/analysis": ["packages/analysis/src/index.ts"],
-      "@tinysa/agent": ["packages/agent/src/index.ts"],
-      "@tinysa/waveforms": ["packages/waveforms/src/index.ts"]
+      "@tinysa/agent": ["packages/agent/src/index.ts"]
     },
     "declaration": true,
     "sourceMap": true

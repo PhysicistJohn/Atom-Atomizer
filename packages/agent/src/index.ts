@@ -9,10 +9,8 @@ import {
   markerIdSchema,
   markerSearchActionSchema,
   measurementViewIdSchema,
-  replayChannelConfigurationSchema,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
-  synthesizedSignalProfileSchema,
   traceConfigurationSchema,
   traceIdSchema,
   waterfallConfigurationSchema,
@@ -40,7 +38,7 @@ export type AgentToolName =
   | 'configure_envelope_stft' | 'get_envelope_stft_results' | 'acquire_envelope_stft'
   | 'configure_signal_detector' | 'configure_zero_span' | 'acquire_zero_span'
   | 'configure_generator' | 'set_rf_output'
-  | 'capture_device_screen' | 'remote_device_touch' | 'export_latest_sweep' | 'select_demo_signal' | 'configure_demo_channel';
+  | 'capture_device_screen' | 'remote_device_touch' | 'export_latest_sweep';
 
 export interface AgentToolDefinition {
   type: 'function';
@@ -226,8 +224,6 @@ export const agentToolDefinitions: readonly AgentToolDefinition[] = [
   { type: 'function', name: 'capture_device_screen', description: 'Capture the physical tinySA LCD as an exact 480×320 RGB565 frame and display it in Device.', parameters: empty },
   { type: 'function', name: 'remote_device_touch', description: 'Send one physical-screen touch gesture. Because firmware UI touch may reach RF controls, every gesture requires immediate human approval.', parameters: { type: 'object', properties: { x: { type: 'integer', minimum: 0, maximum: 479 }, y: { type: 'integer', minimum: 0, maximum: 319 }, gesture: { type: 'string', enum: ['tap', 'press', 'release'] } }, required: ['x', 'y', 'gesture'], additionalProperties: false } },
   { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with measurement and device provenance.', parameters: { type: 'object', properties: { format: { type: 'string', enum: ['csv', 'json'] } }, required: ['format'], additionalProperties: false } },
-  { type: 'function', name: 'select_demo_signal', description: 'Select one closed Signal Lab profile: visual CW/AM/FM; published GSM/EDGE normal-burst modulations; the complete in-scope Release 19 LTE E-TM/sE-TM/N-TM and NR-FR1/NR-N-TM/SBFD model catalog; or an IEEE 802.11ax HE PPDU format. Qualification and exact source clause are returned.', parameters: { type: 'object', properties: { profile: { type: 'string', enum: synthesizedSignalProfileSchema.options } }, required: ['profile'], additionalProperties: false } },
-  { type: 'function', name: 'configure_demo_channel', description: 'Configure the seeded Signal Lab channel as complex-Gaussian AWGN or frequency-selective correlated Rayleigh fading plus AWGN.', parameters: { type: 'object', properties: { model: { type: 'string', enum: ['awgn', 'rayleigh'] }, noiseFloorDbm: { type: 'number', minimum: -150, maximum: -30 }, seed: { type: 'integer', minimum: 1, maximum: 0xffff_ffff }, fadingRateHz: { type: 'number', minimum: 0.1, maximum: 100 } }, required: ['model', 'noiseFloorDbm', 'seed', 'fadingRateHz'], additionalProperties: false } },
 ];
 
 const observe = (name: AgentToolName): AgentToolPolicy => ({ name, risk: 'observe', approval: 'never' });
@@ -275,8 +271,6 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   capture_device_screen: observe('capture_device_screen'),
   remote_device_touch: { name: 'remote_device_touch', risk: 'high-impact', approval: 'at-action' },
   export_latest_sweep: operate('export_latest_sweep'),
-  select_demo_signal: operate('select_demo_signal'),
-  configure_demo_channel: operate('configure_demo_channel'),
 };
 
 const schemas: Record<AgentToolName, z.ZodType> = {
@@ -322,8 +316,6 @@ const schemas: Record<AgentToolName, z.ZodType> = {
   capture_device_screen: z.object({}).strict(),
   remote_device_touch: z.object({ x: z.number().int().min(0).max(479), y: z.number().int().min(0).max(319), gesture: z.enum(['tap', 'press', 'release']) }).strict(),
   export_latest_sweep: z.object({ format: z.enum(['csv', 'json']) }).strict(),
-  select_demo_signal: z.object({ profile: synthesizedSignalProfileSchema }).strict(),
-  configure_demo_channel: replayChannelConfigurationSchema,
 };
 
 export function isAgentToolName(value: string): value is AgentToolName { return Object.hasOwn(agentToolPolicies, value); }

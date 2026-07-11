@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TinySaDeviceService } from '@tinysa/device';
 import type { AnalyzerConfig, GeneratorConfig, ZeroSpanConfig } from '@tinysa/contracts';
-import { suggestedAnalyzerRange, waveformDescriptor } from '@tinysa/waveforms';
 import { FakeTinySaTransport } from './index.js';
 
 const analyzer: AnalyzerConfig = {
@@ -96,41 +95,6 @@ describe('device service against byte-level simulator', () => {
     await device.disconnect();
   });
 
-  it('switches Signal Lab profiles in the actual sweep byte source', async () => {
-    const transport = new FakeTinySaTransport({ signalProfile: 'cw', demoIdentity: true });
-    const device = new TinySaDeviceService(transport);
-    await device.connect(transport.port);
-    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('cw')), points: 145 });
-    const cw = await device.acquireSweep();
-    transport.setSignalProfile('lte-etm1.1');
-    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('lte-etm1.1')), points: 145 });
-    const lte = await device.acquireSweep();
-    expect(cw.powerDbm.filter((value) => value > -80).length).toBeLessThan(8);
-    expect(lte.powerDbm.filter((value) => value > -80).length).toBeGreaterThan(40);
-    await device.disconnect();
-  });
-
-  it('replays a correlated capture-like noise floor that evolves between sweeps', async () => {
-    const transport = new FakeTinySaTransport({ signalProfile: 'cw', demoIdentity: true });
-    const device = new TinySaDeviceService(transport);
-    await device.connect(transport.port);
-    await device.configureAnalyzer({ ...analyzer, ...suggestedAnalyzerRange(waveformDescriptor('cw')), points: 321 });
-    const first = await device.acquireSweep();
-    const second = await device.acquireSweep();
-    const backgroundIndexes = first.powerDbm
-      .map((_value, index) => index)
-      .filter((index) => index / (first.powerDbm.length - 1) < 0.42 || index / (first.powerDbm.length - 1) > 0.58);
-    const floor = backgroundIndexes.map((index) => first.powerDbm[index]!);
-    const adjacentMotion = floor.slice(1).map((value, index) => Math.abs(value - floor[index]!));
-    const frameMotion = backgroundIndexes.map((index) => Math.abs(second.powerDbm[index]! - first.powerDbm[index]!));
-    expect(Math.max(...floor) - Math.min(...floor)).toBeGreaterThan(7);
-    expect(average(adjacentMotion)).toBeGreaterThan(0.2);
-    expect(average(adjacentMotion)).toBeLessThan(2.5);
-    expect(average(frameMotion)).toBeGreaterThan(0.25);
-    expect(average(frameMotion)).toBeLessThan(2.5);
-    await device.disconnect();
-  });
-
   it('keeps generator output off through configuration and requires generator mode before enable', async () => {
     const transport = new FakeTinySaTransport();
     const device = new TinySaDeviceService(transport);
@@ -152,7 +116,3 @@ describe('device service against byte-level simulator', () => {
     await device.disconnect();
   });
 });
-
-function average(values: readonly number[]): number {
-  return values.reduce((total, value) => total + value, 0) / values.length;
-}

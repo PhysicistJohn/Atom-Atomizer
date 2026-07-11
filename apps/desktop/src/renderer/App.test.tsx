@@ -14,7 +14,6 @@ import {
   type Sweep,
 } from '@tinysa/contracts';
 import { App } from './App.js';
-import { DEFAULT_REPLAY_CHANNEL, waveformCatalog, waveformDescriptor } from '@tinysa/waveforms';
 
 const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'tinySA simulator', product: 'tinySA4', serialNumber: 'SIM-407', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc' };
 const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: true } as const;
@@ -34,7 +33,6 @@ const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 20, ac
 const powers = Array.from({ length: 20 }, (_, index) => index === 10 ? -50 : -90);
 const frequencies = Array.from({ length: 20 }, (_, index) => 88e6 + index * (20e6 / 19));
 const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity };
-const demoStatus = { available: false, active: false, playback: false, profile: 'cw' as const, profiles: waveformCatalog.map((entry) => entry.id), waveform: waveformDescriptor('cw'), catalog: waveformCatalog, channel: DEFAULT_REPLAY_CHANNEL };
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
@@ -62,19 +60,9 @@ beforeEach(() => {
     status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
     createRealtimeCall: vi.fn(), agentTurn: vi.fn(), computerScreenshot: vi.fn(), computerClick: vi.fn(), computerType: vi.fn(), computerKey: vi.fn(), computerScroll: vi.fn(),
   };
-  window.demoLab = { status: vi.fn().mockResolvedValue(demoStatus), select: vi.fn(), configureChannel: vi.fn(), subscribe: vi.fn().mockReturnValue(vi.fn()) };
 });
 
 describe('operator vertical slice', () => {
-  it('starts continuous synthetic replay when Signal Lab owns the startup instrument', async () => {
-    vi.mocked(window.tinySA.getSnapshot).mockResolvedValue(ready);
-    vi.mocked(window.demoLab.status).mockResolvedValue({ ...demoStatus, available: true, active: true });
-    render(<App/>);
-    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
-    expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.startStreaming));
-    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
-  });
-
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());

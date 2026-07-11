@@ -11,6 +11,6 @@ export default defineConfig({
   build: {
     outDir: resolve(root, '../../dist/renderer'),
     emptyOutDir: true,
-    rollupOptions: { input: { atomizer: resolve(root, 'index.html'), signalLab: resolve(root, 'demo.html') } },
+    rollupOptions: { input: { atomizer: resolve(root, 'index.html') } },
   },
 });

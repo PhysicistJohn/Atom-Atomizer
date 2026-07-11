@@ -6,6 +6,6 @@
   "exports": { ".": "./dist/index.js" },
   "types": "./dist/index.d.ts",
   "scripts": { "build": "tsup src/index.ts --format esm --dts --clean", "typecheck": "tsc -p tsconfig.json --noEmit" },
-  "dependencies": { "@tinysa/contracts": "*", "@tinysa/waveforms": "*" },
+  "dependencies": { "@tinysa/contracts": "*" },
   "devDependencies": { "@tinysa/device": "*" }
 }

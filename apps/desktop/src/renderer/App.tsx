@@ -18,7 +18,6 @@ import {
   type ChannelMeasurementConfiguration,
   type DeviceDiagnostics,
   type DeviceEvent,
-  type DemoLabStatus,
   type DeviceSnapshot,
   type DetectedSignal,
   type GeneratorConfig,
@@ -29,13 +28,11 @@ import {
   type MarkerSearchConfiguration,
   type MeasurementViewId,
   type PortCandidate,
-  type ReplayChannelConfiguration,
   type ScreenFrame,
   type ScreenPoint,
   type SignalDetectionConfig,
   type SpectrumDisplayConfiguration,
   type Sweep,
-  type SynthesizedSignalProfile,
   type TraceBankConfiguration,
   type TraceConfiguration,
   type TraceFrame,
@@ -145,7 +142,6 @@ export function App() {
   const [envelope, setEnvelope] = useState<EnvelopeClassification>();
   const [diagnostics, setDiagnostics] = useState<DeviceDiagnostics>();
   const [screenFrame, setScreenFrame] = useState<ScreenFrame>();
-  const [demoStatus, setDemoStatus] = useState<DemoLabStatus>();
   const [acquisition, setAcquisition] = useState<AcquisitionState>('idle');
   const [continuous, setContinuous] = useState(false);
   const [error, setError] = useState<string>();
@@ -159,8 +155,6 @@ export function App() {
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const continuousRequested = useRef(false);
   const analysisSequence = useRef(0);
-  const demoStatusRef = useRef<DemoLabStatus | undefined>(undefined);
-  const demoPlaybackStarting = useRef(false);
 
   const connected = snapshot.connection === 'ready';
   const operationBusy = acquisition === 'configuring' || acquisition === 'acquiring' || acquisition === 'streaming';
@@ -171,25 +165,6 @@ export function App() {
 
   useEffect(() => {
     const unsubscribe = window.tinySA.subscribe(handleDeviceEvent);
-    const unsubscribeDemo = window.demoLab.subscribe((status) => {
-      const previous = demoStatusRef.current;
-      demoStatusRef.current = status;
-      setDemoStatus(status);
-      if (!status.active) return;
-      if (status.playback && !continuousRequested.current) {
-        continuousRequested.current = true;
-        setContinuous(true);
-        setAcquisition('streaming');
-      } else if (!status.playback && previous?.playback && continuousRequested.current) {
-        continuousRequested.current = false;
-        setContinuous(false);
-        setAcquisition('complete');
-      }
-      const profileChanged = previous?.profile !== status.profile;
-      const channelChanged = previous && JSON.stringify(previous.channel) !== JSON.stringify(status.channel);
-      if (!previous?.active || profileChanged) void ensureDemoPlayback(status, true);
-      else if (channelChanged) setNotice(`${status.channel.model.toUpperCase()} channel replay applied at ${status.channel.noiseFloorDbm} dBm`);
-    });
     void initialize();
     return () => {
       if (continuousRequested.current) {
@@ -199,7 +174,6 @@ export function App() {
       }
       continuousRequested.current = false;
       unsubscribe();
-      unsubscribeDemo();
     };
   }, []);
   useEffect(() => { analyzerRef.current = analyzer; saveStored('analyzer', analyzer); }, [analyzer]);
@@ -232,46 +206,12 @@ export function App() {
 
   async function initialize(): Promise<void> {
     try {
-      const [nextPorts, currentSnapshot, demo] = await Promise.all([window.tinySA.listDevices(), window.tinySA.getSnapshot(), window.demoLab.status()]);
+      const [nextPorts, currentSnapshot] = await Promise.all([window.tinySA.listDevices(), window.tinySA.getSnapshot()]);
       setPorts(nextPorts);
       setSelectedPortId((current) => current && nextPorts.some((port) => port.id === current) ? current : nextPorts[0]?.id);
       acceptSnapshot(currentSnapshot);
-      demoStatusRef.current = demo;
-      setDemoStatus(demo);
-      if (demo.active && currentSnapshot.connection === 'ready') void ensureDemoPlayback(demo, true);
     } catch (value) {
       setError(errorMessage(value));
-    }
-  }
-
-  async function ensureDemoPlayback(status: DemoLabStatus, configureWaveform = false): Promise<void> {
-    if (!status.active || demoPlaybackStarting.current) return;
-    if (!configureWaveform && (continuousRequested.current || status.playback)) {
-      setNotice(`${status.profile.toUpperCase()} synthesis is live; the next replay frame will use it`);
-      return;
-    }
-    if (snapshotRef.current.connection !== 'ready') return;
-    demoPlaybackStarting.current = true;
-    try {
-      if (continuousRequested.current) await stopContinuous();
-      if (configureWaveform) {
-        const halfSpan = status.waveform.recommendedSpanHz / 2;
-        const nextAnalyzer = analyzerConfigSchema.parse({
-          ...analyzerRef.current,
-          startHz: Math.round(status.waveform.centerHz - halfSpan),
-          stopHz: Math.round(status.waveform.centerHz + halfSpan),
-        });
-        analyzerRef.current = nextAnalyzer;
-        setAnalyzer(nextAnalyzer);
-      }
-      if (!continuousRequested.current) await startContinuous();
-      setNotice(`${status.waveform.label} · ${status.channel.model.toUpperCase()} replay is live`);
-    } catch (value) {
-      const message = `Signal Lab synthetic replay failed: ${errorMessage(value)}`;
-      console.error(message, value);
-      setError(message);
-    } finally {
-      demoPlaybackStarting.current = false;
     }
   }
 
@@ -648,7 +588,6 @@ export function App() {
       acquisition,
       continuous,
       simulated,
-      demo: demoStatus ?? null,
       visibleError: error ?? null,
       snapshot,
       analyzer,
@@ -806,16 +745,6 @@ export function App() {
         return { completed: value.gesture, point };
       }
       case 'export_latest_sweep': return exportLatest((args as { format: 'csv' | 'json' }).format);
-      case 'select_demo_signal': {
-        const status = await window.demoLab.select((args as { profile: SynthesizedSignalProfile }).profile);
-        setDemoStatus(status);
-        return status;
-      }
-      case 'configure_demo_channel': {
-        const status = await window.demoLab.configureChannel(args as ReplayChannelConfiguration);
-        setDemoStatus(status);
-        return status;
-      }
     }
   }
 
@@ -834,7 +763,7 @@ export function App() {
   </div> : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
-    <TopBar snapshot={snapshot} simulated={simulated} demoProfile={demoStatus?.active ? demoStatus.profile : undefined} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
+    <TopBar snapshot={snapshot} simulated={simulated} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}

@@ -33,14 +33,9 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"candidate-1"}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"/dev/cu.usbmodem"}'})).toThrow();
   });
-  it('exposes the closed Signal Lab switch as a typed operation',()=>{
-    expect(validateAgentToolCall({callId:'1',name:'select_demo_signal',arguments:'{"profile":"lte-etm1.1"}'}).policy.risk).toBe('operate');
-    expect(()=>validateAgentToolCall({callId:'1',name:'select_demo_signal',arguments:'{"profile":"wifi"}'})).toThrow();
-  });
   it('gives Atom closed marker, trace, display, and channel operations',()=>{
     expect(validateAgentToolCall({callId:'1',name:'configure_trace',arguments:'{"id":2,"mode":"max-hold","averageCount":8}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'2',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak"}'}).policy.risk).toBe('operate');
-    expect(validateAgentToolCall({callId:'3',name:'configure_demo_channel',arguments:'{"model":"rayleigh","noiseFloorDbm":-108,"seed":407,"fadingRateHz":2}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'4',name:'reset_trace',arguments:'{"traceId":5}'})).toThrow();
   });
   it('gives Atom complete advanced-measurement hooks with closed evidence settings',()=>{
