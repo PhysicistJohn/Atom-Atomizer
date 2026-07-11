@@ -411,6 +411,7 @@ export type SynthesizedSignalProfile = z.infer<typeof synthesizedSignalProfileSc
 export interface DemoLabStatus {
   available: boolean;
   active: boolean;
+  playback: boolean;
   profile: SynthesizedSignalProfile;
   profiles: readonly SynthesizedSignalProfile[];
 }

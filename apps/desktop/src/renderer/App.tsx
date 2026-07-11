@@ -93,7 +93,8 @@ export function App() {
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const continuousRequested = useRef(false);
   const analysisSequence = useRef(0);
-  const demoAutoSweepStarted = useRef(false);
+  const demoStatusRef = useRef<DemoLabStatus | undefined>(undefined);
+  const demoPlaybackStarting = useRef(false);
 
   const connected = snapshot.connection === 'ready';
   const operationBusy = acquisition === 'configuring' || acquisition === 'acquiring' || acquisition === 'streaming';
@@ -104,13 +105,20 @@ export function App() {
   useEffect(() => {
     const unsubscribe = window.tinySA.subscribe(handleDeviceEvent);
     const unsubscribeDemo = window.demoLab.subscribe((status) => {
+      const previous = demoStatusRef.current;
+      demoStatusRef.current = status;
       setDemoStatus(status);
       if (!status.active) return;
-      if (continuousRequested.current) {
-        setNotice(`${status.profile.toUpperCase()} synthesis armed; the next streamed sweep will use it`);
-        return;
+      if (status.playback && !continuousRequested.current) {
+        continuousRequested.current = true;
+        setContinuous(true);
+        setAcquisition('streaming');
+      } else if (!status.playback && previous?.playback && continuousRequested.current) {
+        continuousRequested.current = false;
+        setContinuous(false);
+        setAcquisition('complete');
       }
-      if (snapshotRef.current.connection === 'ready') void acquire().catch(() => undefined);
+      if (!previous?.active || previous.profile !== status.profile) void ensureDemoPlayback(status);
     });
     void initialize();
     return () => {
@@ -141,13 +149,29 @@ export function App() {
       setPorts(nextPorts);
       setSelectedPortId((current) => current && nextPorts.some((port) => port.id === current) ? current : nextPorts[0]?.id);
       acceptSnapshot(currentSnapshot);
+      demoStatusRef.current = demo;
       setDemoStatus(demo);
-      if (demo.active && currentSnapshot.connection === 'ready' && !demoAutoSweepStarted.current) {
-        demoAutoSweepStarted.current = true;
-        void acquire().catch(() => undefined);
-      }
+      if (demo.active && currentSnapshot.connection === 'ready') void ensureDemoPlayback(demo);
     } catch (value) {
       setError(errorMessage(value));
+    }
+  }
+
+  async function ensureDemoPlayback(status: DemoLabStatus): Promise<void> {
+    if (!status.active || demoPlaybackStarting.current) return;
+    if (continuousRequested.current || status.playback) {
+      setNotice(`${status.profile.toUpperCase()} synthesis is live; the next replay frame will use it`);
+      return;
+    }
+    if (snapshotRef.current.connection !== 'ready') return;
+    demoPlaybackStarting.current = true;
+    try {
+      await startContinuous();
+      setNotice(`${status.profile.toUpperCase()} synthetic replay is live`);
+    } catch (value) {
+      console.error('Signal Lab synthetic replay failed to start', value);
+    } finally {
+      demoPlaybackStarting.current = false;
     }
   }
 
@@ -511,7 +535,7 @@ export function App() {
     <TopBar snapshot={snapshot} simulated={simulated} demoProfile={demoStatus?.active ? demoStatus.profile : undefined} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
     <section className="workspace-shell">
-      <div className="workspace-header"><div><span className="workspace-kicker">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.description}</p></div>{workspace !== 'generator' && workspace !== 'device' && <div className="acquisition-actions">{sweep && <><button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button><button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button></>}{continuous ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop after sweep</button> : <><button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button><button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single sweep'}</button></>}</div>}</div>
+      <div className="workspace-header"><div><span className="workspace-kicker">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.description}</p></div>{(continuous || (workspace !== 'generator' && workspace !== 'device')) && <div className="acquisition-actions">{sweep && <><button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button><button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button></>}{continuous ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop replay</button> : <><button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button><button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single sweep'}</button></>}</div>}</div>
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {!connected && <div className="connection-banner"><div><RadioTower size={17}/><span><strong>No instrument connected</strong><small>Connect an exact ZS407 USB CDC device or the byte-level simulator to enable controls.</small></span></div><button className="text-button" onClick={() => setConnectionOpen(true)}>Choose device</button></div>}

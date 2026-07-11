@@ -8,10 +8,12 @@ describe('automatic Signal Lab transport', () => {
     const transport = new AutoDemoTransport(new StubTransport([]));
     const candidates = await transport.list();
     expect(candidates[0]).toMatchObject({ path: 'fake://atom-signal-lab', usbMatch: 'exact-zs407-cdc' });
-    expect(transport.status()).toMatchObject({ available: true, active: false, profile: 'cw' });
+    expect(transport.status()).toMatchObject({ available: true, active: false, playback: false, profile: 'cw' });
     await transport.open(candidates[0]!);
+    expect(transport.setPlayback(true)).toMatchObject({ active: true, playback: true });
     expect(transport.select('lte')).toMatchObject({ active: true, profile: 'lte' });
     await transport.close();
+    expect(transport.status().playback).toBe(false);
   });
 
   it('does not offer a demo fallback when an exact physical candidate exists', async () => {

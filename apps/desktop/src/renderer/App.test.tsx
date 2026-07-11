@@ -45,7 +45,7 @@ beforeEach(() => {
     getSnapshot: vi.fn().mockResolvedValue(disconnected),
     configureAnalyzer: vi.fn().mockResolvedValue({ ...ready, mode: 'analyzer', verification: 'verified' }),
     acquireSweep: vi.fn().mockResolvedValue(sweep),
-    startStreaming: vi.fn(), stopStreaming: vi.fn(),
+    startStreaming: vi.fn().mockResolvedValue(undefined), stopStreaming: vi.fn().mockResolvedValue(undefined),
     acquireZeroSpan: vi.fn(),
     configureGenerator: vi.fn().mockResolvedValue({ ...ready, mode: 'generator' }),
     setGeneratorOutput: vi.fn().mockResolvedValue({ ...ready, mode: 'generator', generatorOutput: 'on' }),
@@ -56,10 +56,19 @@ beforeEach(() => {
     status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
     createRealtimeCall: vi.fn(), agentTurn: vi.fn(), computerScreenshot: vi.fn(), computerClick: vi.fn(), computerType: vi.fn(), computerKey: vi.fn(), computerScroll: vi.fn(),
   };
-  window.demoLab = { status: vi.fn().mockResolvedValue({ available: false, active: false, profile: 'cw', profiles: ['cw', 'am', 'fm', 'lte'] }), select: vi.fn(), subscribe: vi.fn().mockReturnValue(vi.fn()) };
+  window.demoLab = { status: vi.fn().mockResolvedValue({ available: false, active: false, playback: false, profile: 'cw', profiles: ['cw', 'am', 'fm', 'lte'] }), select: vi.fn(), subscribe: vi.fn().mockReturnValue(vi.fn()) };
 });
 
 describe('operator vertical slice', () => {
+  it('starts continuous synthetic replay when Signal Lab owns the startup instrument', async () => {
+    vi.mocked(window.tinySA.getSnapshot).mockResolvedValue(ready);
+    vi.mocked(window.demoLab.status).mockResolvedValue({ available: true, active: true, playback: false, profile: 'cw', profiles: ['cw', 'am', 'fm', 'lte'] });
+    render(<App/>);
+    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
+    expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.startStreaming));
+    expect(await screen.findByRole('button', { name: /Stop replay/i })).toBeTruthy();
+  });
+
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());

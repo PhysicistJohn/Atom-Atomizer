@@ -56,7 +56,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Simulator | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry | scripted corrupt/truncated/unplug matrix expansion |
-| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; second window switches CW/AM/FM/LTE-like byte synthesis | visual acceptance and physical-device coexistence test |
+| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; continuously replay a paced, capture-like floor while the second window switches CW/AM/FM/LTE-like byte synthesis | visual acceptance and physical-device coexistence test |
 | Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
 | Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
 | Spectrum | advanced controls, exact plot/metrics, single/continuous sweeps, 50-sweep memory history, CSV/JSON | marker keyboard workflow, waterfall, sustained physical soak |

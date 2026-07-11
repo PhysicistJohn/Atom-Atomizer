@@ -62,7 +62,9 @@ Durable saved sessions, comparison, waterfall, settings, and support-bundle work
 
 ### 2.3 Signal Lab companion
 
-When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. A compact second BrowserWindow contains exactly four primary choices—CW, AM, FM, and LTE-like—and changes the simulator's actual text/raw/zero-span byte source. Selecting a profile requests a new main-window sweep unless continuous acquisition is already consuming the source. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
+When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. It immediately starts a paced continuous replay through the production acquisition service. A compact second BrowserWindow contains exactly four primary choices—CW, AM, FM, and LTE-like—and changes the simulator's actual text/raw/zero-span byte source while replay remains live. If the operator pauses replay, selecting a new profile starts it again. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
+
+The spectral floor evolves on every frame and combines spatially correlated receiver ripple, broad passband shape, fine-grain jitter, bounded sweep drift, edge lift and stable low-level spurs. It must look capture-like without claiming calibrated RF randomness. Replay cadence is explicitly paced so the UI animates naturally without an unbounded simulator loop.
 
 LTE-like means a deterministic flat occupied channel with OFDM-like texture; it is not standards-compliant LTE I/Q and the UI must retain that qualifier. Atom receives a typed `select_demo_signal` hook. The app-only coordinate harness remains scoped to the main window.
 

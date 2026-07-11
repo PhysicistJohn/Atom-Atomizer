@@ -47,8 +47,14 @@ function registerIpc(): void {
   ipcMain.handle('tinysa:snapshot', () => device.snapshot());
   ipcMain.handle('tinysa:analyzer:configure', (_event, value: unknown) => device.configureAnalyzer(analyzerConfigSchema.parse(value)));
   ipcMain.handle('tinysa:analyzer:acquire', () => device.acquireSweep());
-  ipcMain.handle('tinysa:analyzer:stream:start', () => device.startStreaming());
-  ipcMain.handle('tinysa:analyzer:stream:stop', () => device.stopStreaming());
+  ipcMain.handle('tinysa:analyzer:stream:start', async () => {
+    await device.startStreaming();
+    broadcastDemoStatus(transport.setPlayback(true));
+  });
+  ipcMain.handle('tinysa:analyzer:stream:stop', async () => {
+    await device.stopStreaming();
+    broadcastDemoStatus(transport.setPlayback(false));
+  });
   ipcMain.handle('tinysa:analyzer:zero-span', (_event, value: unknown) => device.acquireZeroSpan(zeroSpanConfigSchema.parse(value)));
   ipcMain.handle('tinysa:generator:configure', (_event, value: unknown) => device.configureGenerator(generatorConfigSchema.parse(value)));
   ipcMain.handle('tinysa:generator:output', (_event, enabled: unknown) => { if (typeof enabled !== 'boolean') throw new TypeError('enabled must be boolean'); return device.setGeneratorOutput(enabled); });
@@ -116,9 +122,11 @@ async function createWindow(): Promise<void> {
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('render-process-gone', (_event, details) => {
     if (!device.streaming) return;
-    void device.stopStreaming().catch((error) => {
-      console.error(`Continuous acquisition did not stop after renderer process ${details.reason}`, error);
-    });
+    void device.stopStreaming()
+      .then(() => broadcastDemoStatus(transport.setPlayback(false)))
+      .catch((error) => {
+        console.error(`Continuous acquisition did not stop after renderer process ${details.reason}`, error);
+      });
   });
   if (process.env.VITE_DEV_SERVER_URL) await win.loadURL(process.env.VITE_DEV_SERVER_URL);
   else await win.loadFile(join(here, '../renderer/index.html'));
@@ -160,6 +168,7 @@ async function createDemoWindow(): Promise<void> {
 }
 registerIpc();
 device.subscribe((event: DeviceEvent) => {
+  if (event.type === 'error' && transport.status().playback) broadcastDemoStatus(transport.setPlayback(false));
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(`tinysa:event:v${API_VERSION}`, event);
 });

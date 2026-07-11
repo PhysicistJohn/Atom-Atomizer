@@ -12,6 +12,7 @@ type EventListener = (event: TransportEvent) => void;
 export interface FakeOptions {
   chunkSize?: number;
   latencyMs?: number;
+  sweepLatencyMs?: number;
   includeBootBanner?: boolean;
   batteryMillivolts?: number;
   signalProfile?: DemoSignalProfile;
@@ -108,7 +109,11 @@ export class FakeTinySaTransport implements ByteTransport {
     const echo = encoder.encode(`${command}\r\n`);
     const body = typeof payload === 'string' ? encoder.encode(payload ? `${payload}\r\n` : '') : payload;
     const response = concatenate(boot, echo, body, PROMPT);
-    if (this.options.latencyMs) await delay(this.options.latencyMs);
+    const operation = command.split(' ', 1)[0];
+    const latencyMs = operation === 'scan' || operation === 'scanraw'
+      ? this.options.sweepLatencyMs ?? this.options.latencyMs
+      : this.options.latencyMs;
+    if (latencyMs) await delay(latencyMs);
     const chunkSize = this.options.chunkSize ?? response.length;
     for (let offset = 0; offset < response.length; offset += chunkSize) {
       const chunk = response.slice(offset, offset + chunkSize);
@@ -141,7 +146,7 @@ export class FakeTinySaTransport implements ByteTransport {
       case 'deviceid': return 'deviceid 407';
       case 'scan': return this.#textSweep(args);
       case 'scanraw': return this.#rawSweep(args);
-      case 'capture': return fakeScreen(this.#signalProfile);
+      case 'capture': return fakeScreen(this.#signalProfile, this.#sweepIndex);
       case 'freq':
       case 'level':
       case 'modulation':
@@ -290,7 +295,7 @@ export class FakeTinySaTransport implements ByteTransport {
     }
     return Array.from({ length: points }, (_, index) => {
       const x = index / Math.max(1, points - 1);
-      const noise = -108 + 1.8 * Math.sin(index * 0.71 + this.#sweepIndex * 0.2) + 0.9 * Math.cos(index * 0.19);
+      const noise = captureLikeNoise(index, points, this.#sweepIndex);
       if (this.#signalProfile === 'cw') return noise + 64 * Math.exp(-Math.pow((x - 0.5) / 0.006, 2));
       if (this.#signalProfile === 'am') {
         const carrier = 61 * Math.exp(-Math.pow((x - 0.5) / 0.005, 2));
@@ -325,17 +330,57 @@ export class FakeTinySaTransport implements ByteTransport {
 
   #zeroSpanPower(index: number): number {
     const phase = (index + this.#sweepIndex * 3) * Math.PI / 13;
-    if (this.#signalProfile === 'cw') return -52 + 0.35 * Math.sin(phase * 1.7);
-    if (this.#signalProfile === 'am') return -68 + 15 * Math.sin(phase);
-    if (this.#signalProfile === 'fm') return -56 + 0.5 * Math.sin(phase * 2.3);
-    if (this.#signalProfile === 'lte') return -66 + 3.8 * Math.sin(phase * 1.9) + 2.1 * Math.cos(phase * 4.1);
+    const receiverNoise = 0.55 * smoothNoise(index / 3.5, this.#sweepIndex, 0x32a7f119)
+      + 0.22 * signedNoise(index, this.#sweepIndex, 0x68bc21eb);
+    if (this.#signalProfile === 'cw') return -52 + 0.35 * Math.sin(phase * 1.7) + receiverNoise;
+    if (this.#signalProfile === 'am') return -68 + 15 * Math.sin(phase) + receiverNoise;
+    if (this.#signalProfile === 'fm') return -56 + 0.5 * Math.sin(phase * 2.3) + receiverNoise;
+    if (this.#signalProfile === 'lte') return -66 + 3.8 * Math.sin(phase * 1.9) + 2.1 * Math.cos(phase * 4.1) + receiverNoise;
     const envelope = 7 * Math.sin(phase);
     const pulse = index % 47 < 5 ? 13 : 0;
-    return -82 + envelope + pulse;
+    return -82 + envelope + pulse + receiverNoise;
   }
 }
 
-function fakeScreen(profile: DemoSignalProfile): Uint8Array {
+function captureLikeNoise(index: number, points: number, sweepIndex: number): number {
+  const x = index / Math.max(1, points - 1);
+  const slowDrift = smoothNoise(sweepIndex / 4, 0, 0x11d42a57) * 0.35;
+  const receiverShape = 1.35 * Math.sin(Math.PI * 2 * (x * 1.45 + 0.08 + sweepIndex * 0.002))
+    + 0.95 * Math.cos(Math.PI * 2 * (x * 3.7 - 0.19))
+    + 0.55 * Math.sin(Math.PI * 2 * (x * 9.2 + 0.31));
+  const stableRipple = 1.25 * smoothNoise(index / 6.5, 0, 0x4a39b70d);
+  const liveRipple = 0.9 * smoothNoise(index / 3.2, sweepIndex, 0x7c2e1f53);
+  const fineGrain = 0.48 * signedNoise(index, sweepIndex, 0x2b91d6af);
+  const edgeLift = 1.4 * Math.pow(Math.abs(x - 0.5) * 2, 1.7);
+  const stableSpurs = 3.8 * gaussian(x, 0.083, 0.0025)
+    + 2.7 * gaussian(x, 0.647, 0.0038)
+    + 4.4 * gaussian(x, 0.914, 0.0022);
+  return -108.7 + slowDrift + receiverShape + stableRipple + liveRipple + fineGrain + edgeLift + stableSpurs;
+}
+
+function smoothNoise(position: number, sweepIndex: number, salt: number): number {
+  const left = Math.floor(position);
+  const fraction = position - left;
+  const blend = fraction * fraction * (3 - 2 * fraction);
+  const start = signedNoise(left, sweepIndex, salt);
+  return start + (signedNoise(left + 1, sweepIndex, salt) - start) * blend;
+}
+
+function signedNoise(index: number, sweepIndex: number, salt: number): number {
+  let value = Math.imul(index + 1, 0x9e3779b1) ^ Math.imul(sweepIndex + 1, 0x85ebca77) ^ salt;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d);
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b);
+  value ^= value >>> 16;
+  return (value >>> 0) / 0xffff_ffff * 2 - 1;
+}
+
+function gaussian(value: number, center: number, width: number): number {
+  return Math.exp(-Math.pow((value - center) / width, 2));
+}
+
+function fakeScreen(profile: DemoSignalProfile, sweepIndex = 0): Uint8Array {
   const width = ZS407_FIRMWARE_LIMITS.screenWidth;
   const height = ZS407_FIRMWARE_LIMITS.screenHeight;
   const pixels = new Uint8Array(width * height * 2);
@@ -352,7 +397,8 @@ function fakeScreen(profile: DemoSignalProfile): Uint8Array {
             : profile === 'lte'
               ? (normalized > 0.3 && normalized < 0.7 ? 52 + 4 * Math.sin(x / 7) : 0)
               : 42 * Math.exp(-Math.pow((x - 245) / 46, 2));
-      const traceY = 226 - Math.round(shape) - Math.round(5 * Math.sin(x / 19));
+      const floorTexture = captureLikeNoise(x, width, sweepIndex) + 108.7;
+      const traceY = 226 - Math.round(shape) - Math.round(floorTexture * 1.35);
       const trace = Math.abs(y - traceY) <= 1;
       const header = y < 34;
       const rgb565 = trace ? 0x7ff0 : header ? 0x10a3 : grid ? 0x2145 : 0x0861;

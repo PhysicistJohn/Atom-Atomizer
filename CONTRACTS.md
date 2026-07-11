@@ -35,7 +35,7 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 The current repository has accepted automated evidence for the API v2 contracts, exact prompt/parser/scheduler, serial transport boundary, byte-level ZS407 simulator, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, spectral morphology, zero-span envelope analysis, Electron v2 bridge, export serialization, Atom session/tool policy, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
 
-The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and changes the byte source among CW, AM, FM, and LTE-like profiles. A physical discovery error must fail rather than activate demo mode.
+The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and continuously replays an evolving capture-like byte stream selectable among CW, AM, FM, and LTE-like profiles. The synthetic receiver floor must combine correlated ripple, fine-grain jitter, sweep drift and stable low-level spurs instead of a static or white-noise-only trace. A physical discovery error must fail rather than activate demo mode.
 
 Work-package status is therefore interpreted as follows:
 

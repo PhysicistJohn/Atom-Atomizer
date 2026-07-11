@@ -16,7 +16,7 @@ TINYSA_SIMULATOR=1 npm run dev
 
 Without `TINYSA_SIMULATOR=1`, Atomizer enumerates OS serial devices and accepts a production session only after the console identifies as a ZS407 and exposes the required command set. There is no raw-console or legacy-command fallback.
 
-If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. Its CW, AM, FM, and LTE-like buttons change the bytes returned by subsequent main-window sweeps; the demo is visibly simulated and never substitutes for a failed physical-device operation.
+If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. It immediately starts a paced synthetic replay with a correlated, drifting receiver floor, ripple, fine-grain jitter and stable low-level spurs. Its CW, AM, FM, and LTE-like buttons change the live byte stream; the demo is visibly simulated and never substitutes for a failed physical-device operation.
 
 To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron main. Voice uses the unified Realtime WebRTC flow; text, tools, image input, and application-scoped computer operation use a trusted Realtime WebSocket. Both are locked to exactly `gpt-realtime-2.1-mini`, `reasoning.effort: high`, voice `ballad`, and server VAD threshold `0.95`. A model, API, transport, configuration, or tool failure is surfaced and stops the operation.
 
@@ -24,7 +24,7 @@ To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron
 
 - Exact USB shell correlation: CR commands, echoed command, CRLF text, exact `ch> ` prompt, 47-character limit.
 - Stateful ZS407 byte simulator with fragmented delivery, boot banner, text/raw sweeps, zero span, diagnostics, RGB565 screen, touch, and generator commands.
-- Automatic companion Signal Lab with CW, AM, FM, and LTE-like spectrum/envelope synthesis driven through the same byte protocol.
+- Automatic companion Signal Lab with live CW, AM, FM, and LTE-like spectrum/envelope replay driven through the same byte protocol.
 - Fail-closed serialized command scheduler and typed device state machine.
 - Analyzer configuration with readback verification, 20–450 points, text/raw acquisition, RBW, attenuation, detector, spur, LNA, trigger, and sweep timing.
 - Single and continuous spectrum acquisition with bounded 50-sweep in-memory history and provenance-preserving CSV/JSON export.
