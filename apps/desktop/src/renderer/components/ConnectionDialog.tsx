@@ -1,0 +1,17 @@
+import { Cable, Check, LoaderCircle, RefreshCw, Usb, X } from 'lucide-react';
+import type { PortCandidate } from '@tinysa/contracts';
+
+export function ConnectionDialog({ ports, selectedId, busy, error, onSelect, onRefresh, onConnect, onDisconnect, connected, onClose }: {
+  ports: readonly PortCandidate[]; selectedId?: string; busy: boolean; error?: string; connected: boolean;
+  onSelect(id: string): void; onRefresh(): void; onConnect(): void; onDisconnect(): void; onClose(): void;
+}) {
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="connection-dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title">
+    <div className="dialog-head"><div><span className="section-kicker">INSTRUMENT</span><h2 id="connection-title">USB connection</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={17}/></button></div>
+    {connected ? <div className="connected-state"><div className="connected-glyph"><Check size={24}/></div><h3>Instrument ready</h3><p>The serial console is identified and available to the control plane.</p><button className="danger-outline" onClick={onDisconnect}>Disconnect instrument</button></div> : <>
+      <div className="dialog-toolbar"><p>Select the USB CDC serial interface exposed by your tinySA.</p><button className="text-button" onClick={onRefresh} disabled={busy}><RefreshCw size={13}/>Refresh</button></div>
+      <div className="port-list">{ports.length === 0 ? <div className="no-ports"><Usb size={22}/><strong>No serial devices found</strong><span>Connect a data-capable USB cable, then refresh.</span></div> : ports.map((port) => <button key={port.id} className={`port-option ${selectedId === port.id ? 'selected' : ''}`} onClick={() => onSelect(port.id)}><span className="port-icon"><Cable size={17}/></span><span><strong>{port.manufacturer ?? 'Manufacturer unavailable'}</strong><small>{port.path} {port.serialNumber ? `· ${port.serialNumber}` : ''}</small></span><i>{selectedId === port.id && <Check size={15}/>}</i></button>)}</div>
+      {error && <div className="inline-error">{error}</div>}
+      <div className="dialog-actions"><button className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={!ports.length || busy} onClick={onConnect}>{busy ? <><LoaderCircle className="spin" size={14}/>Connecting</> : 'Connect instrument'}</button></div>
+    </>}
+  </section></div>;
+}
