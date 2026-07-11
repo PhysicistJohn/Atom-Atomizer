@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_VERSION,
@@ -39,6 +39,10 @@ const demoStatus = { available: false, active: false, playback: false, profile: 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
+  HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
+    fillRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+    fillStyle: '', strokeStyle: '', lineWidth: 1,
+  }) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   window.tinySA = {
     version: API_VERSION,
     listDevices: vi.fn().mockResolvedValue([port]),
@@ -79,11 +83,22 @@ describe('operator vertical slice', () => {
     expect(navigation.textContent).not.toContain('Sessions');
     expect(navigation.textContent).not.toContain('Settings');
     expect(container.querySelector('.atomic-mark')).toBeTruthy();
+    for (const view of ['Spectrum', 'Waterfall', 'Channel', 'Time / STFT']) expect(screen.getByRole('tab', { name: new RegExp(view, 'i') })).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /Waterfall/i }));
+    expect(await screen.findByLabelText(/Measured power by frequency and sweep time/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /Channel/i }));
+    expect(await screen.findByText(/Channel definition/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /Time \/ STFT/i }));
+    expect(await screen.findByText(/Time capture/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /^Spectrum/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
-    for (const control of ['Markers', 'Traces', 'Display']) expect(screen.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    const measurementTabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
+    for (const control of ['Markers', 'Traces', 'Display']) expect(measurementTabs.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
+    fireEvent.click(measurementTabs.getByRole('button', { name: /Markers/i }));
     expect(await screen.findByText(/SEARCH ACTIVE MARKER/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Traces/i }));
+    fireEvent.click(measurementTabs.getByRole('button', { name: /Traces/i }));
     expect(await screen.findByText('TRACE 4')).toBeTruthy();
     await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('REASONING HIGH'));
     expect(container.querySelector('.atom-foot')?.textContent).toContain('VOICE BALLAD');

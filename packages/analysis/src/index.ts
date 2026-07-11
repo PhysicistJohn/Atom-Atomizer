@@ -1,6 +1,12 @@
 import type {
+  AdjacentChannelMeasurement,
   AnalysisModeDefinition,
+  ChannelMeasurementConfiguration,
+  ChannelMeasurementResult,
   DetectedSignal,
+  EnvelopeStftConfiguration,
+  EnvelopeStftResult,
+  IntegratedBandPower,
   MarkerConfiguration,
   MarkerReading,
   MarkerSearchAction,
@@ -16,6 +22,8 @@ import type {
   ZeroSpanCapture,
 } from '@tinysa/contracts';
 import {
+  channelMeasurementConfigurationSchema,
+  envelopeStftConfigurationSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   spectrumDisplayConfigurationSchema,
@@ -187,8 +195,153 @@ export function calculateSweepMetrics(sweep: Sweep): SweepMetrics {
     medianDbm: median(sweep.powerDbm),
     noiseFloorDbm: robustNoiseFloor(sweep.powerDbm),
     summedPowerDbm: milliwattsToDbm(linearSumMilliwatts),
-    occupiedBandwidth99Hz: occupiedBandwidth(sweep, 0.99),
+    occupiedBandwidth99Hz: legacyOccupiedBandwidth(sweep, 0.99),
     crestFactorDb: sweep.powerDbm[peakIndex]! - meanDbm,
+  };
+}
+
+/** Integrate scalar sweep samples as power density using the measured RBW and each bin's frequency cell. */
+export function integrateSweepBandPower(sweep: Sweep, startHz: number, stopHz: number): IntegratedBandPower {
+  validateSweep(sweep);
+  validateFrequencyWindow(sweep, startHz, stopHz, 'Integrated power');
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Integrated power requires a positive measured RBW');
+  const cells = sweepCells(sweep);
+  let integratedMilliwatts = 0;
+  let binsUsed = 0;
+  for (const cell of cells) {
+    const overlapHz = Math.max(0, Math.min(stopHz, cell.stopHz) - Math.max(startHz, cell.startHz));
+    if (overlapHz <= 0) continue;
+    integratedMilliwatts += dbmToMilliwatts(cell.powerDbm) * overlapHz / sweep.actualRbwHz;
+    binsUsed++;
+  }
+  if (binsUsed === 0 || integratedMilliwatts <= 0) throw new Error('Integrated power window contains no sweep evidence');
+  const bandwidthHz = stopHz - startHz;
+  const powerDbm = milliwattsToDbm(integratedMilliwatts);
+  return {
+    startHz,
+    stopHz,
+    bandwidthHz,
+    powerDbm,
+    powerSpectralDensityDbmHz: powerDbm - 10 * Math.log10(bandwidthHz),
+    binsUsed,
+  };
+}
+
+/** Percent-of-total-power OBW over the displayed sweep span, with explicit optional robust-floor subtraction. */
+export function measureOccupiedBandwidth(
+  sweep: Sweep,
+  percent: number,
+  noiseCorrection: ChannelMeasurementConfiguration['obwNoiseCorrection'],
+): ChannelMeasurementResult['occupiedBandwidth'] {
+  validateSweep(sweep);
+  if (!Number.isFinite(percent) || percent < 10 || percent > 99.9) throw new Error('Occupied-bandwidth percentage must be between 10 and 99.9');
+  if (noiseCorrection !== 'none' && noiseCorrection !== 'robust-floor') throw new Error(`Unsupported OBW noise correction: ${String(noiseCorrection)}`);
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Occupied bandwidth requires a positive measured RBW');
+  const floorMilliwatts = noiseCorrection === 'robust-floor' ? dbmToMilliwatts(robustNoiseFloor(sweep.powerDbm)) : 0;
+  const weighted = sweepCells(sweep).map((cell) => ({
+    ...cell,
+    milliwatts: Math.max(0, dbmToMilliwatts(cell.powerDbm) - floorMilliwatts) * (cell.stopHz - cell.startHz) / sweep.actualRbwHz,
+  }));
+  const totalMilliwatts = weighted.reduce((sum, cell) => sum + cell.milliwatts, 0);
+  if (totalMilliwatts <= 0) throw new Error('Occupied bandwidth has no power remaining after the selected noise correction');
+  const fraction = percent / 100;
+  const lowerTarget = totalMilliwatts * (1 - fraction) / 2;
+  const upperTarget = totalMilliwatts - lowerTarget;
+  const startHz = cumulativeBoundary(weighted, lowerTarget);
+  const stopHz = cumulativeBoundary(weighted, upperTarget);
+  return {
+    percent,
+    startHz,
+    stopHz,
+    bandwidthHz: Math.max(0, stopHz - startHz),
+    occupiedPowerDbm: milliwattsToDbm(totalMilliwatts * fraction),
+    noiseCorrection,
+  };
+}
+
+/** Main, adjacent, alternate-channel, and OBW results from one complete scalar sweep. */
+export function measureChannel(sweep: Sweep, input: ChannelMeasurementConfiguration): ChannelMeasurementResult {
+  const configuration = channelMeasurementConfigurationSchema.parse(input);
+  validateSweep(sweep);
+  const mainStartHz = configuration.centerHz - configuration.mainBandwidthHz / 2;
+  const mainStopHz = configuration.centerHz + configuration.mainBandwidthHz / 2;
+  const carrier = integrateSweepBandPower(sweep, mainStartHz, mainStopHz);
+  const adjacent: AdjacentChannelMeasurement[] = [];
+  for (let order = 1; order <= configuration.adjacentChannelCount; order++) {
+    for (const side of ['lower', 'upper'] as const) {
+      const channelCenterHz = configuration.centerHz + (side === 'lower' ? -1 : 1) * configuration.channelSpacingHz * order;
+      const band = integrateSweepBandPower(sweep, channelCenterHz - configuration.adjacentBandwidthHz / 2, channelCenterHz + configuration.adjacentBandwidthHz / 2);
+      adjacent.push({
+        ...band,
+        side,
+        order: order as 1 | 2 | 3,
+        relativeToCarrierDbc: band.powerDbm - carrier.powerDbm,
+      });
+    }
+  }
+  return {
+    carrier,
+    adjacent,
+    occupiedBandwidth: measureOccupiedBandwidth(sweep, configuration.occupiedPowerPercent, configuration.obwNoiseCorrection),
+    sourceSweepId: sweep.id,
+    actualRbwHz: sweep.actualRbwHz,
+    nominalBinWidthHz: nominalBinWidth(sweep.frequencyHz),
+    evidence: 'host-derived-scalar-sweep',
+    qualification: 'engineering-estimate',
+  };
+}
+
+/** STFT of detected power versus time. This is an envelope analysis and deliberately cannot return RF/IQ phase. */
+export function computeEnvelopeStft(capture: ZeroSpanCapture, input: EnvelopeStftConfiguration): EnvelopeStftResult {
+  const configuration = envelopeStftConfigurationSchema.parse(input);
+  validateZeroSpanCapture(capture);
+  if (capture.powerDbm.length < configuration.windowSize) {
+    throw new Error(`Envelope STFT requires at least ${configuration.windowSize} samples; capture contains ${capture.powerDbm.length}`);
+  }
+  const sampleRateHz = 1 / capture.samplePeriodSeconds;
+  const frequencyBins = Math.floor(configuration.windowSize / 2) + 1;
+  const modulationFrequencyHz = Array.from({ length: frequencyBins }, (_, index) => index * sampleRateHz / configuration.windowSize);
+  const window = Array.from({ length: configuration.windowSize }, (_, index) => 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (configuration.windowSize - 1)));
+  const rawFrames: Array<{ startSeconds: number; centerSeconds: number; magnitude: number[] }> = [];
+  for (let start = 0; start + configuration.windowSize <= capture.powerDbm.length; start += configuration.hopSize) {
+    const samples = capture.powerDbm.slice(start, start + configuration.windowSize).map(dbmToMilliwatts);
+    const mean = configuration.removeDc ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0;
+    const magnitude = modulationFrequencyHz.map((_frequency, bin) => {
+      let real = 0;
+      let imaginary = 0;
+      for (let index = 0; index < configuration.windowSize; index++) {
+        const sample = (samples[index]! - mean) * window[index]!;
+        const phase = 2 * Math.PI * bin * index / configuration.windowSize;
+        real += sample * Math.cos(phase);
+        imaginary -= sample * Math.sin(phase);
+      }
+      return Math.hypot(real, imaginary);
+    });
+    if (configuration.removeDc) magnitude[0] = 0;
+    rawFrames.push({
+      startSeconds: start * capture.samplePeriodSeconds,
+      centerSeconds: (start + configuration.windowSize / 2) * capture.samplePeriodSeconds,
+      magnitude,
+    });
+  }
+  const maximumMagnitude = Math.max(...rawFrames.flatMap((frame) => frame.magnitude));
+  if (!Number.isFinite(maximumMagnitude) || maximumMagnitude <= 0) throw new Error('Envelope STFT contains no measurable time variation');
+  const integratedByBin = modulationFrequencyHz.map((_frequency, bin) => rawFrames.reduce((sum, frame) => sum + frame.magnitude[bin]! ** 2, 0));
+  const firstSearchBin = configuration.removeDc ? 1 : 0;
+  let peakBin = firstSearchBin;
+  for (let index = firstSearchBin + 1; index < integratedByBin.length; index++) if (integratedByBin[index]! > integratedByBin[peakBin]!) peakBin = index;
+  return {
+    sourceCaptureId: capture.id,
+    sampleRateHz,
+    modulationFrequencyHz,
+    frames: rawFrames.map((frame) => ({
+      startSeconds: frame.startSeconds,
+      centerSeconds: frame.centerSeconds,
+      magnitudeDbRelative: frame.magnitude.map((magnitude) => Math.max(-configuration.dynamicRangeDb, 20 * Math.log10(Math.max(Number.MIN_VALUE, magnitude) / maximumMagnitude))),
+    })),
+    peakModulationFrequencyHz: modulationFrequencyHz[peakBin]!,
+    evidence: 'zero-span-detected-envelope',
+    qualification: 'not-iq',
   };
 }
 
@@ -535,6 +688,57 @@ function validateSweep(sweep: Sweep): void {
   for (let index = 1; index < sweep.frequencyHz.length; index++) if (sweep.frequencyHz[index]! < sweep.frequencyHz[index - 1]!) throw new Error('Sweep frequencies are not monotonic');
 }
 
+function validateZeroSpanCapture(capture: ZeroSpanCapture): void {
+  if (!capture.complete) throw new Error('Envelope STFT requires a complete zero-span capture');
+  if (!capture.powerDbm.length) throw new Error('Zero-span capture contains no power samples');
+  if (capture.powerDbm.some((value) => !Number.isFinite(value))) throw new Error('Zero-span capture contains non-finite power samples');
+  if (!Number.isFinite(capture.samplePeriodSeconds) || capture.samplePeriodSeconds <= 0) throw new Error('Envelope STFT requires a positive sample period');
+}
+
+interface SweepCell { startHz: number; stopHz: number; powerDbm: number; }
+interface WeightedSweepCell extends SweepCell { milliwatts: number; }
+
+function nominalBinWidth(frequencies: readonly number[]): number {
+  if (frequencies.length < 2) throw new Error('Frequency-domain integration requires at least two sweep points');
+  const differences = frequencies.slice(1).map((frequency, index) => frequency - frequencies[index]!);
+  if (differences.some((difference) => !Number.isFinite(difference) || difference <= 0)) throw new Error('Frequency-domain integration requires strictly increasing sweep frequencies');
+  return median(differences);
+}
+
+function sweepCells(sweep: Sweep): readonly SweepCell[] {
+  const width = nominalBinWidth(sweep.frequencyHz);
+  return sweep.frequencyHz.map((frequency, index) => {
+    const startHz = index === 0 ? sweep.actualStartHz : (sweep.frequencyHz[index - 1]! + frequency) / 2;
+    const stopHz = index === sweep.frequencyHz.length - 1 ? sweep.actualStopHz : (frequency + sweep.frequencyHz[index + 1]!) / 2;
+    if (stopHz <= startHz) throw new Error(`Sweep bin ${index} has no positive frequency cell`);
+    return { startHz, stopHz, powerDbm: sweep.powerDbm[index]! };
+  }).map((cell, index, cells) => {
+    if (index > 0 && Math.abs(cell.startHz - cells[index - 1]!.stopHz) > Math.max(1e-6, width * 1e-9)) throw new Error('Sweep frequency cells are discontinuous');
+    return cell;
+  });
+}
+
+function validateFrequencyWindow(sweep: Sweep, startHz: number, stopHz: number, name: string): void {
+  if (!Number.isFinite(startHz) || !Number.isFinite(stopHz) || stopHz <= startHz) throw new Error(`${name} requires a positive finite frequency window`);
+  if (startHz < sweep.actualStartHz || stopHz > sweep.actualStopHz) {
+    throw new Error(`${name} window ${startHz}–${stopHz} Hz is outside the acquired span ${sweep.actualStartHz}–${sweep.actualStopHz} Hz`);
+  }
+}
+
+function cumulativeBoundary(cells: readonly WeightedSweepCell[], targetMilliwatts: number): number {
+  if (!cells.length) throw new Error('Power percentile requires populated sweep cells');
+  let cumulative = 0;
+  for (const cell of cells) {
+    const next = cumulative + cell.milliwatts;
+    if (next >= targetMilliwatts) {
+      const fraction = cell.milliwatts > 0 ? (targetMilliwatts - cumulative) / cell.milliwatts : 0;
+      return cell.startHz + Math.min(1, Math.max(0, fraction)) * (cell.stopHz - cell.startHz);
+    }
+    cumulative = next;
+  }
+  return cells.at(-1)!.stopHz;
+}
+
 function unknownClassification(detection: DetectedSignal, modelId: string, unknownReason: WaveformClassification['unknownReason']): WaveformClassification {
   return {
     detectionId: detection.id,
@@ -553,7 +757,7 @@ function unknownClassification(detection: DetectedSignal, modelId: string, unkno
   };
 }
 
-function occupiedBandwidth(sweep: Sweep, fraction: number): number {
+function legacyOccupiedBandwidth(sweep: Sweep, fraction: number): number {
   const floorMilliwatts = dbmToMilliwatts(robustNoiseFloor(sweep.powerDbm));
   const corrected = sweep.powerDbm.map((value) => Math.max(0, dbmToMilliwatts(value) - floorMilliwatts));
   const total = corrected.reduce((sum, value) => sum + value, 0);

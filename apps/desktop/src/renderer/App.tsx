@@ -1,26 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, Clock3, Download, LoaderCircle, Play, RadioTower, Repeat2, Square, StopCircle, Zap } from 'lucide-react';
+import { CircleAlert, Download, LoaderCircle, Play, RadioTower, Repeat2, StopCircle } from 'lucide-react';
 import {
   analyzerConfigSchema,
+  channelMeasurementConfigurationSchema,
+  envelopeStftConfigurationSchema,
   generatorConfigSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
+  measurementViewIdSchema,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   traceBankConfigurationSchema,
   traceConfigurationSchema,
+  waterfallConfigurationSchema,
   zeroSpanConfigSchema,
   type AnalyzerConfig,
+  type ChannelMeasurementConfiguration,
   type DeviceDiagnostics,
   type DeviceEvent,
   type DemoLabStatus,
   type DeviceSnapshot,
   type DetectedSignal,
   type GeneratorConfig,
+  type EnvelopeStftConfiguration,
   type MarkerConfiguration,
   type MarkerId,
   type MarkerSearchAction,
   type MarkerSearchConfiguration,
+  type MeasurementViewId,
   type PortCandidate,
   type ReplayChannelConfiguration,
   type ScreenFrame,
@@ -33,6 +40,7 @@ import {
   type TraceConfiguration,
   type TraceFrame,
   type TraceId,
+  type WaterfallConfiguration,
   type WaveformClassification,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
@@ -45,23 +53,22 @@ import {
   autoScaleSpectrum,
   calculateSweepMetrics,
   classifyZeroSpanEnvelope,
+  computeEnvelopeStft,
+  measureChannel,
   readMarkers,
   searchMarker,
   type EnvelopeClassification,
 } from '@tinysa/analysis';
 import type { AgentToolName } from '@tinysa/agent';
-import { AnalyzerInspector } from './components/AnalyzerInspector.js';
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
 import { ClassificationWorkspace } from './components/ClassificationWorkspace.js';
 import { ConnectionDialog } from './components/ConnectionDialog.js';
 import { DetectionWorkspace } from './components/DetectionWorkspace.js';
 import { DeviceWorkspace } from './components/DeviceWorkspace.js';
 import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
-import { MeasurementDock } from './components/MeasurementDock.js';
+import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
-import { SpectrumPlot } from './components/SpectrumPlot.js';
 import { TopBar } from './components/TopBar.js';
-import { formatFrequency, formatLevel } from './format.js';
 import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, DISCONNECTED_SNAPSHOT, type AcquisitionState, type WorkspaceId, workspaceCopy } from './ui-contracts.js';
 import { useAtomAgent } from './useAtomAgent.js';
 
@@ -96,9 +103,21 @@ const DEFAULT_MARKERS: readonly MarkerConfiguration[] = Array.from({ length: 8 }
 }));
 const DEFAULT_MARKER_SEARCH: MarkerSearchConfiguration = { minimumLevelDbm: -90, minimumExcursionDb: 6 };
 const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
+const DEFAULT_WATERFALL: WaterfallConfiguration = { historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' };
+const DEFAULT_CHANNEL: ChannelMeasurementConfiguration = {
+  centerHz: 98_000_000,
+  mainBandwidthHz: 200_000,
+  adjacentBandwidthHz: 200_000,
+  channelSpacingHz: 200_000,
+  adjacentChannelCount: 2,
+  occupiedPowerPercent: 99,
+  obwNoiseCorrection: 'none',
+};
+const DEFAULT_STFT: EnvelopeStftConfiguration = { windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 };
 
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceId>('spectrum');
+  const [measurementView, setMeasurementView] = useState<MeasurementViewId>(() => loadStored('measurement-view', measurementViewIdSchema.parse, 'spectrum'));
   const [agentOpen, setAgentOpen] = useState(true);
   const [snapshot, setSnapshot] = useState<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
   const [ports, setPorts] = useState<PortCandidate[]>([]);
@@ -115,6 +134,9 @@ export function App() {
   const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
   const [markerSearchConfiguration, setMarkerSearchConfiguration] = useState<MarkerSearchConfiguration>(() => loadStored('marker-search', markerSearchConfigurationSchema.parse, DEFAULT_MARKER_SEARCH));
   const [displayConfiguration, setDisplayConfiguration] = useState<SpectrumDisplayConfiguration>(() => loadStored('spectrum-display', spectrumDisplayConfigurationSchema.parse, DEFAULT_DISPLAY));
+  const [waterfallConfiguration, setWaterfallConfiguration] = useState<WaterfallConfiguration>(() => loadStored('waterfall', waterfallConfigurationSchema.parse, DEFAULT_WATERFALL));
+  const [channelConfiguration, setChannelConfiguration] = useState<ChannelMeasurementConfiguration>(() => loadStored('channel-measurement', channelMeasurementConfigurationSchema.parse, DEFAULT_CHANNEL));
+  const [stftConfiguration, setStftConfiguration] = useState<EnvelopeStftConfiguration>(() => loadStored('envelope-stft', envelopeStftConfigurationSchema.parse, DEFAULT_STFT));
   const [sweep, setSweep] = useState<Sweep>();
   const [history, setHistory] = useState<readonly Sweep[]>([]);
   const [detections, setDetections] = useState<readonly DetectedSignal[]>([]);
@@ -192,6 +214,10 @@ export function App() {
   useEffect(() => saveStored('markers', markers), [markers]);
   useEffect(() => saveStored('marker-search', markerSearchConfiguration), [markerSearchConfiguration]);
   useEffect(() => saveStored('spectrum-display', displayConfiguration), [displayConfiguration]);
+  useEffect(() => saveStored('measurement-view', measurementView), [measurementView]);
+  useEffect(() => saveStored('waterfall', waterfallConfiguration), [waterfallConfiguration]);
+  useEffect(() => saveStored('channel-measurement', channelConfiguration), [channelConfiguration]);
+  useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
   useEffect(() => {
     detector.current.configure(detectionConfig);
     tracker.current.configure(detectionConfig);
@@ -569,14 +595,51 @@ export function App() {
     catch (value) { setError(`Display configuration failed: ${errorMessage(value)}`); }
   }
 
+  function changeMeasurementView(input: MeasurementViewId): void {
+    try {
+      const next = measurementViewIdSchema.parse(input);
+      setMeasurementView(next);
+      setWorkspace('spectrum');
+      setError(undefined);
+    } catch (value) { setError(`Measurement view failed: ${errorMessage(value)}`); }
+  }
+
+  function configureWaterfall(input: WaterfallConfiguration): void {
+    try { setWaterfallConfiguration(waterfallConfigurationSchema.parse(input)); setError(undefined); }
+    catch (value) { setError(`Waterfall configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function configureChannelMeasurement(input: ChannelMeasurementConfiguration): void {
+    try { setChannelConfiguration(channelMeasurementConfigurationSchema.parse(input)); setError(undefined); }
+    catch (value) { setError(`Channel measurement configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function configureEnvelopeStft(input: EnvelopeStftConfiguration): void {
+    try { setStftConfiguration(envelopeStftConfigurationSchema.parse(input)); setError(undefined); }
+    catch (value) { setError(`Envelope STFT configuration failed: ${errorMessage(value)}`); }
+  }
+
+  function requireChannelMeasurement() {
+    if (!sweep) throw new Error('Acquire a complete spectrum sweep before reading channel measurements');
+    return measureChannel(sweep, channelConfiguration);
+  }
+
+  function requireEnvelopeStft() {
+    if (!zeroCapture) throw new Error('Acquire a complete zero-span capture before reading the envelope STFT');
+    return computeEnvelopeStft(zeroCapture, stftConfiguration);
+  }
+
   function autoScaleDisplay(): void {
     if (!sweep) { setError('Acquire a sweep before auto-scaling the display'); return; }
     configureDisplay(autoScaleSpectrum(sweep));
   }
 
   function applicationContext(): string {
+    const channelMeasurement = evaluateAnalysis(() => requireChannelMeasurement());
+    const envelopeStft = evaluateAnalysis(() => requireEnvelopeStft());
     return JSON.stringify({
       workspace,
+      measurementView,
       acquisition,
       continuous,
       simulated,
@@ -593,11 +656,15 @@ export function App() {
       classifications: classifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
       zeroSpan: zeroCapture && envelope ? { frequencyHz: zeroCapture.frequencyHz, samples: zeroCapture.powerDbm.length, samplePeriodSeconds: zeroCapture.samplePeriodSeconds, envelope } : null,
       measurement: {
+        activeView: measurementView,
         traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
         markers: markerReadings,
         activeMarkerId,
         markerSearch: markerSearchConfiguration,
         display: displayConfiguration,
+        waterfall: { configuration: waterfallConfiguration, coherentSweeps: history.length },
+        channel: { configuration: channelConfiguration, analysis: channelMeasurement },
+        envelopeStft: { configuration: stftConfiguration, analysis: envelopeStft },
         evidence: 'host-derived',
       },
     });
@@ -605,7 +672,7 @@ export function App() {
 
   async function executeAgentTool(name: AgentToolName, args: unknown): Promise<unknown> {
     switch (name) {
-      case 'get_application_state': return { workspace, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length };
+      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length };
       case 'get_instrument_state': return snapshot;
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
       case 'get_detection_results': return detections;
@@ -624,10 +691,11 @@ export function App() {
         return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, simulated: next.identity.simulated, verification: next.verification };
       }
       case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: (await window.tinySA.getSnapshot()).connection };
-      case 'inspect_interface': return { activeWorkspace: workspace, controls: { 'workspace.spectrum': true, 'workspace.detection': true, 'workspace.classification': true, 'workspace.generator': snapshot.generatorOutput !== 'on' || workspace === 'generator', 'workspace.device': true, 'acquisition.single': connected && !busy, 'acquisition.continuous.start': connected && !busy, 'acquisition.continuous.stop': continuous, 'measurement.markers': workspace === 'spectrum', 'measurement.traces': workspace === 'spectrum', 'measurement.display': workspace === 'spectrum', 'connection.open': !connectionBusy, 'device.capture-screen': connected && !busy, 'atom.close': agentOpen } };
+      case 'inspect_interface': return { activeWorkspace: workspace, activeMeasurementView: measurementView, controls: { 'workspace.spectrum': true, 'workspace.detection': true, 'workspace.classification': true, 'workspace.generator': snapshot.generatorOutput !== 'on' || workspace === 'generator', 'workspace.device': true, 'acquisition.single': connected && !busy, 'acquisition.continuous.start': connected && !busy, 'acquisition.continuous.stop': continuous, 'measurement.view.spectrum': workspace === 'spectrum', 'measurement.view.waterfall': workspace === 'spectrum', 'measurement.view.channel': workspace === 'spectrum', 'measurement.view.envelope-stft': workspace === 'spectrum', 'measurement.markers': workspace === 'spectrum', 'measurement.traces': workspace === 'spectrum', 'measurement.display': workspace === 'spectrum', 'connection.open': !connectionBusy, 'device.capture-screen': connected && !busy, 'atom.close': agentOpen } };
       case 'computer_action': {
         const control = (args as { controlId: string }).controlId;
         if (control.startsWith('workspace.')) changeWorkspace(control.slice('workspace.'.length) as WorkspaceId);
+        else if (control.startsWith('measurement.view.')) changeMeasurementView(control.slice('measurement.view.'.length) as MeasurementViewId);
         else if (control === 'acquisition.single') await acquire();
         else if (control === 'acquisition.continuous.start') await startContinuous();
         else if (control === 'acquisition.continuous.stop') await stopContinuous();
@@ -648,6 +716,41 @@ export function App() {
       case 'start_continuous_sweeps': await startContinuous(); return { streaming: true };
       case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
       case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
+      case 'set_measurement_view': {
+        const view = measurementViewIdSchema.parse((args as { view: MeasurementViewId }).view);
+        changeMeasurementView(view);
+        return { workspace: 'spectrum', view };
+      }
+      case 'configure_waterfall': {
+        const configuration = waterfallConfigurationSchema.parse(args);
+        configureWaterfall(configuration);
+        setWorkspace('spectrum');
+        setMeasurementView('waterfall');
+        return { configuration, retainedSweeps: history.length, evidence: 'host-derived-scalar-sweep' };
+      }
+      case 'configure_channel_measurement': {
+        const configuration = channelMeasurementConfigurationSchema.parse(args);
+        configureChannelMeasurement(configuration);
+        setWorkspace('spectrum');
+        setMeasurementView('channel');
+        return configuration;
+      }
+      case 'get_channel_measurement_results': return requireChannelMeasurement();
+      case 'configure_envelope_stft': {
+        const configuration = envelopeStftConfigurationSchema.parse(args);
+        configureEnvelopeStft(configuration);
+        setWorkspace('spectrum');
+        setMeasurementView('envelope-stft');
+        return configuration;
+      }
+      case 'get_envelope_stft_results': return requireEnvelopeStft();
+      case 'acquire_envelope_stft': {
+        const capture = await acquireZeroSpan();
+        const result = computeEnvelopeStft(capture, stftConfiguration);
+        setWorkspace('spectrum');
+        setMeasurementView('envelope-stft');
+        return result;
+      }
       case 'configure_marker': {
         const marker = markerConfigurationSchema.parse(args);
         configureMarker(marker);
@@ -717,12 +820,25 @@ export function App() {
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
     <TopBar snapshot={snapshot} simulated={simulated} demoProfile={demoStatus?.active ? demoStatus.profile : undefined} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
-    <section className="workspace-shell">
+    <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
       <div className="workspace-header"><div><span className="workspace-kicker">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.description}</p></div>{(continuous || (workspace !== 'generator' && workspace !== 'device')) && <div className="acquisition-actions">{sweep && <><button className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button><button className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button></>}{continuous ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop replay</button> : <><button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button><button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single sweep'}</button></>}</div>}</div>
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {!connected && <div className="connection-banner"><div><RadioTower size={17}/><span><strong>No instrument connected</strong><small>Connect an exact ZS407 USB CDC device or the byte-level simulator to enable controls.</small></span></div><button className="text-button" onClick={() => setConnectionOpen(true)}>Choose device</button></div>}
-      {workspace === 'spectrum' && <div className="spectrum-layout"><AnalyzerInspector config={analyzer} disabled={busy} onChange={setAnalyzer}/><MeasurementDock traces={traceConfiguration} frames={traceFrames} markers={markers} readings={markerReadings} activeMarkerId={activeMarkerId} search={markerSearchConfiguration} display={displayConfiguration} onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId} onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay} onAutoScale={autoScaleDisplay}/><div className="spectrum-main"><SpectrumPlot sweep={sweep} traces={traceFrames} markers={markerReadings} activeMarkerId={activeMarkerId} display={displayConfiguration} onMarkerPlace={placeActiveMarker} detections={detections.filter((item) => item.state !== 'released')} busy={busy}/><MetricStrip sweep={sweep} detections={detections.length} acquisition={acquisition} historyCount={history.length}/></div></div>}
+      {workspace === 'spectrum' && <MeasurementWorkspace
+        view={measurementView} onView={changeMeasurementView}
+        analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={setAnalyzer}
+        sweep={sweep} history={history} detections={detections} acquisition={acquisition}
+        traces={traceConfiguration} frames={traceFrames} markers={markers} readings={markerReadings}
+        activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
+        onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId}
+        onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay}
+        onAutoScale={autoScaleDisplay} onMarkerPlace={placeActiveMarker}
+        waterfall={waterfallConfiguration} onWaterfall={configureWaterfall}
+        channel={channelConfiguration} onChannel={configureChannelMeasurement}
+        zeroConfig={zeroConfig} zeroCapture={zeroCapture} stft={stftConfiguration}
+        onZeroConfig={setZeroConfig} onStft={configureEnvelopeStft} onAcquireZero={() => void acquireZeroSpanFromUi()}
+      />}
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
       {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
@@ -745,11 +861,6 @@ export function App() {
   </main>;
 }
 
-function MetricStrip({ sweep, detections, acquisition, historyCount }: { sweep?: Sweep; detections: number; acquisition: AcquisitionState; historyCount: number }) {
-  const metrics = sweep ? calculateSweepMetrics(sweep) : undefined;
-  return <section className="metric-strip"><div><span className="metric-icon mint"><Zap size={14}/></span><span><small>PEAK POWER</small><strong>{metrics ? formatLevel(metrics.peakDbm) : '—'}</strong></span></div><div><span className="metric-icon"><Square size={13}/></span><span><small>ROBUST FLOOR</small><strong>{metrics ? formatLevel(metrics.noiseFloorDbm) : '—'}</strong></span></div><div><span className="metric-icon amber"><RadioTower size={14}/></span><span><small>TRACKED</small><strong>{String(detections).padStart(2, '0')}</strong></span></div><div><span className="metric-icon"><Clock3 size={14}/></span><span><small>ACQUISITION</small><strong>{sweep ? `${sweep.elapsedMilliseconds.toFixed(0)} ms` : acquisition.toUpperCase()}</strong></span></div><div><span className="metric-icon"><Repeat2 size={14}/></span><span><small>SESSION</small><strong>{historyCount} / {HISTORY_LIMIT}</strong></span></div><div className="range-summary"><small>ACTUAL RANGE</small><strong>{sweep ? `${formatFrequency(sweep.actualStartHz)} — ${formatFrequency(sweep.actualStopHz)}` : '—'}</strong></div></section>;
-}
-
 function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
   const raw = localStorage.getItem(`tinysa-atomizer:v2:${name}`);
   return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
@@ -762,3 +873,7 @@ function parseMarkerBank(value: unknown): readonly MarkerConfiguration[] {
   return markers;
 }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
+function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {
+  try { return { ok: true, result: operation() }; }
+  catch (value) { return { ok: false, error: errorMessage(value) }; }
+}

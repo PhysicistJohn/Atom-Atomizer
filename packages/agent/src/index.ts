@@ -2,16 +2,20 @@ import { z } from 'zod';
 import {
   ZS407_FIRMWARE_LIMITS,
   analyzerConfigSchema,
+  channelMeasurementConfigurationSchema,
+  envelopeStftConfigurationSchema,
   generatorConfigSchema,
   markerConfigurationSchema,
   markerIdSchema,
   markerSearchActionSchema,
+  measurementViewIdSchema,
   replayChannelConfigurationSchema,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   synthesizedSignalProfileSchema,
   traceConfigurationSchema,
   traceIdSchema,
+  waterfallConfigurationSchema,
   zeroSpanConfigSchema,
 } from '@tinysa/contracts';
 
@@ -32,6 +36,8 @@ export type AgentToolName =
   | 'navigate_workspace' | 'configure_analyzer' | 'acquire_sweep'
   | 'start_continuous_sweeps' | 'stop_continuous_sweeps'
   | 'get_measurement_state' | 'configure_marker' | 'search_marker' | 'configure_trace' | 'reset_trace' | 'configure_spectrum_display'
+  | 'set_measurement_view' | 'configure_waterfall' | 'configure_channel_measurement' | 'get_channel_measurement_results'
+  | 'configure_envelope_stft' | 'get_envelope_stft_results' | 'acquire_envelope_stft'
   | 'configure_signal_detector' | 'configure_zero_span' | 'acquire_zero_span'
   | 'configure_generator' | 'set_rf_output'
   | 'capture_device_screen' | 'remote_device_touch' | 'export_latest_sweep' | 'select_demo_signal' | 'configure_demo_channel';
@@ -125,6 +131,43 @@ const zeroSpanParameters = {
   required: ['frequencyHz', 'points', 'rbwKhz', 'attenuationDb', 'sweepTimeSeconds', 'trigger'],
   additionalProperties: false,
 } as const;
+const waterfallParameters = {
+  type: 'object',
+  properties: {
+    historyDepth: { type: 'integer', minimum: 5, maximum: 50 },
+    floorDbm: { type: 'number', minimum: -174, maximum: 29 },
+    ceilingDbm: { type: 'number', minimum: -173, maximum: 30 },
+    palette: { type: 'string', enum: ['atomic'] },
+  },
+  required: ['historyDepth', 'floorDbm', 'ceilingDbm', 'palette'],
+  additionalProperties: false,
+} as const;
+const channelMeasurementParameters = {
+  type: 'object',
+  properties: {
+    centerHz: { type: 'integer', minimum: 0, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
+    mainBandwidthHz: { type: 'integer', minimum: 1, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
+    adjacentBandwidthHz: { type: 'integer', minimum: 1, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
+    channelSpacingHz: { type: 'integer', minimum: 1, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
+    adjacentChannelCount: { type: 'integer', minimum: 1, maximum: 3 },
+    occupiedPowerPercent: { type: 'number', minimum: 10, maximum: 99.9 },
+    obwNoiseCorrection: { type: 'string', enum: ['none', 'robust-floor'] },
+  },
+  required: ['centerHz', 'mainBandwidthHz', 'adjacentBandwidthHz', 'channelSpacingHz', 'adjacentChannelCount', 'occupiedPowerPercent', 'obwNoiseCorrection'],
+  additionalProperties: false,
+} as const;
+const envelopeStftParameters = {
+  type: 'object',
+  properties: {
+    windowSize: { type: 'integer', enum: [16, 32, 64, 128, 256] },
+    hopSize: { type: 'integer', minimum: 1, maximum: 256 },
+    window: { type: 'string', enum: ['hann'] },
+    removeDc: { type: 'boolean' },
+    dynamicRangeDb: { type: 'number', minimum: 20, maximum: 120 },
+  },
+  required: ['windowSize', 'hopSize', 'window', 'removeDc', 'dynamicRangeDb'],
+  additionalProperties: false,
+} as const;
 const generatorParameters = {
   type: 'object',
   properties: {
@@ -151,7 +194,7 @@ export const agentToolDefinitions: readonly AgentToolDefinition[] = [
   { type: 'function', name: 'connect_device', description: 'Connect exactly one candidate returned by list_connection_candidates and verify a ZS407 identity. Never substitutes another candidate.', parameters: { type: 'object', properties: { candidateId: { type: 'string', pattern: '^candidate-[1-9][0-9]*$' } }, required: ['candidateId'], additionalProperties: false } },
   { type: 'function', name: 'disconnect_device', description: 'Disconnect the active instrument. Unknown RF state remains unknown after uncertain transport loss.', parameters: empty },
   { type: 'function', name: 'inspect_interface', description: 'Inspect the semantic TinySA Atomizer interface map and which app-scoped controls are enabled.', parameters: empty },
-  { type: 'function', name: 'computer_action', description: 'Activate one allow-listed semantic control inside TinySA Atomizer. High-impact controls are excluded.', parameters: { type: 'object', properties: { controlId: { type: 'string', enum: ['workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.generator', 'workspace.device', 'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop', 'connection.open', 'device.capture-screen', 'atom.close'] }, action: { type: 'string', enum: ['activate'] } }, required: ['controlId', 'action'], additionalProperties: false } },
+  { type: 'function', name: 'computer_action', description: 'Activate one allow-listed semantic control inside TinySA Atomizer. High-impact controls are excluded.', parameters: { type: 'object', properties: { controlId: { type: 'string', enum: ['workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.generator', 'workspace.device', 'measurement.view.spectrum', 'measurement.view.waterfall', 'measurement.view.channel', 'measurement.view.envelope-stft', 'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop', 'connection.open', 'device.capture-screen', 'atom.close'] }, action: { type: 'string', enum: ['activate'] } }, required: ['controlId', 'action'], additionalProperties: false } },
   { type: 'function', name: 'computer_screenshot', description: 'Capture the current TinySA Atomizer application content only. Observe before coordinate actions and verify afterward.', parameters: empty },
   { type: 'function', name: 'computer_click', description: 'Click screenshot-relative coordinates inside TinySA Atomizer. High-impact targets are blocked by host hit-testing.', parameters: { type: 'object', properties: { x: { type: 'integer', minimum: 0 }, y: { type: 'integer', minimum: 0 } }, required: ['x', 'y'], additionalProperties: false } },
   { type: 'function', name: 'computer_type', description: 'Type bounded text into the focused TinySA Atomizer control.', parameters: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 2_000 } }, required: ['text'], additionalProperties: false } },
@@ -163,6 +206,13 @@ export const agentToolDefinitions: readonly AgentToolDefinition[] = [
   { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the staged analyzer configuration and acquire serialized sweeps until explicitly stopped or a failure occurs.', parameters: empty },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.', parameters: empty },
   { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, eight marker configurations/readings, peak-search criteria, and amplitude display scale with evidence labels.', parameters: empty },
+  { type: 'function', name: 'set_measurement_view', description: 'Select Spectrum, Waterfall, Channel, or detected-envelope STFT as the active bounded analysis view.', parameters: { type: 'object', properties: { view: { type: 'string', enum: ['spectrum', 'waterfall', 'channel', 'envelope-stft'] } }, required: ['view'], additionalProperties: false } },
+  { type: 'function', name: 'configure_waterfall', description: 'Configure coherent sweep-history depth and the explicit dBm color scale for the host waterfall. Frequency-grid changes are excluded, never resampled silently.', parameters: waterfallParameters },
+  { type: 'function', name: 'configure_channel_measurement', description: 'Configure main and adjacent integration bandwidths, channel spacing, adjacent pair count, percent-power OBW, and explicit OBW noise treatment.', parameters: channelMeasurementParameters },
+  { type: 'function', name: 'get_channel_measurement_results', description: 'Calculate channel power, PSD, adjacent and alternate channel powers in dBm/dBc, and percent-power OBW from the latest complete scalar sweep. Fails if any configured window is outside the sweep.', parameters: empty },
+  { type: 'function', name: 'configure_envelope_stft', description: 'Configure the Hann-windowed STFT of detected zero-span power, including window, hop, mean removal, and display range. This is not RF/IQ analysis.', parameters: envelopeStftParameters },
+  { type: 'function', name: 'get_envelope_stft_results', description: 'Read the STFT of the latest complete zero-span detected-power envelope. Fails when no capture exists or the window exceeds the evidence.', parameters: empty },
+  { type: 'function', name: 'acquire_envelope_stft', description: 'Acquire zero-span detected power using the staged zero-span configuration and return its envelope STFT without claiming I/Q, phase, EVM, or symbol recovery.', parameters: empty },
   { type: 'function', name: 'configure_marker', description: 'Configure one of eight host-derived markers, including trace assignment, fixed or peak tracking, normal, delta, or noise-density readout.', parameters: { type: 'object', properties: { id: { type: 'integer', minimum: 1, maximum: 8 }, enabled: { type: 'boolean' }, traceId: { type: 'integer', minimum: 1, maximum: 4 }, mode: { type: 'string', enum: ['normal', 'delta', 'noise-density'] }, frequencyHz: { type: 'integer', minimum: 0, maximum: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz }, tracking: { type: 'string', enum: ['fixed', 'peak'] }, referenceMarkerId: { type: 'integer', minimum: 1, maximum: 8 } }, required: ['id', 'enabled', 'traceId', 'mode', 'frequencyHz', 'tracking'], additionalProperties: false } },
   { type: 'function', name: 'search_marker', description: 'Move a marker to the absolute peak, minimum, or next qualifying local peak left/right using the staged threshold and excursion criteria.', parameters: { type: 'object', properties: { markerId: { type: 'integer', minimum: 1, maximum: 8 }, action: { type: 'string', enum: ['peak', 'minimum', 'next-left', 'next-right'] } }, required: ['markerId', 'action'], additionalProperties: false } },
   { type: 'function', name: 'configure_trace', description: 'Configure one of four host-derived simultaneous traces as Clear/Write, Max Hold, Min Hold, Average, View, or Blank.', parameters: { type: 'object', properties: { id: { type: 'integer', minimum: 1, maximum: 4 }, mode: { type: 'string', enum: ['clear-write', 'max-hold', 'min-hold', 'average', 'view', 'blank'] }, averageCount: { type: 'integer', minimum: 2, maximum: 100 } }, required: ['id', 'mode', 'averageCount'], additionalProperties: false } },
@@ -205,6 +255,13 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   start_continuous_sweeps: operate('start_continuous_sweeps'),
   stop_continuous_sweeps: operate('stop_continuous_sweeps'),
   get_measurement_state: observe('get_measurement_state'),
+  set_measurement_view: operate('set_measurement_view'),
+  configure_waterfall: operate('configure_waterfall'),
+  configure_channel_measurement: operate('configure_channel_measurement'),
+  get_channel_measurement_results: observe('get_channel_measurement_results'),
+  configure_envelope_stft: operate('configure_envelope_stft'),
+  get_envelope_stft_results: observe('get_envelope_stft_results'),
+  acquire_envelope_stft: operate('acquire_envelope_stft'),
   configure_marker: operate('configure_marker'),
   search_marker: operate('search_marker'),
   configure_trace: operate('configure_trace'),
@@ -233,7 +290,7 @@ const schemas: Record<AgentToolName, z.ZodType> = {
   connect_device: z.object({ candidateId: z.string().regex(/^candidate-[1-9][0-9]*$/) }).strict(),
   disconnect_device: z.object({}).strict(),
   inspect_interface: z.object({}).strict(),
-  computer_action: z.object({ controlId: z.enum(['workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.generator', 'workspace.device', 'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop', 'connection.open', 'device.capture-screen', 'atom.close']), action: z.literal('activate') }).strict(),
+  computer_action: z.object({ controlId: z.enum(['workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.generator', 'workspace.device', 'measurement.view.spectrum', 'measurement.view.waterfall', 'measurement.view.channel', 'measurement.view.envelope-stft', 'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop', 'connection.open', 'device.capture-screen', 'atom.close']), action: z.literal('activate') }).strict(),
   computer_screenshot: z.object({}).strict(),
   computer_click: z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }).strict(),
   computer_type: z.object({ text: z.string().min(1).max(2_000) }).strict(),
@@ -245,6 +302,13 @@ const schemas: Record<AgentToolName, z.ZodType> = {
   start_continuous_sweeps: z.object({}).strict(),
   stop_continuous_sweeps: z.object({}).strict(),
   get_measurement_state: z.object({}).strict(),
+  set_measurement_view: z.object({ view: measurementViewIdSchema }).strict(),
+  configure_waterfall: waterfallConfigurationSchema,
+  configure_channel_measurement: channelMeasurementConfigurationSchema,
+  get_channel_measurement_results: z.object({}).strict(),
+  configure_envelope_stft: envelopeStftConfigurationSchema,
+  get_envelope_stft_results: z.object({}).strict(),
+  acquire_envelope_stft: z.object({}).strict(),
   configure_marker: markerConfigurationSchema,
   search_marker: z.object({ markerId: markerIdSchema, action: markerSearchActionSchema }).strict(),
   configure_trace: traceConfigurationSchema,
@@ -279,7 +343,7 @@ export function approvalSummary(name: AgentToolName, args: unknown): string {
   return `Run ${name.replaceAll('_', ' ')}`;
 }
 
-export const ATOM_AGENT_INSTRUCTIONS = `You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists learn and RF engineers move quickly without overstating certainty. Prefer typed application tools over clicks. Read state before making state-dependent claims. A dialog opening is not a connection; list candidates, connect one exact candidate, and verify ready. Explain units and tradeoffs clearly. Distinguish requested, commanded, verified, simulated, stale, unqualified, and unknown values. Spectral morphology labels describe trace shape only; zero span is detected power versus time and never I/Q. Never claim protocol decoding, regulatory-grade accuracy, or a hardware interlock. Never enable RF output unless explicitly requested. Physical-screen touch is high-impact because the firmware UI may expose RF controls. Never retry, reroute, substitute a model, or conceal a failed operation. Keep spoken answers concise, then offer deeper analysis. The active model is exactly gpt-realtime-2.1-mini.`;
+export const ATOM_AGENT_INSTRUCTIONS = `You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists learn and RF engineers move quickly without overstating certainty. Prefer typed application tools over clicks. Read state before making state-dependent claims. A dialog opening is not a connection; list candidates, connect one exact candidate, and verify ready. Explain units and tradeoffs clearly. Distinguish requested, commanded, verified, simulated, stale, unqualified, and unknown values. Spectrum, waterfall, channel power, ACP/ACLR, and OBW are host projections of complete scalar sweeps. Frequency-grid changes are excluded from the waterfall rather than resampled silently. Spectral morphology labels describe trace shape only; zero span is detected power versus time and never I/Q. Envelope STFT reveals detected-power modulation rates only and cannot establish carrier phase, symbols, EVM, or protocol identity. Never claim protocol decoding, regulatory-grade accuracy, or a hardware interlock. Never enable RF output unless explicitly requested. Physical-screen touch is high-impact because the firmware UI may expose RF controls. Never retry, reroute, substitute a model, or conceal a failed operation. Keep spoken answers concise, then offer deeper analysis. The active model is exactly gpt-realtime-2.1-mini.`;
 
 export const realtimeToolDefinitions = agentToolDefinitions.filter((tool) => !tool.name.startsWith('computer_'));
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyzerConfigSchema,
+  channelMeasurementConfigurationSchema,
   dBm,
+  envelopeStftConfigurationSchema,
   generatorConfigSchema,
   hertz,
   markerConfigurationSchema,
@@ -12,6 +14,7 @@ import {
   signalDetectionConfigSchema,
   synthesizedSignalProfileSchema,
   traceBankConfigurationSchema,
+  waterfallConfigurationSchema,
   waveformDescriptorSchema,
 } from './index.js';
 
@@ -71,6 +74,15 @@ describe('domain units and firmware-derived validation', () => {
     expect(traceBankConfigurationSchema.safeParse(Array(4).fill({ id: 1, mode: 'blank', averageCount: 8 })).success).toBe(false);
     expect(markerConfigurationSchema.safeParse({ id: 2, enabled: true, traceId: 1, mode: 'delta', frequencyHz: 100_000_000, tracking: 'fixed' }).success).toBe(false);
     expect(replayChannelConfigurationSchema.safeParse({ model: 'rayleigh', noiseFloorDbm: -108, seed: 407, fadingRateHz: 2 }).success).toBe(true);
+  });
+  it('closes advanced swept-measurement configuration and rejects silent ambiguity', () => {
+    expect(waterfallConfigurationSchema.safeParse({ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }).success).toBe(true);
+    expect(waterfallConfigurationSchema.safeParse({ historyDepth: 51, floorDbm: -20, ceilingDbm: -120, palette: 'thermal' }).success).toBe(false);
+    const channel = { centerHz: 98_000_000, mainBandwidthHz: 200_000, adjacentBandwidthHz: 200_000, channelSpacingHz: 200_000, adjacentChannelCount: 2, occupiedPowerPercent: 99, obwNoiseCorrection: 'none' } as const;
+    expect(channelMeasurementConfigurationSchema.safeParse(channel).success).toBe(true);
+    expect(channelMeasurementConfigurationSchema.safeParse({ ...channel, channelSpacingHz: 100_000 }).success).toBe(false);
+    expect(envelopeStftConfigurationSchema.safeParse({ windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 }).success).toBe(true);
+    expect(envelopeStftConfigurationSchema.safeParse({ windowSize: 64, hopSize: 65, window: 'hann', removeDc: true, dynamicRangeDb: 80 }).success).toBe(false);
   });
   it('requires hashed evidence before a waveform can claim conformance validation', () => {
     const descriptor = { id: 'lte-etm1.1', label: 'LTE', family: 'e-utra', model: 'E-TM1.1', qualification: 'conformance-validated', centerHz: 1_840_000_000, occupiedBandwidthHz: 18_000_000, recommendedSpanHz: 30_000_000, projection: { allocation: 'full', modulation: 'qpsk', timing: 'frame', subcarrierSpacingHz: 15_000, nominalResourceBlocks: 100 }, standard: { organization: '3GPP', specification: 'TS 36.141', clause: '6.1.1', revision: '19.1.0', url: 'https://www.3gpp.org/' }, disclosure: 'Validated asset.' };

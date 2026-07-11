@@ -43,4 +43,12 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'3',name:'configure_demo_channel',arguments:'{"model":"rayleigh","noiseFloorDbm":-108,"seed":407,"fadingRateHz":2}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'4',name:'reset_trace',arguments:'{"traceId":5}'})).toThrow();
   });
+  it('gives Atom complete advanced-measurement hooks with closed evidence settings',()=>{
+    expect(validateAgentToolCall({callId:'1',name:'set_measurement_view',arguments:'{"view":"waterfall"}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'2',name:'configure_waterfall',arguments:'{"historyDepth":35,"floorDbm":-120,"ceilingDbm":-20,"palette":"atomic"}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'3',name:'configure_channel_measurement',arguments:'{"centerHz":98000000,"mainBandwidthHz":200000,"adjacentBandwidthHz":200000,"channelSpacingHz":200000,"adjacentChannelCount":2,"occupiedPowerPercent":99,"obwNoiseCorrection":"none"}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'4',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":16,"window":"hann","removeDc":true,"dynamicRangeDb":80}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'5',name:'get_channel_measurement_results',arguments:'{}'}).policy.risk).toBe('observe');
+    expect(()=>validateAgentToolCall({callId:'6',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":128,"window":"hann","removeDc":true,"dynamicRangeDb":80}'})).toThrow();
+  });
 });

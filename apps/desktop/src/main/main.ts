@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, session } from 'electron';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -119,8 +119,12 @@ async function createWindow(): Promise<void> {
   const allowedOrigin=(url:string)=>url.startsWith('file://')||url.startsWith('http://localhost:5173');
   session.defaultSession.setPermissionCheckHandler((_webContents,permission,origin)=>permission==='media'&&allowedOrigin(origin));
   session.defaultSession.setPermissionRequestHandler((webContents,permission,callback)=>callback(permission==='media'&&allowedOrigin(webContents.getURL())));
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  const startupWidth = Math.min(1720, workArea.width);
+  const startupHeight = Math.min(1040, workArea.height);
   const win = new BrowserWindow({
-    width: 1580, height: 980, minWidth: 1120, minHeight: 720, backgroundColor: '#070b0b',
+    width: startupWidth, height: startupHeight, minWidth: Math.min(1280, startupWidth), minHeight: Math.min(800, startupHeight), backgroundColor: '#070b0b',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 20 } } : {}),
     webPreferences: { preload: join(here, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true }
   });
   mainWindow=win;win.on('closed',()=>{mainWindow=undefined;if(demoWindow&&!demoWindow.isDestroyed())demoWindow.close();});

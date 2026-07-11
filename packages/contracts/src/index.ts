@@ -176,6 +176,94 @@ export const spectrumDisplayConfigurationSchema = z.object({
 }).strict();
 export type SpectrumDisplayConfiguration = z.infer<typeof spectrumDisplayConfigurationSchema>;
 
+/** Host measurement views. They never imply a corresponding tinySA firmware mode. */
+export const measurementViewIdSchema = z.enum(['spectrum', 'waterfall', 'channel', 'envelope-stft']);
+export type MeasurementViewId = z.infer<typeof measurementViewIdSchema>;
+
+export const waterfallConfigurationSchema = z.object({
+  historyDepth: z.number().int().min(5).max(50),
+  floorDbm: z.number().finite().min(-174).max(29),
+  ceilingDbm: z.number().finite().min(-173).max(30),
+  palette: z.literal('atomic'),
+}).strict().refine((value) => value.ceilingDbm > value.floorDbm, {
+  message: 'Waterfall ceiling must be greater than its floor',
+  path: ['ceilingDbm'],
+});
+export type WaterfallConfiguration = z.infer<typeof waterfallConfigurationSchema>;
+
+export const channelMeasurementConfigurationSchema = z.object({
+  centerHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  mainBandwidthHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  adjacentBandwidthHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  channelSpacingHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  adjacentChannelCount: z.number().int().min(1).max(3),
+  occupiedPowerPercent: z.number().finite().min(10).max(99.9),
+  obwNoiseCorrection: z.enum(['none', 'robust-floor']),
+}).strict().superRefine((value, context) => {
+  if (value.channelSpacingHz < (value.mainBandwidthHz + value.adjacentBandwidthHz) / 2) {
+    context.addIssue({ code: 'custom', path: ['channelSpacingHz'], message: 'Adjacent channels must not overlap the main channel' });
+  }
+});
+export type ChannelMeasurementConfiguration = z.infer<typeof channelMeasurementConfigurationSchema>;
+
+export const envelopeStftConfigurationSchema = z.object({
+  windowSize: z.union([z.literal(16), z.literal(32), z.literal(64), z.literal(128), z.literal(256)]),
+  hopSize: z.number().int().min(1).max(256),
+  window: z.literal('hann'),
+  removeDc: z.boolean(),
+  dynamicRangeDb: z.number().finite().min(20).max(120),
+}).strict().superRefine((value, context) => {
+  if (value.hopSize > value.windowSize) context.addIssue({ code: 'custom', path: ['hopSize'], message: 'STFT hop size cannot exceed its window size' });
+});
+export type EnvelopeStftConfiguration = z.infer<typeof envelopeStftConfigurationSchema>;
+
+export interface IntegratedBandPower {
+  startHz: number;
+  stopHz: number;
+  bandwidthHz: number;
+  powerDbm: number;
+  powerSpectralDensityDbmHz: number;
+  binsUsed: number;
+}
+export interface OccupiedBandwidthMeasurement {
+  percent: number;
+  startHz: number;
+  stopHz: number;
+  bandwidthHz: number;
+  occupiedPowerDbm: number;
+  noiseCorrection: ChannelMeasurementConfiguration['obwNoiseCorrection'];
+}
+export interface AdjacentChannelMeasurement extends IntegratedBandPower {
+  side: 'lower' | 'upper';
+  order: 1 | 2 | 3;
+  relativeToCarrierDbc: number;
+}
+export interface ChannelMeasurementResult {
+  carrier: IntegratedBandPower;
+  adjacent: readonly AdjacentChannelMeasurement[];
+  occupiedBandwidth: OccupiedBandwidthMeasurement;
+  sourceSweepId: string;
+  actualRbwHz: number;
+  nominalBinWidthHz: number;
+  evidence: 'host-derived-scalar-sweep';
+  qualification: 'engineering-estimate';
+}
+
+export interface EnvelopeStftFrame {
+  startSeconds: number;
+  centerSeconds: number;
+  magnitudeDbRelative: readonly number[];
+}
+export interface EnvelopeStftResult {
+  sourceCaptureId: string;
+  sampleRateHz: number;
+  modulationFrequencyHz: readonly number[];
+  frames: readonly EnvelopeStftFrame[];
+  peakModulationFrequencyHz: number;
+  evidence: 'zero-span-detected-envelope';
+  qualification: 'not-iq';
+}
+
 export interface TraceFrame {
   traceId: TraceId;
   mode: TraceMode;

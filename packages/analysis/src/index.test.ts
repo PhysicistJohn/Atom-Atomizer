@@ -8,6 +8,9 @@ import {
   autoScaleSpectrum,
   calculateSweepMetrics,
   classifyZeroSpanEnvelope,
+  computeEnvelopeStft,
+  measureChannel,
+  measureOccupiedBandwidth,
   readMarkers,
   searchMarker,
 } from './index.js';
@@ -122,6 +125,52 @@ describe('signal analysis', () => {
     expect(metrics.noiseFloorDbm).toBe(-90);
     expect(metrics.occupiedBandwidth99Hz).toBeGreaterThanOrEqual(100);
     expect(metrics.crestFactorDb).toBeGreaterThan(0);
+  });
+
+  it('integrates channel, adjacent-channel, and configurable occupied-bandwidth evidence from a complete scalar sweep', () => {
+    const frequencyHz = Array.from({ length: 401 }, (_, index) => index * 1_000);
+    const powerDbm = frequencyHz.map((frequency) => {
+      if (Math.abs(frequency - 200_000) <= 20_000) return -50;
+      if (Math.abs(frequency - 130_000) <= 20_000) return -80;
+      if (Math.abs(frequency - 270_000) <= 20_000) return -70;
+      return -120;
+    });
+    const channelSweep = makeSweep({
+      id: 'channel-1', frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 400_000, actualRbwHz: 1_000,
+    });
+    const result = measureChannel(channelSweep, {
+      centerHz: 200_000,
+      mainBandwidthHz: 40_000,
+      adjacentBandwidthHz: 40_000,
+      channelSpacingHz: 70_000,
+      adjacentChannelCount: 1,
+      occupiedPowerPercent: 99,
+      obwNoiseCorrection: 'robust-floor',
+    });
+    expect(result.carrier.powerDbm).toBeCloseTo(-33.98, 1);
+    expect(result.adjacent.find((entry) => entry.side === 'lower')?.relativeToCarrierDbc).toBeCloseTo(-30, 1);
+    expect(result.adjacent.find((entry) => entry.side === 'upper')?.relativeToCarrierDbc).toBeCloseTo(-20, 1);
+    expect(result.occupiedBandwidth.bandwidthHz).toBeGreaterThan(80_000);
+    expect(result.occupiedBandwidth.bandwidthHz).toBeLessThan(100_000);
+    expect(result).toMatchObject({ evidence: 'host-derived-scalar-sweep', qualification: 'engineering-estimate' });
+    const ninetyPercent = measureOccupiedBandwidth(channelSweep, 90, 'robust-floor').bandwidthHz;
+    expect(ninetyPercent).toBeGreaterThan(35_000);
+    expect(ninetyPercent).toBeLessThan(43_000);
+  });
+
+  it('computes a detected-envelope STFT without claiming I/Q evidence', () => {
+    const samplePeriodSeconds = 0.001;
+    const powerDbm = Array.from({ length: 256 }, (_, index) => 10 * Math.log10(1 + 0.6 * Math.sin(2 * Math.PI * 62.5 * index * samplePeriodSeconds)));
+    const capture: ZeroSpanCapture = {
+      kind: 'zero-span', id: 'stft-1', sequence: 1, capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 256,
+      frequencyHz: 433_920_000, samplePeriodSeconds, powerDbm,
+      requested: { frequencyHz: 433_920_000, points: 256, rbwKhz: 100, attenuationDb: 'auto', sweepTimeSeconds: 0.256, trigger: { mode: 'auto' } },
+      actualRbwHz: 100_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity,
+    };
+    const result = computeEnvelopeStft(capture, { windowSize: 64, hopSize: 32, window: 'hann', removeDc: true, dynamicRangeDb: 80 });
+    expect(result.frames).toHaveLength(7);
+    expect(result.peakModulationFrequencyHz).toBeCloseTo(62.5, 5);
+    expect(result).toMatchObject({ evidence: 'zero-span-detected-envelope', qualification: 'not-iq' });
   });
 
   it('classifies spectral morphology while retaining explicit unknown behavior', async () => {
