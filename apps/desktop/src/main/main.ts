@@ -35,6 +35,7 @@ const device = new TinySaDeviceService(transport);
 const ai = new OpenAiGateway();
 const computer = new AppComputerHarness();
 let mainWindow: BrowserWindow | undefined;
+let shutdownStarted = false;
 app.setName('TinySA Atomizer');
 const firmwareUpdater = new FirmwareUpdater(join(app.getPath('userData'), 'firmware'), device);
 
@@ -152,15 +153,21 @@ app.whenReady().then(async () => {
   console.error('TinySA Atomizer startup failed', error);
   app.exit(1);
 });
-app.on('before-quit', () => ai.close());
-app.on('window-all-closed', () => {
+app.on('before-quit', (event) => {
+  ai.close();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   if (device.snapshot().connection === 'disconnected') {
     device.dispose();
-    app.quit();
     return;
   }
-  void device.disconnect().then(()=>app.quit()).catch(error=>{
-    console.error('TinySA Atomizer shutdown failed while disconnecting the instrument',error);
+  event.preventDefault();
+  void device.disconnect().then(() => {
+    device.dispose();
+    app.quit();
+  }).catch((error) => {
+    console.error('TinySA Atomizer shutdown failed while commanding RF off and disconnecting the instrument', error);
     app.exit(1);
   });
 });
+app.on('window-all-closed', () => app.quit());
