@@ -146,6 +146,7 @@ Default context may include:
 - Simulation flag and visible error.
 - Device identity, firmware, capabilities, mode, RF output and verification.
 - Analyzer/generator/detector configuration.
+- Host trace bank, active markers/readouts, amplitude display, selected demo waveform qualification, and replay-channel state.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
@@ -159,6 +160,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_application_state` | Observe | Never | Reads route/acquisition/environment |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
+| `get_measurement_state` | Observe | Never | Reads the four trace modes, eight markers/readouts, searches, and host display scale |
 | `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
 | `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
@@ -174,6 +176,11 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `computer_scroll` | Operate | Never | Bounded scroll inside the app |
 | `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
 | `configure_analyzer` | Operate | Never | Changes staged analyzer settings only |
+| `configure_marker` | Operate | Never | Configures one of eight host-derived markers through the measurement reducer |
+| `search_marker` | Operate | Never | Places the active marker using peak/min/next search and explicit thresholds |
+| `configure_trace` | Operate | Never | Configures one of four host-derived trace accumulators |
+| `reset_trace` | Operate | Never | Clears exactly one host trace accumulator |
+| `configure_spectrum_display` | Operate | Never | Changes the host reference level and dB/div projection |
 | `acquire_sweep` | Operate | Never | Runs one analyzer acquisition |
 | `start_continuous_sweeps` | Operate | Never | Starts serialized service-owned acquisition |
 | `stop_continuous_sweeps` | Operate | Never | Stops after the in-flight firmware operation |
@@ -185,7 +192,8 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `capture_device_screen` | Observe | Never | Reads and displays one exact RGB565 frame |
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
-| `select_demo_signal` | Operate | Never | Switches the explicit Signal Lab among CW/AM/FM/LTE-like synthesis |
+| `select_demo_signal` | Operate | Never | Selects one closed visual/standards-derived Signal Lab waveform and its recommended range |
+| `configure_demo_channel` | Operate | Never | Changes the explicit AWGN/Rayleigh replay-channel schema |
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact are refused; the model must use the typed tool with action-time approval. Text, key and scroll inputs are bounded and remain targeted at TinySA Atomizer.
 
@@ -337,6 +345,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-26:** The microphone remains muted until every sent voice-session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
 - **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
 - **AI-28:** Remote physical-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
+- **AI-29:** Every marker, trace, display, waveform, and replay-channel operation has a closed typed tool and returns its evidence/qualification state.
 
 ## 16. Source traceability
 

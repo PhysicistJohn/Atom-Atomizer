@@ -69,7 +69,7 @@ Atomizer requires these commands after `help` capability discovery:
 | --- | --- |
 | identity | `version`, `info`, `help` |
 | lifecycle | `status`, `pause`, `resume`, `abort` |
-| analyzer | `mode`, `sweep`, `scan`, `scanraw`, `rbw`, `attenuate`, `spur`, `avoid`, `lna`, `trigger`, `calc`, `trace` |
+| analyzer | `mode`, `sweep`, `scan`, `scanraw`, `rbw`, `attenuate`, `spur`, `avoid`, `lna`, `trigger`, `calc`, `trace`, `marker` |
 | generator | `mode`, `freq`, `level`, `modulation`, `output` |
 | diagnostics | `vbat`, `deviceid`, `capture` |
 | remote panel | `touch`, `release` |
@@ -130,6 +130,34 @@ The host reads `sweep`, `rbw`, `attenuate` and `status` after configuration.
 Start, stop and point count are `verified` only when the returned values match.
 Actual RBW and attenuation are recorded because firmware auto-selection may differ
 from the request.
+
+## Firmware marker and trace surface
+
+The pinned tinySA4 build defines eight markers (`MARKER_COUNT = 8`) and four
+traces (`TRACES_MAX = 4`). These counts are published through the device
+capability profile.
+
+The `marker` command accepts marker selection/listing and firmware operations for
+`on`, `off`, `peak`, `delta`, `noise`, `tracking`, trace assignment, trace
+averaging, and fixed frequency/index placement. The `trace` command accepts
+units (`dBm`, `dBmV`, `dBuV`, `RAW`, `V`, `Vpp`, `W`), scale/reference level,
+trace value access, copy, freeze, subtract, and view operations across traces
+1–4.
+
+This is a command-capability statement, not a complete state-readback claim. The
+shell query output does not round-trip every trace property reliably enough to
+reconstruct four simultaneous traces; the pinned trace-list formatting also
+does not expose the frozen argument as complete machine-readable state. Atomizer
+therefore keeps the analyzer's unit command at `trace dBm` and derives its
+simultaneous Clear/Write, Max Hold, Min Hold, Average, View/Freeze and Blank
+frames from the exact host sweep arrays. Its eight marker readouts are derived
+from those frames. Every such surface says `HOST MATH` and is governed by
+`MEASUREMENT_CONTROLS_CONTRACT.md`.
+
+No failed host projection falls through to firmware marker/trace manipulation or
+remote screen touch. A future firmware-backed state mode requires explicit
+request/result grammars, readback fixtures, a capability-profile revision, and a
+separate evidence label.
 
 ## Sweep payloads
 
@@ -198,6 +226,9 @@ and can reach RF controls; agent-driven remote touch is therefore high impact.
 | analyzer range/points | `sweep` | verified |
 | actual RBW | `rbw` query output | observed |
 | actual attenuation | `attenuate` query output | observed |
+| marker/trace slot counts | pinned firmware constants and `help` support | capability-derived |
+| simultaneous desktop trace frames | complete acquired sweeps | host-derived |
+| desktop marker readouts/search | assigned host trace frames | host-derived |
 | paused/resumed | `status` | observed |
 | battery voltage | `vbat` | observed telemetry |
 | device ID | `deviceid` | observed telemetry |
@@ -216,3 +247,5 @@ and can reach RF controls; agent-driven remote touch is therefore high impact.
 - `FW-PROTO-008`: physical identity without ZS407 fails connection.
 - `FW-PROTO-009`: generator configuration begins and ends muted.
 - `FW-PROTO-010`: disconnect while output may be active yields `unknown` RF state.
+- `FW-PROTO-011`: capability discovery requires both `trace` and `marker` and reports four/eight slots.
+- `FW-PROTO-012`: desktop trace/marker projections remain labeled host-derived and never impersonate firmware readback.

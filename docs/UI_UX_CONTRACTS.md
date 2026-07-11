@@ -62,11 +62,11 @@ Durable saved sessions, comparison, waterfall, settings, and support-bundle work
 
 ### 2.3 Signal Lab companion
 
-When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. It immediately starts a paced continuous replay through the production acquisition service. A compact second BrowserWindow contains exactly four primary choices—CW, AM, FM, and LTE-like—and changes the simulator's actual text/raw/zero-span byte source while replay remains live. If the operator pauses replay, selecting a new profile starts it again. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
+When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. It immediately starts a paced continuous replay through the production acquisition service. A compact second BrowserWindow contains seven closed profiles—CW, AM, FM, GSM normal burst, LTE E-TM1.1, 5G NR TM1.1, and Wi-Fi 6 HE SU—and changes the simulator's actual text/raw/zero-span byte source and recommended analyzer range while replay remains live. If the operator pauses replay, selecting a new profile starts it again. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
 
-The spectral floor evolves on every frame and combines spatially correlated receiver ripple, broad passband shape, fine-grain jitter, bounded sweep drift, edge lift and stable low-level spurs. It must look capture-like without claiming calibrated RF randomness. Replay cadence is explicitly paced so the UI animates naturally without an unbounded simulator loop.
+The replay channel is explicitly AWGN or Rayleigh. Seeded complex-Gaussian periodogram power evolves on every frame and combines with spatially correlated receiver ripple, broad passband shape, bounded sweep drift, edge lift, and stable low-level spurs. Rayleigh mode adds correlated frequency-selective signal fades with operator-controlled temporal rate. Replay cadence is explicitly paced so the UI animates naturally without an unbounded simulator loop.
 
-LTE-like means a deterministic flat occupied channel with OFDM-like texture; it is not standards-compliant LTE I/Q and the UI must retain that qualifier. Atom receives a typed `select_demo_signal` hook. The app-only coordinate harness remains scoped to the main window.
+Every profile shows `VISUAL`, `STD-DERIVED`, or `CONFORMANCE-VALIDATED`. Current cellular/WLAN entries are standards-derived power-spectrum/time projections, not bit-exact or conformance-validated I/Q; GSM and Wi-Fi retain their published Normal Burst/PPDU naming rather than invented test-model IDs. Atom receives typed `select_demo_signal` and `configure_demo_channel` hooks. The app-only coordinate harness remains scoped to the main window. Exact qualification, algorithms, and admission gates are normative in `WAVEFORM_REPLAY_CONTRACT.md`.
 
 ## 3. Global state contracts
 
@@ -147,7 +147,7 @@ Inputs are start/stop or center/span in integer Hz and capability limits. Stop m
 
 ### UX-SPC-02 — Configure sweep
 
-Inputs include points, resolution bandwidth, attenuation and later accepted detector/trace controls. “Automatic” is a typed value, not `0` or an empty string. Unsupported options are absent with an inspectable reason, not merely disabled without explanation.
+Inputs include points, resolution bandwidth, attenuation, detector, trigger mode/level, spur handling, harmonic avoidance, and LNA state. “Automatic” is a typed value, not `0` or an empty string. Unsupported options are absent with an inspectable reason, not merely disabled without explanation. Simultaneous traces and markers are host measurement controls, visibly separated from firmware-verified analyzer settings.
 
 ### UX-SPC-03 — Acquire once
 
@@ -169,6 +169,17 @@ An incomplete or mismatched sweep never partially paints.
 - A stale trace remains visible with a stale badge.
 - Simulated data carries a persistent environment badge and export provenance.
 - At reference throughput, pointer/keyboard interactions target p95 latency below 100 ms.
+
+### UX-SPC-05 — Traces, markers, and amplitude display
+
+The compact measurement command bar exposes four traces, eight markers, and
+reference-level/division controls without reducing the plot to a secondary
+surface. Exactly one panel opens at a time. Trace modes are Clear/Write, Max
+Hold, Min Hold, linear-power Average, View/Freeze, and Blank. Markers are
+trace-assignable and support fixed/peak tracking, peak/min/next search, normal,
+delta, and noise-density readouts. The surface and plot say `HOST MATH`; they do
+not claim full firmware state. Exact calculations, persistence, reset, and
+failure semantics are governed by `MEASUREMENT_CONTROLS_CONTRACT.md`.
 
 ## 6. Signal Detection mode contract
 
@@ -275,7 +286,8 @@ Cable loss, transition timeout or unverified reconnect results in `unknown`. The
 | `TopBar` | snapshot, environment, Atom state | open connection/Atom | disconnected, ready, simulated, RF global state | identity truncation, keyboard, status text |
 | `Sidebar` | route, output state, capabilities | route intent | active, unavailable, RF on/unknown | guarded navigation, current page |
 | `ConnectionDialog` | candidates, selection, busy, error | refresh/select/connect/disconnect/close | empty, list, connecting, connected, failed | focus trap/restore, duplicate submit |
-| `SpectrumPlot` | sweep, detections, busy, freshness | zoom/pan/marker intents | empty, loading, live, stale | exact bins, axes, resize, performance |
+| `SpectrumPlot` | trace frames, markers, detections, busy, freshness, display | marker placement intents | empty, loading, live, stale | exact bins, multi-trace overlay, markers, axes, resize, performance |
+| `MeasurementDock` | trace/marker/display configurations and readings | configure/search/reset/auto-scale intents | compact, marker, trace, display | calculations, overflow, persistence, keyboard |
 | `AnalyzerInspector` | config, capabilities, busy | validated config change | auto/manual, invalid, unsupported | units, ordered range, operation lock |
 | `MetricStrip` | sweep, events, operation | none | empty/current/stale | atomic update, units |
 | `DetectionWorkspace` | sweep, config/results | config/select/reanalyze | not analyzed, zero, result, failure, tracking | semantics and provenance |
@@ -377,6 +389,11 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **SPC-08:** Previous trace is visibly stale on failure.
 - **SPC-09:** Simulated data is persistently labeled/exported as simulated.
 - **SPC-10:** Thirty-minute stream has bounded memory/responsive UI.
+- **SPC-11:** Four traces accumulate with the exact contracted bin semantics.
+- **SPC-12:** Eight markers bind to assigned trace bins and expose textual values.
+- **SPC-13:** Delta/noise/search failures preserve state and explicit units.
+- **SPC-14:** Reference level and dB/div affect only host display projection.
+- **SPC-15:** Expanded Markers, Traces, and Display surfaces do not overflow at the reference viewport with Atom open.
 
 ### Detection
 
@@ -437,7 +454,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | UX-00 | Tokens, primitives, frame, accessibility harness | contracts | XP rules; scale review |
 | UX-01 | Connection/global state | transport/device API | CON-01..12 |
 | UX-02 | Spectrum configuration/acquisition | analyzer service | SPC-01..10 |
-| UX-03 | Plot, marker and waterfall engine | measured throughput | performance/a11y |
+| UX-03 | Plot, four-trace, eight-marker, and future waterfall engine | measured throughput | MEAS-001..12; performance/a11y |
 | UX-04 | Detection configuration and sweep segmentation | sweeps | DET-01..07,09 |
 | UX-05 | Cross-sweep tracker and alerts | bounded stream | DET-08,10 |
 | UX-06 | Classification pipeline and unknown UX | detections/model manifest | CLS-01..05,08,09 |
@@ -450,7 +467,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | UX-10 | Diagnostics/settings/help | error catalog | recovery/support tests |
 | UX-11 | Accessibility/usability qualification | stable workflows | operator studies |
 
-UX-00/01/02/04/05/06/07/08 and the export portion of UX-09 have an implemented vertical slice. Hardware clauses, durable session persistence, comparison, waterfall, and support bundles remain open.
+UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemented vertical slice. Hardware clauses, complete keyboard marker workflow, durable session persistence, comparison, waterfall, limit lines, and support bundles remain open.
 
 ## 15. Traceability to current source
 
@@ -461,7 +478,8 @@ UX-00/01/02/04/05/06/07/08 and the export portion of UX-09 have an implemented v
 | Exact unit parsing | `apps/desktop/src/renderer/format.ts` |
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
-| Spectrum | `components/SpectrumPlot.tsx`, `components/AnalyzerInspector.tsx` |
+| Spectrum | `components/SpectrumPlot.tsx`, `components/AnalyzerInspector.tsx`, `components/MeasurementDock.tsx`, `packages/analysis` |
+| Waveform/channel replay | `packages/waveforms`, `components/DemoLab.tsx`, `main/demo-transport.ts` |
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Generator | `components/GeneratorWorkspace.tsx`, `packages/tinysa` |

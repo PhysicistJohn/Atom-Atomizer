@@ -4,6 +4,8 @@ Status: active execution baseline, API v2, 2026-07-10
 Companion: [PLAN.md](./PLAN.md)
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
+Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
+Replay authority: [docs/WAVEFORM_REPLAY_CONTRACT.md](./docs/WAVEFORM_REPLAY_CONTRACT.md)
 Experience authority: [docs/UI_UX_CONTRACTS.md](./docs/UI_UX_CONTRACTS.md)
 Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
 
@@ -35,7 +37,9 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 The current repository has accepted automated evidence for the API v2 contracts, exact prompt/parser/scheduler, serial transport boundary, byte-level ZS407 simulator, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, spectral morphology, zero-span envelope analysis, Electron v2 bridge, export serialization, Atom session/tool policy, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
 
-The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and continuously replays an evolving capture-like byte stream selectable among CW, AM, FM, and LTE-like profiles. The synthetic receiver floor must combine correlated ripple, fine-grain jitter, sweep drift and stable low-level spurs instead of a static or white-noise-only trace. A physical discovery error must fail rather than activate demo mode.
+The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and continuously replays an evolving byte stream selectable among CW, AM, FM, GSM normal burst, LTE E-TM1.1, 5G NR TM1.1, and Wi-Fi 6 HE SU profiles. Seeded AWGN and correlated frequency-selective Rayleigh modes share receiver ripple, sweep evolution, and stable low-level spurs. Standards-derived profiles remain power-spectrum/time projections, not bit-exact or conformance-validated I/Q. A physical discovery error must fail rather than activate demo mode.
+
+Spectrum now exposes four host-derived trace slots and eight host-derived markers over complete acquired sweeps, plus trigger and amplitude-display controls. This mirrors established instrument workflows without claiming unreadable firmware state or equivalence to a vendor implementation. Exact mode semantics, evidence labels, and acceptance tests are governed by the measurement contract.
 
 Work-package status is therefore interpreted as follows:
 
@@ -89,6 +93,8 @@ apps/desktop/             Electron main, preload, and React renderer
 packages/contracts/       Pure serializable TypeScript contracts
 packages/tinysa/          Protocol codecs, device service, capability profiles
 packages/test-device/     Fake transport, simulator, transcript fixtures
+packages/waveforms/       Qualified catalog and deterministic channel replay
+packages/analysis/        Traces, markers, detection and characterization
 packages/session/         Session model, persistence, import/export
 docs/                     User, support, protocol, ADR, and release documents
 tools/                    Hardware probes and release utilities

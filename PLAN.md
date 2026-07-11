@@ -37,6 +37,7 @@ No layer may substitute a lower layer after failure. In particular, typed comman
 - Commands are printable ASCII terminated by CR, echoed exactly, and complete at `ch> ` after the echo.
 - Maximum command text is 47 characters.
 - Screen capture is exactly 480×320 RGB565 little-endian: 307,200 bytes.
+- tinySA4 firmware defines four trace slots and eight marker slots; complete simultaneous desktop trace/marker state is host-derived and labeled rather than inferred from incomplete shell readback.
 - `scan … 3` returns text frequency/power/reserved rows.
 - `scanraw` returns brace-framed, marker-prefixed signed int16 dB×32 samples.
 - Analyzer range, points, actual RBW, attenuation, and status have query/readback paths.
@@ -52,14 +53,15 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis plus marker, trace, display, waveform and replay-channel contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Simulator | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry | scripted corrupt/truncated/unplug matrix expansion |
-| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; continuously replay a paced, capture-like floor while the second window switches CW/AM/FM/LTE-like byte synthesis | visual acceptance and physical-device coexistence test |
+| Waveform engine | closed seven-profile catalog; visible qualification; animated AM/FM; GSM normal burst, LTE E-TM1.1, NR-FR1-TM1.1 and Wi-Fi 6 HE SU standards-derived projections; seeded AWGN and correlated Rayleigh channels | admitted hashed I/Q assets and independent checks before any conformance-validated claim |
+| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; continuously replay the selected waveform/channel while the companion window changes the real text/raw/zero-span byte source and recommended analyzer range | physical-device coexistence test; visual review at supported display scales |
 | Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
 | Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
-| Spectrum | advanced controls, exact plot/metrics, single/continuous sweeps, 50-sweep memory history, CSV/JSON | marker keyboard workflow, waterfall, sustained physical soak |
+| Spectrum | advanced analyzer/trigger controls, four host-derived trace modes, eight trace-assignable markers/search/delta/noise readouts, amplitude scaling, exact plot/metrics, single/continuous sweeps, 50-sweep memory history, CSV/JSON | complete keyboard marker workflow, waterfall/limit lines, sustained physical soak |
 | Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
 | Classification | morphology evidence, ranked candidates, unknown rejection, zero-span envelope mode | labeled physical corpus and validated modulation/protocol model |
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
@@ -136,7 +138,7 @@ Every application capability ships with a domain contract, closed agent schema, 
 1. Keep Gate A green and visually inspect every simulator workspace at the reference and minimum window sizes.
 2. Expand fault fixtures and parser fuzz/property tests.
 3. Add durable versioned session persistence, sweep comparison, and import validation.
-4. Add marker/zoom/waterfall only after measured renderer throughput.
+4. Add zoom, waterfall and limit lines only after measured renderer throughput; keep marker/trace behavior green at 450 points.
 5. Run the physical characterization protocol immediately when the ZS407 arrives.
 6. Build the RF capture corpus only after hardware/session provenance is stable.
 7. Freeze platform support, packaging, credential storage, and release policy after hardware Gate B.
