@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Activity, AudioWaveform, BarChart3, Clock3, Crosshair, Layers3, RadioTower, Repeat2, SlidersHorizontal, Square, Zap } from 'lucide-react';
 import type {
@@ -79,13 +79,19 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   const [overlay, setOverlay] = useState<Overlay>();
   const activeDetections = props.detections.filter((item) => item.state !== 'released');
   const toggleOverlay = (next: Overlay) => setOverlay((current) => current === next ? undefined : next);
+  const selectView = (view: MeasurementViewId) => { setOverlay(undefined); props.onView(view); };
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOverlay(undefined); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, []);
   return <section className="measurement-workspace">
     <header className="measurement-viewbar">
       <div className="measurement-view-tabs" role="tablist" aria-label="Spectrum analysis views">
-        <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={props.onView}/>
-        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} onView={props.onView}/>
+        <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={selectView}/>
+        <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={selectView}/>
+        <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={selectView}/>
+        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} onView={selectView}/>
       </div>
       <div className="measurement-view-utilities">
         <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
@@ -96,7 +102,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
       </div>
     </header>
     <div className="measurement-stage">
-      {overlay && <div className="measurement-overlay" role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
+      {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
         {overlay === 'setup' ? <AnalyzerInspector config={props.analyzer} disabled={props.busy} onChange={props.onAnalyzer}/> : <MeasurementDock traces={props.traces} frames={props.frames} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>} 
       </div>}
       <div className="measurement-stage-content" role="tabpanel">

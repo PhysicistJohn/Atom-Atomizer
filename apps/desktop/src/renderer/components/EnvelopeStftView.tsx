@@ -4,6 +4,7 @@ import type { EnvelopeStftConfiguration, EnvelopeStftResult, ZeroSpanCapture, Ze
 import { computeEnvelopeStft } from '@tinysa/analysis';
 import { formatFrequency } from '../format.js';
 import { atomicColor } from './WaterfallView.js';
+import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
 
 export interface EnvelopeStftViewProps {
   zeroConfig: ZeroSpanConfig;
@@ -19,7 +20,7 @@ export interface EnvelopeStftViewProps {
 
 export function EnvelopeStftView({ zeroConfig, capture, configuration, connected, streaming, busy, onZeroConfig, onConfiguration, onAcquire }: EnvelopeStftViewProps) {
   const analysis = useMemo(() => evaluate(capture, configuration), [capture, configuration]);
-  const captureUnavailable = !connected || busy;
+  const captureUnavailable = !connected || streaming || busy;
   const captureLabel = !connected ? 'Connect an instrument' : streaming ? 'Stop acquisition first' : busy ? 'Wait for current operation' : 'Acquire zero span';
   return <section className="envelope-stft-view" aria-label="Detected-envelope STFT">
     <div className="stft-visual">
@@ -33,17 +34,17 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
     </div>
     <aside className="stft-console">
       <div className="channel-console-title"><span><ScanLine size={14}/></span><strong>Capture</strong></div>
-      <div className="stft-form">
-        <label className="wide"><span>Tuned frequency</span><div><input type="number" min="0" step="1" value={zeroConfig.frequencyHz} onChange={(event) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(event.target.value) })}/><em>Hz</em></div></label>
-        <label><span>Samples</span><input type="number" min="20" max="450" step="1" value={zeroConfig.points} onChange={(event) => onZeroConfig({ ...zeroConfig, points: Number(event.target.value) })}/></label>
-        <label><span>Capture time</span><div><input type="number" min="0.003" max="60" step="0.001" value={zeroConfig.sweepTimeSeconds} onChange={(event) => onZeroConfig({ ...zeroConfig, sweepTimeSeconds: Number(event.target.value) })}/><em>s</em></div></label>
-        <label><span>Window</span><select value={configuration.windowSize} onChange={(event) => {
-          const windowSize = Number(event.target.value) as EnvelopeStftConfiguration['windowSize'];
+      <div className="stft-form parameter-stack">
+        <EditableParameter label="Tuned frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={0} step={1} controlId="stft.frequency" onCommit={(value) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(value) })}/>
+        <EditableParameter label="Capture samples" value={zeroConfig.points} displayValue={`${zeroConfig.points} points`} minimum={20} maximum={450} step={1} controlId="stft.samples" onCommit={(value) => onZeroConfig({ ...zeroConfig, points: Number(value) })}/>
+        <EditableParameter label="Capture time" value={zeroConfig.sweepTimeSeconds} displayValue={formatDuration(zeroConfig.sweepTimeSeconds)} unit="s" minimum={0.003} maximum={60} step={0.001} controlId="stft.capture-time" onCommit={(value) => onZeroConfig({ ...zeroConfig, sweepTimeSeconds: Number(value) })}/>
+        <SelectParameter label="STFT window" value={configuration.windowSize} options={[16, 32, 64, 128, 256].map((value) => ({ value, label: `Hann · ${value} points` }))} controlId="stft.window" onValue={(value) => {
+          const windowSize = Number(value) as EnvelopeStftConfiguration['windowSize'];
           onConfiguration({ ...configuration, windowSize, hopSize: Math.min(configuration.hopSize, windowSize) });
-        }}><option value="16">Hann · 16</option><option value="32">Hann · 32</option><option value="64">Hann · 64</option><option value="128">Hann · 128</option><option value="256">Hann · 256</option></select></label>
-        <label><span>Hop</span><div><input type="number" min="1" max={configuration.windowSize} step="1" value={configuration.hopSize} onChange={(event) => onConfiguration({ ...configuration, hopSize: Number(event.target.value) })}/><em>pts</em></div></label>
-        <label><span>Range</span><div><input type="number" min="20" max="120" step="1" value={configuration.dynamicRangeDb} onChange={(event) => onConfiguration({ ...configuration, dynamicRangeDb: Number(event.target.value) })}/><em>dB</em></div></label>
-        <label className="dc-control"><input type="checkbox" checked={configuration.removeDc} onChange={(event) => onConfiguration({ ...configuration, removeDc: event.target.checked })}/><span>Remove mean envelope (DC)</span></label>
+        }}/>
+        <EditableParameter label="Hop size" value={configuration.hopSize} displayValue={`${configuration.hopSize} points`} unit="pts" minimum={1} maximum={configuration.windowSize} step={1} controlId="stft.hop" onCommit={(value) => onConfiguration({ ...configuration, hopSize: Number(value) })}/>
+        <EditableParameter label="Dynamic range" value={configuration.dynamicRangeDb} displayValue={`${configuration.dynamicRangeDb} dB`} unit="dB" minimum={20} maximum={120} step={1} controlId="stft.range" onCommit={(value) => onConfiguration({ ...configuration, dynamicRangeDb: Number(value) })}/>
+        <ToggleParameter label="Remove envelope mean" value={configuration.removeDc} controlId="stft.remove-dc" onToggle={(removeDc) => onConfiguration({ ...configuration, removeDc })}/>
       </div>
       <button className="primary full stft-acquire" disabled={captureUnavailable} onClick={onAcquire}><Play size={13} fill="currentColor"/>{captureLabel}</button>
       <div className="channel-contract-note"><AudioWaveform size={14}/><p>Detected power only · no phase, I/Q, or EVM.</p></div>
@@ -61,7 +62,7 @@ function EnvelopeTrace({ capture }: { capture?: ZeroSpanCapture }) {
   const points = capture.powerDbm.map((power, index) => `${index / Math.max(1, capture.powerDbm.length - 1) * width},${height - (power - minimum) / range * height}`).join(' ');
   return <div className="envelope-trace compact">
     <div className="envelope-trace-label"><span>{maximum.toFixed(1)}</span><em>dBm · POWER VS TIME</em><span>{minimum.toFixed(1)}</span></div>
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Detected power versus time"><defs><linearGradient id="envelope-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#6ee1e8" stopOpacity=".22"/><stop offset="1" stopColor="#6ee1e8" stopOpacity="0"/></linearGradient></defs>{Array.from({ length: 9 }, (_, index) => <line key={index} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height}/>) }<polygon points={`0,${height} ${points} ${width},${height}`} fill="url(#envelope-fill)"/><polyline points={points}/></svg>
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Detected power versus time"><defs><linearGradient id="envelope-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".2"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>{Array.from({ length: 9 }, (_, index) => <line key={index} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height}/>) }<polygon points={`0,${height} ${points} ${width},${height}`} fill="url(#envelope-fill)"/><polyline points={points}/></svg>
     <div className="envelope-time-axis"><span>0 s</span><span>{(capture.samplePeriodSeconds * Math.max(0, capture.powerDbm.length - 1)).toFixed(4)} s</span></div>
   </div>;
 }
@@ -87,3 +88,5 @@ function evaluate(capture: ZeroSpanCapture | undefined, configuration: EnvelopeS
   try { return { result: computeEnvelopeStft(capture, configuration) }; }
   catch (value) { return { error: value instanceof Error ? value.message : String(value) }; }
 }
+
+function formatDuration(seconds: number): string { return seconds < 1 ? `${Math.round(seconds * 1000)} ms` : `${seconds} s`; }

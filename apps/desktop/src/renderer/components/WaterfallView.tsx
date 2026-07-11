@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { History } from 'lucide-react';
 import type { Sweep, WaterfallConfiguration } from '@tinysa/contracts';
 import { formatFrequency } from '../format.js';
+import { EditableParameter } from './ParameterRow.js';
 
 export interface WaterfallViewProps {
   history: readonly Sweep[];
@@ -54,13 +55,6 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
   }, [compatible, configuration]);
 
   return <section className="waterfall-view" aria-label="Sweep-history waterfall">
-    <header className="analysis-view-head control-only">
-      <div className="view-head-controls">
-        <label><span>Floor</span><div><input aria-label="Waterfall floor dBm" type="number" min="-174" max="29" value={configuration.floorDbm} onChange={(event) => onConfiguration({ ...configuration, floorDbm: Number(event.target.value) })}/><em>dBm</em></div></label>
-        <label><span>Ceiling</span><div><input aria-label="Waterfall ceiling dBm" type="number" min="-173" max="30" value={configuration.ceilingDbm} onChange={(event) => onConfiguration({ ...configuration, ceilingDbm: Number(event.target.value) })}/><em>dBm</em></div></label>
-        <label><span>Depth</span><div><input aria-label="Waterfall history depth" type="number" min="5" max="50" step="1" value={configuration.historyDepth} onChange={(event) => onConfiguration({ ...configuration, historyDepth: Number(event.target.value) })}/><em>sweeps</em></div></label>
-      </div>
-    </header>
     <div className="waterfall-canvas-shell">
       <div className="waterfall-y-axis"><span>NOW</span><span>−{configuration.historyDepth - 1}</span><em>SWEEP AGE</em></div>
       <canvas ref={canvas} width="1200" height="560" aria-label="Measured power by frequency and sweep time"/>
@@ -68,6 +62,15 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
       <div className="waterfall-scale"><span>{configuration.floorDbm} dBm</span><i/><span>{configuration.ceilingDbm} dBm</span></div>
     </div>
     <footer className="analysis-axis-footer"><span>{reference ? formatFrequency(reference.actualStartHz) : 'START'}</span><span>{compatible.length} / {configuration.historyDepth} COHERENT{rejected ? ` · ${rejected} GRID CHANGE${rejected === 1 ? '' : 'S'} EXCLUDED` : ''}</span><span>{reference ? formatFrequency(reference.actualStopHz) : 'STOP'}</span></footer>
+    <aside className="waterfall-console">
+      <div className="channel-console-title"><span><History size={14}/></span><strong>History scale</strong></div>
+      <div className="waterfall-form parameter-stack">
+        <EditableParameter label="Color floor" value={configuration.floorDbm} displayValue={`${configuration.floorDbm} dBm`} unit="dBm" minimum={-174} maximum={configuration.ceilingDbm - 1} controlId="waterfall.floor" onCommit={(value) => onConfiguration({ ...configuration, floorDbm: Number(value) })}/>
+        <EditableParameter label="Color ceiling" value={configuration.ceilingDbm} displayValue={`${configuration.ceilingDbm} dBm`} unit="dBm" minimum={configuration.floorDbm + 1} maximum={30} controlId="waterfall.ceiling" onCommit={(value) => onConfiguration({ ...configuration, ceilingDbm: Number(value) })}/>
+        <EditableParameter label="History depth" value={configuration.historyDepth} displayValue={`${configuration.historyDepth} sweeps`} unit="sweeps" minimum={5} maximum={50} step={1} controlId="waterfall.depth" onCommit={(value) => onConfiguration({ ...configuration, historyDepth: Number(value) })}/>
+      </div>
+      <div className="waterfall-status"><small>COHERENT HISTORY</small><strong>{compatible.length} / {configuration.historyDepth}</strong><span>{rejected ? `${rejected} incompatible grid${rejected === 1 ? '' : 's'} excluded` : 'All captured grids align'}</span></div>
+    </aside>
   </section>;
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, AudioLines, Boxes, Grid3X3, RadioTower, Waves, Wifi } from 'lucide-react';
 import type { DemoLabStatus, ReplayChannelConfiguration, SynthesizedSignalProfile, WaveformDescriptor } from '@tinysa/contracts';
+import { EditableParameter, SelectParameter } from './components/ParameterRow.js';
 
 type CatalogGroup = 'lab' | 'geran' | 'e-utra' | 'nr' | 'wlan';
 
@@ -83,8 +84,10 @@ export function DemoLab() {
     <section className="channel-model">
       <div><span>Channel</span></div>
       <div className="channel-buttons"><button className={channel?.model === 'awgn' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'awgn' })}>AWGN</button><button className={channel?.model === 'rayleigh' ? 'active' : ''} disabled={!channel || Boolean(switching)} onClick={() => channel && void configureChannel({ ...channel, model: 'rayleigh' })}>Rayleigh</button></div>
-      <label><span>Noise floor</span><input type="range" min="-130" max="-60" step="1" value={channel?.noiseFloorDbm ?? -108} disabled={!channel || Boolean(switching)} onChange={(event) => channel && void configureChannel({ ...channel, noiseFloorDbm: Number(event.target.value) })}/><output>{channel?.noiseFloorDbm ?? -108} dBm</output></label>
-      {channel?.model === 'rayleigh' && <label><span>Fading rate</span><input type="range" min="0.1" max="20" step="0.1" value={channel.fadingRateHz} disabled={Boolean(switching)} onChange={(event) => void configureChannel({ ...channel, fadingRateHz: Number(event.target.value) })}/><output>{channel.fadingRateHz.toFixed(1)} Hz</output></label>}
+      <div className="channel-parameters parameter-stack">
+        <EditableParameter label="Noise floor" value={channel?.noiseFloorDbm ?? -108} displayValue={`${channel?.noiseFloorDbm ?? -108} dBm`} unit="dBm" minimum={-130} maximum={-60} disabled={!channel || Boolean(switching)} controlId="demo.channel.noise-floor" onCommit={(value) => { if (!channel) throw new Error('Replay channel is unavailable'); void configureChannel({ ...channel, noiseFloorDbm: Number(value) }); }}/>
+        {channel?.model === 'rayleigh' && <EditableParameter label="Fading rate" value={channel.fadingRateHz} displayValue={`${channel.fadingRateHz.toFixed(1)} Hz`} unit="Hz" minimum={0.1} maximum={20} step={0.1} disabled={Boolean(switching)} controlId="demo.channel.fading-rate" onCommit={(value) => void configureChannel({ ...channel, fadingRateHz: Number(value) })}/>}
+      </div>
       <p>{channel?.model === 'rayleigh' ? 'Rayleigh fading + AWGN' : 'AWGN + receiver ripple'}</p>
     </section>
     {error && <div className="demo-error" role="alert">{error}</div>}
@@ -102,7 +105,7 @@ function ProfileBrowser({ descriptor, catalog, active, switching, disabled, onSe
 }) {
   const Icon = descriptor.family === 'geran' ? AudioLines : descriptor.family === 'e-utra' ? Grid3X3 : descriptor.family === 'nr' ? Boxes : Wifi;
   return <div className="profile-browser">
-    <label><select aria-label={`${familyLabel(descriptor)} waveform model`} value={descriptor.id} disabled={disabled} onChange={(event) => onSelect(event.target.value as SynthesizedSignalProfile)}>{catalog.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}</select></label>
+    <SelectParameter label={`${familyLabel(descriptor)} waveform model`} value={descriptor.id} disabled={disabled} controlId="demo.waveform-model" options={catalog.map((entry) => ({ value: entry.id, label: entry.label }))} onValue={(value) => onSelect(value as SynthesizedSignalProfile)}/>
     <article className={active ? 'active' : ''} title={descriptor.disclosure}>
       <span className="profile-icon"><Icon size={21}/></span>
       <div><small>{descriptor.qualification === 'standards-derived' ? 'STD-DERIVED' : 'VISUAL'}</small><h2>{descriptor.label}</h2><p>{switching ? 'Switching model…' : descriptor.model}</p></div>

@@ -3,6 +3,7 @@ import { BarChart3, Brackets, Radio } from 'lucide-react';
 import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep } from '@tinysa/contracts';
 import { measureChannel } from '@tinysa/analysis';
 import { formatFrequency, formatLevel } from '../format.js';
+import { EditableParameter, SelectParameter } from './ParameterRow.js';
 
 export interface ChannelAnalysisViewProps {
   sweep?: Sweep;
@@ -21,14 +22,14 @@ export function ChannelAnalysisView({ sweep, configuration, display, onConfigura
     </div>
     <aside className="channel-console">
       <div className="channel-console-title"><span><Brackets size={14}/></span><strong>Channel setup</strong></div>
-      <div className="channel-form">
-        <NumberControl label="Center" unit="Hz" value={configuration.centerHz} minimum={0} onValue={(centerHz) => onConfiguration({ ...configuration, centerHz })}/>
-        <NumberControl label="Main BW" unit="Hz" value={configuration.mainBandwidthHz} minimum={1} onValue={(mainBandwidthHz) => onConfiguration({ ...configuration, mainBandwidthHz })}/>
-        <NumberControl label="Spacing" unit="Hz" value={configuration.channelSpacingHz} minimum={1} onValue={(channelSpacingHz) => onConfiguration({ ...configuration, channelSpacingHz })}/>
-        <NumberControl label="Adjacent BW" unit="Hz" value={configuration.adjacentBandwidthHz} minimum={1} onValue={(adjacentBandwidthHz) => onConfiguration({ ...configuration, adjacentBandwidthHz })}/>
-        <label><span>Adjacent pairs</span><select value={configuration.adjacentChannelCount} onChange={(event) => onConfiguration({ ...configuration, adjacentChannelCount: Number(event.target.value) })}><option value="1">1 · adjacent</option><option value="2">2 · alternate</option><option value="3">3 · extended</option></select></label>
-        <label><span>OBW power</span><div><input type="number" min="10" max="99.9" step="0.1" value={configuration.occupiedPowerPercent} onChange={(event) => onConfiguration({ ...configuration, occupiedPowerPercent: Number(event.target.value) })}/><em>%</em></div></label>
-        <label className="wide"><span>OBW noise treatment</span><select value={configuration.obwNoiseCorrection} onChange={(event) => onConfiguration({ ...configuration, obwNoiseCorrection: event.target.value as ChannelMeasurementConfiguration['obwNoiseCorrection'] })}><option value="none">None · total displayed power</option><option value="robust-floor">Subtract robust floor</option></select></label>
+      <div className="channel-form parameter-stack">
+        <NumberControl label="Center frequency" value={configuration.centerHz} minimum={0} controlId="channel.center" onValue={(centerHz) => onConfiguration({ ...configuration, centerHz })}/>
+        <NumberControl label="Main bandwidth" value={configuration.mainBandwidthHz} minimum={1} controlId="channel.main-bandwidth" onValue={(mainBandwidthHz) => onConfiguration({ ...configuration, mainBandwidthHz })}/>
+        <NumberControl label="Channel spacing" value={configuration.channelSpacingHz} minimum={1} controlId="channel.spacing" onValue={(channelSpacingHz) => onConfiguration({ ...configuration, channelSpacingHz })}/>
+        <NumberControl label="Adjacent bandwidth" value={configuration.adjacentBandwidthHz} minimum={1} controlId="channel.adjacent-bandwidth" onValue={(adjacentBandwidthHz) => onConfiguration({ ...configuration, adjacentBandwidthHz })}/>
+        <SelectParameter label="Adjacent pairs" value={configuration.adjacentChannelCount} options={[{ value: 1, label: '1 · adjacent' }, { value: 2, label: '2 · alternate' }, { value: 3, label: '3 · extended' }]} controlId="channel.adjacent-count" onValue={(value) => onConfiguration({ ...configuration, adjacentChannelCount: Number(value) })}/>
+        <EditableParameter label="Occupied power" value={configuration.occupiedPowerPercent} displayValue={`${configuration.occupiedPowerPercent}%`} unit="%" minimum={10} maximum={99.9} step={0.1} controlId="channel.occupied-power" onCommit={(value) => onConfiguration({ ...configuration, occupiedPowerPercent: Number(value) })}/>
+        <SelectParameter label="OBW noise treatment" value={configuration.obwNoiseCorrection} options={[{ value: 'none', label: 'Total displayed power' }, { value: 'robust-floor', label: 'Subtract robust floor' }]} controlId="channel.obw-noise" onValue={(value) => onConfiguration({ ...configuration, obwNoiseCorrection: value as ChannelMeasurementConfiguration['obwNoiseCorrection'] })}/>
       </div>
       <div className="channel-contract-note"><BarChart3 size={14}/><p>RBW-normalized scalar sweep · uncalibrated.</p></div>
     </aside>
@@ -50,7 +51,7 @@ function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep;
   return <div className="channel-plot-shell">
     <div className="channel-y-axis"><span>{maximum}</span><span>{minimum}</span><em>dBm</em></div>
     {!sweep ? <div className="analysis-empty"><Radio size={23}/><strong>No sweep</strong><span>Acquire the carrier and adjacent windows.</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
-      <defs><linearGradient id="channel-trace-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#79f2c3" stopOpacity=".20"/><stop offset="1" stopColor="#79f2c3" stopOpacity="0"/></linearGradient></defs>
+      <defs><linearGradient id="channel-trace-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>
       {Array.from({ length: 9 }, (_, index) => <line key={`v${index}`} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height} className="plot-grid"/>)}
       {Array.from({ length: 6 }, (_, index) => <line key={`h${index}`} x1="0" x2={width} y1={index * height / 5} y2={index * height / 5} className="plot-grid"/>)}
       {channels.map((channel) => <g key={channel.key} className="adjacent-window"><rect x={x(channel.start)} width={x(channel.stop) - x(channel.start)} y="0" height={height}/><text x={(x(channel.start) + x(channel.stop)) / 2} y="20">{channel.label}</text></g>)}
@@ -74,8 +75,8 @@ function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
   </div>;
 }
 
-function NumberControl({ label, unit, value, minimum, onValue }: { label: string; unit: string; value: number; minimum: number; onValue(value: number): void }) {
-  return <label><span>{label}</span><div><input type="number" min={minimum} step="1" value={value} onChange={(event) => onValue(Number(event.target.value))}/><em>{unit}</em></div></label>;
+function NumberControl({ label, value, minimum, controlId, onValue }: { label: string; value: number; minimum: number; controlId: string; onValue(value: number): void }) {
+  return <EditableParameter label={label} value={value} displayValue={formatFrequency(value)} unit="Hz" minimum={minimum} step={1} controlId={controlId} onCommit={(next) => onValue(Number(next))}/>;
 }
 
 function evaluate(sweep: Sweep | undefined, configuration: ChannelMeasurementConfiguration): { result?: ChannelMeasurementResult; error?: string } {

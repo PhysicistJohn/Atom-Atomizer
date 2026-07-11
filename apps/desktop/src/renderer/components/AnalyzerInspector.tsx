@@ -1,49 +1,67 @@
-import { useState } from 'react';
-import { ArrowRight, ChevronDown } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { ZS407_FIRMWARE_LIMITS, type AnalyzerConfig } from '@tinysa/contracts';
 import { formatFrequency, parseFrequency } from '../format.js';
+import { EditableParameter, SelectParameter } from './ParameterRow.js';
+
+const RBW_OPTIONS = [3, 10, 30, 100, 300] as const;
+const ATTENUATION_OPTIONS = [0, 10, 20, 30, 31] as const;
+const SWEEP_TIME_OPTIONS = [0.05, 0.1, 0.5, 1] as const;
 
 export function AnalyzerInspector({ config, disabled, onChange }: { config: AnalyzerConfig; disabled: boolean; onChange(config: AnalyzerConfig): void }) {
-  const [frequencyError, setFrequencyError] = useState<string>();
   const updateFrequency = (field: 'startHz' | 'stopHz', text: string) => {
-    try {
-      const next = { ...config, [field]: parseFrequency(text) };
-      if (next.stopHz <= next.startHz) throw new Error('Stop frequency must be greater than start frequency');
-      onChange(next);
-      setFrequencyError(undefined);
-    } catch (error) {
-      setFrequencyError(error instanceof Error ? error.message : String(error));
-    }
+    const next = { ...config, [field]: parseFrequency(text) };
+    if (next.stopHz <= next.startHz) throw new Error('Stop frequency must be greater than start frequency');
+    onChange(next);
   };
   const harmonicRange = config.stopHz > ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz;
+  const rbwOptions = [
+    { value: 'auto', label: 'Automatic' },
+    ...(typeof config.rbwKhz === 'number' && !RBW_OPTIONS.includes(config.rbwKhz as typeof RBW_OPTIONS[number]) ? [{ value: config.rbwKhz, label: `${config.rbwKhz} kHz · custom` }] : []),
+    ...RBW_OPTIONS.map((value) => ({ value, label: `${value} kHz` })),
+  ];
+  const attenuationOptions = [
+    { value: 'auto', label: 'Automatic' },
+    ...(typeof config.attenuationDb === 'number' && !ATTENUATION_OPTIONS.includes(config.attenuationDb as typeof ATTENUATION_OPTIONS[number]) ? [{ value: config.attenuationDb, label: `${config.attenuationDb} dB · custom` }] : []),
+    ...ATTENUATION_OPTIONS.map((value) => ({ value, label: `${value} dB` })),
+  ];
+  const sweepTimeOptions = [
+    { value: 'auto', label: 'Automatic' },
+    ...(typeof config.sweepTimeSeconds === 'number' && !SWEEP_TIME_OPTIONS.includes(config.sweepTimeSeconds as typeof SWEEP_TIME_OPTIONS[number]) ? [{ value: config.sweepTimeSeconds, label: `${config.sweepTimeSeconds} s · custom` }] : []),
+    { value: 0.05, label: '50 ms' }, { value: 0.1, label: '100 ms' }, { value: 0.5, label: '500 ms' }, { value: 1, label: '1 second' },
+  ];
 
   return <aside className="inspector inspector-setup">
-    <fieldset disabled={disabled} className="acquisition-dock">
-      <div className="frequency-window">
-        <label><span>Start</span><input data-agent-control="analyzer.start" aria-invalid={Boolean(frequencyError)} key={`start-${config.startHz}`} defaultValue={formatFrequency(config.startHz)} onBlur={(event) => updateFrequency('startHz', event.target.value)}/></label>
-        <ArrowRight size={14}/>
-        <label><span>Stop</span><input data-agent-control="analyzer.stop" aria-invalid={Boolean(frequencyError)} key={`stop-${config.stopHz}`} defaultValue={formatFrequency(config.stopHz)} onBlur={(event) => updateFrequency('stopHz', event.target.value)}/></label>
+    <fieldset disabled={disabled} className="acquisition-dock parameter-stack">
+      <EditableParameter label="Start frequency" value={formatFrequency(config.startHz)} displayValue={formatFrequency(config.startHz)} type="text" controlId="analyzer.start" disabled={disabled} onCommit={(value) => updateFrequency('startHz', value)}/>
+      <EditableParameter label="Stop frequency" value={formatFrequency(config.stopHz)} displayValue={formatFrequency(config.stopHz)} type="text" controlId="analyzer.stop" disabled={disabled} onCommit={(value) => updateFrequency('stopHz', value)}/>
+      <div className="range-summary" aria-label="Derived frequency range">
+        <span><small>Center</small><strong>{formatFrequency((config.startHz + config.stopHz) / 2)}</strong></span>
+        <span><small>Span</small><strong>{formatFrequency(config.stopHz - config.startHz)}</strong></span>
       </div>
-      <div className="derived-range"><span><small>Center</small><strong>{formatFrequency((config.startHz + config.stopHz) / 2)}</strong></span><span><small>Span</small><strong>{formatFrequency(config.stopHz - config.startHz)}</strong></span></div>
-      <label className="dock-select"><span>Points</span><input type="number" min={ZS407_FIRMWARE_LIMITS.minimumSweepPoints} max={ZS407_FIRMWARE_LIMITS.maximumSweepPoints} step="1" value={config.points} onChange={(event) => onChange({ ...config, points: Number(event.target.value) })}/></label>
-      <label className="dock-select"><span>Transfer</span><select value={config.acquisitionFormat} onChange={(event) => onChange({ ...config, acquisitionFormat: event.target.value as AnalyzerConfig['acquisitionFormat'] })}><option value="raw">Raw · fast</option><option value="text">Text · inspectable</option></select></label>
-      <label className="dock-select"><span>Resolution</span><select value={config.rbwKhz} onChange={(event) => onChange({ ...config, rbwKhz: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Auto RBW</option>{typeof config.rbwKhz === 'number' && ![3, 10, 30, 100, 300].includes(config.rbwKhz) && <option value={config.rbwKhz}>{config.rbwKhz} kHz · custom</option>}<option value="3">3 kHz</option><option value="10">10 kHz</option><option value="30">30 kHz</option><option value="100">100 kHz</option><option value="300">300 kHz</option></select></label>
-      <div className="quick-ranges" aria-label="Frequency presets"><button type="button" onClick={() => onChange({ ...config, startHz: 88e6, stopHz: 108e6 })}>FM</button><button type="button" onClick={() => onChange({ ...config, startHz: 2.4e9, stopHz: 2.5e9 })}>2.4G</button><button type="button" onClick={() => onChange({ ...config, startHz: 5.15e9, stopHz: 5.85e9 })}>5G</button></div>
+      <EditableParameter label="Sweep points" value={config.points} displayValue={`${config.points} points`} minimum={ZS407_FIRMWARE_LIMITS.minimumSweepPoints} maximum={ZS407_FIRMWARE_LIMITS.maximumSweepPoints} step={1} disabled={disabled} controlId="analyzer.points" onCommit={(value) => onChange({ ...config, points: Number(value) })}/>
+      <SelectParameter label="Resolution bandwidth" value={config.rbwKhz} options={rbwOptions} disabled={disabled} controlId="analyzer.rbw" onValue={(value) => onChange({ ...config, rbwKhz: value === 'auto' ? 'auto' : Number(value) })}/>
+      <SelectParameter label="Sweep transfer" value={config.acquisitionFormat} options={[{ value: 'raw', label: 'Raw · fastest' }, { value: 'text', label: 'Text · inspectable' }]} disabled={disabled} controlId="analyzer.transfer" onValue={(value) => onChange({ ...config, acquisitionFormat: value as AnalyzerConfig['acquisitionFormat'] })}/>
+      <div className="quick-ranges" aria-label="Frequency presets"><span>Presets</span><div><button type="button" onClick={() => onChange({ ...config, startHz: 88e6, stopHz: 108e6 })}>FM band</button><button type="button" onClick={() => onChange({ ...config, startHz: 2.4e9, stopHz: 2.5e9 })}>2.4 GHz</button><button type="button" onClick={() => onChange({ ...config, startHz: 5.15e9, stopHz: 5.85e9 })}>5 GHz</button></div></div>
     </fieldset>
     <details className="advanced-sweep">
-      <summary><ChevronDown size={13}/>Advanced <span>{config.detector} · {config.attenuationDb === 'auto' ? 'auto attenuation' : `${config.attenuationDb} dB`}</span></summary>
-      <fieldset disabled={disabled}>
-        <label><span>Attenuation</span><select value={config.attenuationDb} onChange={(event) => onChange({ ...config, attenuationDb: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option>{typeof config.attenuationDb === 'number' && ![0, 10, 20, 30, 31].includes(config.attenuationDb) && <option value={config.attenuationDb}>{config.attenuationDb} dB · custom</option>}<option value="0">0 dB</option><option value="10">10 dB</option><option value="20">20 dB</option><option value="30">30 dB</option><option value="31">31 dB</option></select></label>
-        <label><span>Sweep time</span><select value={config.sweepTimeSeconds} onChange={(event) => onChange({ ...config, sweepTimeSeconds: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option>{typeof config.sweepTimeSeconds === 'number' && ![0.05, 0.1, 0.5, 1].includes(config.sweepTimeSeconds) && <option value={config.sweepTimeSeconds}>{config.sweepTimeSeconds} s · custom</option>}<option value="0.05">50 ms</option><option value="0.1">100 ms</option><option value="0.5">500 ms</option><option value="1">1 second</option></select></label>
-        <label><span>Detector</span><select value={config.detector} onChange={(event) => onChange({ ...config, detector: event.target.value as AnalyzerConfig['detector'] })}><option value="sample">Sample</option><option value="maximum-hold">Maximum hold</option><option value="minimum-hold">Minimum hold</option><option value="maximum-decay">Maximum decay</option><option value="average-4">Average · 4</option><option value="average-16">Average · 16</option><option value="average">Average</option><option value="quasi-peak">Quasi peak</option></select></label>
-        <label><span>Spur rejection</span><select value={config.spurRejection} onChange={(event) => onChange({ ...config, spurRejection: event.target.value as AnalyzerConfig['spurRejection'] })}><option value="auto">Automatic</option><option value="on">On</option><option value="off">Off</option></select></label>
-        <label><span>Avoid spurs</span><select value={config.avoidSpurs} onChange={(event) => onChange({ ...config, avoidSpurs: event.target.value as AnalyzerConfig['avoidSpurs'] })}><option value="auto">Automatic</option><option value="on">On</option><option value="off">Off</option></select></label>
-        <label><span>LNA</span><select value={config.lna} onChange={(event) => onChange({ ...config, lna: event.target.value as AnalyzerConfig['lna'] })}><option value="off">Off</option><option value="on">On</option></select></label>
-        <label><span>Trigger</span><select value={config.trigger.mode} onChange={(event) => { const mode = event.target.value as AnalyzerConfig['trigger']['mode']; onChange({ ...config, trigger: mode === 'auto' ? { mode } : { mode, levelDbm: config.trigger.levelDbm ?? -60 } }); }}><option value="auto">Free run</option><option value="normal">Normal</option><option value="single">Single</option></select></label>
-        {config.trigger.mode !== 'auto' && <label><span>Trigger level</span><div className="input-with-unit"><input type="number" min="-174" max="30" value={config.trigger.levelDbm} onChange={(event) => onChange({ ...config, trigger: { ...config.trigger, levelDbm: Number(event.target.value) } })}/><em>dBm</em></div></label>}
+      <summary><span><ChevronDown size={14}/>Advanced</span><strong>{detectorLabel(config.detector)}</strong></summary>
+      <fieldset disabled={disabled} className="parameter-stack">
+        <SelectParameter label="Attenuation" value={config.attenuationDb} options={attenuationOptions} disabled={disabled} controlId="analyzer.attenuation" onValue={(value) => onChange({ ...config, attenuationDb: value === 'auto' ? 'auto' : Number(value) })}/>
+        <SelectParameter label="Sweep time" value={config.sweepTimeSeconds} options={sweepTimeOptions} disabled={disabled} controlId="analyzer.sweep-time" onValue={(value) => onChange({ ...config, sweepTimeSeconds: value === 'auto' ? 'auto' : Number(value) })}/>
+        <SelectParameter label="Detector" value={config.detector} options={[{ value: 'sample', label: 'Sample' }, { value: 'maximum-hold', label: 'Maximum hold' }, { value: 'minimum-hold', label: 'Minimum hold' }, { value: 'maximum-decay', label: 'Maximum decay' }, { value: 'average-4', label: 'Average · 4' }, { value: 'average-16', label: 'Average · 16' }, { value: 'average', label: 'Average' }, { value: 'quasi-peak', label: 'Quasi peak' }]} disabled={disabled} controlId="analyzer.detector" onValue={(value) => onChange({ ...config, detector: value as AnalyzerConfig['detector'] })}/>
+        <SelectParameter label="Spur rejection" value={config.spurRejection} options={AUTO_SWITCH_OPTIONS} disabled={disabled} controlId="analyzer.spur-rejection" onValue={(value) => onChange({ ...config, spurRejection: value as AnalyzerConfig['spurRejection'] })}/>
+        <SelectParameter label="Avoid spurs" value={config.avoidSpurs} options={AUTO_SWITCH_OPTIONS} disabled={disabled} controlId="analyzer.avoid-spurs" onValue={(value) => onChange({ ...config, avoidSpurs: value as AnalyzerConfig['avoidSpurs'] })}/>
+        <SelectParameter label="Low-noise amplifier" value={config.lna} options={[{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }]} disabled={disabled} controlId="analyzer.lna" onValue={(value) => onChange({ ...config, lna: value as AnalyzerConfig['lna'] })}/>
+        <SelectParameter label="Trigger" value={config.trigger.mode} options={[{ value: 'auto', label: 'Free run' }, { value: 'normal', label: 'Normal' }, { value: 'single', label: 'Single' }]} disabled={disabled} controlId="analyzer.trigger" onValue={(value) => { const mode = value as AnalyzerConfig['trigger']['mode']; onChange({ ...config, trigger: mode === 'auto' ? { mode } : { mode, levelDbm: config.trigger.levelDbm ?? -60 } }); }}/>
+        {config.trigger.mode !== 'auto' && <EditableParameter label="Trigger level" value={config.trigger.levelDbm ?? -60} displayValue={`${config.trigger.levelDbm ?? -60} dBm`} unit="dBm" minimum={-174} maximum={30} disabled={disabled} controlId="analyzer.trigger-level" onCommit={(value) => onChange({ ...config, trigger: { ...config.trigger, levelDbm: Number(value) } })}/>}
       </fieldset>
     </details>
-    {frequencyError && <div className="control-error" role="alert">{frequencyError}</div>}
-    {harmonicRange && <div className="range-warning">Above 7.3701 GHz uses the firmware harmonic path. Treat amplitude accuracy as unqualified until your physical ZS407 is characterized.</div>}
+    {harmonicRange && <div className="range-warning">Harmonic path above 7.3701 GHz · amplitude accuracy remains unqualified until this instrument is characterized.</div>}
   </aside>;
+}
+
+const AUTO_SWITCH_OPTIONS = [{ value: 'auto', label: 'Automatic' }, { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }] as const;
+
+function detectorLabel(value: AnalyzerConfig['detector']): string {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
