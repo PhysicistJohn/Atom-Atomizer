@@ -1,8 +1,10 @@
 # TinySA Atomizer
 
-A secure, local-first Electron control plane for the tinySA Ultra+ ZS407. The repository currently contains the pre-hardware foundation: typed contracts, serial transport, prompt parser and command scheduler, byte-level simulator, analyzer service, signal detection, waveform-classification boundary, and a desktop vertical slice.
+TinySA Atomizer is an AI-native Electron control plane for the tinySA Ultra+ ZS407. It owns the instrument through USB CDC, preserves measurement provenance, exposes every accepted operation through a typed API, and gives the same governed surface to Atom, its native voice and tool-using RF agent.
 
-## Run it now
+The repository is executable today with a byte-level ZS407 simulator. Its host protocol is derived from the sibling firmware checkout at commit `c97938697b6c7485e7cab50bca9af76996b7d671`; the ordered physical unit is still required to qualify RF accuracy, shipped firmware variance, timing, and cable-loss behavior.
+
+## Run
 
 Requirements: Node.js 22+ and npm 11+.
 
@@ -12,49 +14,56 @@ npm run check
 TINYSA_SIMULATOR=1 npm run dev
 ```
 
-The simulator appears as a ZS407 and produces a repeatable 450-point trace. Without `TINYSA_SIMULATOR=1`, the app enumerates real OS serial ports. Real-device commands remain provisional until the ordered ZS407 is characterized.
+Without `TINYSA_SIMULATOR=1`, Atomizer enumerates OS serial devices and accepts a production session only after the console identifies as a ZS407 and exposes the required command set. There is no raw-console or legacy-command fallback.
 
-To activate the native Atom copilot, copy `.env.example` to `.env` and set `OPENAI_KEY`. The key is loaded only by Electron main. Voice uses Realtime WebRTC; text, tools, and app-window computer control use one trusted Realtime WebSocket. Both are locked to `gpt-realtime-2.1-mini` with `high` reasoning effort. There is no alternate model, API, transport, alias, effort downgrade, or automatic retry path: a failure is shown and execution stops.
+If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. Its CW, AM, FM, and LTE-like buttons change the bytes returned by subsequent main-window sweeps; the demo is visibly simulated and never substitutes for a failed physical-device operation.
 
-### macOS Dock development app
+To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron main. Voice uses the unified Realtime WebRTC flow; text, tools, image input, and application-scoped computer operation use a trusted Realtime WebSocket. Both are locked to exactly `gpt-realtime-2.1-mini`, `reasoning.effort: high`, voice `ballad`, and server VAD threshold `0.95`. A model, API, transport, configuration, or tool failure is surfaced and stops the operation.
+
+## Implemented vertical slice
+
+- Exact USB shell correlation: CR commands, echoed command, CRLF text, exact `ch> ` prompt, 47-character limit.
+- Stateful ZS407 byte simulator with fragmented delivery, boot banner, text/raw sweeps, zero span, diagnostics, RGB565 screen, touch, and generator commands.
+- Automatic companion Signal Lab with CW, AM, FM, and LTE-like spectrum/envelope synthesis driven through the same byte protocol.
+- Fail-closed serialized command scheduler and typed device state machine.
+- Analyzer configuration with readback verification, 20–450 points, text/raw acquisition, RBW, attenuation, detector, spur, LNA, trigger, and sweep timing.
+- Single and continuous spectrum acquisition with bounded 50-sweep in-memory history and provenance-preserving CSV/JSON export.
+- Robust adaptive/absolute signal detection with cross-sweep promotion, stable IDs, and release behavior.
+- Experimental spectral-morphology characterization plus zero-span envelope classification; both retain explicit unknown behavior and never claim I/Q or protocol decoding.
+- Generator path, level, frequency, AM/FM controls, forced-off configuration sequence, persistent RF state, and approval-gated Atom enable.
+- Device workspace with firmware identity, telemetry, command diagnostics, exact 480×320 screen capture, and governed remote touch.
+- Full v2 Electron IPC/preload API with runtime validation and device event subscription.
+- Atom voice/text, typed tool catalog, app-only screenshots/clicks, action-time approvals, and recursive verification of every returned Realtime session setting.
+
+## Safety and evidence boundary
+
+Generator frequency, level, modulation, path, and physical output do not have dependable firmware readback. Atomizer labels them `commanded`; cable loss makes RF state `unknown`. Software is not a hardware interlock.
+
+The firmware exposes analyzer harmonic paths up to a command-derived 17.9226 GHz and generator mixer output up to the same ceiling. Those limits describe addressable firmware behavior, not calibrated performance. The UI warns above the 7.3701 GHz Ultra transition until the ordered ZS407 is characterized.
+
+Zero span is repeated detected-power measurement at one frequency. It is not I/Q and cannot establish phase or decode a waveform protocol.
+
+## Workspace map
+
+- `apps/desktop`: hardened Electron main/preload, v2 bridge, Atom gateway, computer harness, and React instrument UI.
+- `packages/contracts`: runtime-validated device, measurement, analysis, export, safety, and API v2 types.
+- `packages/tinysa`: byte transport, exact parser/scheduler, serial implementation, and ZS407 device service.
+- `packages/test-device`: deterministic byte-level firmware simulator.
+- `packages/analysis`: robust detection/tracking, metrics, spectral morphology, and zero-span envelope analysis.
+- `packages/agent`: exact-model session config, closed tool schemas, policy, approvals, and returned-setting verification.
+
+## macOS live development app
 
 ```bash
 npm run dev:install-app
 ```
 
-This installs `~/Applications/TinySA Atomizer Dev.app`, adds its Atom icon to the
-Dock, binds it to this checkout, and launches it. A cold launch rebuilds shared
-packages plus Electron main/preload before starting Vite. Renderer edits update via
-HMR; quit and reopen the Dock app to load main, preload, or shared-package edits.
-The explicit simulator/USB and port contract lives in
-[`tools/dev-launcher/config.json`](./tools/dev-launcher/config.json), with launcher
-details and failure-log location in
-[`tools/dev-launcher/README.md`](./tools/dev-launcher/README.md).
+This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkout, adds the Atom icon to the Dock, and launches the simulator or USB mode declared in [`tools/dev-launcher/config.json`](./tools/dev-launcher/config.json). Renderer edits use HMR. Quit and reopen the Dock app after main, preload, or shared-package changes. Launcher logs and recovery steps are in [`tools/dev-launcher/README.md`](./tools/dev-launcher/README.md).
 
-## Workspace map
+## Normative contracts
 
-- `apps/desktop`: hardened Electron main/preload and React instrument UI.
-- `packages/contracts`: versioned units, device, measurement, safety, and analysis types.
-- `packages/tinysa`: byte transport, serial implementation, scheduler/parser, and device service.
-- `packages/test-device`: byte-level ZS407 simulator.
-- `packages/analysis`: adaptive signal detection and waveform-classifier interface.
-- `docs/adr`: architecture decisions and extension rules.
-
-## Current safety boundary
-
-Generator output defaults off and cannot be enabled before entering generator mode. Reconnect restoration is intentionally absent. A cable loss can make actual RF state unknowable; the production UI must display `unknown`, never falsely claim off. The app is not a hardware interlock.
-
-## What waits for hardware
-
-- Exact prompt, echo, timeout, abort, and error behavior.
-- ZS407 binary capture/refresh framing and remote touch.
-- Readback and commanded-versus-verified behavior.
-- Above-900 MHz analyzer/generator mode boundaries.
-- Sustainable stream rate and command/refresh arbitration.
-- A labeled capture corpus and validated waveform classifier.
-
-See [PLAN.md](./PLAN.md) and [CONTRACTS.md](./CONTRACTS.md) for the complete delivery scope.
-
-The screen-level states, interaction rules, detection/classification quality bars, acceptance IDs, and custom-mode extension boundary are specified in [docs/UI_UX_CONTRACTS.md](./docs/UI_UX_CONTRACTS.md).
-
-The native Atom voice/agent architecture, exact `gpt-realtime-2.1-mini` model lock, application tool catalog, app-scoped computer use, approval policy, privacy boundary, and AI evals are specified in [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md).
+- [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
+- [UI, UX, and custom analysis modes](./docs/UI_UX_CONTRACTS.md)
+- [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
+- [Master work-package contract](./CONTRACTS.md)
+- [Delivery and hardware-qualification plan](./PLAN.md)

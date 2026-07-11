@@ -1,13 +1,19 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: proposed execution baseline, 2026-07-10  
+Status: active execution baseline, API v2, 2026-07-10
 Companion: [PLAN.md](./PLAN.md)
+
+Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
+Experience authority: [docs/UI_UX_CONTRACTS.md](./docs/UI_UX_CONTRACTS.md)
+Atom authority: [docs/AI_NATIVE_CONTRACTS.md](./docs/AI_NATIVE_CONTRACTS.md)
 
 ## 1. Master engagement
 
 ### Objective
 
 Deliver a production-quality Electron desktop application that wholly operates one tinySA Ultra+ ZS407 over USB to the extent exposed by its installed firmware. The product includes analyzer and generator control, measurement visualization, remote screen/touch, local sessions and exports, robust recovery, packaged installers, automated tests, and operating documentation.
+
+The software baseline is no longer based on wiki guesses. Host protocol v2 is derived from sibling firmware commit `c97938697b6c7485e7cab50bca9af76996b7d671`. Source-derived framing, commands, limits, screen shape, and readback semantics are frozen in the protocol contract. The ordered unit still gates physical timing, shipped-version variance, RF accuracy, cable-loss behavior, and final safety qualification.
 
 ### Contract form
 
@@ -23,6 +29,23 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 - Normal transport is USB CDC serial. Firmware update/DFU is excluded from v1.
 - TypeScript is used throughout application code. Electron hosts a sandboxed React renderer; serial access stays in the main process.
 - Public protocol behavior may be implemented cleanly. GPL code is not copied or linked unless the owner explicitly chooses a compatible distribution license after legal review.
+- Every application capability has an agent-hook disposition in the same package. The exact Atom model, transport, approval, and no-substitution rules are normative rather than optional integration work.
+
+### Accepted implementation slice
+
+The current repository has accepted automated evidence for the API v2 contracts, exact prompt/parser/scheduler, serial transport boundary, byte-level ZS407 simulator, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, spectral morphology, zero-span envelope analysis, Electron v2 bridge, export serialization, Atom session/tool policy, and five live workspaces. These remain software acceptance, not physical-hardware qualification.
+
+The simulator also has a contracted companion Signal Lab window. It auto-activates only after successful discovery finds no exact ZS407, remains visibly simulated, and changes the byte source among CW, AM, FM, and LTE-like profiles. A physical discovery error must fail rather than activate demo mode.
+
+Work-package status is therefore interpreted as follows:
+
+| Package group | Current status |
+|---|---|
+| WP-00, WP-02 through WP-10, WP-15, WP-16, WP-18 through WP-20 | Active vertical slice with automated evidence |
+| WP-01, WP-13 | Firmware-source phase accepted; physical ZS407 phase blocked only on unit arrival |
+| WP-11, WP-12 | Partial: export/diagnostics implemented; durable sessions/support bundle remain |
+| WP-17 | Hardware/data gated; no validated modulation or protocol classifier claim |
+| WP-14, WP-21 | Release qualification pending |
 
 ### Global definition of done
 
@@ -145,7 +168,7 @@ Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. 
 
 - Branded types for hertz, dBm, dB, microseconds, sweep point count, operation/device/session IDs.
 - Contracts for port candidates, identity, capabilities, snapshots, analyzer/generator configurations, sweeps, traces, markers, screen frames, device events, progress, and typed errors.
-- `TinySaApiV1` request/response/event contract and runtime validators for every IPC input.
+- `TinySaApiV2` request/response/event contract and runtime validators for every IPC input.
 - Compatibility rules: additive evolution, schema versioning, exhaustive discriminated unions, serialization tests.
 
 **Acceptance**
@@ -235,7 +258,7 @@ Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. 
 
 ## WP-07 — Electron main/preload security bridge
 
-**Outcome:** a minimal secure desktop boundary exposing `TinySaApiV1`.  
+**Outcome:** a minimal secure desktop boundary exposing `TinySaApiV2`.
 **Estimate:** 4–7 ED.  
 **Dependencies:** WP-02, WP-04, WP-06.
 

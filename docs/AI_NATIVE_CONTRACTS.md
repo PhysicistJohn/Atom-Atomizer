@@ -1,7 +1,7 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 1.3.0  
+Version: 2.0.0
 Model lock: `gpt-realtime-2.1-mini`  
 Reasoning lock: `high`  
 Voice lock: `ballad`  
@@ -23,7 +23,7 @@ No fallback model, API, endpoint, transport, alias substitution, silent upgrade,
 
 Every voice and text session sets `reasoning: { effort: "high" }`. The exact model accepted and echoed this configuration in a live WebSocket probe. Lowering effort for latency/cost or changing it dynamically requires an explicit contract and evaluation change; it is not an automatic degradation path.
 
-The model supports audio/text Realtime connections, image input and function calling. It does not document Structured Outputs or a built-in Realtime computer tool as supported capabilities. Therefore every function argument is treated as untrusted and runtime-validated; computer operation uses an application-owned harness exposed as functions.
+The official model catalog identifies the exact model as a 128k-context reasoning Realtime model with text/audio/image input, text/audio output, and function calling. It lists only the Realtime endpoint and does not list a built-in computer tool. Every function argument is therefore untrusted and runtime-validated; computer operation uses an application-owned harness exposed as functions.
 
 ## 2. Trust architecture
 
@@ -159,6 +159,9 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_application_state` | Observe | Never | Reads route/acquisition/environment |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
+| `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
+| `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
+| `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
 | `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
@@ -172,9 +175,17 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
 | `configure_analyzer` | Operate | Never | Changes staged analyzer settings only |
 | `acquire_sweep` | Operate | Never | Runs one analyzer acquisition |
+| `start_continuous_sweeps` | Operate | Never | Starts serialized service-owned acquisition |
+| `stop_continuous_sweeps` | Operate | Never | Stops after the in-flight firmware operation |
 | `configure_signal_detector` | Operate | Never | Changes detector and opens Detection |
+| `configure_zero_span` | Operate | Never | Stages detected-power-versus-time capture settings |
+| `acquire_zero_span` | Operate | Never | Captures and characterizes one envelope |
 | `configure_generator` | Operate | Never | Commands output off and stages generator |
 | `set_rf_output` | High impact | At action | Enables/disables physical output |
+| `capture_device_screen` | Observe | Never | Reads and displays one exact RGB565 frame |
+| `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
+| `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
+| `select_demo_signal` | Operate | Never | Switches the explicit Signal Lab among CW/AM/FM/LTE-like synthesis |
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact are refused; the model must use the typed tool with action-time approval. Text, key and scroll inputs are bounded and remain targeted at TinySA Atomizer.
 
@@ -219,7 +230,7 @@ Atom may complete safe preparatory work before asking. It requests approval imme
 - Relevant frequency/level/load state.
 - What will change.
 
-RF output enable always requires approval even if the original prompt requested it. Disabling output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
+RF output enable always requires approval even if the original prompt requested it. Agent-driven physical-screen touch also requires approval because the firmware UI can reach generator controls. Disabling typed RF output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
 
 ### 9.2 Non-bypass guarantees
 
@@ -324,6 +335,8 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-24:** Voice and text sessions both send and retain `reasoning.effort = high`.
 - **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.95`.
 - **AI-26:** The microphone remains muted until every sent voice-session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
+- **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
+- **AI-28:** Remote physical-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
 
 ## 16. Source traceability
 
@@ -344,6 +357,6 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - Realtime WebSocket: https://developers.openai.com/api/docs/guides/realtime-websocket
 - Realtime conversations and function calls: https://developers.openai.com/api/docs/guides/realtime-conversations
 - Realtime voice activity detection: https://developers.openai.com/api/docs/guides/realtime-vad
-- Realtime reasoning session configuration: https://openai.github.io/openai-agents-js/guides/voice-agents/build/
+- Realtime reasoning and prompting: https://developers.openai.com/api/docs/guides/realtime-models-prompting
 - Function calling: https://developers.openai.com/api/docs/guides/function-calling
 - Computer use and confirmation guidance: https://developers.openai.com/api/docs/guides/tools-computer-use

@@ -1,7 +1,7 @@
 # TinySA Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
-Version: 1.1.0  
+Version: 2.0.0
 Updated: 2026-07-10
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
@@ -54,11 +54,17 @@ Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a det
 |---|---|---|---|
 | Spectrum | WS-SPC | Configure and acquire a trace | Core |
 | Detection | WS-DET | Find and inspect emissions | Core |
-| Classification | WS-CLS | Classify detections with evidence | Infrastructure core; model gated |
-| Generator | WS-GEN | Configure and deliberately enable RF output | Core after hardware validation |
-| Remote screen | WS-REM | Operate remaining firmware UI | Contracted, hardware gated |
-| Sessions | WS-SES | Save, reopen, compare, export | Contracted, not in current slice |
-| Settings/diagnostics | WS-SET | Preferences, compatibility, support bundle | Contracted, not in current slice |
+| Classification | WS-CLS | Characterize spectral morphology and zero-span envelope evidence | Experimental core; validated modulation/protocol model gated |
+| Generator | WS-GEN | Configure and deliberately enable RF output | Software core; physical qualification pending |
+| Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical qualification pending |
+
+Durable saved sessions, comparison, waterfall, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum provides bounded in-memory history and native CSV/JSON export now.
+
+### 2.3 Signal Lab companion
+
+When startup discovery completes successfully but contains no exact `0483:5740` ZS407 candidate, main may expose and auto-connect one explicit synthesized ZS407. This is a declared demo environment, not a recovery fallback. A compact second BrowserWindow contains exactly four primary choices—CW, AM, FM, and LTE-like—and changes the simulator's actual text/raw/zero-span byte source. Selecting a profile requests a new main-window sweep unless continuous acquisition is already consuming the source. An exact physical candidate suppresses Signal Lab startup. Discovery failure does not activate it.
+
+LTE-like means a deterministic flat occupied channel with OFDM-like texture; it is not standards-compliant LTE I/Q and the UI must retain that qualifier. Atom receives a typed `select_demo_signal` hook. The app-only coordinate harness remains scoped to the main window.
 
 ## 3. Global state contracts
 
@@ -177,6 +183,7 @@ interface SignalDetectionConfig {
   threshold: DetectionThreshold;
   minimumBandwidthHz: number;
   minimumConsecutiveSweeps: number;
+  releaseAfterMissedSweeps: number;
 }
 ```
 
@@ -198,20 +205,21 @@ Required result fields: stable event ID, start/stop/peak frequencies, peak power
 
 ### UX-DET-03 — Track across sweeps
 
-Tracking is a separate stateful stage from sweep-local segmentation. Association rules, maximum frequency drift, merge/split behavior, expiry, and event-ID stability must be versioned. Until implemented, UI copy must say sweep-local and persistence controls must not pretend otherwise.
+Tracking is a separate stateful stage from sweep-local segmentation. `SignalTracker` v2 greedily associates highest-score candidates by occupied-range overlap and peak-frequency distance bounded by three bins or observed bandwidth. It promotes a stable ID after `minimumConsecutiveSweeps`, records missed sweeps, emits one explicit `released` result after the configured miss window, and then removes the track. Configuration changes reset the tracker rather than rewriting prior provenance. Merge/split policy remains one-to-one best match and must change version if revised.
 
 Before claiming production detection quality, publish event-level precision/recall, false alarms per sweep/hour, detection probability versus SNR, frequency/bandwidth error, performance by capture configuration, and boundary/overlap behavior.
 
 ## 7. Waveform Classification mode contract
 
-Classification comprises two separately accepted deliverables:
+Classification comprises three explicitly separated evidence levels:
 
-1. **Classification infrastructure:** candidate selection, evidence bundle, model lifecycle, local inference adapter, result visualization, unknown state and provenance. This is core scope.
-2. **Validated classifier model:** taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. This is hardware/data gated.
+1. **Spectral morphology:** deterministic labels for narrow carrier, multi-carrier, wideband noise-like, and band-limited trace shape. Implemented as experimental evidence; it is not a modulation or protocol claim.
+2. **Zero-span envelope:** deterministic steady, amplitude-varying, or pulsed detected-power behavior. Implemented; zero span is not I/Q.
+3. **Validated modulation/protocol classifier:** taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated.
 
 ### UX-CLS-01 — Pipeline visibility
 
-Capture, detect, and classify stages are independently `waiting | ready | running | complete | failed | unavailable`. A missing model is unavailable, not a failed signal or empty classification.
+Capture, detect, and characterize stages are independently `waiting | ready | running | complete | failed | unavailable`. A future validated model being absent does not invalidate deterministic morphology/envelope evidence and never permits a stronger label.
 
 ### UX-CLS-02 — Candidate selection
 
@@ -222,7 +230,7 @@ Each candidate shows its source detection, frequency, bandwidth, power, time win
 Required presentation:
 
 - Primary label or `unknown`.
-- Calibrated confidence for the primary result.
+- A relative score for heuristic morphology/envelope, or calibrated confidence only for a validated model.
 - Ranked candidates with scores.
 - Unknown reason: low confidence, out-of-domain, insufficient evidence, model unavailable, or inference failure.
 - Model ID/version/hash and preprocessing version.
@@ -239,7 +247,7 @@ A model package is inert data plus declared inference metadata; it cannot execut
 - Evaluation includes an explicit open-set corpus absent from training classes.
 - Report per-class precision, recall, F1, support, confusion matrix, macro metrics, expected calibration error and coverage-risk curve.
 - “State of the art” is comparative: record baselines, dataset version, compute budget and evaluation protocol.
-- Thresholds are frozen after corpus characterization; before then the only conforming outcome is `unknown`.
+- Learned modulation/protocol thresholds are frozen after corpus characterization; before then the only conforming learned-model outcome is `unknown`. Heuristic morphology/envelope results remain visibly experimental and use relative scores, never calibrated-confidence copy.
 
 ## 8. Generator workspace contract
 
@@ -271,6 +279,7 @@ Cable loss, transition timeout or unverified reconnect results in `unknown`. The
 | `DetectionWorkspace` | sweep, config/results | config/select/reanalyze | not analyzed, zero, result, failure, tracking | semantics and provenance |
 | `ClassificationWorkspace` | candidates, pipeline/model/result | select/install/classify | no capture, no candidates, no model, running, unknown, result, failure | no invented certainty |
 | `GeneratorWorkspace` | config, snapshot/capabilities | apply, enable, disable | disconnected, invalid, off, enabling, on, disabling, unknown | safety transitions |
+| `DeviceWorkspace` | snapshot, diagnostics, screen frame | refresh/capture/touch/release | disconnected, ready, frame empty/current, failure | pixel framing, coordinates, high-impact guard |
 | `StatusBar` | connection, trace, verification, API | diagnostics intent | all global states | always visible and textual |
 
 Components receive domain values and emit intent. They do not call IPC directly except through workspace/controller composition. Formatting and parsing are pure functions with unit tests.
@@ -411,13 +420,13 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **ATM-01:** Reference viewport preserves one dominant measurement plane with Atom open.
 - **ATM-02:** Spectrum setup remains one horizontal command dock without clipping or overlap.
 - **ATM-03:** Closing Atom returns its reserved width to the workspace without remounting device state.
-- **ATM-04:** All four route labels remain visible and active-route state is textual.
+- **ATM-04:** All five route labels remain visible and active-route state is textual.
 - **ATM-05:** No rendered control is a nonfunctional visual placeholder.
-- **ATM-06:** Connected 450-point sweep renders exact trace, axes, peak marker and five metric groups without overflow.
+- **ATM-06:** Connected 450-point sweep renders exact trace, axes, peak marker and six metric groups without overflow.
 - **ATM-07:** Detection, Classification and Generator retain the same tokens, spacing, status semantics and Atom layer.
 - **ATM-08:** Reduced motion disables orbital, voice-ring, sweep and drawer animations.
 - **ATM-09:** Simulated provenance remains visible in top bar and status contract.
-- **ATM-10:** Screenshot review fixtures cover disconnected Spectrum and connected Spectrum/Detection/Classification/Generator at the reference viewport.
+- **ATM-10:** Screenshot review fixtures cover disconnected Spectrum and connected Spectrum/Detection/Classification/Generator/Device at the reference viewport.
 
 ## 14. Delivery decomposition
 
@@ -439,7 +448,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | UX-10 | Diagnostics/settings/help | error catalog | recovery/support tests |
 | UX-11 | Accessibility/usability qualification | stable workflows | operator studies |
 
-UX-00/01/02/04/06/07 have an implemented vertical slice. Hardware clauses remain open until ZS407 characterization.
+UX-00/01/02/04/05/06/07/08 and the export portion of UX-09 have an implemented vertical slice. Hardware clauses, durable session persistence, comparison, waterfall, and support bundles remain open.
 
 ## 15. Traceability to current source
 
@@ -454,6 +463,8 @@ UX-00/01/02/04/06/07 have an implemented vertical slice. Hardware clauses remain
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Generator | `components/GeneratorWorkspace.tsx`, `packages/tinysa` |
+| Device diagnostics/screen/touch | `components/DeviceWorkspace.tsx`, `packages/tinysa` |
+| CSV/JSON export | `apps/desktop/src/main/sweep-export.ts`, `main.ts` |
 | Visual tokens/layout | `apps/desktop/src/renderer/styles.css` |
 | Product orbital signature | `components/AtomicMark.tsx` |
 

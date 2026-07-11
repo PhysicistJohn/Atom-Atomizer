@@ -1,161 +1,144 @@
-# tinySA Ultra+ ZS407 Electron Controller — Research and Delivery Contract
+# TinySA Atomizer delivery plan
 
-Status: proposed plan, 2026-07-10
+Status: active implementation baseline
+Contract/API version: 2
+Updated: 2026-07-10
+Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
 
-## Product outcome
+## Outcome
 
-Build a cross-platform desktop application that connects to one tinySA Ultra+ ZS407 over its normal USB cable and makes the computer the primary user interface for the instrument. The application will configure spectrum-analyzer and signal-generator modes, acquire and visualize measurements, reproduce the device screen, operate its touch UI remotely, save/export sessions, and reconnect safely after cable or device interruptions.
+One local Electron application wholly controls every accepted tinySA Ultra+ ZS407 operation exposed by the pinned firmware, without raw serial access in the renderer. The same typed application layer powers the visual UI and Atom. Measurements are reproducible and carry configuration, actual readback, timing, source, identity, and simulation state. Generator operations remain explicitly commanded where firmware has no readback.
 
-The analysis layer is extensible. Initial custom modes are Signal Detection (adaptive/absolute thresholding, segmentation, tracking, and alerts) and Waveform Classification (validated local model inference with confidence, provenance, ranked candidates, and explicit unknown/open-set behavior).
+“Wholly controls” does not mean pretending the host can verify what firmware cannot report. Physical RF output, generator level/frequency/path/modulation, calibration quality, input protection, and harmonic-path accuracy retain clear uncertainty boundaries.
 
-“Full control” means every function exposed by the installed tinySA firmware through its USB console, including the explicit remote-screen/touch surface. It does not mean adding hardware capabilities, guaranteeing undocumented commands across firmware releases, or initially programming firmware in DFU mode.
-
-## Research conclusions
-
-- Normal operation uses USB CDC/ACM serial (the operating system presents a COM or `/dev/tty*` port). DFU is a separate firmware-update mode.
-- The console defaults to 115200 baud and accepts newline-terminated text commands. Responses are command-dependent and end at the `ch>` prompt; some operations return binary frames.
-- The documented surface includes sweep configuration and acquisition (`sweep`, `scan`, `hop`, `data`, `frequencies`), analyzer controls (RBW, attenuation, LNA/LNA2, AGC, trigger, spur handling, traces, markers), generator controls (mode, frequency, level, modulation, sweep, output), presets/configuration, battery/status/info, SD-card operations, screen capture, refresh frames, touch/release, and menu activation.
-- `capture`/`bulk` responses are binary RGB565 images. Documentation is inconsistent across models about screen dimensions, so dimensions and frame format must be discovered/validated on the ZS407 rather than hard-coded from older tinySA documentation.
-- The firmware performs limited validation. Some commands are mode- and model-dependent. The host must validate values and sequence state transitions before sending them.
-- A command and a refresh stream cannot safely share an uncoordinated reader. The transport needs a single serialized command queue and a byte-level parser that can switch among prompt-delimited text, fixed/declared binary payloads, and unsolicited refresh frames.
-- Electron can use either Web Serial or the Node `serialport` package. The proposed production route is `serialport` in Electron's main process: it gives deterministic enumeration/reconnect behavior and a mock binding for tests. Only narrow, typed IPC methods are exposed to the sandboxed renderer.
-- Existing Python implementations are useful behavioral references, but should not be copied into the product without a license review. The official firmware and the prominent unofficial Python API are GPL-licensed; this project should implement its own adapter from public protocol documentation and captured device behavior.
-
-## Architecture contract
+## Current architecture
 
 ```text
-React renderer (plots, controls, sessions)
-        |
-typed, allow-listed Electron IPC
-        |
-Device service (state machine, validation, safety policy)
-        |
-Protocol codec (command queue, prompt/text/binary parsers)
-        |
-Serial transport (enumeration, open/close, reconnect)
-        |
-USB CDC serial — tinySA Ultra+ ZS407
+operator / Atom voice / Atom text / app-only computer actions
+                            |
+                    React application host
+                            |
+                  TinySaApiV2 preload contract
+                            |
+             Electron main validation + lifecycle
+                            |
+         ZS407 device state machine + safety policy
+                            |
+        serialized command scheduler + byte parser
+                            |
+           USB CDC transport or explicit simulator
 ```
 
-The renderer never receives arbitrary Node, serial, or IPC access. Electron runs with context isolation and renderer sandboxing enabled. The main process owns the port and all device state.
+No layer may substitute a lower layer after failure. In particular, typed command failure never falls through to physical-screen clicking, another command spelling, another transport, another model, or simulation.
 
-Suggested monorepo packages:
+## Firmware-derived facts now frozen in host v2
 
-- `apps/desktop`: Electron main/preload and React renderer.
-- `packages/contracts`: serializable TypeScript request, event, capability, error, and measurement types.
-- `packages/tinysa`: transport-independent device service and protocol codecs.
-- `packages/test-device`: deterministic fake serial instrument and recorded transcripts.
+- USB CDC ACM identity is `0483:5740`, product `tinySA4`.
+- Commands are printable ASCII terminated by CR, echoed exactly, and complete at `ch> ` after the echo.
+- Maximum command text is 47 characters.
+- Screen capture is exactly 480×320 RGB565 little-endian: 307,200 bytes.
+- `scan … 3` returns text frequency/power/reserved rows.
+- `scanraw` returns brace-framed, marker-prefixed signed int16 dB×32 samples.
+- Analyzer range, points, actual RBW, attenuation, and status have query/readback paths.
+- Generator configuration and physical output have no dependable readback and remain commanded/unknown.
+- Zero span is detected power versus time, never I/Q.
+- `mode input`/`mode output` reset state and mute output; Atomizer still commands `output off` around generator transitions.
+- Remote touch can reach firmware RF controls and is therefore high impact for agentic operation.
 
-## Public application API (v1)
+See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) for exact framing and transactions.
 
-The preload bridge exposes one versioned object, not raw command execution:
+## Delivery ledger
 
-```ts
-interface TinySaApiV1 {
-  listDevices(): Promise<PortCandidate[]>;
-  connect(request: ConnectRequest): Promise<DeviceSnapshot>;
-  disconnect(): Promise<void>;
-  getSnapshot(): Promise<DeviceSnapshot>;
-  configureAnalyzer(request: AnalyzerConfig): Promise<DeviceSnapshot>;
-  acquireSweep(request?: AcquireRequest): Promise<Sweep>;
-  startStreaming(request: StreamRequest): Promise<void>;
-  stopStreaming(): Promise<void>;
-  configureGenerator(request: GeneratorConfig): Promise<DeviceSnapshot>;
-  setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot>;
-  captureScreen(): Promise<ScreenFrame>;
-  touch(point: { x: number; y: number }): Promise<void>;
-  releaseTouch(): Promise<void>;
-  invokeCapability(request: CapabilityRequest): Promise<CapabilityResult>;
-  subscribe(listener: (event: DeviceEvent) => void): () => void;
-}
-```
+| Area | Implemented now | Remaining acceptance |
+|---|---|---|
+| Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
+| Contracts | strict API v2, device/sweep/zero-span/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
+| USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking | physical macOS/Windows/Linux port evidence and permission guidance |
+| Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, raw scan decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
+| Simulator | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry | scripted corrupt/truncated/unplug matrix expansion |
+| Demo Signal Lab | auto-attach only when no exact ZS407 is detected; second window switches CW/AM/FM/LTE-like byte synthesis | visual acceptance and physical-device coexistence test |
+| Device service | identity gate, capability catalog, analyzer readback, text/raw/zero-span, diagnostics, screen/touch, safe generator | physical command transcript qualification and recovery observations |
+| Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
+| Spectrum | advanced controls, exact plot/metrics, single/continuous sweeps, 50-sweep memory history, CSV/JSON | marker keyboard workflow, waterfall, sustained physical soak |
+| Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
+| Classification | morphology evidence, ranked candidates, unknown rejection, zero-span envelope mode | labeled physical corpus and validated modulation/protocol model |
+| Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
+| Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
+| Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
+| Atom | exact model, high reasoning, Ballad, VAD 0.95, voice/text, all feature hooks, screenshots, policies, approvals | live eval corpus, safety identifier policy, production credential storage |
+| UX | atomic precision visual system, five live workspaces, responsive Atom rail | screenshot review at all supported scales and operator usability pass |
 
-There will be no user-facing raw console in v1. A developer-only console may be enabled by a build flag, with destructive commands denied by default.
+## Execution gates
 
-Core contract rules:
+### Gate A — firmware-derived software baseline
 
-- All frequencies are integer Hz, durations integer microseconds, and levels numeric dBm/dB. Formatting suffixes exist only inside the protocol adapter.
-- Every request has a timeout, operation ID, and typed result or typed error.
-- Exactly one command owns the serial response parser at a time.
-- A `Sweep` contains requested and actual start/stop frequencies, frequency bins, power values, units, timestamp, device/firmware identity, and the effective settings used.
-- Device capabilities come from model, hardware version, firmware version, `help`, and safe probes. UI controls are capability-driven, not assumed from “Ultra+”.
-- Disconnect rejects in-flight work, clears stale state, emits an event, and starts bounded reconnect only when the user enabled it.
-- Configuration changes are verified by a readback/status command where firmware supports one. Otherwise the snapshot marks the value as `commanded`, not `verified`.
+Complete when contracts, parser, scheduler, simulator, device service, IPC, analysis, Atom tools, and all five workspaces build and pass without hardware.
 
-## Safety contract
+Evidence:
 
-- RF generator output always defaults off on app startup and connection. Enabling it requires an explicit visible action and persistent on-screen indicator.
-- App disconnect/quit attempts `output off`; because cable loss can prevent delivery, the UI must never imply this is a hardware interlock.
-- Analyzer ranges are validated against the discovered ZS407 mode/capabilities. The UI prominently states the documented input limits; software cannot protect the RF input from excess power or DC.
-- Destructive or calibration-affecting commands (`clearconfig`, calibration/offset writes, reset/restart, SD delete, DFU entry) are excluded from the normal API until separately designed with confirmations and recovery tests.
-- Switching analyzer/generator modes stops streaming first and follows an explicit state-machine transition.
-- No silent firmware update. DFU support is a later, separately accepted workstream with signed/verified image provenance and recovery documentation.
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+- simulator walkthrough for connect, text/raw sweep, continuous stop, detection persistence, morphology result, zero span, generator-off configuration, diagnostics, screen/touch, export, and Atom tool calls
 
-## Delivery milestones and acceptance
+### Gate B — ordered ZS407 characterization
 
-### M0 — hardware protocol characterization
+Begins when the unit arrives. Record exact USB descriptors, `version`, `info`, `help`, boot behavior, and sanitized byte transcripts before changing the host profile.
 
-Deliver a probe CLI, command transcripts, captured binary fixtures, and a ZS407 capability matrix for the exact shipped firmware.
+Required experiments:
 
-Acceptance: on macOS, Windows, and Linux where available, identify the device; run `info`, `version`, `help`, and `status`; acquire repeated sweeps; decode a screen capture; exercise touch/release; unplug during every operation without hanging. Unknown bytes are preserved in diagnostic logs. This milestone begins when the physical unit arrives and gates final protocol commitments.
+1. Identify on each target OS and prove candidate/path behavior.
+2. Repeat every read-only query three times.
+3. Acquire text and raw sweeps at 20, 64, 145, 290, and 450 points.
+4. Capture screens, confirm RGB565 endian/orientation, and map corner/center touches.
+5. Compare requested/read-back analyzer settings across automatic/manual RBW and attenuation.
+6. Remove USB during identification, text scan, raw scan, screen capture, zero span, generator configuration, RF-on, and clean shutdown.
+7. Measure sustainable sweep cadence and a 30-minute continuous run.
+8. Use appropriate RF equipment and loads to characterize generator ranges; never infer physical output solely from shell success.
 
-### M1 — protocol SDK and simulator
+Any firmware variance becomes an explicit capability-profile change with fixtures and an ADR. It is not hidden behind UI conditionals.
 
-Deliver the contracts package, serial transport, command scheduler, parsers, state machine, fake device, fixtures, and structured diagnostic logging.
+### Gate C — RF analysis qualification
 
-Acceptance: unit tests cover fragmented/coalesced reads, prompt-like bytes inside binary frames, timeouts, cancellation, malformed frames, disconnect/reconnect, and mode conflicts. Integration tests run without hardware in CI. No renderer dependency exists in the SDK.
+Use physically captured, session-grouped data. Detection reports event precision/recall, false alarms per hour, probability versus SNR, frequency/bandwidth error, and boundary behavior. Classification separates:
 
-### M2 — analyzer MVP
+- spectral morphology labels that describe observed trace shape;
+- zero-span envelope labels that describe power variation;
+- any later modulation/protocol model, which requires I/Q-capable reference captures or a declared power-spectrum-only domain.
 
-Deliver connection UX, device/firmware display, analyzer configuration, single and continuous sweeps, live trace plot, markers/peak search, pause/resume, screenshot/remote touch, and CSV/JSON/PNG export.
+A production classifier requires a frozen taxonomy, corpus license/provenance, grouped splits, open-set holdout, calibrated confidence, model hash, preprocessing ID, supported-domain statement, and reproducible metrics. Until then, results remain experimental and may return `unknown`.
 
-Acceptance: a 30-minute continuous run has no parser desynchronization or unbounded memory growth; displayed/exported bins match captured device results; reconnection restores UI coherently but does not silently reapply unsafe state.
+### Gate D — desktop release
 
-### M3 — complete operational control
+Complete only after clean install/connect/sweep on frozen macOS, Windows, and Linux versions; native serial ABI packaging; RF safety cases; crash/restart behavior; dependency audit/SBOM; keyboard/accessibility review; signed/notarized packages as applicable; and user/support documentation.
 
-Deliver all safe, verified ZS407 analyzer controls, signal generator controls, modulation/sweeps, presets, supported measurements, SD browsing/read, session recording, waterfall, preferences, and keyboard-accessible UI.
+## State and failure rules
 
-Acceptance: every capability in the M0 matrix is marked implemented, intentionally excluded, or firmware-inaccessible with evidence. Remote screen/touch is a separately selected, tested control surface for firmware UI functions without a stable typed command; it is never entered automatically after a typed-command failure. Generator-output safety tests pass.
+- One scheduler owns all response bytes and one instrument operation is in flight.
+- Continuous acquisition is serialized and stops after the current firmware operation; it never overlaps commands.
+- A timeout, malformed echo/payload, unexpected prompt state, or cable loss faults the session and cancels queued work.
+- Reconnect is user initiated and never restores acquisition or RF-on state.
+- Previous valid measurement data stays visible after a failed new acquisition but is not relabeled as current.
+- Export cancellation is an explicit `cancelled` result; write failures surface and do not pick another path.
+- Physical screen control is never an automatic recovery path.
+- Atom never repeats or reroutes a failed state-changing operation.
 
-### M4 — packaging and release
+## Atom plan
 
-Deliver signed/notarized installers as applicable, auto-update policy, user guide, troubleshooting/exportable diagnostics, licenses/SBOM, and platform CI artifacts.
+The exact model is `gpt-realtime-2.1-mini`, which the official model catalog describes as a reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
 
-Acceptance: clean-machine install/connect/sweep tests pass on the supported OS matrix; native serial dependencies are rebuilt for the packaged Electron ABI; upgrades preserve user data; uninstall and crash recovery are documented.
+Voice additionally fixes `audio.output.voice: ballad` and `audio.input.turn_detection` to `server_vad` with threshold `0.95`, automatic response creation, and interruption. Chromium requests echo cancellation, noise suppression, and automatic gain control. Requested/applied microphone settings and sent/API-returned Realtime session settings are emitted to the console; voice remains muted until the final `session.updated` object exactly acknowledges all sent leaves.
 
-### Optional M5 — DFU firmware management
+Every application capability ships with a domain contract, closed agent schema, risk class, executor through the same application host, context projection, UI activity, tests, and docs. RF enable and remote physical-screen touch require action-time approval. Computer clicks are application-only and DOM-hit-tested; high-impact targets are blocked.
 
-This is out of v1 scope. It requires a separate threat/recovery design, platform driver tests, firmware authenticity rules, power-loss testing, and explicit acceptance because failure can leave the instrument needing manual recovery.
+## Near-term order
 
-## Initial product scope
+1. Keep Gate A green and visually inspect every simulator workspace at the reference and minimum window sizes.
+2. Expand fault fixtures and parser fuzz/property tests.
+3. Add durable versioned session persistence, sweep comparison, and import validation.
+4. Add marker/zoom/waterfall only after measured renderer throughput.
+5. Run the physical characterization protocol immediately when the ZS407 arrives.
+6. Build the RF capture corpus only after hardware/session provenance is stable.
+7. Freeze platform support, packaging, credential storage, and release policy after hardware Gate B.
 
-Target one locally attached genuine tinySA Ultra+ ZS407. Support macOS, Windows, and Linux, subject to hands-on platform verification. Store sessions locally; no account, cloud service, telemetry, network remote control, or multi-device orchestration in v1. Use TypeScript, Electron, React, and a plotting library selected by a sweep/waterfall performance spike.
-
-## Decisions to resolve during M0
-
-1. Exact USB VID/PID, serial-number behavior, port naming, and whether clones share identifiers.
-2. Exact ZS407 capture and refresh frame dimensions, byte order, and refresh reliability.
-3. Prompt/echo behavior, line endings, maximum response sizes, and safe timeouts per command.
-4. Which settings have reliable readback and which require app-maintained commanded state.
-5. Maximum sustainable sweep/refresh rate and whether measurement and screen streaming can coexist.
-6. Firmware-specific generator command ranges and behavior above 900 MHz.
-7. Supported OS versions and whether Linux udev guidance is required.
-8. Project license and whether any GPL code will be linked or merely treated as a behavioral reference.
-
-## Definition of done
-
-The project is done when the capability matrix is closed; a user can install the app, connect the ZS407, operate every accepted analyzer and generator function without touching the unit, capture/export reproducible measurements, recover cleanly from disconnects and application restarts, and understand every excluded or firmware-limited function. Automated protocol tests, hardware smoke tests, safety behavior, documentation, and packaged installers are part of the product—not follow-up work.
-
-## Sources
-
-- Official tinySA USB interface: https://tinysa.org/wiki/pmwiki.php?n=Main.USBInterface
-- Official PC control and USB modes: https://tinysa.org/wiki/pmwiki.php?n=Main.PCSW
-- Official ZS407 model comparison: https://tinysa.org/wiki/pmwiki.php?n=TinySA4.Comparison
-- Official Ultra/Ultra+ specification: https://tinysa.org/wiki/pmwiki.php?n=TinySA4.Specification
-- Official Ultra/Ultra+ menu tree: https://tinysa.org/wiki/pmwiki.php?n=TinySA4.MenuTree
-- Official firmware repository: https://github.com/erikkaashoek/tinySA
-- Unofficial Python API and behavioral examples: https://github.com/LC-Linkous/tinySA_python
-- Electron context isolation: https://www.electronjs.org/docs/latest/tutorial/context-isolation
-- Electron process sandboxing: https://www.electronjs.org/docs/latest/tutorial/sandbox
-- Electron device/serial access: https://www.electronjs.org/docs/latest/tutorial/devices
-- Node SerialPort API and mock binding: https://serialport.io/docs/api-serialport/
+DFU, calibration writes, unrestricted raw console, SD deletion, cloud accounts, telemetry, remote network control, multi-device orchestration, and silent auto-update remain excluded until separately contracted.
