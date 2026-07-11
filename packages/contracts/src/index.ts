@@ -24,6 +24,14 @@ export const OEM_ZS407_FIRMWARE_RELEASE = Object.freeze({
   sizeBytes: 185_704,
   transportIntegrity: 'pinned-sha256' as const,
 });
+export const OEM_ZS407_SELF_TEST_PROCEDURE = Object.freeze({
+  id: 'tinySA4-zs407-cal-rf-v1' as const,
+  fixture: 'short-50-ohm-coax-cal-to-rf' as const,
+  connectorA: 'CAL' as const,
+  connectorB: 'RF' as const,
+  menuPath: 'CONFIG > SELF TEST' as const,
+  guideUrl: 'https://tinysa.org/wiki/pmwiki.php?n=TinySA4.MenuTree' as const,
+});
 export const TINYSA_USB_VENDOR_ID = '0483' as const;
 export const TINYSA_USB_PRODUCT_ID = '5740' as const;
 export const TINYSA_SHELL_PROMPT = 'ch> ' as const;
@@ -646,6 +654,7 @@ export const firmwareUpdateStateSchema = z.object({
     deviceId: z.number().int().nonnegative(),
     screenSha256: z.string().regex(/^[a-f0-9]{64}$/),
     selfTestPassed: z.literal(true),
+    selfTestProcedure: z.literal(OEM_ZS407_SELF_TEST_PROCEDURE.id),
     configurationDisposition: z.enum(['new-device-unchanged', 'backup-complete-and-recalibration-accepted']),
     rfPortsDisconnected: z.literal(true),
   }).strict().optional(),
@@ -674,6 +683,7 @@ export const firmwareUpdateJournalSchema = z.object({
 export type FirmwareUpdateJournal = z.infer<typeof firmwareUpdateJournalSchema>;
 export const firmwareUpdatePreflightSchema = z.object({
   selfTestPassed: z.literal(true),
+  selfTestProcedure: z.literal(OEM_ZS407_SELF_TEST_PROCEDURE.id),
   configurationDisposition: z.enum(['new-device-unchanged', 'backup-complete-and-recalibration-accepted']),
   rfPortsDisconnected: z.literal(true),
 }).strict();

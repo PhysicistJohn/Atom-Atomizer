@@ -78,7 +78,7 @@ SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither l
 An admitted older supported physical revision opens one centered, no-scroll firmware dialog while the pinned artifact downloads and verifies. The dialog uses a four-stage route—Verify, Preflight, DFU, Flash—and always shows installed versus target version. Only the current stage’s content is rendered; the operator never navigates a long wizard page.
 
 - Verified artifact size and hash are visible before preflight.
-- Pre-update self-test, configuration disposition, and disconnected RF ports are explicit local human attestations.
+- Pre-update self-test, configuration disposition, and disconnected RF ports are explicit local human attestations. The ZS407 screen gives the complete `CAL`↔`RF` fixture and `CONFIG > SELF TEST` path, explicitly rejects generic LOW/HIGH wording, and offers one exact human-only OEM reference.
 - DFU guidance shows the exact power/jog sequence, tooling version, and `0483:df11` identity.
 - Flash uses red hazard treatment, names the irreversible action, and remains disabled until one exact target exists.
 - Flashing locks close/navigation and says not to disconnect.

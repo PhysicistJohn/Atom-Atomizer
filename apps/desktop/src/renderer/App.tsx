@@ -8,6 +8,7 @@ import {
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
+  OEM_ZS407_SELF_TEST_PROCEDURE,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   traceBankConfigurationSchema,
@@ -295,7 +296,7 @@ export function App() {
   }
 
   async function prepareFirmwareUpdate(): Promise<void> {
-    if (firmwarePreflight.selfTestPassed !== true || firmwarePreflight.rfPortsDisconnected !== true || !firmwarePreflight.configurationDisposition) throw new Error('Firmware preflight attestations are incomplete');
+    if (firmwarePreflight.selfTestPassed !== true || firmwarePreflight.selfTestProcedure !== OEM_ZS407_SELF_TEST_PROCEDURE.id || firmwarePreflight.rfPortsDisconnected !== true || !firmwarePreflight.configurationDisposition) throw new Error('Firmware preflight attestations are incomplete or do not identify the ZS407 CAL-to-RF procedure');
     setFirmwareUpdateBusy(true);
     try {
       setFirmwareUpdate(await window.tinySA.prepareFirmwareUpdate(firmwarePreflight as FirmwareUpdatePreflight));

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OEM_ZS407_FIRMWARE_RELEASE, ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
+import { OEM_ZS407_FIRMWARE_RELEASE, OEM_ZS407_SELF_TEST_PROCEDURE, ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
 import { FIRMWARE_UPDATE_JOURNAL_FILENAME, FirmwareUpdater, inspectStm32DfuDevices, parseDfuUtilVersion, parseStm32DfuDevices, verifyFirmwareArtifact } from './firmware-updater.js';
 
 const temporaryDirectories: string[] = [];
@@ -75,7 +75,7 @@ function preparation() {
   return {
     id: 'a5ada7f3-fbe3-41bd-83ac-a07028bc55f6', preparedAt: '2026-07-11T21:59:00.000Z', batteryMillivolts: 4211,
     deviceId: 0, screenSha256: '39174d17a08e3f6c09407bec2d2f8088a56232c5ec177056c8f3b5b37f53694a',
-    selfTestPassed: true, configurationDisposition: 'new-device-unchanged', rfPortsDisconnected: true,
+    selfTestPassed: true, selfTestProcedure: OEM_ZS407_SELF_TEST_PROCEDURE.id, configurationDisposition: 'new-device-unchanged', rfPortsDisconnected: true,
   } as const;
 }
 

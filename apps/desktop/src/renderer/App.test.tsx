@@ -112,7 +112,7 @@ describe('operator vertical slice', () => {
       const controls = [...container.querySelectorAll<HTMLElement>('[data-agent-control]')];
       expect(controls.length).toBeGreaterThan(0);
       for (const control of controls) expect(() => agentControlBinding(control.dataset.agentControl ?? '')).not.toThrow();
-      const interactives = [...container.querySelectorAll<HTMLElement>('button,input,select,textarea,details')];
+      const interactives = [...container.querySelectorAll<HTMLElement>('button,input,select,textarea,details,a[href]')];
       for (const interactive of interactives) expect(interactive.closest('[data-agent-control],[data-agent-exclusion]'), interactive.outerHTML.slice(0, 160)).toBeTruthy();
     };
     assertRenderedContracts();

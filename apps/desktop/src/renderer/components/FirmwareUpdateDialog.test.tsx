@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
-import { OEM_ZS407_FIRMWARE_RELEASE, ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT, type FirmwareUpdatePreflight, type FirmwareUpdateState } from '@tinysa/contracts';
+import { OEM_ZS407_FIRMWARE_RELEASE, OEM_ZS407_SELF_TEST_PROCEDURE, ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT, type FirmwareUpdatePreflight, type FirmwareUpdateState } from '@tinysa/contracts';
 import { agentControlBinding } from '@tinysa/agent';
 import { FirmwareUpdateDialog } from './FirmwareUpdateDialog.js';
 
@@ -15,8 +15,12 @@ describe('firmware update human boundary', () => {
 
     const prepare = screen.getByRole('button', { name: /Record preflight and disconnect/i });
     expect((prepare as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText(/Pre-update self-test passed/i));
-    fireEvent.click(screen.getByLabelText(/Both RF ports are disconnected/i));
+    expect(screen.getByText(/not LOW\/HIGH/i)).toBeTruthy();
+    const guide = screen.getByRole('link', { name: /OEM Ultra \/ Ultra\+ menu guide/i });
+    expect(guide.getAttribute('href')).toBe(OEM_ZS407_SELF_TEST_PROCEDURE.guideUrl);
+    expect(guide.dataset.agentExclusion).toBe('human-external-reference');
+    fireEvent.click(screen.getByLabelText(/CAL↔RF self-test passed/i));
+    fireEvent.click(screen.getByLabelText(/CAL and RF connectors are disconnected/i));
     fireEvent.change(screen.getByLabelText(/Configuration disposition/i), { target: { value: 'new-device-unchanged' } });
     expect((prepare as HTMLButtonElement).disabled).toBe(false);
     expect(prepare.dataset.agentRisk).toBe('high-impact');
@@ -41,6 +45,7 @@ describe('firmware update human boundary', () => {
 const preparation = {
   id: 'a5ada7f3-fbe3-41bd-83ac-a07028bc55f6', preparedAt: '2026-07-11T22:00:00.000Z', batteryMillivolts: 4211, deviceId: 0,
   screenSha256: '39174d17a08e3f6c09407bec2d2f8088a56232c5ec177056c8f3b5b37f53694a', selfTestPassed: true as const,
+  selfTestProcedure: OEM_ZS407_SELF_TEST_PROCEDURE.id,
   configurationDisposition: 'new-device-unchanged' as const, rfPortsDisconnected: true as const,
 };
 const verified: FirmwareUpdateState = {
@@ -51,7 +56,7 @@ const verified: FirmwareUpdateState = {
 };
 
 function assertNoOrphans(container: HTMLElement): void {
-  for (const interactive of container.querySelectorAll<HTMLElement>('button,input,select,textarea,details')) {
+  for (const interactive of container.querySelectorAll<HTMLElement>('button,input,select,textarea,details,a[href]')) {
     expect(interactive.closest('[data-agent-control],[data-agent-exclusion]'), interactive.outerHTML.slice(0, 160)).toBeTruthy();
   }
 }

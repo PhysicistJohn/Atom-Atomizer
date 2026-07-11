@@ -276,6 +276,8 @@ RF output enable always requires approval even if the original prompt requested 
 
 Firmware update is stricter than ordinary action-time approval. Atom can explain, open, download/verify, and observe DFU. It cannot attest that a physical self-test passed, claim RF cables were removed, choose configuration disposition, disconnect the unit for DFU, or submit the flash literal. Those controls require a trusted direct local UI event and are excluded from semantic, coordinate, type, key, and scroll computer use.
 
+For the Ultra+ ZS407, Atom must identify the self-test fixture as a short 50 Ω coax connection between the SMA connectors labeled `CAL` and `RF`, followed by `CONFIG > SELF TEST`. It must never substitute the generic LOW/HIGH wording. The human-only OEM reference opens only the exact allow-listed Ultra/Ultra+ menu page outside Atomizer.
+
 ### 9.2 Non-bypass guarantees
 
 - Model output cannot change policy.

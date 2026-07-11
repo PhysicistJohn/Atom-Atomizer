@@ -4,6 +4,7 @@ import {
   channelMeasurementConfigurationSchema,
   dBm,
   envelopeStftConfigurationSchema,
+  firmwareUpdatePreflightSchema,
   firmwareUpdateStateSchema,
   generatorConfigSchema,
   hertz,
@@ -11,6 +12,7 @@ import {
   microseconds,
   modelPackageManifestSchema,
   OEM_ZS407_FIRMWARE_RELEASE,
+  OEM_ZS407_SELF_TEST_PROCEDURE,
   portCandidateSchema,
   signalDetectionConfigSchema,
   traceBankConfigurationSchema,
@@ -90,5 +92,15 @@ describe('domain units and firmware-derived validation', () => {
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'flashing' }).success).toBe(false);
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, writeDisposition: 'started' }).success).toBe(false);
     expect(firmwareUpdateStateSchema.safeParse({ ...idle, phase: 'completed', writeDisposition: 'completed', writeStartedAt: 't1', writeCompletedAt: 't2' }).success).toBe(false);
+  });
+  it('binds firmware preflight to the exact ZS407 CAL-to-RF self-test procedure', () => {
+    const preflight = {
+      selfTestPassed: true,
+      selfTestProcedure: OEM_ZS407_SELF_TEST_PROCEDURE.id,
+      configurationDisposition: 'new-device-unchanged',
+      rfPortsDisconnected: true,
+    } as const;
+    expect(firmwareUpdatePreflightSchema.safeParse(preflight).success).toBe(true);
+    expect(firmwareUpdatePreflightSchema.safeParse({ ...preflight, selfTestProcedure: 'generic-low-high' }).success).toBe(false);
   });
 });

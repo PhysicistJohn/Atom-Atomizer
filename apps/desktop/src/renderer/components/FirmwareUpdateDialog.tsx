@@ -1,5 +1,5 @@
-import { AlertTriangle, Check, Download, LoaderCircle, ShieldCheck, Terminal, Usb, X, Zap } from 'lucide-react';
-import type { FirmwareUpdatePreflight, FirmwareUpdateState } from '@tinysa/contracts';
+import { AlertTriangle, Check, Download, ExternalLink, LoaderCircle, ShieldCheck, Terminal, Usb, X, Zap } from 'lucide-react';
+import { OEM_ZS407_SELF_TEST_PROCEDURE, type FirmwareUpdatePreflight, type FirmwareUpdateState } from '@tinysa/contracts';
 
 export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDownload, onPrepare, onDetect, onFlash, onClose }: {
   state: FirmwareUpdateState;
@@ -14,7 +14,10 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
 }) {
   const locked = busy || state.phase === 'flashing' || state.phase === 'reconnecting';
   const artifactVerified = Boolean(state.artifact);
-  const preflightComplete = preflight.selfTestPassed === true && preflight.rfPortsDisconnected === true && Boolean(preflight.configurationDisposition);
+  const preflightComplete = preflight.selfTestPassed === true
+    && preflight.selfTestProcedure === OEM_ZS407_SELF_TEST_PROCEDURE.id
+    && preflight.rfPortsDisconnected === true
+    && Boolean(preflight.configurationDisposition);
   return <div className="dialog-backdrop firmware-backdrop" role="presentation">
     <section className="firmware-dialog" role="dialog" aria-modal="true" aria-labelledby="firmware-title">
       <header className="firmware-head">
@@ -43,10 +46,17 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
         </Stage>}
 
         {state.phase === 'verified' && <Stage icon={<ShieldCheck/>} title="Physical preflight">
-          <p>The OEM requires a self-test before updating. Run it with the supplied SMA cable between LOW and HIGH, then remove that cable and every RF connection before continuing.</p>
+          <p>This Ultra+ ZS407 uses its SMA connectors labeled <code>CAL</code> and <code>RF</code> for self-test—not LOW/HIGH.</p>
+          <ol className="firmware-self-test-steps">
+            <li><span>Confirm output is off, then connect one short 50 Ω coax cable from <code>CAL</code> to <code>RF</code>.</span></li>
+            <li><span>On the analyzer screen, open <code>CONFIG</code>, then choose <code>SELF TEST</code>.</span></li>
+            <li><span>Let every test finish; touch the screen only when the instrument prompts you.</span></li>
+            <li><span>Confirm the test passed, exit it, then remove the CAL↔RF cable and every RF connection.</span></li>
+          </ol>
+          <a className="firmware-reference" href={OEM_ZS407_SELF_TEST_PROCEDURE.guideUrl} target="_blank" rel="noreferrer" data-agent-exclusion="human-external-reference"><ExternalLink size={12}/>Open the OEM Ultra / Ultra+ menu guide</a>
           <div className="firmware-checks">
-            <SafetyCheck checked={preflight.selfTestPassed === true} onChange={(checked) => onPreflight({ ...preflight, selfTestPassed: checked || undefined })} label="Pre-update self-test passed"/>
-            <SafetyCheck checked={preflight.rfPortsDisconnected === true} onChange={(checked) => onPreflight({ ...preflight, rfPortsDisconnected: checked || undefined })} label="Both RF ports are disconnected"/>
+            <SafetyCheck checked={preflight.selfTestPassed === true && preflight.selfTestProcedure === OEM_ZS407_SELF_TEST_PROCEDURE.id} onChange={(checked) => onPreflight({ ...preflight, selfTestPassed: checked || undefined, selfTestProcedure: checked ? OEM_ZS407_SELF_TEST_PROCEDURE.id : undefined })} label="CAL↔RF self-test passed"/>
+            <SafetyCheck checked={preflight.rfPortsDisconnected === true} onChange={(checked) => onPreflight({ ...preflight, rfPortsDisconnected: checked || undefined })} label="CAL and RF connectors are disconnected"/>
             <label data-agent-exclusion="human-safety-attestation"><span>Configuration disposition</span><select value={preflight.configurationDisposition ?? ''} onChange={(event) => onPreflight({ ...preflight, configurationDisposition: event.target.value as FirmwareUpdatePreflight['configurationDisposition'] || undefined })}><option value="">Choose…</option><option value="new-device-unchanged">New device · no calibration changes</option><option value="backup-complete-and-recalibration-accepted">Backup complete · recalibration accepted</option></select></label>
           </div>
           <div className="firmware-proof"><Check size={13}/><span>Image verified</span><code>{state.artifact?.sha256}</code></div>

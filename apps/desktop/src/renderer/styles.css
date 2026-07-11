@@ -616,7 +616,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .firmware-backdrop { z-index: 60; background: rgba(2,3,5,.78); backdrop-filter: blur(24px) saturate(90%); }
 .firmware-dialog {
   width: min(680px, calc(100vw - 52px));
-  min-height: 585px;
+  min-height: 650px;
   max-height: calc(100vh - 52px);
   display: grid;
   grid-template-rows: 74px 55px 68px minmax(0,1fr) 34px;
@@ -657,6 +657,8 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .firmware-stage-content > ol { margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 7px 22px; counter-reset: firmware-step; list-style: none; }
 .firmware-stage-content > ol li { min-height: 28px; display: grid; grid-template-columns: 20px 1fr; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 9px; line-height: 1.4; counter-increment: firmware-step; }
 .firmware-stage-content > ol li::before { content: counter(firmware-step); width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted); font: 7px var(--mono); }
+.firmware-reference { width: fit-content; display: inline-flex; align-items: center; gap: 6px; margin: -2px 0 10px; color: var(--energy-bright); font: 8px var(--mono); text-decoration: none; }
+.firmware-reference:hover { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
 .firmware-facts { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 15px; }
 .firmware-facts span { padding: 10px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); }
 .firmware-facts small { color: var(--quiet); font: 6px var(--mono); letter-spacing: .09em; }

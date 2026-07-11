@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, session, shell } from 'electron';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,7 @@ import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
 import { selectStartupInstrument } from './startup-admission.js';
 import { FirmwareUpdater } from './firmware-updater.js';
+import { isAllowedOfficialReference } from './official-references.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
@@ -113,7 +114,16 @@ async function createWindow(): Promise<void> {
     webPreferences: { preload: join(here, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true }
   });
   mainWindow=win;win.on('closed',()=>{mainWindow=undefined;});
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedOfficialReference(url)) {
+      void shell.openExternal(url).catch((error) => {
+        const message = `Opening the allow-listed OEM reference failed: ${error instanceof Error ? error.message : String(error)}`;
+        console.error(message, error);
+        win.webContents.send(`tinysa:event:v${API_VERSION}`, { type: 'error', error: { code: 'unsupported', message, recoverable: true } } satisfies DeviceEvent);
+      });
+    }
+    return { action: 'deny' };
+  });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('render-process-gone', (_event, details) => {
     if (!device.streaming) return;

@@ -1,7 +1,7 @@
 # ZS407 firmware update contract
 
 Status: implementation baseline; physical write not yet performed
-Version: 1.0.0
+Version: 1.0.1
 Updated: 2026-07-11
 
 This contract governs Atomizer’s updater for one verified physical tinySA Ultra+ ZS407. It does not create a generic firmware browser or accept “latest” by filename, directory order, redirect, or server metadata.
@@ -58,9 +58,17 @@ Atomizer never automatically:
 
 ## Human preflight boundary
 
-The OEM procedure requires a pre-update self-test. The visual workflow requires local human attestation that:
+The OEM procedure requires a pre-update self-test. For the admitted Ultra+ ZS407, the hardware-specific procedure is closed as `tinySA4-zs407-cal-rf-v1`:
 
-1. the pre-update self-test passed with the supplied SMA cable between LOW and HIGH;
+1. confirm RF output is off;
+2. connect one short 50 Ω coax cable between the SMA connectors physically labeled `CAL` and `RF`;
+3. on the instrument, select `CONFIG > SELF TEST`;
+4. let every test finish and touch the screen only when prompted;
+5. confirm the self-test passed, exit it, and remove the CAL↔RF cable and every RF connection.
+
+The generic Basic/older-device wording “LOW and HIGH” is explicitly invalid for this ZS407 contract. The updater renders these steps, links only to the allow-listed OEM Ultra/Ultra+ menu guide, and records the exact procedure ID. The visual workflow then requires local human attestation that:
+
+1. the pre-update self-test passed under the exact CAL↔RF procedure;
 2. that cable and every other RF connection have subsequently been removed;
 3. the unit is either new/unchanged or configuration backup and recalibration consequences are accepted.
 
@@ -125,3 +133,4 @@ OEM references:
 
 - https://tinysa.org/wiki/pmwiki.php?n=Main.UpdatingTheFirmware
 - https://tinysa.org/wiki/pmwiki.php?n=TinySA4.FWupdate
+- https://tinysa.org/wiki/pmwiki.php?n=TinySA4.MenuTree
