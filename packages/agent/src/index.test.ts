@@ -33,4 +33,8 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"candidate-1"}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"/dev/cu.usbmodem"}'})).toThrow();
   });
+  it('exposes the closed Signal Lab switch as a typed operation',()=>{
+    expect(validateAgentToolCall({callId:'1',name:'select_demo_signal',arguments:'{"profile":"lte"}'}).policy.risk).toBe('operate');
+    expect(()=>validateAgentToolCall({callId:'1',name:'select_demo_signal',arguments:'{"profile":"wifi"}'})).toThrow();
+  });
 });

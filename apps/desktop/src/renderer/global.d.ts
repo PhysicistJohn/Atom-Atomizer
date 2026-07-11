@@ -1,7 +1,8 @@
-import type { TinySaApiV1 } from '@tinysa/contracts';
+import type { DemoLabApi, TinySaApiV2 } from '@tinysa/contracts';
 import type { AgentStatus, AgentTurnRequest, AgentTurnResult } from '@tinysa/agent';
 declare global { interface Window {
-  tinySA: Pick<TinySaApiV1, 'version' | 'listDevices' | 'connect' | 'disconnect' | 'getSnapshot' | 'configureAnalyzer' | 'acquireSweep' | 'configureGenerator' | 'setGeneratorOutput'>;
+  tinySA: TinySaApiV2;
+  demoLab: DemoLabApi;
   atomAgent: { status():Promise<AgentStatus>; createRealtimeCall(sdp:string):Promise<string>; agentTurn(request:AgentTurnRequest):Promise<AgentTurnResult>;
     computerScreenshot():Promise<{kind:'tinysa-atomizer-screenshot';imageDataUrl:string;width:number;height:number;capturedAt:string}>;
     computerClick(point:{x:number;y:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;

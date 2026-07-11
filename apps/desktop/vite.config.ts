@@ -1,3 +1,16 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-export default defineConfig({ plugins: [react()], root: 'src/renderer', base: './', build: { outDir: '../../dist/renderer', emptyOutDir: true } });
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+const root = fileURLToPath(new URL('./src/renderer', import.meta.url));
+export default defineConfig({
+  plugins: [react()],
+  root,
+  base: './',
+  build: {
+    outDir: resolve(root, '../../dist/renderer'),
+    emptyOutDir: true,
+    rollupOptions: { input: { atomizer: resolve(root, 'index.html'), signalLab: resolve(root, 'demo.html') } },
+  },
+});

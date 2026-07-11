@@ -1,20 +1,48 @@
 import { useState } from 'react';
-import { ArrowRight, SlidersHorizontal } from 'lucide-react';
-import type { AnalyzerConfig } from '@tinysa/contracts';
+import { ArrowRight, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { ZS407_FIRMWARE_LIMITS, type AnalyzerConfig } from '@tinysa/contracts';
 import { formatFrequency, parseFrequency } from '../format.js';
 
 export function AnalyzerInspector({ config, disabled, onChange }: { config: AnalyzerConfig; disabled: boolean; onChange(config: AnalyzerConfig): void }) {
-  const [frequencyError,setFrequencyError]=useState<string>();
-  const updateFrequency = (field: 'startHz'|'stopHz', text: string) => { try { onChange({ ...config, [field]: parseFrequency(text) });setFrequencyError(undefined); } catch(error) { setFrequencyError(error instanceof Error?error.message:String(error)); } };
-  return <aside className="inspector"><div className="inspector-head"><div><SlidersHorizontal size={16}/><span>Sweep setup</span></div><small>Commanded values</small></div>
+  const [frequencyError, setFrequencyError] = useState<string>();
+  const updateFrequency = (field: 'startHz' | 'stopHz', text: string) => {
+    try {
+      const next = { ...config, [field]: parseFrequency(text) };
+      if (next.stopHz <= next.startHz) throw new Error('Stop frequency must be greater than start frequency');
+      onChange(next);
+      setFrequencyError(undefined);
+    } catch (error) {
+      setFrequencyError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const harmonicRange = config.stopHz > ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz;
+
+  return <aside className="inspector">
+    <div className="inspector-head"><div><SlidersHorizontal size={16}/><span>Sweep setup</span></div><small>FIRMWARE-VERIFIED</small></div>
     <fieldset disabled={disabled} className="acquisition-dock">
-      <div className="frequency-window"><label><span>Start</span><input aria-invalid={Boolean(frequencyError)} key={`start-${config.startHz}`} defaultValue={formatFrequency(config.startHz)} onBlur={(e)=>updateFrequency('startHz',e.target.value)}/></label><ArrowRight size={14}/><label><span>Stop</span><input aria-invalid={Boolean(frequencyError)} key={`stop-${config.stopHz}`} defaultValue={formatFrequency(config.stopHz)} onBlur={(e)=>updateFrequency('stopHz',e.target.value)}/></label></div>
-      <div className="derived-range"><span><small>Center</small><strong>{formatFrequency((config.startHz+config.stopHz)/2)}</strong></span><span><small>Span</small><strong>{formatFrequency(config.stopHz-config.startHz)}</strong></span></div>
-      <label className="dock-select"><span>Points</span><select value={config.points} onChange={(e)=>onChange({...config,points:Number(e.target.value)})}><option value="145">145</option><option value="290">290</option><option value="450">450</option></select></label>
-      <label className="dock-select"><span>Resolution</span><select value={config.rbwKhz ?? 'auto'} onChange={(e)=>onChange({...config,...(e.target.value==='auto'?{rbwKhz:undefined}:{rbwKhz:Number(e.target.value)})})}><option value="auto">Auto RBW</option><option value="10">10 kHz</option><option value="30">30 kHz</option><option value="100">100 kHz</option></select></label>
-      <label className="dock-select"><span>Attenuation</span><select value={config.attenuationDb} onChange={(e)=>onChange({...config,attenuationDb:e.target.value==='auto'?'auto':Number(e.target.value)})}><option value="auto">Automatic</option><option value="0">0 dB</option><option value="10">10 dB</option><option value="20">20 dB</option><option value="30">30 dB</option></select></label>
-      <div className="quick-ranges" aria-label="Frequency presets"><button type="button" onClick={()=>onChange({...config,startHz:88e6,stopHz:108e6})}>FM</button><button type="button" onClick={()=>onChange({...config,startHz:2.4e9,stopHz:2.5e9})}>2.4G</button><button type="button" onClick={()=>onChange({...config,startHz:5.15e9,stopHz:5.85e9})}>5G</button></div>
+      <div className="frequency-window">
+        <label><span>Start</span><input data-agent-control="analyzer.start" aria-invalid={Boolean(frequencyError)} key={`start-${config.startHz}`} defaultValue={formatFrequency(config.startHz)} onBlur={(event) => updateFrequency('startHz', event.target.value)}/></label>
+        <ArrowRight size={14}/>
+        <label><span>Stop</span><input data-agent-control="analyzer.stop" aria-invalid={Boolean(frequencyError)} key={`stop-${config.stopHz}`} defaultValue={formatFrequency(config.stopHz)} onBlur={(event) => updateFrequency('stopHz', event.target.value)}/></label>
+      </div>
+      <div className="derived-range"><span><small>Center</small><strong>{formatFrequency((config.startHz + config.stopHz) / 2)}</strong></span><span><small>Span</small><strong>{formatFrequency(config.stopHz - config.startHz)}</strong></span></div>
+      <label className="dock-select"><span>Points</span><select value={config.points} onChange={(event) => onChange({ ...config, points: Number(event.target.value) })}><option value="64">64</option><option value="145">145</option><option value="290">290</option><option value="450">450</option></select></label>
+      <label className="dock-select"><span>Transfer</span><select value={config.acquisitionFormat} onChange={(event) => onChange({ ...config, acquisitionFormat: event.target.value as AnalyzerConfig['acquisitionFormat'] })}><option value="raw">Raw · fast</option><option value="text">Text · inspectable</option></select></label>
+      <label className="dock-select"><span>Resolution</span><select value={config.rbwKhz} onChange={(event) => onChange({ ...config, rbwKhz: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Auto RBW</option><option value="3">3 kHz</option><option value="10">10 kHz</option><option value="30">30 kHz</option><option value="100">100 kHz</option><option value="300">300 kHz</option></select></label>
+      <div className="quick-ranges" aria-label="Frequency presets"><button type="button" onClick={() => onChange({ ...config, startHz: 88e6, stopHz: 108e6 })}>FM</button><button type="button" onClick={() => onChange({ ...config, startHz: 2.4e9, stopHz: 2.5e9 })}>2.4G</button><button type="button" onClick={() => onChange({ ...config, startHz: 5.15e9, stopHz: 5.85e9 })}>5G</button></div>
     </fieldset>
-    {frequencyError&&<div className="control-error" role="alert">{frequencyError}</div>}
+    <details className="advanced-sweep">
+      <summary><ChevronDown size={13}/>Acquisition physics <span>{config.detector} · {config.attenuationDb === 'auto' ? 'auto attenuation' : `${config.attenuationDb} dB`}</span></summary>
+      <fieldset disabled={disabled}>
+        <label><span>Attenuation</span><select value={config.attenuationDb} onChange={(event) => onChange({ ...config, attenuationDb: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option><option value="0">0 dB</option><option value="10">10 dB</option><option value="20">20 dB</option><option value="30">30 dB</option><option value="31">31 dB</option></select></label>
+        <label><span>Sweep time</span><select value={config.sweepTimeSeconds} onChange={(event) => onChange({ ...config, sweepTimeSeconds: event.target.value === 'auto' ? 'auto' : Number(event.target.value) })}><option value="auto">Automatic</option><option value="0.05">50 ms</option><option value="0.1">100 ms</option><option value="0.5">500 ms</option><option value="1">1 second</option></select></label>
+        <label><span>Detector</span><select value={config.detector} onChange={(event) => onChange({ ...config, detector: event.target.value as AnalyzerConfig['detector'] })}><option value="sample">Sample</option><option value="maximum-hold">Maximum hold</option><option value="minimum-hold">Minimum hold</option><option value="maximum-decay">Maximum decay</option><option value="average-4">Average · 4</option><option value="average-16">Average · 16</option><option value="quasi-peak">Quasi peak</option></select></label>
+        <label><span>Spur rejection</span><select value={config.spurRejection} onChange={(event) => onChange({ ...config, spurRejection: event.target.value as AnalyzerConfig['spurRejection'] })}><option value="auto">Automatic</option><option value="on">On</option><option value="off">Off</option></select></label>
+        <label><span>Avoid spurs</span><select value={config.avoidSpurs} onChange={(event) => onChange({ ...config, avoidSpurs: event.target.value as AnalyzerConfig['avoidSpurs'] })}><option value="auto">Automatic</option><option value="on">On</option><option value="off">Off</option></select></label>
+        <label><span>LNA</span><select value={config.lna} onChange={(event) => onChange({ ...config, lna: event.target.value as AnalyzerConfig['lna'] })}><option value="off">Off</option><option value="on">On</option></select></label>
+      </fieldset>
+    </details>
+    {frequencyError && <div className="control-error" role="alert">{frequencyError}</div>}
+    {harmonicRange && <div className="range-warning">Above 7.3701 GHz uses the firmware harmonic path. Treat amplitude accuracy as unqualified until your physical ZS407 is characterized.</div>}
   </aside>;
 }

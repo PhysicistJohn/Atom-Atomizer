@@ -27,7 +27,9 @@ export function useAtomAgent(host: AtomAgentHost) {
 
   async function executeCall(call:{callId:string;name:string;arguments:string}){
     const validated=validateAgentToolCall(call);
-    const needsApproval=validated.policy.approval==='at-action'&&validated.name==='set_rf_output'&&(validated.args as {enabled:boolean}).enabled;
+    const needsApproval=validated.policy.approval==='at-action'&&(
+      validated.name!=='set_rf_output'||(validated.args as {enabled:boolean}).enabled
+    );
     if(needsApproval&&!await requestApproval(call,validated.name,validated.args))return {ok:false,error:'User denied the high-impact action'};
     try{const output=await hostRef.current.execute(validated.name,validated.args);append('tool',`${validated.name.replaceAll('_',' ')} completed`);return {ok:true,output};}
     catch(error){const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};}
