@@ -52,10 +52,22 @@ export function MeasurementDock(props: MeasurementDockProps) {
     </nav>
 
     {panel === 'markers' && <div className="measurement-panel marker-panel">
-      <div className="marker-selector" aria-label="Active marker">{props.markers.map((marker) => <button key={marker.id} className={`${marker.id === props.activeMarkerId ? 'active' : ''} ${marker.enabled ? 'enabled' : ''}`} onClick={() => props.onActiveMarker(marker.id)} data-agent-control={`marker.${marker.id}.select`}><span>M{marker.id}</span><i/></button>)}</div>
+      <div className="marker-selector" aria-label="Active marker">{props.markers.map((marker) => {
+        const active = marker.id === props.activeMarkerId;
+        return <button
+          key={marker.id}
+          type="button"
+          className={`${active ? 'active' : ''} ${marker.enabled ? 'enabled' : ''}`}
+          aria-label={`Marker ${marker.id}, ${marker.enabled ? 'visible' : 'hidden'}${active ? ', selected' : ''}`}
+          aria-pressed={marker.enabled}
+          title={active ? `${marker.enabled ? 'Hide' : 'Show'} marker ${marker.id}` : `Select marker ${marker.id}`}
+          onClick={() => active ? props.onMarker({ ...marker, enabled: !marker.enabled }) : props.onActiveMarker(marker.id)}
+          data-agent-control={`marker.${marker.id}.${active ? 'enabled' : 'select'}`}
+        ><span>M{marker.id}</span><i/></button>;
+      })}</div>
       <div className="active-marker-result"><small>M{activeMarker.id} · {activeMarker.mode.replace('-', ' ').toUpperCase()}</small><strong>{activeReading ? formatMarkerReading(activeReading) : 'No trace data'}</strong><span>{activeReading ? formatFrequency(activeReading.frequencyHz) : 'Place on the trace or run a peak search'}</span></div>
       <div className="parameter-stack marker-settings">
-        <ToggleParameter label={`Marker M${activeMarker.id}`} value={activeMarker.enabled} controlId={`marker.${activeMarker.id}.enabled`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled })}/>
+        <ToggleParameter label={`Marker M${activeMarker.id} visibility`} value={activeMarker.enabled} controlId={`marker.${activeMarker.id}.enabled`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled })}/>
         <EditableParameter label="Frequency" value={activeMarker.frequencyHz} displayValue={formatFrequency(activeMarker.frequencyHz)} unit="Hz" minimum={0} maximum={17_922_600_000} controlId={`marker.${activeMarker.id}.frequency`} onCommit={(value) => props.onMarker({ ...activeMarker, enabled: true, tracking: 'fixed', frequencyHz: Number(value) })}/>
         <SelectParameter label="Trace" value={activeMarker.traceId} options={props.traces.map((trace) => ({ value: trace.id, label: `Trace ${trace.id} · ${traceModeLabel(trace.mode)}` }))} controlId={`marker.${activeMarker.id}.trace`} onValue={(value) => props.onMarker({ ...activeMarker, traceId: Number(value) as TraceId })}/>
         <SelectParameter label="Readout" value={activeMarker.mode} options={[{ value: 'normal', label: 'Normal' }, { value: 'delta', label: 'Delta' }, { value: 'noise-density', label: 'Noise density' }]} controlId={`marker.${activeMarker.id}.readout`} onValue={(value) => { const mode = value as MarkerConfiguration['mode']; props.onMarker({ ...activeMarker, mode, ...(mode === 'delta' && activeMarker.referenceMarkerId === undefined ? { referenceMarkerId: activeMarker.id === 1 ? 2 : 1 } : {}) }); }}/>

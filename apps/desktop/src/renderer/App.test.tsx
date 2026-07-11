@@ -104,6 +104,16 @@ describe('operator vertical slice', () => {
     expect(container.querySelector('.atom-foot')?.textContent).toContain('BALLAD');
   });
 
+  it('allows marker 1 and the entire marker bank to remain off', async () => {
+    const { container } = render(<App/>);
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    const markerOne = screen.getByRole('button', { name: /Marker 1, visible, selected/i });
+    fireEvent.click(markerOne);
+    expect(screen.getByRole('button', { name: /Marker 1, hidden, selected/i }).getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByRole('button', { name: /Marker M1 visibility/i }).textContent).toContain('Off');
+    expect(container.querySelectorAll('.marker-selector button.enabled')).toHaveLength(0);
+  });
+
   it('connects, configures, and acquires through the complete typed bridge', async () => {
     render(<App/>);
     await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
