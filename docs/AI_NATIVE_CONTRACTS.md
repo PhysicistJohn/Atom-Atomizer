@@ -192,7 +192,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `capture_device_screen` | Observe | Never | Reads and displays one exact RGB565 frame |
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
-| `select_demo_signal` | Operate | Never | Selects one closed visual/standards-derived Signal Lab waveform and its recommended range |
+| `select_demo_signal` | Operate | Never | Selects one of 79 closed visual/Release-19/HE Signal Lab profiles and its recommended range; returns qualification and source clause |
 | `configure_demo_channel` | Operate | Never | Changes the explicit AWGN/Rayleigh replay-channel schema |
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact are refused; the model must use the typed tool with action-time approval. Text, key and scroll inputs are bounded and remain targeted at TinySA Atomizer.

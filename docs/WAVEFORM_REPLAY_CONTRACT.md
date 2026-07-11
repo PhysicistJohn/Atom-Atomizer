@@ -1,7 +1,7 @@
 # Qualified waveform and channel replay contract
 
 Status: implementation baseline  
-Version: 2.1.0  
+Version: 2.2.0
 Updated: 2026-07-10
 
 This document is normative for the synthesized ZS407 used by Atom Signal Lab.
@@ -26,19 +26,42 @@ conformance mode.
 
 ## Closed catalog
 
-| ID | UI label | Nominal center | Occupied bandwidth | Recommended span | Qualification | Publication basis |
-|---|---|---:|---:|---:|---|---|
-| `cw` | CW carrier | 98 MHz | 5 kHz | 2 MHz | Visual | Atomizer lab fixture |
-| `am` | AM replay | 98 MHz | 60 kHz | 500 kHz | Visual | time-compressed carrier/sideband envelope |
-| `fm` | FM replay | 98 MHz | 200 kHz | 500 kHz | Visual | time-compressed ±75 kHz deviation |
-| `gsm-normal-burst` | GSM normal burst | 947.4 MHz | 200 kHz | 2 MHz | Standards-derived | 3GPP TS 45.002 normal burst |
-| `lte-etm1.1` | LTE E-TM1.1 | 1.84 GHz | 18 MHz | 30 MHz | Standards-derived | 3GPP TS 36.141 clause 6.1.1, 20 MHz E-TM1.1 |
-| `nr-fr1-tm1.1` | 5G NR TM1.1 | 3.5 GHz | 98.28 MHz | 120 MHz | Standards-derived | 3GPP TS 38.141-1, NR-FR1-TM1.1, 273 RB, 30 kHz SCS |
-| `wifi6-he-su` | Wi-Fi 6 HE SU | 5.18 GHz | 18.90625 MHz | 30 MHz | Standards-derived | IEEE 802.11ax HE SU PPDU, 20 MHz, 242-tone RU |
+The catalog contains exactly 79 profiles. Every profile also carries a closed
+projection contract: allocation, modulation, timing, optional subcarrier
+spacing, and optional resource-block count.
 
-LTE and NR publications define named test models. GSM and IEEE 802.11 do not use
-that exact test-model naming for these entries, so the UI says Normal Burst and
-HE SU PPDU rather than inventing `TM` identifiers.
+| Family | Count | Nominal center | Range contract | Publication basis |
+|---|---:|---:|---|---|
+| Lab | 3 | 98 MHz | CW 2 MHz; AM/FM 500 kHz | visual fixture |
+| GSM/EDGE | 6 | 947.4 MHz | 2 MHz span | TS 45.005 V19.0.0 normal-burst modulations |
+| LTE | 25 | 1.84 GHz | 20 MHz E-UTRA or 180 kHz NB-IoT | TS 36.141 V19.1.0 clauses 6.1.1–6.1.6 |
+| 5G NR | 41 | 3.5 GHz | 100 MHz/30 kHz SCS or 180 kHz NR-N-TM | TS 38.141-1 V19.4.0 clauses 4.9.2.2.1–4.9.2.2.17 |
+| Wi-Fi 6 | 4 | 5.18 GHz | 20 MHz HE PPDU | IEEE 802.11ax-2021 HE formats |
+
+### Exact in-scope model sets
+
+- GSM/EDGE: GMSK, QPSK, AQPSK, 8-PSK, 16-QAM, and 32-QAM Normal Bursts.
+- LTE ordinary models: E-TM1.1, E-TM1.2, E-TM2, E-TM2a, E-TM2b,
+  E-TM3.1, E-TM3.1a, E-TM3.1b, E-TM3.2, and E-TM3.3.
+- LTE shortened-TTI models: sE-TM2-1, sE-TM2a-1, sE-TM2-2,
+  sE-TM2a-2, sE-TM3.1-1, sE-TM3.1a-1, sE-TM3.1-2,
+  sE-TM3.1a-2, sE-TM3.2-1, sE-TM3.2-2, sE-TM3.3-1, and
+  sE-TM3.3-2.
+- LTE NB-IoT: N-TM, guard-band N-TM, and in-band N-TM.
+- NR ordinary FR1 models: NR-FR1-TM1.1, TM1.2, TM2, TM2a, TM2b,
+  TM3.1, TM3.1a, TM3.1b, TM3.2, and TM3.3, plus NR-N-TM.
+- NR SBFD: every ordinary FR1 model above except NR-N-TM in each published
+  `_SBFD_DU`, `_SBFD_UD`, and `_SBFD_DUD` timing pattern—30 profiles.
+- Wi-Fi 6: HE SU, HE ER SU, HE MU, and HE TB PPDU formats.
+
+FR2 is deliberately absent: its frequencies exceed the ZS407 firmware command
+ceiling. Multi-carrier test configurations such as LTE ETC and NR NRTC are also
+not mislabeled as waveform TMs; they remain separately contracted future
+multi-carrier orchestration.
+
+LTE and NR publications define named test models. GSM and IEEE 802.11 use
+Normal-Burst and PPDU-format terminology, so the UI retains those names instead
+of inventing `TM` identifiers.
 
 Selecting a profile reconfigures the simulated analyzer to the descriptor's
 recommended range before replay restarts. Invalid descriptor/range combinations
@@ -54,14 +77,17 @@ returns one finite dBm value per requested bin.
 - AM has a carrier and symmetric sidebands whose amplitude follows a
   time-compressed modulation cycle. At the center bin, replay must span more than
   5 dB across the fixture window.
-- FM moves instantaneous carrier energy laterally through ±75 kHz while retaining
-  a low-level occupied comb. Peak position must traverse more than 130 kHz across
-  the fixture window.
-- GSM projects a GMSK-like 200 kHz spectral shape and active/inactive time slots.
-- LTE and NR project full-allocation OFDM plateaus, edge taper, shoulders, and
-  subcarrier-scale texture at their declared allocation widths.
-- Wi-Fi projects a 20 MHz HE SU occupied-tone shape, center null, and PPDU-like
-  active/idle replay intervals.
+- FM moves instantaneous carrier energy laterally through ±75 kHz and renders
+  resolved low-level sideband lines. It must not create a filled occupied
+  pedestal: the median non-line level inside ±105 kHz must remain within 4 dB of
+  the adjacent replay-channel floor. Peak position must traverse more than
+  130 kHz across the fixture window.
+- GSM projects modulation-dependent normal-burst widths and active/inactive time slots.
+- LTE and NR distinguish full allocation, boosted/deboosted allocation,
+  single-PRB dynamic-range models, narrowband models, shortened-TTI timing, and
+  SBFD DU/UD/DUD timing. Modulation-specific texture never implies EVM evidence.
+- Wi-Fi distinguishes full-width, 106-tone extended-range, multi-RU, and
+  trigger-based PPDU projections with active/idle replay intervals.
 
 These are detected-power fixtures driven through the production text/raw/zero-
 span byte protocol. They do not contain payload bits, coding, reference-signal
@@ -108,10 +134,12 @@ labeled EPA, EVA, ETU, TDL, CDL, or a propagation qualification result.
 
 ## Signal Lab and Atom
 
-Signal Lab exposes all seven profiles, a persistent qualification badge, AWGN or
-Rayleigh selection, noise floor, fading rate, and seed. It remains a separate,
-visibly simulated companion window. A physical discovery failure fails loudly;
-only successful discovery with no exact ZS407 activates the synthesized device.
+Signal Lab exposes all 79 profiles through five counted family tabs and a closed
+model selector, plus a persistent qualification badge, source clause,
+allocation/timing evidence, AWGN or Rayleigh selection, noise floor, fading
+rate, and seed. It remains a separate, visibly simulated companion window. A
+physical discovery failure fails loudly; only successful discovery with no
+exact ZS407 activates the synthesized device.
 
 Atom's typed `select_demo_signal` tool accepts only catalog IDs. The typed
 `configure_demo_channel` tool accepts only the closed channel schema. Atom reads
@@ -140,19 +168,22 @@ is never used as its fallback.
 - `WAVE-003`: requesting conformance validation without a hashed admitted asset fails loudly.
 - `WAVE-004`: seeded AWGN is repeatable at a fixed sweep and evolves at the next sweep.
 - `WAVE-005`: Rayleigh output is repeatable and contains deeper frequency-selective fades than AWGN.
-- `WAVE-006`: AM center power and FM peak position meet their animation assertions.
+- `WAVE-006`: AM center power and FM peak position meet their animation assertions; FM non-line bins do not elevate the channel floor.
 - `WAVE-007`: GSM and Wi-Fi zero-span fixtures contain both active and idle intervals.
 - `WAVE-008`: selecting any profile changes the actual simulator byte source and analyzer range.
 - `WAVE-009`: channel changes affect the next frame without restarting the application.
 - `WAVE-010`: text scan, raw scan, and zero span use the same waveform/channel engine.
 - `WAVE-011`: a physical candidate suppresses Signal Lab; discovery error never activates it.
 - `WAVE-012`: Signal Lab renders all controls without overflow at its fixed companion size.
+- `WAVE-013`: the catalog has exactly 3 Lab, 6 GSM, 25 LTE, 41 NR, and 4 Wi-Fi profiles, with no missing or extra schema IDs.
+- `WAVE-014`: full, boosted, single-PRB, narrowband, subslot/slot, and SBFD projections are observably distinct.
 
 ## Primary references
 
-- GSM/GERAN TS 45.002 portal: https://www.3gpp.org/DynaReport/45002.htm
-- LTE E-UTRA TS 36.141 E-TM definitions:
-  https://www.etsi.org/deliver/etsi_ts/136100_136199/136141/13.11.00_60/ts_136141v131100p.pdf
-- NR TS 38.141-1 FR1 test models:
-  https://www.etsi.org/deliver/etsi_TS/138100_138199/13814101/18.08.00_60/ts_13814101v180800p.pdf
+- GSM/EDGE TS 45.005 V19.0.0:
+  https://www.etsi.org/deliver/etsi_ts/145000_145099/145005/19.00.00_60/ts_145005v190000p.pdf
+- LTE E-UTRA TS 36.141 V19.1.0 E-TM definitions:
+  https://www.etsi.org/deliver/etsi_ts/136100_136199/136141/19.01.00_60/ts_136141v190100p.pdf
+- NR TS 38.141-1 V19.4.0 FR1 and SBFD test models:
+  https://www.etsi.org/deliver/etsi_ts/138100_138199/13814101/19.04.00_60/ts_13814101v190400p.pdf
 - IEEE 802.11ax-2021: https://standards.ieee.org/ieee/802.11ax/7180/

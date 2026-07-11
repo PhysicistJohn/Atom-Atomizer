@@ -16,7 +16,7 @@ TINYSA_SIMULATOR=1 npm run dev
 
 Without `TINYSA_SIMULATOR=1`, Atomizer enumerates OS serial devices and accepts a production session only after the console identifies as a ZS407 and exposes the required command set. There is no raw-console or legacy-command fallback.
 
-If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. It immediately starts a paced synthetic replay with seeded AWGN or correlated Rayleigh fading, receiver ripple, sweep evolution, and stable low-level spurs. Its CW, AM, FM, GSM normal-burst, LTE E-TM1.1, 5G NR TM1.1, and Wi-Fi 6 HE SU controls change the live byte stream and analyzer range. The demo is visibly simulated and never substitutes for a failed physical-device operation. Standards-derived profiles are spectrum/time projections, not bit-exact or conformance-validated I/Q.
+If no exact ZS407 USB identity is present at startup, Atomizer auto-attaches its synthesized ZS407 and opens the compact **Atom Signal Lab** companion window. It immediately starts a paced synthetic replay with seeded AWGN or correlated Rayleigh fading, receiver ripple, sweep evolution, and stable low-level spurs. Its 79-profile library contains CW/AM/FM, all contracted GSM/EDGE normal-burst modulations, the complete in-scope Release 19 LTE and NR-FR1 transmitter test-model sets, and all four Wi-Fi 6 HE PPDU formats. Selecting one changes the live byte stream and analyzer range. The demo is visibly simulated and never substitutes for a failed physical-device operation. Standards-derived profiles are spectrum/time projections, not bit-exact or conformance-validated I/Q.
 
 To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron main. Voice uses the unified Realtime WebRTC flow; text, tools, image input, and application-scoped computer operation use a trusted Realtime WebSocket. Both are locked to exactly `gpt-realtime-2.1-mini`, `reasoning.effort: high`, voice `ballad`, and server VAD threshold `0.95`. A model, API, transport, configuration, or tool failure is surfaced and stops the operation.
 
@@ -24,7 +24,7 @@ To activate Atom, place `OPENAI_KEY` in `.env`. The key is read only by Electron
 
 - Exact USB shell correlation: CR commands, echoed command, CRLF text, exact `ch> ` prompt, 47-character limit.
 - Stateful ZS407 byte simulator with fragmented delivery, boot banner, text/raw sweeps, zero span, diagnostics, RGB565 screen, touch, and generator commands.
-- Automatic companion Signal Lab with seven live waveform profiles, seeded AWGN/Rayleigh replay, explicit standards qualification, and the same production byte protocol.
+- Automatic companion Signal Lab with 79 closed live profiles, family/model browsing, seeded AWGN/Rayleigh replay, explicit source/qualification, and the same production byte protocol.
 - Fail-closed serialized command scheduler and typed device state machine.
 - Analyzer configuration with readback verification, 20–450 points, text/raw acquisition, RBW, attenuation, detector, spur, LNA, trigger, and sweep timing.
 - Single and continuous spectrum acquisition with bounded 50-sweep in-memory history and provenance-preserving CSV/JSON export.
