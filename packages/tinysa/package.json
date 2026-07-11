@@ -1,0 +1,11 @@
+{
+  "name": "@tinysa/device",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/index.js" },
+  "types": "./dist/index.d.ts",
+  "scripts": { "build": "tsup src/index.ts --format esm --dts --clean --external serialport", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": { "@tinysa/contracts": "*", "serialport": "13.0.0" },
+  "devDependencies": { "@tinysa/test-device": "*" }
+}

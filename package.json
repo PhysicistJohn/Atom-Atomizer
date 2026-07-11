@@ -1,0 +1,22 @@
+{
+  "name": "tinysa-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "npm run dev -w @tinysa/desktop",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.13",
+    "typescript": "5.9.2",
+    "tsup": "8.5.0",
+    "vitest": "4.1.10"
+  },
+  "engines": { "node": ">=22" }
+}
