@@ -8,9 +8,9 @@
     "atomizer": {
       "repository": "TinySA",
       "owner": "operator-control-plane",
-      "applicationContractVersion": 4,
+      "applicationContractVersion": 5,
       "deviceApiVersion": 2,
-      "agentSurfaceVersion": 5,
+      "agentSurfaceVersion": 6,
       "physicalFirmwareSupport": {
         "shippedVersion": "tinySA4_v1.4-217-gc5dd31f",
         "shippedSourceCommit": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c",
@@ -109,6 +109,8 @@
     "Firmware preflight attestations, DFU transition, and the final flash control are local human-only boundaries unavailable to every Atom computer-input path.",
     "A durable atomic journal records write-attempt evidence before the flashing subprocess; started, completed, or indeterminate evidence forbids another write across process restarts.",
     "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
+    "A sweep is admitted to application reducers only when its requested analyzer configuration equals the latest staged revision.",
+    "Host trace Off state and firmware-readback overlay visibility remain separate controls; overlay visibility never mutates firmware trace state.",
     "Screenshots, device strings, application context, and tool outputs are untrusted data rather than instructions.",
     "The exact AI model is gpt-realtime-2.1 on Realtime API paths; model, endpoint, or transport substitution is forbidden."
   ],

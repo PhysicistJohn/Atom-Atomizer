@@ -186,7 +186,9 @@ of enabled stored/raw traces with `trace <id> value`. Trace 1 is coherently
 identified with the just-acquired measured sweep; Trace 2 and Trace 3 are stored
 slots; Trace 4 is the raw/temp slot. Any malformed line, duplicate/missing
 index, non-finite dBm value, or wrong point count rejects the acquisition. These
-frames carry `evidence=firmware-readback` and render as `D1..D4` device traces.
+frames carry `evidence=firmware-readback` and are exposed as `D1..D4` device
+traces. Plot visibility is a separate host display projection, defaults off,
+and never changes the enabled/frozen state reported by firmware.
 
 Separately, Atomizer derives four simultaneous Clear/Write, Max Hold, Min Hold,
 Average, View/Freeze and Blank frames from the exact host sweep arrays. Its
@@ -311,3 +313,4 @@ retried.
 - `FW-PROTO-014`: an unknown syntactically valid source revision is admitted only as `custom-unqualified` after exact ZS407 identity, required command/framing and output-off checks; its warning and unresolved source provenance remain visible.
 - `FW-PROTO-015`: every enabled Ultra firmware trace has one unique ID in `1..4`, exact contiguous indices and the acquired point count; malformed device trace readback rejects.
 - `FW-PROTO-016`: remote press/release cannot interleave with continuous acquisition; resume occurs only after successful release and analyzer re-verification.
+- `FW-PROTO-017`: D1–D4 overlay visibility is host-only, explicit, and cannot issue a firmware trace mutation.

@@ -40,19 +40,22 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v5, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
+The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v6, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
 
 Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. One exact physical ZS407 suppresses the twin and is automatically admitted; multiple exact devices require selection; no exact device admits the twin. Discovery/identity/source/boot/evidence failure is visible and never activates another backend.
 
 SignalLab is an independent repository and application. It owns 79 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Its Firmware sink is `reserved-not-connected`; Atomizer has no SignalLab tools or hidden process coupling. Activating that future edge requires a coordinated contract-version change in all three repositories.
 
 Spectrum now exposes four host-derived trace slots (`H1..H4`) and eight
-host-derived markers, off by default, over complete acquired sweeps. Enabled
-firmware trace values are independently read with exact point-count validation
-and rendered as `D1..D4` firmware-readback overlays; incomplete firmware trace
-state is never inferred. Continuous analyzer edits use an explicit
-stop/apply/readback/resume transaction. Exact mode semantics, evidence labels,
-and acceptance tests are governed by the measurement and protocol contracts.
+host-derived markers, off by default, over complete acquired sweeps. Every host
+trace has an explicit Off action. Enabled firmware trace values are independently
+read with exact point-count validation and exposed as `D1..D4` firmware-readback
+frames; overlays are separately controlled and off by default. Incomplete
+firmware trace state is never inferred. Analyzer controls emit atomic patches
+merged into the latest staged revision. Continuous edits use an explicit
+stop/apply/readback/resume transaction, and superseded in-flight sweeps are
+quarantined before any measurement reducer. Exact mode semantics, evidence
+labels, and acceptance tests are governed by the measurement and protocol contracts.
 
 Work-package status is therefore interpreted as follows:
 

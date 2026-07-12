@@ -17,9 +17,9 @@ for (let index = 1; index < bytes.length; index++) {
 const trio = JSON.parse(bytes[0].toString('utf8'));
 assertEqual(trio.contractId, 'tinysa-trio-composition', 'contractId');
 assertEqual(trio.contractVersion, 2, 'contractVersion');
-assertEqual(trio.parties.atomizer.applicationContractVersion, 4, 'Atomizer application contract');
+assertEqual(trio.parties.atomizer.applicationContractVersion, 5, 'Atomizer application contract');
 assertEqual(trio.parties.atomizer.deviceApiVersion, 2, 'device API');
-assertEqual(trio.parties.atomizer.agentSurfaceVersion, 5, 'Atom surface');
+assertEqual(trio.parties.atomizer.agentSurfaceVersion, 6, 'Atom surface');
 assertEqual(trio.parties.signalLab.stimulusContractVersion, 1, 'SignalLab contract');
 assertEqual(trio.parties.signalLab.closedProfileCount, 79, 'SignalLab profile count');
 assertEqual(trio.parties.signalLab.sinkStatus, 'reserved-not-connected', 'SignalLab sink');
@@ -35,7 +35,7 @@ assertEqual(twin.invariants.usbTransactionsModeled, false, 'bridge USB modeling'
 
 const agentSource = await readFile(resolve(root, 'packages/agent/src/index.ts'), 'utf8');
 requireSource(agentSource, "export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1'", 'exact Atom model');
-requireSource(agentSource, 'export const ATOM_AGENT_VERSION = 5', 'Atom surface version');
+requireSource(agentSource, 'export const ATOM_AGENT_VERSION = 6', 'Atom surface version');
 requireSource(agentSource, 'export const realtimeToolDefinitions = agentToolDefinitions', 'identical voice/text tool surface');
 const contractSource = await readFile(resolve(root, 'packages/contracts/src/index.ts'), 'utf8');
 requireSource(contractSource, trio.parties.atomizer.physicalFirmwareSupport.shippedSourceCommit, 'shipped physical firmware source');

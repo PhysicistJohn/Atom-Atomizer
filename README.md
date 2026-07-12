@@ -62,13 +62,13 @@ Both AI paths use exactly `gpt-realtime-2.1`:
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both response paths use the identical 53-tool closed catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical 54-tool closed catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
 Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls.
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
-WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the full voice, reasoning, transcription, instruction, and tool configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. This avoids putting the full 53-tool catalog in the call-creation gateway request without changing model or transport.
+WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the full voice, reasoning, transcription, instruction, and tool configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. This avoids putting the full 54-tool catalog in the call-creation gateway request without changing model or transport.
 
 Atom’s application surface is contract version 5:
 
@@ -90,7 +90,7 @@ Atom’s application surface is contract version 5:
 - Analyzer configuration, readback, single/continuous spectrum acquisition, live pause-verify-resume retuning, raw/text transfers, and zero span.
 - Device-observed `scanraw` offset readback and provenance-preserving Q5 decoding.
 - Spectrum, coherent waterfall, channel power/PSD/ACP/ACLR/OBW, and detected-envelope STFT.
-- Four host traces (`H1..H4`): Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset; enabled firmware traces are separately read and rendered as provenance-bearing `D1..D4` overlays.
+- Four host traces (`H1..H4`): Clear/Write, Max Hold, Min Hold, linear-power Average, View, explicit Off, and reset; enabled firmware traces are separately read as provenance-bearing `D1..D4` frames and overlaid only when explicitly enabled.
 - Eight markers, all off by default: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
 - Explicit reference level, dB/div, and evidence-backed auto scale.
 - Persistent robust-threshold signal detection with local prominence, cross-sweep promotion, and explicit candidate/released states. Detect alone overlays active bandwidth regions and dashed channel-center lines; Spectrum remains annotation-free.

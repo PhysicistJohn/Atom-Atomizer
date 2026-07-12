@@ -1,7 +1,7 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 5.0.0
+Version: 6.0.0
 Model lock: `gpt-realtime-2.1`
 Reasoning lock: `high`  
 Voice lock: `ballad`  
@@ -195,7 +195,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_agent_surface` | Observe | Never | Reads every tool policy and UI-control binding with projection and guarantee |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
-| `get_measurement_state` | Observe | Never | Reads the four trace modes, eight markers/readouts, searches, and host display scale |
+| `get_measurement_state` | Observe | Never | Reads four host trace modes, D1–D4 overlay visibility, eight markers/readouts, searches, and host display scale |
 | `set_measurement_view` | Operate | Never | Selects Spectrum, Waterfall, Channel, or detected-envelope STFT |
 | `configure_waterfall` | Operate | Never | Sets bounded coherent history depth and explicit dBm color scale |
 | `configure_channel_measurement` | Operate | Never | Sets main/adjacent bandwidths, spacing, offset pairs, and OBW behavior |
@@ -228,6 +228,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `search_marker` | Operate | Never | Places the active marker using peak/min/next search and explicit thresholds |
 | `select_trace` | Operate | Never | Selects one trace for editing without changing its mode or accumulator |
 | `configure_trace` | Operate | Never | Configures one of four host-derived trace accumulators |
+| `configure_firmware_trace_visibility` | Operate | Never | Shows or hides one separately labeled firmware-readback overlay without changing the device trace |
 | `reset_trace` | Operate | Never | Clears exactly one host trace accumulator |
 | `configure_spectrum_display` | Operate | Never | Changes the host reference level and dB/div projection |
 | `auto_scale_spectrum_display` | Operate | Never | Derives the display scale from the latest complete sweep or fails |
@@ -246,9 +247,9 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only.
 
-All 53 delivered parameter schemas are generated from the same Zod objects used to accept execution. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
+All 54 delivered parameter schemas are generated from the same Zod objects used to accept execution. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
-Transient numeric-entry panels inherit the originating row's stable `data-agent-control` policy boundary. Their field, keypad, unit terminators, and close/apply controls are therefore inspectable and cannot become ungoverned DOM targets. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
+Transient numeric-entry panels are body-level portals carrying the originating row identity in `data-parameter-editor`. While open, the one stable `data-agent-control` moves from the occluded source row to the portal and the source becomes an explicit exclusion, so duplicate hooks cannot appear. Their field, keypad, unit terminators, and close/apply controls cannot create a second configuration path. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
 ### 7.2 Every-feature hook rule
 
@@ -418,12 +419,13 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-39:** Voice config includes and exactly verifies `audio.input.transcription.model = gpt-realtime-whisper`; user and assistant deltas stream into one message per turn.
 - **AI-40:** Atom makes one startup voice connection attempt with microphone muted; mic/speaker state remains independently human-controlled and visually encoded.
 - **AI-41:** Realtime calls are harvested only at `response.done`; all outputs precede exactly one continuation response.
-- **AI-42:** Every one of the 53 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
+- **AI-42:** Every one of the 54 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
 - **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the full shared session is sent and exactly acknowledged before the muted microphone can be enabled.
 - **AI-46:** Every coordinate action consumes one current screenshot ID; focus-sensitive input fails when `expectedTarget` no longer matches.
 - **AI-47:** Every function schema is a closed top-level object with no Realtime-forbidden top-level combinator; runtime relational constraints remain authoritative.
+- **AI-48:** Host trace Off and D1–D4 overlay visibility are separate typed operations; firmware-readback visibility never mutates device trace state.
 
 ## 16. Source traceability
 

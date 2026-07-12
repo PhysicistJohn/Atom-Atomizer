@@ -1,7 +1,7 @@
 # TinySA Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
-Version: 2.2.0
+Version: 2.3.0
 Updated: 2026-07-11
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
@@ -105,10 +105,13 @@ and STFT surfaces:
 1. A closed row exposes one label and one complete effective value at a minimum
    44 px target height; main-app rows use 52 px.
 2. Numeric or free-form values do not render as permanently small input boxes.
-   Activating the full row opens one centered, no-scroll numeric-entry panel.
-   It exposes a large selected field, touch-sized decimal keypad, bounds, and
-   explicit Apply/Cancel actions. Focus stays inside the panel and returns to
-   the originating row on commit, Cancel, backdrop dismissal, or Escape.
+   Activating the full row opens one document-level, no-scroll numeric-entry
+   popover beside the originating row. It is portaled outside transformed
+   inspectors, chooses the available left/right viewport edge, and never dims
+   or displaces the measurement canvas. It exposes a large selected field,
+   touch-sized decimal keypad, bounds, and explicit Apply/Cancel actions. Focus
+   stays inside the panel and returns to the originating row on commit, Cancel,
+   outside-click dismissal, or Escape.
 3. Frequency entry is stored and validated as integer Hz. The panel selects a
    readable current scale and exposes `GHz`, `MHz`, `kHz`, and `Hz` unit
    terminators. Choosing a terminator converts, validates, commits once, and
@@ -131,9 +134,11 @@ and STFT surfaces:
    closes them; neither action changes configuration or acquisition state.
 10. Every row carries a stable agent-control identifier where the capability is
    agent-operable. Visual, semantic-computer, and typed Atom operations converge
-   on the same validated application reducer. Every transient keypad/input
-   control remains inside that same policy-bearing hook; no modal control is an
-   orphan. Atom still prefers the exact typed configuration tool.
+   on the same validated application reducer. Every portaled keypad carries the
+   originating control identity as `data-parameter-editor`; while open, the one
+   stable agent-control hook moves to the portal and the occluded source row is
+   explicitly excluded. No transient input becomes an unowned or duplicate
+   reducer. Atom still prefers the exact typed configuration tool.
 
 The visual system uses neutral graphite hierarchy and macOS system typography.
 System blue means selection/action, violet identifies Atom, amber/red retain
@@ -151,6 +156,7 @@ Acceptance:
 - `UI-PAR-007`: reference screenshots show no truncated effective value, second-line chevron, horizontal overflow, or body scroll.
 - `UI-PAR-008`: `915` followed by the `MHz` terminator commits exactly `915000000` Hz once; invalid bounds/steps remain open and uncommitted.
 - `UI-PAR-009`: numeric-panel focus is trapped and restored; Escape and Cancel do not mutate configuration.
+- `UI-PAR-010`: the numeric editor is a body-level anchored portal and is never clipped or positioned by a measurement inspector.
 
 The unit-terminator interaction follows established X-Series active-function behavior without copying vendor visual trade dress. Primary references: Keysight X-Series User's and Programmer's Guide, https://www.keysight.com/mg/en/assets/9018-04190/user-manuals/9018-04190.pdf, and Keysight X-Series Getting Started Guide, https://www.keysight.com/my/en/assets/9018-01478/quick-start-guides/9018-01478.pdf.
 
@@ -261,20 +267,26 @@ An incomplete or mismatched sweep never partially paints.
 The compact measurement command bar exposes four host traces, eight markers, and
 reference-level/division controls without reducing the plot to a secondary
 surface. Exactly one panel opens at a time. Trace modes are Clear/Write, Max
-Hold, Min Hold, linear-power Average, View/Freeze, and Blank. Markers are
+Hold, Min Hold, linear-power Average, View/Freeze, and operator-facing Off
+(`blank` on the internal contract). Markers are
 trace-assignable and support fixed/peak tracking, peak/min/next search, normal,
 delta, and noise-density readouts. All eight markers are off by default; the
 exact untouched legacy M1-on preference migrates to all-off without rewriting a
 deliberately edited bank. Host traces render as `H1..H4`. Enabled firmware trace
-readbacks render independently as `D1..D4`, with distinct dash/color treatment
-and `firmware-readback` evidence. Exact calculations, persistence, reset, and
-failure semantics are governed by `MEASUREMENT_CONTROLS_CONTRACT.md`.
+readbacks are listed independently as `D1..D4`; overlays are off by default and
+require an explicit per-trace visibility action. Visible device traces retain
+distinct dash/color treatment and `firmware-readback` evidence. Exact
+calculations, persistence, reset, and failure semantics are governed by
+`MEASUREMENT_CONTROLS_CONTRACT.md`.
 
-While Run is active, analyzer inputs remain editable. A committed change stops
-after the in-flight sweep, shows `RETUNING`, applies and verifies the merged
-configuration, then restarts continuous acquisition. Failure leaves the new
-staged value visible, stops the run when it was already stopped, and reports the
-exact cause; it never leaves the old device setting silently active.
+Analyzer rows emit atomic patches that merge against the latest staged state,
+never a sidebar-render snapshot. Run applies that exact staged revision. While
+Run is active, a committed change stops after the in-flight sweep, shows
+`RETUNING`, applies and verifies the newest merged revision, then restarts
+continuous acquisition. Any in-flight sweep carrying a superseded requested
+configuration is quarantined and cannot repaint the new span. Failure leaves
+the new staged value visible, stops the run when it was already stopped, and
+reports the exact cause; it never leaves the old device setting silently active.
 
 ### UX-SPC-06 — Advanced measurement views
 

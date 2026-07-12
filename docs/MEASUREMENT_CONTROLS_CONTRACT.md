@@ -1,7 +1,7 @@
 # Spectrum measurement controls contract
 
 Status: implementation baseline  
-Version: 2.3.0
+Version: 2.4.0
 Updated: 2026-07-11
 
 This document is normative for TinySA Atomizer marker, trace, amplitude-display,
@@ -21,8 +21,10 @@ That firmware surface is recorded in `DeviceCapabilities`; it is not treated as
 a dependable complete-configuration API. The shell summary does identify
 enabled trace IDs and the value command returns indexed points, so Atomizer
 reads and exactly validates those values as a separate `FirmwareTraceFrame`
-bank. Missing configuration properties remain `unknown`. Device frames render
-as `D1..D4` with `firmware-readback` provenance.
+bank. Missing configuration properties remain `unknown`. Device frames are
+exposed as `D1..D4` with `firmware-readback` provenance. Their plot overlays
+are off by default and controlled independently from the host trace bank;
+visibility never commands, clears, or relabels a firmware trace.
 
 Atomizer also calculates four host traces and eight marker readouts from the
 exact host sweep arrays. Those render as `H1..H4` with `host-derived`
@@ -31,7 +33,7 @@ provenance. Host and device trace banks are never merged or relabeled.
 ## Trace-bank contract
 
 `TraceBankConfiguration` contains exactly four uniquely identified traces. The
-initial bank is T1 Clear / Write and T2–T4 Blank. Each `TraceFrame` identifies its
+initial bank is T1 Clear / Write and T2–T4 Off (`blank`). Each `TraceFrame` identifies its
 source trace, mode, exact frequency grid, power array, source sweep ID,
 accumulated sweep count, and host-derived provenance.
 
@@ -42,17 +44,19 @@ accumulated sweep count, and host-derived provenance.
 | Min Hold | Minimum dBm observed independently at every bin | Since reset/grid change |
 | Average | Rolling mean of linear milliwatt power, converted back to dBm | Configured 2–100 sweeps |
 | View / Freeze | Preserve the last valid accumulated frame | Yes |
-| Blank | Do not render; preserve its accumulated frame | Yes |
+| Off (`blank`) | Do not render; preserve its accumulated frame | Yes |
 
-Changing the frequency grid or point count invalidates prior binwise memory and
-starts a new accumulation. Switching from Blank or View back to its retained
+Changing any staged analyzer acquisition configuration invalidates displayed
+host/device frames, history, detections, and classifications before a new sweep
+can be admitted. The accumulator also rejects grid-incompatible memory.
+Switching from Off or View back to its retained
 accumulation mode resumes only when the grid is identical; selecting a different
 accumulation mode begins a new frame. Reset
 clears one trace without mutating the other three. Incomplete or mismatched
 sweeps never enter any accumulator.
 
 This vocabulary aligns with the common Clear/Write, Max Hold, Min Hold, Average,
-View, and Blank workflows documented by Keysight and Rohde & Schwarz; it does
+View, and Blank/Off workflows documented by Keysight and Rohde & Schwarz; it does
 not imply command or numerical equivalence to those instruments.
 
 ## Marker contract
@@ -64,7 +68,7 @@ default (M1 enabled/peak, M2–M8 disabled) migrates once to the all-off bank;
 edited banks are preserved.
 
 Marker frequency is always snapped to the nearest actual bin of its assigned
-`TraceFrame`. Markers on Blank traces or traces without a frame have no reading.
+`TraceFrame`. Markers on Off traces or traces without a frame have no reading.
 Clicking or dragging on the plot places the active marker on an actual bin and
 changes tracking to Fixed.
 
@@ -109,7 +113,7 @@ reference viewport must have no clipped input, overlapping label, horizontal
 overflow, or workspace scroll with Atom open.
 
 Atom receives typed tools for `get_measurement_state`, `configure_marker`,
-`search_marker`, `configure_trace`, `reset_trace`, and
+`search_marker`, `configure_trace`, `configure_firmware_trace_visibility`, `reset_trace`, and
 `configure_spectrum_display`, plus the advanced view tools governed by
 `ADVANCED_MEASUREMENTS_CONTRACT.md`. These execute the same reducers as the
 visual controls. Screenshot/computer operation remains available for UI
@@ -120,7 +124,7 @@ inspection but is not a substitute for the typed measurement tools.
 - `MEAS-001`: the trace bank rejects missing, duplicate, or out-of-range trace IDs.
 - `MEAS-002`: Max Hold and Min Hold are binwise across complete identical grids.
 - `MEAS-003`: Average is performed in linear power, never directly in dBm.
-- `MEAS-004`: View and Blank retain memory; Reset clears only the selected trace.
+- `MEAS-004`: View and Off retain memory; Reset clears only the selected trace.
 - `MEAS-005`: a grid or point-count change starts a new accumulation.
 - `MEAS-006`: all marker readings bind to exact bins of their assigned trace.
 - `MEAS-007`: delta and noise-density calculations preserve explicit units.
@@ -132,6 +136,9 @@ inspection but is not a substitute for the typed measurement tools.
 - `MEAS-013`: enabled D1–D4 frames require unique firmware IDs, exact contiguous indices, finite dBm values and the complete acquired point count.
 - `MEAS-014`: H1–H4 and D1–D4 remain visually and semantically distinguishable even when their curves coincide.
 - `MEAS-015`: all eight markers are off by default and the exact legacy untouched default migrates without rewriting edited banks.
+- `MEAS-016`: every host trace has an explicit operator-facing Off action; an empty host frame bank never falls back to an implicit H1 curve.
+- `MEAS-017`: D1–D4 visibility is explicit, defaults off, is separately agent-operable, and never mutates firmware trace state.
+- `MEAS-018`: a sweep whose `requested` analyzer configuration differs from the latest staged revision is quarantined before history, trace, detection, or classification reducers.
 
 ## References
 
