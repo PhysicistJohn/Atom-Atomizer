@@ -40,9 +40,27 @@ During the receive-only qualification, the first command on every session was `o
 | Text sweep | 101 rows; peak −43.03 dBm at 105.000 MHz; minimum −92.38 dBm |
 | Raw sweep | 101 points; peak −42.78 dBm at 105.030 MHz; minimum −92.41 dBm |
 | Raw/text agreement | peak level within 0.25 dB; minima within 0.04 dB in consecutive live sweeps |
-| LCD capture | 480×320 RGB565LE, exactly 307,200 bytes |
-| LCD evidence hash | `39174d17a08e3f6c09407bec2d2f8088a56232c5ec177056c8f3b5b37f53694a` |
+| LCD capture wire payload | 480×320 RGB565, high byte first, exactly 307,200 bytes |
+| Atomizer screen frame | byte-swapped once at the physical transport boundary to the declared RGB565LE host contract |
+| LCD wire-evidence hash | `39174d17a08e3f6c09407bec2d2f8088a56232c5ec177056c8f3b5b37f53694a` |
 | Terminal state | clean disconnect with another `output off`; RF state no longer inferred after close |
+
+### LCD byte order resolved
+
+The ZS407 `capture` command streams the ST7796S memory-read bytes in panel order:
+the canonical RGB565 high byte followed by the low byte. This is directly
+consistent with the firmware's byte-reversed `RGB565` storage macro and was
+confirmed on hardware with the runtime Atomic palette: intended background
+RGB `(9, 11, 12)` appeared in the capture as bytes `08 41`, canonical RGB565
+`0x0841`. Reading those bytes as a little-endian word (`0x4108`) produced the
+incorrect purple/yellow mirror even though the physical panel was
+charcoal/mint.
+
+The public `ScreenFrame` contract remains RGB565LE. The physical device adapter
+performs the one required byte swap after consuming the exact fixed-length
+payload. The executable-twin bridge already performs the same panel-order to
+host-order conversion; protocol fixtures are already host-order. This keeps
+rendering transport-independent without falsifying the physical wire format.
 
 ### Raw sweep variance resolved
 

@@ -430,7 +430,14 @@ export class TinySaDeviceService {
     const scheduler = this.#ready();
     this.#requireCapability('capture');
     try {
-      const pixels = await scheduler.executeBinary('capture', SCREEN_BYTES, 20_000);
+      const wirePixels = await scheduler.executeBinary('capture', SCREEN_BYTES, 20_000);
+      // The ZS407 ST7796S returns canonical RGB565 in panel/wire order
+      // (high byte first).  ScreenFrame deliberately exposes little-endian
+      // host words; the executable twin already performs this conversion at
+      // its bridge boundary.
+      const pixels = this.transport.kind === 'usb-cdc-acm'
+        ? rgb565BigEndianToLittleEndian(wirePixels)
+        : wirePixels;
       const frame: ScreenFrame = {
         width: ZS407_FIRMWARE_LIMITS.screenWidth,
         height: ZS407_FIRMWARE_LIMITS.screenHeight,
@@ -581,6 +588,16 @@ export class TinySaDeviceService {
   }
 
   #emit(event: DeviceEvent): void { for (const listener of this.#listeners) listener(event); }
+}
+
+function rgb565BigEndianToLittleEndian(wirePixels: Uint8Array): Uint8Array {
+  if (wirePixels.length % 2 !== 0) throw new Error('RGB565 capture contained a partial pixel');
+  const pixels = new Uint8Array(wirePixels.length);
+  for (let offset = 0; offset < wirePixels.length; offset += 2) {
+    pixels[offset] = wirePixels[offset + 1]!;
+    pixels[offset + 1] = wirePixels[offset]!;
+  }
+  return pixels;
 }
 
 function disconnectedSnapshot(): DeviceSnapshot {

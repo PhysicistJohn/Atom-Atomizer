@@ -17,6 +17,7 @@ export interface FakeOptions {
   batteryMillivolts?: number;
   versionResponse?: string;
   infoResponse?: string;
+  screenCaptureByteOrder?: 'big-endian' | 'little-endian';
 }
 
 const encoder = new TextEncoder();
@@ -134,7 +135,12 @@ export class FakeTinySaTransport implements ByteTransport {
       case 'scan': return this.#textSweep(args);
       case 'scanraw': return this.#rawSweep(args);
       case 'zero': return this.#zeroCommand(args);
-      case 'capture': return fakeScreen(this.#sweepIndex, this.#startHz, this.#stopHz);
+      case 'capture': return fakeScreen(
+        this.#sweepIndex,
+        this.#startHz,
+        this.#stopHz,
+        this.options.screenCaptureByteOrder ?? 'little-endian',
+      );
       case 'freq':
       case 'level':
       case 'modulation':
@@ -293,7 +299,12 @@ export class FakeTinySaTransport implements ByteTransport {
 
 }
 
-function fakeScreen(sweepIndex: number, startHz: number, stopHz: number): Uint8Array {
+function fakeScreen(
+  sweepIndex: number,
+  startHz: number,
+  stopHz: number,
+  byteOrder: 'big-endian' | 'little-endian',
+): Uint8Array {
   const width = ZS407_FIRMWARE_LIMITS.screenWidth;
   const height = ZS407_FIRMWARE_LIMITS.screenHeight;
   const pixels = new Uint8Array(width * height * 2);
@@ -307,8 +318,13 @@ function fakeScreen(sweepIndex: number, startHz: number, stopHz: number): Uint8A
       const header = y < 34;
       const rgb565 = trace ? 0x7ff0 : header ? 0x10a3 : grid ? 0x2145 : 0x0861;
       const offset = (y * width + x) * 2;
-      pixels[offset] = rgb565 & 0xff;
-      pixels[offset + 1] = rgb565 >> 8;
+      if (byteOrder === 'big-endian') {
+        pixels[offset] = rgb565 >> 8;
+        pixels[offset + 1] = rgb565 & 0xff;
+      } else {
+        pixels[offset] = rgb565 & 0xff;
+        pixels[offset + 1] = rgb565 >> 8;
+      }
     }
   }
   return pixels;

@@ -132,7 +132,7 @@ identification loudly.
 | RBW command | 0.2–850 kHz or `auto` |
 | attenuation command | 0–31 dB integer or `auto` |
 | requested sweep time | 3 ms–60 s, or firmware minimum via zero |
-| display | 480×320 RGB565 little-endian |
+| host display frame | 480×320 RGB565 little-endian |
 | raw RSSI representation | signed 16-bit little-endian Q5 of `powerDbm + ext_zero_level` |
 
 The harmonic ceiling is command-addressable firmware behavior, not an RF accuracy
@@ -249,10 +249,14 @@ command was attempted.
 
 ## Screen and remote touch
 
-`capture` emits exactly `480 × 320 × 2 = 307,200` RGB565 little-endian bytes before
-the prompt. `touch x y` accepts bounded panel coordinates. `release` optionally
-accepts the final coordinates. Remote touch is a general instrument UI operation
-and can reach RF controls; agent-driven remote touch is therefore high impact.
+On the physical ZS407, `capture` emits exactly `480 × 320 × 2 = 307,200` RGB565
+panel bytes before the prompt, with each canonical word's high byte first. The
+device adapter swaps each physical pixel once into the RGB565 little-endian
+`ScreenFrame` contract. The executable-twin bridge exports that normalized host
+format directly. `touch x y` accepts bounded panel coordinates. `release`
+optionally accepts the final coordinates. Remote touch is a general instrument
+UI operation and can reach RF controls; agent-driven remote touch is therefore
+high impact.
 
 ## Readback matrix
 
@@ -282,6 +286,7 @@ and can reach RF controls; agent-driven remote touch is therefore high impact.
 - `FW-PROTO-005`: `scan` rejects missing, extra, non-finite or non-monotonic rows.
 - `FW-PROTO-006`: `scanraw` validates braces, sample markers, Q5 decoding, the immediate `zero` offset readback, subtraction, and retained offset provenance.
 - `FW-PROTO-007`: screen capture consumes exactly 307,200 bytes before prompt.
+- `FW-PROTO-007A`: physical RGB565 panel-order bytes normalize exactly once to the RGB565LE host frame.
 - `FW-PROTO-008`: physical identity without ZS407 fails connection.
 - `FW-PROTO-009`: generator configuration begins and ends muted.
 - `FW-PROTO-010`: disconnect while output may be active yields `unknown` RF state.

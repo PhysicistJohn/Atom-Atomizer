@@ -47,6 +47,22 @@ describe('device fail-loud lifecycle', () => {
     await service.disconnect();
   });
 
+  it('normalizes physical ZS407 RGB565 panel bytes to the little-endian screen contract', async () => {
+    const bytes = new FakeTinySaTransport({ screenCaptureByteOrder: 'big-endian' });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+
+    const frame = await service.captureScreen();
+
+    expect(frame).toMatchObject({ width: 480, height: 320, format: 'rgb565le' });
+    expect(frame.pixels).toHaveLength(307_200);
+    // The fixture's first pixel is canonical RGB565 0x10a3.  The physical
+    // command emits 10 a3; ScreenFrame must expose the LE bytes a3 10.
+    expect(Array.from(frame.pixels.slice(0, 2))).toEqual([0xa3, 0x10]);
+    await service.disconnect();
+  });
+
   it('rejects a tinySA4 that has no strict ZS407 evidence', async () => {
     const bytes = new FakeTinySaTransport({
       versionResponse: 'tinySA4_v1.4-217-gc5dd31f\r\nHW Version:V0.5.4 max2871',
