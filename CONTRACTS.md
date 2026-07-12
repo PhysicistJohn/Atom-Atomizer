@@ -46,7 +46,13 @@ Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It b
 
 SignalLab is an independent repository and application. It owns 79 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Its Firmware sink is `reserved-not-connected`; Atomizer has no SignalLab tools or hidden process coupling. Activating that future edge requires a coordinated contract-version change in all three repositories.
 
-Spectrum now exposes four host-derived trace slots and eight host-derived markers over complete acquired sweeps, plus trigger and amplitude-display controls. This mirrors established instrument workflows without claiming unreadable firmware state or equivalence to a vendor implementation. Exact mode semantics, evidence labels, and acceptance tests are governed by the measurement contract.
+Spectrum now exposes four host-derived trace slots (`H1..H4`) and eight
+host-derived markers, off by default, over complete acquired sweeps. Enabled
+firmware trace values are independently read with exact point-count validation
+and rendered as `D1..D4` firmware-readback overlays; incomplete firmware trace
+state is never inferred. Continuous analyzer edits use an explicit
+stop/apply/readback/resume transaction. Exact mode semantics, evidence labels,
+and acceptance tests are governed by the measurement and protocol contracts.
 
 Work-package status is therefore interpreted as follows:
 
@@ -134,7 +140,12 @@ tools/                    Hardware probes and release utilities
 
 Connection: `disconnected -> discovering -> connecting -> identifying -> ready -> recovering -> disconnected`, with `faulted` reachable from every active state.
 
-Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates. Generator output is an explicit state, never inferred from mode. Transitions stop conflicting activity before configuration changes.
+Operation: `idle <-> analyzer`, `idle <-> generator`, with streaming substates.
+Generator output is an explicit state, never inferred from mode. Analyzer edits
+during streaming execute a serialized `stop after in-flight -> configure ->
+readback verify -> resume` transaction; failure never leaves an old device
+configuration silently running. Other transitions stop conflicting activity
+before configuration changes.
 
 ### Assume/guarantee composition rule
 
@@ -536,13 +547,13 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 **Deliverables**
 
-- Trusted unified WebRTC SDP gateway, renderer peer/media lifecycle, server VAD/interruption, transcript and Realtime function-call loop.
+- Trusted unified WebRTC SDP gateway, renderer peer/media lifecycle, one automatic muted startup attempt, server VAD/interruption, `gpt-realtime-whisper` streaming input transcription, and `response.done`-bounded function-call continuation.
 - OS microphone permission/packaging configuration, voice states, cancellation and resource cleanup.
 - Voice-specific RF task and duplicate-execution evals.
 
 **Acceptance**
 
-- AI-01–06, AI-17–18 pass on primary platforms.
+- AI-01–06, AI-17–18, AI-24–26 and AI-39–43 pass on primary platforms.
 - `OPENAI_KEY` never crosses main/preload; media resources close on every exit/failure path.
 - Barge-in does not duplicate or replay an instrument operation.
 
@@ -599,7 +610,7 @@ claims.
 - RBW-normalized band-power integration, lower/upper ACP/ACLR, configurable
   percent-power OBW, and deterministic Hann-windowed envelope STFT engines.
 - One fixed-height Spectrum/Waterfall/Channel/Time-STFT stage with setup and
-  trace/marker/display overlays; 1720 × 1040 work-area-clamped startup sizing.
+  trace/marker/display overlays; 1920 × 1100 work-area-clamped startup sizing.
 - Typed Atom selection/configuration/result/acquisition hooks and minimized
   application context for every new view.
 - Official-vendor workflow research, evidence boundary, failure matrix, unit

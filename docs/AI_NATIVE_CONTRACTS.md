@@ -5,14 +5,15 @@ Version: 4.0.0
 Model lock: `gpt-realtime-2.1-mini`  
 Reasoning lock: `high`  
 Voice lock: `ballad`  
-VAD lock: `server_vad`, threshold `0.95`  
+VAD lock: `server_vad`, threshold `0.97`
+Input-transcription lock: `gpt-realtime-whisper`
 Updated: 2026-07-11
 
 This document is normative. “Atom” is the application-layer AI inside TinySA Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
 
 ## 1. Exact model contract
 
-Every AI path uses exactly `gpt-realtime-2.1-mini`:
+Every response-agent path uses exactly `gpt-realtime-2.1-mini`:
 
 | Path | API | Purpose |
 |---|---|---|
@@ -20,6 +21,14 @@ Every AI path uses exactly `gpt-realtime-2.1-mini`:
 | Text agent | Realtime API over trusted WebSocket | Text reasoning, multi-step application tools, screenshot input, app-scoped computer control |
 
 No fallback model, API, endpoint, transport, alias substitution, silent upgrade, retry route, or second reasoning model is permitted. Voice uses Realtime WebRTC; text/tools/computer use Realtime WebSocket. Any authentication, authorization, model, rate-limit, network, protocol or server failure is surfaced and execution stops. Model or transport changes require a contract change, prompt/tool regression evaluation, and explicit owner approval.
+
+Voice input transcription is a separate, non-agent Realtime subsystem locked to
+`gpt-realtime-whisper`; it does not generate Atom responses, reason, choose
+tools, or substitute for the response model. Its sole output is the user's
+streaming transcript. The optional transcription `delay` setting is omitted
+because conversational sessions do not echo it as an acknowledged session
+setting; every field Atomizer does send remains subject to exact echo
+verification.
 
 Every voice and text session sets `reasoning: { effort: "high" }`. The exact model accepted and echoed this configuration in a live WebSocket probe. Lowering effort for latency/cost or changing it dynamically requires an explicit contract and evaluation change; it is not an automatic degradation path.
 
@@ -86,6 +95,7 @@ Atom must:
 - Never invent a waveform classification or imply regulatory-grade accuracy.
 - Never describe software as an RF interlock.
 - Keep initial spoken responses concise and offer deeper analysis.
+- Lead with the answer, make every word earn its place, omit tool narration, and expand only when asked or when safety, uncertainty, or provenance requires it.
 - Explain tool intent before high-impact operations.
 
 ## 4. Agent lifecycle
@@ -111,26 +121,29 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 
 ### 5.1 Session creation
 
-1. User explicitly activates the microphone.
-2. Renderer requests microphone permission and creates one `RTCPeerConnection`.
+1. When `OPENAI_KEY` is configured, renderer makes one automatic startup connection attempt with microphone state already muted. Failure is visible and is not retried automatically.
+2. Renderer requests microphone permission and creates one `RTCPeerConnection`; the local audio track is disabled before it can send audio.
 3. Renderer adds one microphone track and one `oai-events` data channel.
 4. Renderer sends SDP through allow-listed IPC.
-5. Main validates size/shape and calls `/v1/realtime/calls` with the exact model, `high` reasoning, `ballad` voice, `server_vad` threshold `0.95`, Atom instructions and the identical complete text/voice tool catalog.
+5. Main validates size/shape and calls `/v1/realtime/calls` with the exact response model, `high` reasoning, `ballad` voice, `gpt-realtime-whisper` input transcription, `server_vad` threshold `0.97`, Atom instructions and the identical complete text/voice tool catalog.
 6. Main returns SDP only; renderer sets the remote answer.
 7. The microphone track remains muted while the first `session.created` event is recursively compared with every setting in the exact object sent by main. API-supplied defaults and initial differences are logged separately.
 8. Renderer sends the identical shared configuration through `session.update` and starts a bounded ten-second acknowledgement timer.
 9. Every `session.updated` echo is recursively compared. At least one exact acknowledgement must arrive before the timer expires; any final mismatch or timeout is emitted to the console, shown in Atom, and terminates the voice session.
-10. Only after an exact acknowledgement does the renderer unmute the microphone and enter Listening. Remote audio auto-plays only for this user-initiated session.
+10. Only after an exact acknowledgement does the renderer enter Listening. The microphone remains muted until the local human unmutes it; remote Ballad audio auto-plays unless the independent speaker control is muted.
 
 ### 5.2 Voice behavior
 
-- Server voice-activity detection uses activation threshold `0.95`, creates responses, and allows interruption.
+- Server voice-activity detection uses activation threshold `0.97`, creates responses, and allows interruption.
 - Chromium is required to apply echo cancellation, noise suppression and automatic gain control. Requested and applied `MediaStreamTrack` settings are emitted together; a missing or mismatched setting terminates startup rather than silently degrading voice capture.
+- A renderer-global ownership lease and synchronous startup token permit only one peer/session construction at a time, covering auto-connect/manual-connect, React teardown, and in-flight media-permission races. A canceled asynchronous start cannot resurrect a peer. A second remote audio track or distinct stream terminates the session rather than producing double playback; one connected session still preserves normal VAD barge-in.
 - `session.created` and every `session.updated` check emit every sent leaf, the full returned session, and every server-only/default setting in a collapsed console group.
 - Mic, peer connection, data channel and media tracks close on user stop, window close, session failure or component teardown.
-- User and assistant transcripts appear in the same Atom history used by text.
+- User input-transcription deltas and assistant audio-transcript deltas stream into the same Atom history used by text; completion finalizes the existing message rather than appending a duplicate.
+- Input-transcription failure is shown and terminates the voice session; it is never replaced with guessed text or another model.
 - Partial assistant transcripts are not persisted as complete messages.
-- Function calls arriving on the data channel go through the identical validator, policy and approval path as text-agent calls.
+- Function calls are harvested only from completed `response.done` output. They go through the identical validator, policy and approval path as text-agent calls; every function output is submitted before exactly one continuation `response.create`.
+- Invalid function names/JSON/arguments become explicit failed `function_call_output` results so Atom may make one schema-grounded correction inside the bounded chain; they do not masquerade as host success or tear down an otherwise healthy voice transport.
 - Voice function chains are limited to eight calls per user speech turn; duplicate call IDs fail the session.
 - Tool output is returned as `function_call_output`; screenshots are additionally returned as explicitly untrusted Realtime image input before Atom continues.
 - The app never records raw microphone audio locally in v1.
@@ -152,7 +165,9 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 
 The gateway remembers at most four Realtime text conversations and expires idle conversations after five minutes. Renderer conversation IDs are opaque; API-specific objects, sockets and credentials stay in main. Text turns keep conversational continuity while Atom is open. A missing/expired conversation or any API failure stops with an explicit error; the gateway never opens a substitute conversation or replays a completed instrument operation.
 
-Malformed output, unknown tools, bad JSON, invalid ranges and loop overflow fail closed.
+Malformed output, unknown tools, bad JSON and invalid ranges become explicit
+failed tool results inside the active bounded turn. Conversation/session
+protocol failure and loop overflow terminate the affected transport.
 
 ### 6.2 Context contract
 
@@ -175,7 +190,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 
 | Tool | Risk | Approval | Effect |
 |---|---|---|---|
-| `get_application_state` | Observe | Never | Reads route/acquisition/environment |
+| `get_application_state` | Observe | Never | Reads route/acquisition/environment plus complete staged analyzer/generator/detection/measurement configuration |
 | `get_system_topology` | Observe | Never | Reads the versioned trio, active execution, transport, and reserved SignalLab edge |
 | `get_agent_surface` | Observe | Never | Reads every tool policy and UI-control binding with projection and guarantee |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
@@ -206,7 +221,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `computer_key` | Operate | Never | One allow-listed key/shortcut inside the app |
 | `computer_scroll` | Operate | Never | Bounded scroll inside the app |
 | `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
-| `configure_analyzer` | Operate | Never | Changes staged analyzer settings only |
+| `configure_analyzer` | Operate | Never | Applies a non-empty partial patch to staged analyzer settings; omitted fields are preserved and the merged full config is validated |
 | `select_marker` | Operate | Never | Selects one marker for editing without changing its configuration |
 | `configure_marker` | Operate | Never | Configures one of eight host-derived markers through the measurement reducer |
 | `configure_marker_search` | Operate | Never | Configures minimum level and local-peak excursion criteria |
@@ -301,7 +316,8 @@ Computer use is application-scoped specifically to prevent external pages from b
 Atom has a dedicated spatial rail, not a modal chatbot:
 
 - Exact model identity is visible.
-- Voice is the hero interaction with explicit listening/thinking/speaking states.
+- Realtime voice connects once at startup when configured, with the microphone muted by default and no automatic retry.
+- Microphone and speaker controls are the connection/status indicators: disconnected, connected-muted, connected-live, speaking, and error use distinct colors; no microphone-shaped connection button remains.
 - Current instrument context and connectivity are visible.
 - Text, voice transcript, tool activity, failures and approvals share one chronological surface.
 - Suggested workflows teach capabilities instead of generic conversation starters.
@@ -310,8 +326,8 @@ Atom has a dedicated spatial rail, not a modal chatbot:
 
 ## 12. Privacy, cost, and retention
 
-- AI is off unless configured and user-initiated.
-- No background turns, hidden telemetry or always-on microphone.
+- A configured app may establish one idle Realtime voice session automatically; it sends no microphone audio until the local human unmutes the disabled track.
+- No background turns, hidden telemetry, automatic reconnect loop or always-on microphone.
 - Status UI clearly distinguishes API configured, active voice and active tool execution.
 - Session transcript retention is memory-only in the current slice; persistence requires an explicit setting and schema.
 - A future usage view should report request/audio duration and token usage returned by APIs without estimating billing claims.
@@ -383,7 +399,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-22:** Text sockets are trusted-main-only, capacity bounded, idle-expiring and closed on app quit.
 - **AI-23:** Acquisition cannot proceed from a dialog-open state; Atom lists, connects, and verifies `ready` first.
 - **AI-24:** Voice and text sessions both send and retain `reasoning.effort = high`.
-- **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.95`.
+- **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.97`.
 - **AI-26:** Voice and text operation remains gated until every sent session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
 - **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
 - **AI-28:** Remote connected-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
@@ -397,6 +413,12 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-36:** Computer actions fail closed on firmware preparation and flash controls.
 - **AI-37:** Every firmware-updater API method maps to a typed Atom operation or the machine-checked `human-safety-boundary` projection.
 - **AI-38:** Atom treats durable `writeDisposition=started|completed|indeterminate` as irreversible no-repeat evidence and never recommends or attempts another flash.
+- **AI-39:** Voice config includes and exactly verifies `audio.input.transcription.model = gpt-realtime-whisper`; user and assistant deltas stream into one message per turn.
+- **AI-40:** Atom makes one startup voice connection attempt with microphone muted; mic/speaker state remains independently human-controlled and visually encoded.
+- **AI-41:** Realtime calls are harvested only at `response.done`; all outputs precede exactly one continuation response.
+- **AI-42:** Every one of the 53 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
+- **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
+- **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
 
 ## 16. Source traceability
 
@@ -417,6 +439,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - Realtime WebSocket: https://developers.openai.com/api/docs/guides/realtime-websocket
 - Realtime conversations and function calls: https://developers.openai.com/api/docs/guides/realtime-conversations
 - Realtime voice activity detection: https://developers.openai.com/api/docs/guides/realtime-vad
+- Realtime input transcription: https://developers.openai.com/api/docs/guides/realtime-transcription
 - Realtime reasoning and prompting: https://developers.openai.com/api/docs/guides/realtime-models-prompting
 - Function calling: https://developers.openai.com/api/docs/guides/function-calling
 - Computer use and confirmation guidance: https://developers.openai.com/api/docs/guides/tools-computer-use

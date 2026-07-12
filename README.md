@@ -16,7 +16,7 @@ The normative composition is byte-identical in all three repositories at [trio-c
 
 Requirements:
 
-- Node.js 22+ and npm 11+.
+- Node.js 22.23.1 and npm 10.9.8 (the versions pinned by CI).
 - The sibling Firmware repository at `../TinySA_Firmware`.
 - Renode and the pinned Firmware twin dependencies declared by that repository.
 - `../TinySA_SignalLab` only when running the separate SignalLab application.
@@ -34,7 +34,7 @@ Startup follows one closed admission rule:
 2. If exactly one exact ZS407 CDC candidate exists, suppress the twin and automatically connect the physical unit through the strict identity/source/command gate.
 3. If multiple exact candidates exist, suppress the twin and require operator choice.
 4. If no exact ZS407 exists, expose and automatically connect the executable twin from `../TinySA_Firmware`.
-5. A discovery, identity, unsupported-firmware, or twin boot/evidence error is visible and terminal for that admission attempt. It never activates a test double or synthetic replacement.
+5. A discovery, identity, malformed-firmware, required-command, or twin boot/evidence error is visible and terminal for that admission attempt. A syntactically valid unknown physical revision is admitted only as `custom-unqualified`, with persistent warning and no invented source provenance. It never activates a test double or synthetic replacement.
 
 The executable twin boots the pinned `lab-v0.2.0-protocol` firmware in Renode. Its sweeps, LCD framebuffer, touch behavior, and generator state come from executable firmware. Its transport is `renode-monitor-bridge`; USB transactions are explicitly not modeled.
 
@@ -62,7 +62,9 @@ Both AI paths use exactly `gpt-realtime-2.1-mini`:
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both paths use the identical closed tool catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad and server VAD threshold `0.95`; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical 53-tool closed catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+
+Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls.
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
@@ -75,19 +77,20 @@ Atom’s application surface is contract version 4:
 - RF-output enable and general firmware-screen touch require immediate human approval.
 - Firmware status, pinned download, and DFU detection are first-class tools; preflight attestations and the one-shot flash control are explicit local human-only exclusions.
 - Tool loops are bounded to eight operations.
-- Unknown tools, malformed arguments, missing evidence, duplicate Realtime calls, and unavailable conversations fail visibly without retry or reroute.
+- Unknown tools and malformed arguments return explicit failed tool evidence for one bounded schema-grounded correction. Missing evidence, duplicate Realtime calls, unavailable conversations, and session-protocol failure stop visibly without retry or reroute.
 
 ## Implemented instrument surface
 
 - Exact ZS407 USB-shell framing and serialized command scheduling.
-- Unique-device physical auto-admission with a closed shipped/OEM firmware registry and executable-twin admission only when no exact device exists.
-- Analyzer configuration, readback, single/continuous spectrum acquisition, raw/text transfers, and zero span.
+- Unique-device physical auto-admission with qualified shipped/OEM provenance, warning-only custom-firmware admission, and executable-twin admission only when no exact device exists.
+- Analyzer configuration, readback, single/continuous spectrum acquisition, live pause-verify-resume retuning, raw/text transfers, and zero span.
 - Device-observed `scanraw` offset readback and provenance-preserving Q5 decoding.
 - Spectrum, coherent waterfall, channel power/PSD/ACP/ACLR/OBW, and detected-envelope STFT.
-- Four host traces: Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset.
-- Eight markers: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
+- Four host traces (`H1..H4`): Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset; enabled firmware traces are separately read and rendered as provenance-bearing `D1..D4` overlays.
+- Eight markers, all off by default: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
 - Explicit reference level, dB/div, and evidence-backed auto scale.
-- Persistent signal detection and bounded spectral/envelope classification with explicit unknown results.
+- Persistent local-CFAR signal detection with global threshold, local prominence, cross-sweep promotion, and explicit candidate/released states.
+- Measurement-only SignalLab EMSO hypotheses over 79 profiles, with exact/family/unknown decisions, pinned producer provenance, open-set rejection, and no selected-state side channel.
 - Generator frequency, level, path, AM/FM configuration, forced-off apply, RF state, and governed enable.
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.
@@ -98,7 +101,7 @@ Atom’s application surface is contract version 4:
 
 Generator configuration and physical output do not have dependable firmware readback. They remain labeled `commanded`; uncertain transport loss makes RF state `unknown`. Software is not a hardware interlock.
 
-The delivered physical ZS407 is admitted, has passed initial receive-only text/raw sweep, diagnostics, and exact LCD-byte validation, and completed one guarded update to the pinned `c979386` OEM firmware with post-reboot identity verification. This is not RF calibration or complete Gate B qualification; timing matrices, destructive update-fault cases, cable-loss cases, touch, high-frequency behavior, generator behavior, and metrology remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
+The delivered physical ZS407 has passed initial receive-only text/raw sweep, diagnostics, exact LCD-byte validation, and one guarded update to the pinned `c979386` OEM firmware with post-reboot identity verification. It was subsequently observed running custom revision `43eb0f1`, which Atomizer admitted with exact USB/command/output-off checks and explicit `custom-unqualified` provenance. This is not RF calibration or complete Gate B qualification; timing matrices, destructive update-fault cases, cable-loss cases, touch, high-frequency behavior, generator behavior, and metrology remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
 
 Zero span is detected power versus time, not I/Q. Envelope STFT cannot establish phase, EVM, symbols, or protocol identity. Standards-derived SignalLab profiles are visual resource/timing projections unless separately backed by immutable conformance evidence.
 
@@ -115,11 +118,12 @@ Cross-repository contract and executable-twin verification:
 
 ```bash
 npm run check:trio-contract
+npm run check:signal-classifier
 npm run check:firmware-twin
 npm run release:trio
 ```
 
-`check:trio-contract` requires byte-identical v2 manifests and reconciles Atomizer, physical/OEM firmware evidence, Firmware bridge, and SignalLab contract versions. `check:firmware-twin` boots Renode, checks the exact ready declaration, runs a real firmware sweep, captures the LCD, and verifies generator output returns off.
+`check:trio-contract` requires byte-identical v2 manifests and reconciles Atomizer, physical/OEM firmware evidence, Firmware bridge, and SignalLab contract versions. `check:signal-classifier` generates the 79-profile and open-set offline measurement corpus from SignalLab. `check:firmware-twin` boots Renode, checks the exact ready declaration, runs a real firmware sweep, captures the LCD, and verifies generator output returns off.
 
 ## Workspace map
 

@@ -175,20 +175,29 @@ units (`dBm`, `dBmV`, `dBuV`, `RAW`, `V`, `Vpp`, `W`), scale/reference level,
 trace value access, copy, freeze, subtract, and view operations across traces
 1–4.
 
-This is a command-capability statement, not a complete state-readback claim. The
-shell query output does not round-trip every trace property reliably enough to
-reconstruct four simultaneous traces; the pinned trace-list formatting also
-does not expose the frozen argument as complete machine-readable state. Atomizer
-therefore keeps the analyzer's unit command at `trace dBm` and derives its
-simultaneous Clear/Write, Max Hold, Min Hold, Average, View/Freeze and Blank
-frames from the exact host sweep arrays. Its eight marker readouts are derived
-from those frames. Every such surface says `HOST MATH` and is governed by
+This is not a complete trace-configuration readback claim. The trace-list output
+does not round-trip every property and the pinned formatting may omit the
+frozen argument. Atomizer records that property as `unknown` unless it is
+explicitly present.
+
+The value surface is usable. After every complete sweep Atomizer queries
+`trace`, validates each enabled Ultra trace ID in `1..4`, and reads every point
+of enabled stored/raw traces with `trace <id> value`. Trace 1 is coherently
+identified with the just-acquired measured sweep; Trace 2 and Trace 3 are stored
+slots; Trace 4 is the raw/temp slot. Any malformed line, duplicate/missing
+index, non-finite dBm value, or wrong point count rejects the acquisition. These
+frames carry `evidence=firmware-readback` and render as `D1..D4` device traces.
+
+Separately, Atomizer derives four simultaneous Clear/Write, Max Hold, Min Hold,
+Average, View/Freeze and Blank frames from the exact host sweep arrays. Its
+eight marker readouts are derived from those host frames. These carry
+`evidence=host-derived` and render as `H1..H4`. Device and host traces never
+impersonate one another; exact mode semantics remain governed by
 `MEASUREMENT_CONTROLS_CONTRACT.md`.
 
-No failed host projection falls through to firmware marker/trace manipulation or
-remote screen touch. A future firmware-backed state mode requires explicit
-request/result grammars, readback fixtures, a capability-profile revision, and a
-separate evidence label.
+No failed host projection falls through to firmware marker manipulation or
+remote screen touch. Firmware trace values are read-only evidence; Atomizer
+does not infer missing device configuration from them.
 
 ## Sweep payloads
 
@@ -256,7 +265,12 @@ device adapter swaps each physical pixel once into the RGB565 little-endian
 format directly. `touch x y` accepts bounded panel coordinates. `release`
 optionally accepts the final coordinates. Remote touch is a general instrument
 UI operation and can reach RF controls; agent-driven remote touch is therefore
-high impact.
+Host continuous acquisition is stopped after its in-flight sweep before a press
+is sent. Press and release execute through one serialized application queue.
+Only after a successful release does Atomizer reapply/verify its staged analyzer
+configuration and resume acquisition when it was previously running. A failed
+gesture stays visible and is not raced by the sweep loop or automatically
+retried.
 
 ## Readback matrix
 
@@ -269,7 +283,8 @@ high impact.
 | actual attenuation | `attenuate` query output | observed |
 | raw sweep offset | `zero` query output immediately before transfer | observed and retained per raw sweep |
 | marker/trace slot counts | pinned firmware constants and `help` support | capability-derived |
-| simultaneous desktop trace frames | complete acquired sweeps | host-derived |
+| enabled device trace values | `trace`, `trace <id> value` with exact point count | firmware-readback (`D1..D4`) |
+| simultaneous desktop trace frames | complete acquired sweeps | host-derived (`H1..H4`) |
 | desktop marker readouts/search | assigned host trace frames | host-derived |
 | paused/resumed | `status` | observed |
 | battery voltage | `vbat` | observed telemetry |
@@ -293,4 +308,6 @@ high impact.
 - `FW-PROTO-011`: capability discovery requires both `trace` and `marker` and reports four/eight slots.
 - `FW-PROTO-012`: desktop trace/marker projections remain labeled host-derived and never impersonate firmware readback.
 - `FW-PROTO-013`: the shipped hardware line plus strict `info` product line admits ZS407; either response without sufficient model evidence rejects.
-- `FW-PROTO-014`: unknown firmware source revisions reject instead of inheriting the host baseline provenance.
+- `FW-PROTO-014`: an unknown syntactically valid source revision is admitted only as `custom-unqualified` after exact ZS407 identity, required command/framing and output-off checks; its warning and unresolved source provenance remain visible.
+- `FW-PROTO-015`: every enabled Ultra firmware trace has one unique ID in `1..4`, exact contiguous indices and the acquired point count; malformed device trace readback rejects.
+- `FW-PROTO-016`: remote press/release cannot interleave with continuous acquisition; resume occurs only after successful release and analyzer re-verification.

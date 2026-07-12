@@ -18,15 +18,31 @@ This record separates facts observed on the delivered unit from source-derived l
 | Hardware line | `HW Version:V0.5.4 max2871` |
 | Initial firmware | `tinySA4_v1.4-217-gc5dd31f` |
 | Initial resolved source | `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c` |
-| Current verified firmware | `tinySA4_v1.4-224-gc979386` |
-| Current resolved source | `c97938697b6c7485e7cab50bca9af76996b7d671` |
-| Build time | `Dec 17 2025 - 10:50:40` |
+| Verified OEM firmware after guarded update | `tinySA4_v1.4-224-gc979386` |
+| Resolved OEM source | `c97938697b6c7485e7cab50bca9af76996b7d671` |
+| Current observed firmware | `tinySA4_hw-v0.3-fft1024-g43eb0f1` |
+| Current qualification | `custom-unqualified`; source unresolved, warning visible |
+| OEM build time | `Dec 17 2025 - 10:50:40` |
 | MCU/platform | STM32F303xC, ARMv7E-M Cortex-M4F |
-| Shell commands observed | 77; all required Atomizer commands present |
+| Shell commands observed | 79 on the custom build; all required Atomizer commands present |
 
-The source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before the reported build time. Atomizer admits this revision through a closed revision-to-full-commit registry. An unknown revision is rejected; it is never labeled with the host baseline commit.
+The OEM source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before its reported build time. Atomizer admits that revision through a closed revision-to-full-commit registry. A syntactically valid unknown revision is not assigned the host or OEM commit: it may be admitted only as `custom-unqualified` after the same exact ZS407 identity, required-command, framing and output-off gates, with an explicit warning.
 
-The shipped `version` hardware line does not contain `ZS407`. The exact product line appears in `info`. Physical identity therefore requires all of: exact USB identifiers, `tinySA4_` firmware, a hardware line, strict ZS407 evidence across `version` and `info`, a supported source revision, and the complete required command catalog.
+The shipped `version` hardware line does not contain `ZS407`. The exact product
+line appears in `info`. Physical identity therefore requires all of: exact USB
+identifiers, `tinySA4_` firmware, a hardware line, strict ZS407 evidence across
+`version` and `info`, a parseable source revision, and the complete required
+command catalog. Source qualification is separate from identity evidence.
+
+### Custom-firmware admission evidence
+
+After the OEM update, the unit was observed running
+`tinySA4_hw-v0.3-fft1024-g43eb0f1`. Atomizer verified the exact USB/model
+identity, 79-command required surface, prompt/framing behavior, and output-off
+terminal state, then admitted it as `custom-unqualified`. It deliberately did
+not populate `firmwareSourceCommit` and disabled the pinned OEM updater for that
+session. This proves protocol admission only; it is not RF, FFT-path, timing, or
+metrology qualification of the custom firmware.
 
 ## Receive-only transaction evidence
 

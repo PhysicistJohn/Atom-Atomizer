@@ -53,7 +53,14 @@ Lab. Traffic-light controls occupy a reserved leading area inside the draggable
 top bar; brand and controls may not overlap them. Other platforms retain native
 window controls without the macOS-only inset spacing.
 
-Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the reference width it is a detached intelligence layer and the workspace reserves its full footprint, so the active trace is never hidden. Below the reference width Atom becomes an explicit overlay that the operator can close; it must not silently cover a high-impact approval or RF state. The exact model identity, reasoning effort, transport, and configured/listening/thinking/speaking state remain visible.
+Atom is governed by `AI_NATIVE_CONTRACTS.md`. At the 1920×1100
+work-area-clamped reference size it is a detached intelligence layer and the
+workspace reserves its full footprint, so the active trace is never hidden.
+Below the reference width Atom becomes an explicit overlay that the operator can
+close; it must not silently cover a high-impact approval or RF state. Realtime
+voice connects once at startup with the microphone muted. The independent mic
+and speaker buttons encode disconnected, connected-muted, connected-live,
+speaking, and error states; a redundant microphone connection button is absent.
 
 ### 2.2 Workspace routes
 
@@ -85,7 +92,7 @@ An admitted older supported physical revision opens one centered, no-scroll firm
 - Flashing shows the actual dfu-util erase/download stage percentage, a bounded overall projection, and elapsed time; it never substitutes an animated wait or time-derived fake percentage.
 - Reconnecting distinguishes “write complete” from “post-reboot verified.”
 - A post-write failure says not to flash again and preserves recovery evidence.
-- No updater stage scrolls at the 1720×1040 reference window.
+- No updater stage scrolls at the 1920×1100 reference window.
 
 The top-bar update affordance reopens the staged flow. Atom may open, inspect, download, and detect through typed tools. Safety attestations and the final flash button carry explicit agent exclusions; coordinate computer use cannot click them.
 
@@ -251,14 +258,23 @@ An incomplete or mismatched sweep never partially paints.
 
 ### UX-SPC-05 — Traces, markers, and amplitude display
 
-The compact measurement command bar exposes four traces, eight markers, and
+The compact measurement command bar exposes four host traces, eight markers, and
 reference-level/division controls without reducing the plot to a secondary
 surface. Exactly one panel opens at a time. Trace modes are Clear/Write, Max
 Hold, Min Hold, linear-power Average, View/Freeze, and Blank. Markers are
 trace-assignable and support fixed/peak tracking, peak/min/next search, normal,
-delta, and noise-density readouts. The surface and plot say `HOST MATH`; they do
-not claim full firmware state. Exact calculations, persistence, reset, and
+delta, and noise-density readouts. All eight markers are off by default; the
+exact untouched legacy M1-on preference migrates to all-off without rewriting a
+deliberately edited bank. Host traces render as `H1..H4`. Enabled firmware trace
+readbacks render independently as `D1..D4`, with distinct dash/color treatment
+and `firmware-readback` evidence. Exact calculations, persistence, reset, and
 failure semantics are governed by `MEASUREMENT_CONTROLS_CONTRACT.md`.
+
+While Run is active, analyzer inputs remain editable. A committed change stops
+after the in-flight sweep, shows `RETUNING`, applies and verifies the merged
+configuration, then restarts continuous acquisition. Failure leaves the new
+staged value visible, stops the run when it was already stopped, and reports the
+exact cause; it never leaves the old device setting silently active.
 
 ### UX-SPC-06 — Advanced measurement views
 
@@ -270,6 +286,13 @@ are RBW-normalized host estimates from complete scalar sweeps. STFT consumes onl
 zero-span detected-power evidence and is always labeled Envelope/Not I/Q. Exact
 math, failure behavior, Atom hooks, and acceptance are governed by
 `ADVANCED_MEASUREMENTS_CONTRACT.md`.
+
+When the analyzer span changes, an already valid channel definition is retained.
+An out-of-span definition is recentered, and only if necessary proportionally
+bounded to keep main/adjacent integration windows inside the new span. The
+Classification workspace is a fixed-height three-row composition (pipeline,
+result/candidates, envelope); only the bounded candidate list may scroll, never
+the document, and its empty/result state is always visible with Atom open.
 
 ## 6. Signal Detection mode contract
 
@@ -285,44 +308,49 @@ type DetectionThreshold =
 interface SignalDetectionConfig {
   threshold: DetectionThreshold;
   minimumBandwidthHz: number;
+  minimumProminenceDb: number;
   minimumConsecutiveSweeps: number;
   releaseAfterMissedSweeps: number;
 }
 ```
 
-Required result fields: stable event ID, start/stop/peak frequencies, peak power, estimated bandwidth, first/last timestamps, source sweep IDs, detector version/configuration, and quality flags.
+Required result fields: stable event ID, start/stop/peak frequencies, peak power, measured local prominence, effective local prominence threshold, estimated bandwidth, first/last timestamps, source sweep IDs, detector version/configuration, and quality flags.
 
 ### UX-DET-01 — Configure detector
 
 - Adaptive threshold displays estimated floor and margin separately.
 - Absolute threshold displays dBm.
-- Minimum bandwidth and persistence declare exact units.
+- Minimum prominence, minimum bandwidth, and persistence declare exact units.
 - Changes affect subsequent analysis; re-analysis of existing data is explicit and records the new config.
 
 ### UX-DET-02 — Display detections
 
-- Detection bands appear on the plot without obscuring the trace.
-- Event table provides status, peak frequency, power, bandwidth, age, and inspect action.
+- Spectrum never overlays detection bands or dashed peak lines; localization belongs to Detection while Spectrum retains only the compact tracked-count metric.
+- The primary event table shows only cross-sweep-promoted active emissions. Pending candidates are counted separately; released tracks never read as current signals.
+- Event rows provide peak frequency, power, measured/required prominence, bandwidth, and persistence.
 - Selected event synchronizes plot highlight, detail panel, and classification candidate.
 - Zero events is a valid outcome, distinct from “not analyzed” and “analysis failed.”
 
 ### UX-DET-03 — Track across sweeps
 
-Tracking is a separate stateful stage from sweep-local segmentation. `SignalTracker` v2 greedily associates highest-score candidates by occupied-range overlap and peak-frequency distance bounded by three bins or observed bandwidth. It promotes a stable ID after `minimumConsecutiveSweeps`, records missed sweeps, emits one explicit `released` result after the configured miss window, and then removes the track. Configuration changes reset the tracker rather than rewriting prior provenance. Merge/split policy remains one-to-one best match and must change version if revised.
+`SignalDetector` v5 first applies the declared absolute/adaptive global threshold, bridges only bounded gaps of at most two returned sweep bins, and estimates each candidate's local shoulder level and robust sigma from neighboring returned bins. A candidate must clear both `minimumProminenceDb` and four local robust sigmas. The algorithm operates on returned scalar sweep bins; firmware FFT capacity is not represented as instantaneous RF FFT evidence.
+
+Tracking is a separate stateful stage from sweep-local segmentation. `SignalTracker` v2 greedily associates highest-score candidates by occupied-range overlap and peak-frequency distance bounded by three returned bins or observed bandwidth. It promotes a stable ID after `minimumConsecutiveSweeps`, records missed sweeps, emits one explicit `released` result after the configured miss window, and then removes the track. Only active tracks enter classification. Configuration changes reset the tracker rather than rewriting prior provenance. Merge/split policy remains one-to-one best match and must change version if revised.
 
 Before claiming production detection quality, publish event-level precision/recall, false alarms per sweep/hour, detection probability versus SNR, frequency/bandwidth error, performance by capture configuration, and boundary/overlap behavior.
 
 ## 7. Waveform Classification mode contract
 
-Classification comprises three explicitly separated evidence levels:
+Classification comprises four explicitly separated evidence levels:
 
 1. **Spectral morphology:** deterministic labels for narrow carrier, multi-carrier, wideband noise-like, and band-limited trace shape. Implemented as experimental evidence; it is not a modulation or protocol claim.
 2. **Zero-span envelope:** deterministic steady, amplitude-varying, or pulsed detected-power behavior. Implemented; zero span is not I/Q.
-3. **Validated modulation/protocol classifier:** taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated.
+3. **SignalLab synthetic hypothesis:** a pinned expert Bayesian model compares repeated scalar spectra and an optional matching detected-power envelope with 79 closed SignalLab profiles. Implemented as experimental EMSO evidence. Digital families require the envelope; active SignalLab selection is never an input. Exact profile, family, and unknown are separate decisions, and scores are model posteriors rather than real-world calibrated probabilities.
+4. **Validated modulation/protocol classifier:** physical taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated and not claimed by the SignalLab hypothesis model.
 
 ### UX-CLS-01 — Pipeline visibility
 
-Capture, detect, and characterize stages are independently `waiting | ready | running | complete | failed | unavailable`. A future validated model being absent does not invalidate deterministic morphology/envelope evidence and never permits a stronger label.
+Capture, promote, compare-spectrum, capture-envelope, and decide stages are independently `waiting | ready | running | complete | failed | unavailable`. A future physically validated model being absent does not invalidate deterministic morphology/envelope or synthetic-hypothesis evidence and never permits a stronger label.
 
 ### UX-CLS-02 — Candidate selection
 
@@ -333,16 +361,16 @@ Each candidate shows its source detection, frequency, bandwidth, power, time win
 Required presentation:
 
 - Primary label or `unknown`.
-- A relative score for heuristic morphology/envelope, or calibrated confidence only for a validated model.
+- A relative score for heuristic morphology/envelope, a declared generative-model posterior for SignalLab synthetic hypotheses, or calibrated confidence only for a physically validated model.
 - Ranked candidates with scores.
 - Unknown reason: low confidence, out-of-domain, insufficient evidence, model unavailable, or inference failure.
-- Model ID/version/hash and preprocessing version.
+- Model ID, producer source/catalog/generator hashes, preprocessing version, qualification, score kind, and decision level.
 - Evidence link to source sweeps.
 - Domain warning when capture parameters fall outside validation.
 
 ### Model package contract
 
-A model package is inert data plus declared inference metadata; it cannot execute arbitrary scripts. It contains a signed manifest, asset hash, taxonomy, preprocessing graph ID, input shape/ranges, supported device/firmware/capture domain, validation metrics and license. Installation validates size, schema, signature policy and hashes in the trusted process.
+A model package is inert data plus declared inference metadata; it cannot execute arbitrary scripts. It contains a signed manifest, asset hash, taxonomy, preprocessing graph ID, input shape/ranges, supported device/firmware/capture domain, validation metrics and license. Installation validates size, schema, signature policy and hashes in the trusted process. The built-in SignalLab model is governed separately by `SIGNALLAB_EMSO_CLASSIFIER_CONTRACT.md` and its pinned producer hashes.
 
 ### Classification quality contract
 
@@ -425,7 +453,7 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 
 ### 11.1 Spatial rules
 
-1. At the 1720 × 1040 reference viewport, Spectrum has exactly one dominant measurement plane and no workspace scroll. Its rendered area exceeds any control surface.
+1. At the 1920 × 1100 reference viewport, Spectrum has exactly one dominant measurement plane and no workspace scroll. Its rendered area exceeds any control surface.
 2. Analyzer settings form one horizontal overlay. They do not become a competing inspector column or change stage height at the reference viewport.
 3. Navigation is an instrument rail no wider than 104 CSS px. Core destinations remain labeled; icon-only navigation is forbidden.
 4. Atom is visually detached with a bounded 404 CSS px width. At widths at or above 1430 px the workspace reserves 438 px while Atom is open.
@@ -442,7 +470,7 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 - Every visible button performs its labeled action. Placeholder controls are omitted instead of simulated.
 - The plot marker binds to an actual sweep bin and exposes its exact power/frequency as text.
 
-Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1720 × 1040 CSS px; minimum is 1280 × 800 where the display work area permits it. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
+Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1920 × 1100 CSS px; minimum is 1440 × 800 where the display work area permits it. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
 
 ## 12. Accessibility contract
 

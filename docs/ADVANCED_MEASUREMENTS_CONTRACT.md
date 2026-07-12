@@ -62,7 +62,7 @@ Spectrum owns one fixed-height `MeasurementWorkspace`. It contains:
 
 Only the active view is rendered. Spectrum metrics occupy a fixed footer inside
 the stage. No Spectrum workflow requires body or workspace scrolling. The
-default Electron window is 1720 × 1040 CSS px, clamped to the primary display's
+default Electron window is 1920 × 1100 CSS px, clamped to the primary display's
 work area; minimum size is 1280 × 800 where the display permits it. Atom's open
 rail remains reserved at the reference width.
 
@@ -100,6 +100,14 @@ an I/Q spectrogram.
 
 Adjacent and main windows may touch but may not overlap. Every configured window
 must lie inside the actual acquired span.
+
+When the staged analyzer span changes, the application first retains a channel
+definition whose complete main/adjacent extent still fits with margin. A stale
+out-of-span definition is recentered on the new analyzer span; if its extent is
+too large, main/adjacent bandwidth and spacing are deterministically bounded
+while preserving non-overlap and adjacent-channel count. This is staged UI
+geometry, not a substitute for evidence validation: the calculation still fails
+if any resulting window lies outside the actual returned sweep endpoints.
 
 Each trace point is treated as detected power through the measured RBW. The
 frequency cell for an interior bin is bounded by the midpoints to its neighbors;
@@ -191,7 +199,7 @@ contracts.
 
 ## Acceptance inventory
 
-- `ADV-001`: Spectrum workspace has no body/workspace scroll at 1720 × 1040 with Atom open.
+- `ADV-001`: Spectrum workspace has no body/workspace scroll at 1920 × 1100 with Atom open.
 - `ADV-002`: only one analysis view owns the measurement canvas.
 - `ADV-003`: setup and measurement controls overlay without changing stage height.
 - `ADV-004`: waterfall retains at most 50 frames and excludes mismatched grids visibly.
@@ -204,4 +212,6 @@ contracts.
 - `ADV-011`: envelope STFT never carries an I/Q qualification.
 - `ADV-012`: every visible analysis view has a typed Atom selection/config/result path.
 - `ADV-013`: reference screenshots cover populated Spectrum, Waterfall, Channel, and Envelope STFT.
+- `ADV-014`: Classification uses a fixed-height pipeline/result-candidate/envelope composition; the document never scrolls and empty/result evidence remains visible with Atom open.
+- `ADV-015`: analyzer-span changes reconcile stale channel geometry before render while actual-endpoint validation remains fail-closed.
 - `ADV-014`: invalid evidence produces a visible/typed error and never a substituted result.

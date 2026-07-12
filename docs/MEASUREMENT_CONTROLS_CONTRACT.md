@@ -1,7 +1,7 @@
 # Spectrum measurement controls contract
 
 Status: implementation baseline  
-Version: 2.2.0
+Version: 2.3.0
 Updated: 2026-07-11
 
 This document is normative for TinySA Atomizer marker, trace, amplitude-display,
@@ -18,11 +18,15 @@ assignment, trace averaging, fixed-frequency, and fixed-index operations. Its
 copy/freeze/subtract/view, and trace-value access.
 
 That firmware surface is recorded in `DeviceCapabilities`; it is not treated as
-a dependable complete-state API. In particular, the shell's trace query does
-not round-trip every trace state sufficiently to reconstruct a simultaneous
-desktop trace bank. Atomizer therefore calculates its four displayed traces and
-eight marker readouts from the exact host sweep arrays. The UI labels this
-`HOST MATH`. It never presents host state as firmware readback.
+a dependable complete-configuration API. The shell summary does identify
+enabled trace IDs and the value command returns indexed points, so Atomizer
+reads and exactly validates those values as a separate `FirmwareTraceFrame`
+bank. Missing configuration properties remain `unknown`. Device frames render
+as `D1..D4` with `firmware-readback` provenance.
+
+Atomizer also calculates four host traces and eight marker readouts from the
+exact host sweep arrays. Those render as `H1..H4` with `host-derived`
+provenance. Host and device trace banks are never merged or relabeled.
 
 ## Trace-bank contract
 
@@ -55,7 +59,9 @@ not imply command or numerical equivalence to those instruments.
 
 There are exactly eight marker configurations. A marker contains an ID, enabled
 state, assigned trace, frequency, readout mode, tracking mode, and optional delta
-reference. M1 starts enabled and peak-tracking on T1; M2–M8 start disabled.
+reference. M1–M8 all start disabled and fixed on H1. The exact untouched legacy
+default (M1 enabled/peak, M2–M8 disabled) migrates once to the all-off bank;
+edited banks are preserved.
 
 Marker frequency is always snapped to the nearest actual bin of its assigned
 `TraceFrame`. Markers on Blank traces or traces without a frame have no reading.
@@ -98,7 +104,7 @@ visible trace count, and display scale. Markers shows one selected marker,
 its live readout, and search controls; Traces shows one selected trace; Display
 shows amplitude controls. Opening Markers, Traces, or Display replaces the
 current drawer surface without changing document or stage height. Values follow
-the shared one-value-per-row contract in `UI_UX_CONTRACTS.md`. The 1720 × 1040
+the shared one-value-per-row contract in `UI_UX_CONTRACTS.md`. The 1920 × 1100
 reference viewport must have no clipped input, overlapping label, horizontal
 overflow, or workspace scroll with Atom open.
 
@@ -123,6 +129,9 @@ inspection but is not a substitute for the typed measurement tools.
 - `MEAS-010`: the reference viewport renders every expanded panel without overflow.
 - `MEAS-011`: local persistence round-trips only schema-valid measurement state.
 - `MEAS-012`: host projections are never described as firmware-verified state.
+- `MEAS-013`: enabled D1–D4 frames require unique firmware IDs, exact contiguous indices, finite dBm values and the complete acquired point count.
+- `MEAS-014`: H1–H4 and D1–D4 remain visually and semantically distinguishable even when their curves coincide.
+- `MEAS-015`: all eight markers are off by default and the exact legacy untouched default migrates without rewriting edited banks.
 
 ## References
 

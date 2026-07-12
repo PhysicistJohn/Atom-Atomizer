@@ -34,6 +34,7 @@ any pre-write state -> failed
 write-started + interruption -> failed / indeterminate-completion / do-not-flash-again
 write-complete + verification failure -> failed / do-not-flash-again
 target already installed -> up-to-date
+custom-unqualified installed -> custom-firmware / updater disabled
 ```
 
 Every operation settles once. Network and DFU failures do not retry automatically. Reconnection polling after a successful write is verification of the one completed transaction, not another write attempt.
@@ -43,6 +44,12 @@ Beginning with preflight, every safety-relevant transition is atomically journal
 ## Automatic behavior
 
 After one exact physical ZS407 is admitted, Atomizer compares the reported source revision with the pinned target. An older supported revision opens the updater and downloads/verifies the artifact. Automatic behavior stops at `verified`.
+
+A valid but unregistered revision remains admitted as `custom-unqualified` for
+instrument use, but the OEM updater enters `custom-firmware` state with an
+explicit warning and all download/prepare/flash actions disabled. Atomizer does
+not guess whether an OEM image is an upgrade, downgrade, or compatible
+replacement for owner-built firmware.
 
 Atomizer never automatically:
 
@@ -125,7 +132,7 @@ Atom, coordinate computer use, keyboard/type/scroll computer paths, and semantic
 
 ## Acceptance
 
-- Unknown installed firmware revision is rejected before updater offer.
+- A valid unknown installed revision is warning-admitted as custom firmware, never assigned OEM provenance, and cannot enter the OEM updater transaction.
 - Wrong URL response status, redirect, length, byte count, or hash cannot produce a verified artifact.
 - First physical session command and every disconnect attempt command `output off`.
 - Battery below 4.000 V blocks preparation.
