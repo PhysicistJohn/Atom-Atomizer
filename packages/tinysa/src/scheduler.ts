@@ -1,4 +1,4 @@
-import { appendBytes, extractFixedBinaryResponse, extractRawSweepResponse, extractTextResponse } from './parser.js';
+import { extractFixedBinaryResponse, extractRawSweepResponse, extractTextResponse } from './parser.js';
 import type { ByteTransport } from './transport.js';
 
 type ResponseKind = 'text' | 'fixed-binary' | 'raw-sweep';
@@ -21,7 +21,8 @@ export class CommandScheduler {
   #queue: Pending[] = [];
   #active?: Pending;
   #timer?: ReturnType<typeof setTimeout>;
-  #buffer: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  #buffer = new Uint8Array();
+  #bufferLength = 0;
   #failed?: Error;
   #unsubscribe: () => void;
   #maximumBufferedBytes: number;
@@ -52,6 +53,7 @@ export class CommandScheduler {
     this.#active = undefined;
     for (const item of this.#queue.splice(0)) item.reject(reason);
     this.#buffer = new Uint8Array();
+    this.#bufferLength = 0;
   }
 
   dispose(): void {
@@ -96,7 +98,7 @@ export class CommandScheduler {
   #receive(bytes: Uint8Array): void {
     if (this.#failed) return;
     try {
-      this.#buffer = appendBytes(this.#buffer, bytes, this.#maximumBufferedBytes);
+      this.#append(bytes);
       this.#processActive();
     } catch (error) {
       this.#fault(asError(error, 'Protocol parser failed'));
@@ -106,18 +108,21 @@ export class CommandScheduler {
   #processActive(): void {
     const active = this.#active;
     if (!active) {
-      if (this.#buffer.length > 64 * 1024) this.#fault(new Error('Unsolicited device traffic exceeded 64 KiB before a command was active'));
+      if (this.#bufferLength > 64 * 1024) this.#fault(new Error('Unsolicited device traffic exceeded 64 KiB before a command was active'));
       return;
     }
+    const buffer = this.#buffer.subarray(0, this.#bufferLength);
     const response = active.kind === 'text'
-      ? extractTextResponse(this.#buffer, active.command)
+      ? extractTextResponse(buffer, active.command)
       : active.kind === 'fixed-binary'
-        ? extractFixedBinaryResponse(this.#buffer, active.command, required(active.payloadBytes, 'payloadBytes'))
-        : extractRawSweepResponse(this.#buffer, active.command, required(active.points, 'points'));
+        ? extractFixedBinaryResponse(buffer, active.command, required(active.payloadBytes, 'payloadBytes'))
+        : extractRawSweepResponse(buffer, active.command, required(active.points, 'points'));
     if (!response) return;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
-    this.#buffer = this.#buffer.slice(response.consumedBytes);
+    const remaining = this.#bufferLength - response.consumedBytes;
+    if (remaining > 0) this.#buffer.copyWithin(0, response.consumedBytes, this.#bufferLength);
+    this.#bufferLength = remaining;
     this.#active = undefined;
     active.resolve(response.value);
     void this.#startNext();
@@ -132,7 +137,21 @@ export class CommandScheduler {
     this.#active = undefined;
     for (const item of this.#queue.splice(0)) item.reject(error);
     this.#buffer = new Uint8Array();
+    this.#bufferLength = 0;
     this.options.onFault?.(error);
+  }
+
+  #append(bytes: Uint8Array): void {
+    const requiredLength = this.#bufferLength + bytes.length;
+    if (requiredLength > this.#maximumBufferedBytes) throw new Error(`Protocol response exceeded ${this.#maximumBufferedBytes} bytes`);
+    if (requiredLength > this.#buffer.length) {
+      const capacity = Math.min(this.#maximumBufferedBytes, Math.max(requiredLength, Math.max(1_024, this.#buffer.length * 2)));
+      const expanded = new Uint8Array(capacity);
+      expanded.set(this.#buffer.subarray(0, this.#bufferLength));
+      this.#buffer = expanded;
+    }
+    this.#buffer.set(bytes, this.#bufferLength);
+    this.#bufferLength = requiredLength;
   }
 }
 

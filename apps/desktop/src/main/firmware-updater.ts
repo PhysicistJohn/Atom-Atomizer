@@ -282,8 +282,12 @@ export class FirmwareUpdater {
         await handle.close();
       }
       await rename(temporaryPath, this.#journalPath);
-      const directory = await open(this.cacheDirectory, 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
+      const committed = await open(this.#journalPath, 'r');
+      try { await committed.sync(); } finally { await committed.close(); }
+      if (process.platform !== 'win32') {
+        const directory = await open(this.cacheDirectory, 'r');
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
     } catch (value) {
       try { await rm(temporaryPath, { force: true }); }
       catch (cleanupFailure) { throw new Error(`${message(value)}. Temporary journal cleanup also failed: ${message(cleanupFailure)}`, { cause: value }); }
