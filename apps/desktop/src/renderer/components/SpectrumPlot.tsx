@@ -12,6 +12,7 @@ export interface SpectrumPlotProps {
   markers?: readonly MarkerReading[];
   activeMarkerId?: MarkerId;
   detections?: readonly DetectedSignal[];
+  detectionOverlay?: boolean;
   display?: SpectrumDisplayConfiguration;
   busy: boolean;
   onMarkerPlace?(frequencyHz: number): void;
@@ -19,7 +20,7 @@ export interface SpectrumPlotProps {
 
 const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
 
-export function SpectrumPlot({ sweep, traces = [], firmwareTraces = [], activeTraceId = 1, markers = [], activeMarkerId, detections = [], display = DEFAULT_DISPLAY, busy, onMarkerPlace }: SpectrumPlotProps) {
+export function SpectrumPlot({ sweep, traces = [], firmwareTraces = [], activeTraceId = 1, markers = [], activeMarkerId, detections = [], detectionOverlay = false, display = DEFAULT_DISPLAY, busy, onMarkerPlace }: SpectrumPlotProps) {
   const width = 1200;
   const height = 430;
   const maximumDbm = display.referenceLevelDbm;
@@ -43,9 +44,21 @@ export function SpectrumPlot({ sweep, traces = [], firmwareTraces = [], activeTr
         <defs><linearGradient id="trace-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset=".7" stopColor="#0a84ff" stopOpacity=".035"/><stop offset="1" stopColor="#bf5af2" stopOpacity="0"/></linearGradient><filter id="trace-glow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
         {Array.from({ length: 9 }, (_, index) => <line key={`v${index}`} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height} className="plot-grid"/>)}
         {Array.from({ length: 5 }, (_, index) => <line key={`h${index}`} x1="0" x2={width} y1={index * height / 4} y2={index * height / 4} className="plot-grid"/>)}
+        {detectionOverlay && <g className="detection-overlays" data-testid="detection-overlays" aria-label={`${detections.length} detected signal ${detections.length === 1 ? 'region' : 'regions'}`}>
+          {detections.map((detection) => {
+            const geometry = detectionGeometry(detection, sweep, width);
+            if (!geometry) return null;
+            return <rect key={`band-${detection.id}`} className="detection-band" x={geometry.startX} y="0" width={geometry.width} height={height} vectorEffect="non-scaling-stroke"/>;
+          })}
+        </g>}
         {visibleTraces[0] && <polygon points={`0,${height} ${tracePoints(visibleTraces[0], width, height, minimumDbm, maximumDbm)} ${width},${height}`} fill="url(#trace-fill)"/>}
         {paintOrder.map((trace) => <polyline key={trace.traceId} points={tracePoints(trace, width, height, minimumDbm, maximumDbm)} className={`trace-line t${trace.traceId} ${trace.traceId === activeTraceId ? 'active' : ''}`} vectorEffect="non-scaling-stroke" filter={trace.traceId === activeTraceId ? 'url(#trace-glow)' : undefined}/>)}
         {firmwareOverlays.map((trace) => <polyline key={`firmware-${trace.traceId}`} points={tracePoints(trace, width, height, minimumDbm, maximumDbm)} className={`trace-line firmware-trace f${trace.traceId}`} vectorEffect="non-scaling-stroke"/>)}
+        {detectionOverlay && detections.map((detection) => {
+          const geometry = detectionGeometry(detection, sweep, width);
+          if (!geometry) return null;
+          return <line key={`center-${detection.id}`} className="detection-center" x1={geometry.centerX} x2={geometry.centerX} y1="0" y2={height} vectorEffect="non-scaling-stroke"/>;
+        })}
         {markers.map((marker) => {
           const x = (marker.frequencyHz - sweep.actualStartHz) / (sweep.actualStopHz - sweep.actualStartHz) * width;
           const y = powerY(marker.powerDbm, height, minimumDbm, maximumDbm);
@@ -57,6 +70,17 @@ export function SpectrumPlot({ sweep, traces = [], firmwareTraces = [], activeTr
       {sweep && <div className="x-labels"><span>{formatFrequency(sweep.actualStartHz)}</span><span>{formatFrequency((sweep.actualStartHz + sweep.actualStopHz) / 2)}</span><span>{formatFrequency(sweep.actualStopHz)}</span></div>}
     </div>
   </section>;
+}
+
+function detectionGeometry(detection: DetectedSignal, sweep: Sweep, width: number): { startX: number; width: number; centerX: number } | undefined {
+  const spanHz = sweep.actualStopHz - sweep.actualStartHz;
+  if (spanHz <= 0 || detection.stopHz < sweep.actualStartHz || detection.startHz > sweep.actualStopHz) return undefined;
+  const startHz = Math.max(sweep.actualStartHz, detection.startHz);
+  const stopHz = Math.min(sweep.actualStopHz, detection.stopHz);
+  const centerHz = Math.min(sweep.actualStopHz, Math.max(sweep.actualStartHz, (detection.startHz + detection.stopHz) / 2));
+  const startX = (startHz - sweep.actualStartHz) / spanHz * width;
+  const stopX = (stopHz - sweep.actualStartHz) / spanHz * width;
+  return { startX, width: Math.max(0, stopX - startX), centerX: (centerHz - sweep.actualStartHz) / spanHz * width };
 }
 
 function tracePoints(trace: Pick<TraceFrame | FirmwareTraceFrame, 'powerDbm'>, width: number, height: number, minimum: number, maximum: number): string {

@@ -326,6 +326,7 @@ Required result fields: stable event ID, start/stop/peak frequencies, peak power
 ### UX-DET-02 — Display detections
 
 - Spectrum never overlays detection bands or dashed peak lines; localization belongs to Detection while Spectrum retains only the compact tracked-count metric.
+- Detection renders each promoted active emission as one translucent `startHz..stopHz` bandwidth region plus one dashed line at the region midpoint `(startHz + stopHz) / 2`. It does not reuse `peakHz` as the channel-center line, and it never draws candidate or released tracks as current annotations.
 - The primary event table shows only cross-sweep-promoted active emissions. Pending candidates are counted separately; released tracks never read as current signals.
 - Event rows provide peak frequency, power, measured/required prominence, bandwidth, and persistence.
 - Selected event synchronizes plot highlight, detail panel, and classification candidate.
@@ -361,6 +362,8 @@ Each candidate shows its source detection, frequency, bandwidth, power, time win
 Required presentation:
 
 - Primary label or `unknown`.
+- Operator-facing live-observation labels never carry `SignalLab:`/`SignalLab family:` prefixes and never call the observed emission a replay. Canonical analog results read `AM signal` or `FM signal`; synthetic-reference provenance remains in the model/evidence fields.
+- A non-unknown profile/family pill is success green. Pending remains caution-colored and `unknown` remains neutral, so color never upgrades uncertain evidence.
 - A relative score for heuristic morphology/envelope, a declared generative-model posterior for SignalLab synthetic hypotheses, or calibrated confidence only for a physically validated model.
 - Ranked candidates with scores.
 - Unknown reason: low confidence, out-of-domain, insufficient evidence, model unavailable, or inference failure.
@@ -530,6 +533,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **DET-08:** Tracking UI remains unavailable until tracker exists.
 - **DET-09:** Cancellation is bounded.
 - **DET-10:** Quality report covers agreed captured corpus.
+- **DET-11:** Only Detection renders active bandwidth/midpoint annotations; Spectrum renders neither even when it receives the same detection count data.
 
 ### Classification
 
@@ -543,6 +547,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **CLS-08:** UI shows ranked candidates and unknown reason.
 - **CLS-09:** Inference cancellation/resource bounds pass.
 - **CLS-10:** Repeated inference is deterministic within tolerance.
+- **CLS-11:** Live waveform labels omit SignalLab/replay source wording, retain measured-hypothesis qualification, and use green only for a non-unknown decision.
 
 ### Generator
 

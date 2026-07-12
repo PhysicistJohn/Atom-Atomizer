@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint } from 'lucide-react';
-import type { EnvelopeClassification } from '@tinysa/analysis';
+import { signalLabWaveformHypotheses, type EnvelopeClassification } from '@tinysa/analysis';
 import type { DetectedSignal, Sweep, WaveformClassification, ZeroSpanCapture, ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
@@ -23,7 +23,7 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
   }, [detections, selectedId, onSelectedId]);
   const selected = detections.find((item) => item.id === selectedId);
   const result = classifications.find((item) => item.detectionId === selectedId);
-  const qualification = result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'SIGNALLAB MODEL · MEASURED HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
+  const qualification = result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'MEASURED WAVEFORM HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
   const scoreLabel = result?.scoreKind === 'model-posterior' ? 'model posterior' : 'relative score';
 
   return <div className="classification-grid">
@@ -32,18 +32,22 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
     <section className="classification-result">
       {result ? <div className="result-card">
         <span className="result-qualification">{qualification}</span>
-        <h2>{humanLabel(result.label)}</h2>
+        <h2>{waveformLabel(result.label)}</h2>
         {result.label === 'unknown' && <p>{result.unknownReason?.replaceAll('-', ' ') ?? 'Evidence rejected'}</p>}
         <div className="confidence-gauge"><span style={{ width: `${result.confidence * 100}%` }}/></div>
         <strong>{Math.round(result.confidence * 100)}% {scoreLabel}</strong>
-        <div className="ranked-candidates">{result.candidates.slice(0, 4).map((candidate) => <div key={candidate.label}><span>{humanLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}{result.candidates.length > 4 && <small>+{result.candidates.length - 4} lower-ranked hypotheses</small>}</div>
+        <div className="ranked-candidates">{result.candidates.slice(0, 4).map((candidate) => <div key={candidate.label}><span>{waveformLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}{result.candidates.length > 4 && <small>+{result.candidates.length - 4} lower-ranked hypotheses</small>}</div>
         <div className="result-provenance"><span>{selected ? `${formatFrequency(selected.peakHz)} · ${formatLevel(selected.peakDbm)} · ${formatFrequency(selected.bandwidthHz)}` : 'Detection unavailable'}</span><span>{result.evidence.sweepIds.length} sweep{result.evidence.sweepIds.length === 1 ? '' : 's'}{result.evidence.zeroSpanCaptureId ? ' + envelope' : ''} · {result.modelId}</span></div>
       </div> : <div className="result-empty"><Fingerprint size={28}/><h2>{detections.length ? 'Select an emission' : 'No candidate'}</h2>{detections.length === 0 && <p>Acquire a sweep to detect candidates.</p>}</div>}
     </section>
 
-    <section className="candidate-panel"><div className="panel-header"><span>Candidates</span><span>{detections.length}</span></div>{detections.length ? <div className="candidate-list">{detections.map((detection, index) => <button data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}><span className="candidate-index">{String(index + 1).padStart(2, '0')}</span><span><strong>{formatFrequency(detection.peakHz)}</strong><small>{formatFrequency(detection.bandwidthHz)} · {formatLevel(detection.peakDbm)} · {detection.persistenceSweeps}×</small></span><em>{classifications.find((item) => item.detectionId === detection.id)?.label.toUpperCase() ?? 'PENDING'}</em></button>)}</div> : <div className="table-empty"><Fingerprint size={20}/><strong>No candidates</strong><span>Run a sweep.</span></div>}</section>
+    <section className="candidate-panel"><div className="panel-header"><span>Candidates</span><span>{detections.length}</span></div>{detections.length ? <div className="candidate-list">{detections.map((detection, index) => {
+      const classification = classifications.find((item) => item.detectionId === detection.id);
+      const state = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
+      return <button data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}><span className="candidate-index">{String(index + 1).padStart(2, '0')}</span><span><strong>{formatFrequency(detection.peakHz)}</strong><small>{formatFrequency(detection.bandwidthHz)} · {formatLevel(detection.peakDbm)} · {detection.persistenceSweeps}×</small></span><em className={state}>{classification ? waveformLabel(classification.label) : 'Pending'}</em></button>;
+    })}</div> : <div className="table-empty"><Fingerprint size={20}/><strong>No candidates</strong><span>Run a sweep.</span></div>}</section>
 
-    <section className="zero-span-panel"><div className="panel-header"><div><Activity size={14}/>Envelope</div><span>{zeroCapture ? `${zeroCapture.powerDbm.length} samples` : 'DETECTED POWER · NOT I/Q'}</span></div><div className="zero-span-body"><div className="zero-controls parameter-stack"><EditableParameter label="Center frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={0} disabled={busy} controlId="classification.envelope-frequency" onCommit={(value) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(value) })}/><SelectParameter label="Capture window" value={zeroConfig.sweepTimeSeconds} options={[{ value: 0.05, label: '50 ms' }, { value: 0.1, label: '100 ms' }, { value: 0.5, label: '500 ms' }, { value: 1, label: '1 second' }]} disabled={busy} controlId="classification.envelope-window" onValue={(value) => onZeroConfig({ ...zeroConfig, sweepTimeSeconds: Number(value) })}/><div className="panel-action"><button className="secondary full" disabled={busy} onClick={onAcquireZero} data-agent-control="classification.capture-envelope">Capture envelope</button></div></div><EnvelopePlot capture={zeroCapture}/><div className="envelope-result"><small>CHARACTER</small><strong>{envelope ? humanLabel(envelope.label) : '—'}</strong>{envelope && <span>{Math.round(envelope.confidence * 100)}% · {envelope.features.transitionCount} transitions</span>}</div></div></section>
+    <section className="zero-span-panel"><div className="panel-header"><div><Activity size={14}/>Envelope</div><span>{zeroCapture ? `${zeroCapture.powerDbm.length} samples` : 'DETECTED POWER · NOT I/Q'}</span></div><div className="zero-span-body"><div className="zero-controls parameter-stack"><EditableParameter label="Center frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={0} disabled={busy} controlId="classification.envelope-frequency" onCommit={(value) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(value) })}/><SelectParameter label="Capture window" value={zeroConfig.sweepTimeSeconds} options={[{ value: 0.05, label: '50 ms' }, { value: 0.1, label: '100 ms' }, { value: 0.5, label: '500 ms' }, { value: 1, label: '1 second' }]} disabled={busy} controlId="classification.envelope-window" onValue={(value) => onZeroConfig({ ...zeroConfig, sweepTimeSeconds: Number(value) })}/><div className="panel-action"><button className="secondary full" disabled={busy} onClick={onAcquireZero} data-agent-control="classification.capture-envelope">Capture envelope</button></div></div><EnvelopePlot capture={zeroCapture}/><div className="envelope-result"><small>CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : '—'}</strong>{envelope && <span>{Math.round(envelope.confidence * 100)}% · {envelope.features.transitionCount} transitions</span>}</div></div></section>
   </div>;
 }
 
@@ -57,7 +61,13 @@ function EnvelopePlot({ capture }: { capture?: ZeroSpanCapture }) {
   return <div className="envelope-plot"><svg viewBox="0 0 600 100" preserveAspectRatio="none"><line x1="0" x2="600" y1="50" y2="50"/><polyline points={points}/></svg><span>0</span><span>{Math.round(capture.requested.sweepTimeSeconds * 1_000)} ms</span></div>;
 }
 
-function humanLabel(value: string): string {
-  const scoped = value.replace(/^signal-lab-family:/, 'SignalLab family · ').replace(/^signal-lab:/, 'SignalLab · ');
-  return scoped.replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+export function waveformLabel(value: string): string {
+  const profileId = value.replace(/^signal-lab:/, '');
+  const profile = signalLabWaveformHypotheses.find((item) => item.id === profileId);
+  if (profile) return profile.label.replace(/^(AM|FM) replay$/, '$1 signal');
+  const family = value.match(/^signal-lab-family:(.+)$/)?.[1];
+  if (family) return ({ tone: 'Tone', analog: 'Analog', geran: 'GSM / EDGE', 'e-utra': 'LTE', nr: '5G NR', wlan: 'Wi-Fi' } as const)[family as 'tone' | 'analog' | 'geran' | 'e-utra' | 'nr' | 'wlan'] ?? titleCase(family);
+  return titleCase(value);
 }
+
+function titleCase(value: string): string { return value.replaceAll('-', ' ').replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()); }
