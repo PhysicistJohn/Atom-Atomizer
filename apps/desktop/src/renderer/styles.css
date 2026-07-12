@@ -260,8 +260,8 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .parameter-entry button { min-width: 74px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--energy); border-radius: 0 10px 10px 0; color: #fff; background: var(--energy); font-size: 9px; font-weight: 680; }
 .parameter-entry input:not(:has(+ em)) { border-radius: 10px 0 0 10px; }
 .parameter-error { display: block; margin-top: 7px; color: #ffaaa3; font-size: 9px; }
-.numeric-entry-backdrop { position: fixed; z-index: 52; inset: 0; display: grid; place-items: center; padding: 28px; background: rgba(2,3,5,.72); backdrop-filter: blur(18px) saturate(85%); }
-.numeric-entry-panel { width: min(470px, calc(100vw - 48px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 24px; background: linear-gradient(155deg, #1b1c21, #101115 60%, #0a0b0e); box-shadow: 0 40px 130px rgba(0,0,0,.72), inset 0 1px rgba(255,255,255,.045); animation: numeric-panel-enter .18s var(--ease); }
+.numeric-entry-layer { position: fixed; z-index: 80; inset: 0; background: transparent; }
+.numeric-entry-panel { width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); position: fixed; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.15); border-radius: 20px; background: linear-gradient(155deg, rgba(31,32,37,.985), rgba(16,17,21,.99) 60%, rgba(10,11,14,.995)); box-shadow: 0 28px 90px rgba(0,0,0,.68), 0 4px 18px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.055); backdrop-filter: blur(30px) saturate(125%); animation: numeric-panel-enter .16s var(--ease); }
 .numeric-entry-panel > header { min-height: 67px; display: flex; align-items: center; justify-content: space-between; padding: 0 19px 0 21px; border-bottom: 1px solid var(--line); }
 .numeric-entry-panel > header > span { display: flex; flex-direction: column; gap: 4px; }
 .numeric-entry-panel > header small { color: var(--energy); font: 7px var(--mono); letter-spacing: .12em; }
@@ -942,6 +942,9 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .measurement-overlay { width: 390px; position: absolute; z-index: 12; inset: 12px 12px 12px auto; overflow: hidden; padding: 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 21px; background: rgba(12,12,15,.8); box-shadow: 0 30px 95px rgba(0,0,0,.58), inset 0 1px rgba(255,255,255,.05); backdrop-filter: blur(36px) saturate(125%); animation: stage-overlay-enter .18s var(--ease); }
 .measurement-overlay.controls { width: 420px; }
 .measurement-overlay .inspector, .measurement-overlay .measurement-dock { height: 100%; overflow: auto; background: rgba(27,27,30,.74); box-shadow: none; }
+.firmware-trace-bank { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.firmware-trace-bank .panel-section-label { padding: 7px 13px 9px; }
+.firmware-trace-bank .parameter-row { min-height: 42px; }
 .spectrum-stage { display: grid; grid-template-rows: minmax(0, 1fr) 66px; overflow: hidden; }
 .spectrum-stage .plot-panel { min-height: 0; display: grid; grid-template-rows: 49px minmax(0, 1fr); }
 .spectrum-stage .plot-canvas { height: 100%; min-height: 0; }

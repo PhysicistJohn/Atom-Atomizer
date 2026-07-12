@@ -18,6 +18,7 @@ import {
   waterfallConfigurationSchema,
   zeroSpanConfigSchema,
   type AnalyzerConfig,
+  type AnalyzerConfigPatch,
   type ChannelMeasurementConfiguration,
   type DeviceDiagnostics,
   type DeviceEvent,
@@ -26,6 +27,8 @@ import {
   type FirmwareUpdatePreflight,
   type FirmwareUpdateState,
   type FirmwareTraceFrame,
+  type FirmwareTraceId,
+  type FirmwareTraceVisibility,
   type GeneratorConfig,
   type EnvelopeStftConfiguration,
   type MarkerConfiguration,
@@ -47,6 +50,7 @@ import {
   type WaveformClassification,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
+  firmwareTraceVisibilitySchema,
 } from '@tinysa/contracts';
 import {
   SignalDetector,
@@ -146,6 +150,7 @@ export function App() {
   const [traceConfiguration, setTraceConfiguration] = useState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES));
   const [traceFrames, setTraceFrames] = useState<readonly TraceFrame[]>([]);
   const [firmwareTraceFrames, setFirmwareTraceFrames] = useState<readonly FirmwareTraceFrame[]>([]);
+  const [visibleFirmwareTraceIds, setVisibleFirmwareTraceIds] = useState<FirmwareTraceVisibility>(() => loadStored('firmware-trace-visibility', firmwareTraceVisibilitySchema.parse, []));
   const [activeTraceId, setActiveTraceId] = useState<TraceId>(1);
   const [markers, setMarkers] = useState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS));
   const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
@@ -181,9 +186,11 @@ export function App() {
   const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
   const snapshotRef = useRef<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
+  const analyzerRevision = useRef(0);
+  const visibleFirmwareTraceIdsRef = useRef<FirmwareTraceVisibility>(visibleFirmwareTraceIds);
   const agentConnectionCandidates = useRef(new Map<string, PortCandidate>());
   const continuousRequested = useRef(false);
-  const analyzerRetuneBusy = useRef(false);
+  const analyzerRetuneTask = useRef<Promise<void> | undefined>(undefined);
   const remoteGestureQueue = useRef<Promise<void>>(Promise.resolve());
   const remoteGesturePausedContinuous = useRef(false);
   const analysisSequence = useRef(0);
@@ -211,7 +218,7 @@ export function App() {
       unsubscribe();
     };
   }, []);
-  useEffect(() => { analyzerRef.current = analyzer; saveStored('analyzer', analyzer); }, [analyzer]);
+  useEffect(() => saveStored('analyzer', analyzer), [analyzer]);
   useEffect(() => {
     setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, analyzer.startHz, analyzer.stopHz));
   }, [analyzer.startHz, analyzer.stopHz]);
@@ -223,6 +230,7 @@ export function App() {
     setTraceFrames(traceAccumulator.current.frames());
     saveStored('traces', traceConfiguration);
   }, [traceConfiguration]);
+  useEffect(() => saveStored('firmware-trace-visibility', visibleFirmwareTraceIds), [visibleFirmwareTraceIds]);
   useEffect(() => saveStored('markers', markers), [markers]);
   useEffect(() => saveStored('marker-search', markerSearchConfiguration), [markerSearchConfiguration]);
   useEffect(() => saveStored('spectrum-display', displayConfiguration), [displayConfiguration]);
@@ -475,48 +483,98 @@ export function App() {
     return next;
   }
 
-  async function updateAnalyzer(input: AnalyzerConfig): Promise<AnalyzerConfig> {
-    const next = analyzerConfigSchema.parse(input);
+  function stageAnalyzerPatch(input: AnalyzerConfigPatch): { configuration: AnalyzerConfig; changed: boolean } {
+    const patch = analyzerConfigPatchSchema.parse(input);
+    const previous = analyzerRef.current;
+    const next = analyzerConfigSchema.parse({ ...previous, ...patch });
+    if (sameAnalyzerConfiguration(previous, next)) return { configuration: previous, changed: false };
     analyzerRef.current = next;
+    analyzerRevision.current++;
     setAnalyzer(next);
     setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, next.startHz, next.stopHz));
-    if (!continuousRequested.current) return next;
-    if (analyzerRetuneBusy.current) throw new Error('An analyzer retune is already in progress');
-    analyzerRetuneBusy.current = true;
-    let stopped = false;
+    invalidateAcquiredEvidence();
+    return { configuration: next, changed: true };
+  }
+
+  function invalidateAcquiredEvidence(): void {
+    analysisSequence.current++;
+    historyRef.current = [];
+    detectionsRef.current = [];
+    traceAccumulator.current.reset();
+    tracker.current.reset();
+    setSweep(undefined);
+    setHistory([]);
+    setTraceFrames(traceAccumulator.current.frames());
+    setFirmwareTraceFrames([]);
+    setDetections([]);
+    setClassifications([]);
+    setSelectedClassificationId(undefined);
+  }
+
+  function synchronizeContinuousAnalyzer(): Promise<void> {
+    const active = analyzerRetuneTask.current;
+    if (active) return active;
+    if (!continuousRequested.current) return Promise.resolve();
+    const task = retuneContinuousToLatest();
+    analyzerRetuneTask.current = task;
+    void task.then(
+      () => { if (analyzerRetuneTask.current === task) analyzerRetuneTask.current = undefined; },
+      () => { if (analyzerRetuneTask.current === task) analyzerRetuneTask.current = undefined; },
+    );
+    return task;
+  }
+
+  async function retuneContinuousToLatest(): Promise<void> {
     try {
       setAcquisition('retuning');
       setNotice('Retuning continuous acquisition…');
       await window.tinySA.stopStreaming();
-      stopped = true;
       continuousRequested.current = false;
       setContinuous(false);
-      await configureAnalyzer(next, 'retuning');
-      await window.tinySA.startStreaming();
-      continuousRequested.current = true;
-      setContinuous(true);
-      setAcquisition('streaming');
-      setNotice('Continuous acquisition retuned');
-      return next;
-    } catch (value) {
-      if (stopped) {
+      while (true) {
+        const targetRevision = analyzerRevision.current;
+        await configureAnalyzer(analyzerRef.current, 'retuning');
+        if (targetRevision !== analyzerRevision.current) continue;
+        continuousRequested.current = true;
+        setContinuous(true);
+        await window.tinySA.startStreaming();
+        if (targetRevision === analyzerRevision.current) break;
+        await window.tinySA.stopStreaming();
         continuousRequested.current = false;
         setContinuous(false);
       }
+      setAcquisition('streaming');
+      setNotice('Continuous acquisition retuned');
+    } catch (value) {
+      continuousRequested.current = false;
+      setContinuous(false);
       setAcquisition('failed');
       setError(`Analyzer retune failed: ${errorMessage(value)}`);
       throw value;
-    } finally {
-      analyzerRetuneBusy.current = false;
     }
   }
 
-  async function updateAnalyzerFromUi(input: AnalyzerConfig): Promise<void> {
-    try { await updateAnalyzer(input); }
-    catch { /* The failed retune remains visible and continuous mode is not silently restored. */ }
+  async function updateAnalyzer(input: AnalyzerConfigPatch): Promise<AnalyzerConfig> {
+    const staged = stageAnalyzerPatch(input);
+    if (staged.changed && (continuousRequested.current || analyzerRetuneTask.current)) await synchronizeContinuousAnalyzer();
+    return staged.configuration;
   }
 
-  async function recordSweep(next: Sweep): Promise<void> {
+  function updateAnalyzerFromUi(input: AnalyzerConfigPatch): void {
+    try {
+      const staged = stageAnalyzerPatch(input);
+      if (staged.changed && (continuousRequested.current || analyzerRetuneTask.current)) void synchronizeContinuousAnalyzer().catch(() => undefined);
+    } catch (value) {
+      setError(`Analyzer configuration failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
+  async function recordSweep(next: Sweep): Promise<boolean> {
+    if (!sameAnalyzerConfiguration(next.requested, analyzerRef.current)) {
+      console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: analyzerRef.current });
+      return false;
+    }
     const sequence = ++analysisSequence.current;
     const nextHistory = [next, ...historyRef.current].slice(0, HISTORY_LIMIT);
     historyRef.current = nextHistory;
@@ -531,6 +589,7 @@ export function App() {
     const currentSignals = tracked.filter((item) => item.state === 'active');
     const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, { sweeps: nextHistory, zeroSpan: zeroCaptureRef.current })));
     if (sequence === analysisSequence.current) setClassifications(results);
+    return true;
   }
 
   async function acquire(): Promise<Sweep> {
@@ -538,7 +597,7 @@ export function App() {
       await configureAnalyzer(analyzerRef.current);
       setAcquisition('acquiring');
       const next = await window.tinySA.acquireSweep();
-      await recordSweep(next);
+      if (!await recordSweep(next)) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
       setAcquisition('complete');
       return next;
     } catch (value) {
@@ -770,6 +829,22 @@ export function App() {
     } catch (value) { setError(`Trace reset failed: ${errorMessage(value)}`); }
   }
 
+  function configureFirmwareTraceVisibility(traceId: FirmwareTraceId, visible: boolean): FirmwareTraceVisibility {
+    try {
+      const current = visibleFirmwareTraceIdsRef.current;
+      const next = firmwareTraceVisibilitySchema.parse(visible
+        ? [...new Set([...current, traceId])].sort((left, right) => left - right)
+        : current.filter((item) => item !== traceId));
+      visibleFirmwareTraceIdsRef.current = next;
+      setVisibleFirmwareTraceIds(next);
+      setError(undefined);
+      return next;
+    } catch (value) {
+      setError(`Instrument trace visibility failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
   function applyMarker(input: MarkerConfiguration): MarkerConfiguration {
     const marker = markerConfigurationSchema.parse(input);
     setMarkers((current) => {
@@ -928,7 +1003,7 @@ export function App() {
       measurement: {
         activeView: measurementView,
         traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
-        firmwareTraces: firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
+        firmwareTraces: firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, visible: visibleFirmwareTraceIds.includes(traceId), sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
         activeTraceId,
         markers: { configurations: markers, readings: markerReadings },
         activeMarkerId,
@@ -1031,8 +1106,7 @@ export function App() {
       case 'configure_analyzer': {
         assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput);
         const patch = analyzerConfigPatchSchema.parse(args);
-        const next = analyzerConfigSchema.parse({ ...analyzerRef.current, ...patch });
-        await updateAnalyzer(next);
+        const next = await updateAnalyzer(patch);
         applyWorkspace('spectrum');
         return { patch, configuration: next, continuous: continuousRequested.current };
       }
@@ -1115,6 +1189,12 @@ export function App() {
         applyTrace(trace);
         return { trace, evidence: 'host-derived' };
       }
+      case 'configure_firmware_trace_visibility': {
+        const value = args as { traceId: FirmwareTraceId; visible: boolean };
+        applyWorkspace('spectrum');
+        const visibleTraceIds = configureFirmwareTraceVisibility(value.traceId, value.visible);
+        return { traceId: value.traceId, visible: value.visible, visibleTraceIds, evidence: 'firmware-readback-display-projection' };
+      }
       case 'reset_trace': {
         applyWorkspace('spectrum');
         const traceId = (args as { traceId: TraceId }).traceId;
@@ -1188,7 +1268,7 @@ export function App() {
         view={measurementView} onView={changeMeasurementView}
         analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
-        traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
+        traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} visibleFirmwareTraceIds={visibleFirmwareTraceIds} onFirmwareTraceVisibility={configureFirmwareTraceVisibility} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
         onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId}
         onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay}
@@ -1282,6 +1362,21 @@ export function coherentSweepCount(history: readonly Sweep[], depth: number): nu
 function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {
   if (!result.ok) throw new Error(`App-scoped computer ${result.action} was rejected${result.target ? ` at ${result.target}` : ''}: ${result.reason ?? 'no rejection reason was returned'}`);
   return result;
+}
+function sameAnalyzerConfiguration(left: AnalyzerConfig, right: AnalyzerConfig): boolean {
+  return left.startHz === right.startHz
+    && left.stopHz === right.stopHz
+    && left.points === right.points
+    && left.acquisitionFormat === right.acquisitionFormat
+    && left.rbwKhz === right.rbwKhz
+    && left.attenuationDb === right.attenuationDb
+    && left.sweepTimeSeconds === right.sweepTimeSeconds
+    && left.detector === right.detector
+    && left.spurRejection === right.spurRejection
+    && left.lna === right.lna
+    && left.avoidSpurs === right.avoidSpurs
+    && left.trigger.mode === right.trigger.mode
+    && (left.trigger.mode === 'auto' || (right.trigger.mode !== 'auto' && left.trigger.levelDbm === right.trigger.levelDbm));
 }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
 function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {

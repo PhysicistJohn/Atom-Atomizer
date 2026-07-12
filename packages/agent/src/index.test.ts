@@ -13,7 +13,7 @@ const validToolArguments = {
   start_continuous_sweeps: {}, stop_continuous_sweeps: {}, get_measurement_state: {}, select_marker: { markerId: 1 },
   configure_marker: { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 94_000_000, tracking: 'fixed' },
   configure_marker_search: { minimumLevelDbm: -95, minimumExcursionDb: 8 }, search_marker: { markerId: 1, action: 'peak' },
-  select_trace: { traceId: 1 }, configure_trace: { id: 1, mode: 'clear-write', averageCount: 8 }, reset_trace: { traceId: 1 },
+  select_trace: { traceId: 1 }, configure_trace: { id: 1, mode: 'clear-write', averageCount: 8 }, configure_firmware_trace_visibility: { traceId: 2, visible: false }, reset_trace: { traceId: 1 },
   configure_spectrum_display: { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }, auto_scale_spectrum_display: {},
   set_measurement_view: { view: 'spectrum' }, configure_waterfall: { historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' },
   configure_channel_measurement: { centerHz: 94_000_000, mainBandwidthHz: 200_000, adjacentBandwidthHz: 200_000, channelSpacingHz: 250_000, adjacentChannelCount: 2, occupiedPowerPercent: 99, obwNoiseCorrection: 'robust-floor' },
@@ -53,7 +53,7 @@ describe('Atom agent contracts',()=>{
   });
   it('has unique, closed tool names',()=>expect(new Set(agentToolDefinitions.map(t=>t.name)).size).toBe(agentToolDefinitions.length));
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(53);
+    expect(agentToolDefinitions).toHaveLength(54);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -65,7 +65,7 @@ describe('Atom agent contracts',()=>{
       assertClosedDescribedObjects(tool.name,tool.parameters);
     }
   });
-  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 53 tools',()=>{
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 54 tools',()=>{
     expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     for(const tool of agentToolDefinitions){
@@ -105,6 +105,7 @@ describe('Atom agent contracts',()=>{
     }
     for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
+    expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
   });
   it('has an evidence and failure disposition for every TinySaApiV2 method',()=>{
@@ -141,6 +142,7 @@ describe('Atom agent contracts',()=>{
   it('gives Atom closed marker, trace, display, and channel operations',()=>{
     expect(validateAgentToolCall({callId:'0',name:'select_marker',arguments:'{"markerId":8}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'1',name:'configure_trace',arguments:'{"id":2,"mode":"max-hold","averageCount":8}'}).policy.risk).toBe('operate');
+    expect(validateAgentToolCall({callId:'1a',name:'configure_firmware_trace_visibility',arguments:'{"traceId":2,"visible":false}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'1b',name:'select_trace',arguments:'{"traceId":4}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'2',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak"}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'3',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak","referenceMarkerId":2}'})).toThrow();

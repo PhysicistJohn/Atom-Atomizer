@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_VERSION,
@@ -10,6 +10,7 @@ import {
   TINYSA_USB_VENDOR_ID,
   type AnalyzerConfig,
   type DeviceCapabilities,
+  type DeviceEvent,
   type DeviceSnapshot,
   type PortCandidate,
   type Sweep,
@@ -32,10 +33,25 @@ const capabilities: DeviceCapabilities = {
 };
 const ready: DeviceSnapshot = { connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded', identity, capabilities };
 const disconnected: DeviceSnapshot = { connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale' };
-const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 20, acquisitionFormat: 'text', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
-const powers = Array.from({ length: 20 }, (_, index) => index === 10 ? -50 : -90);
-const frequencies = Array.from({ length: 20 }, (_, index) => 88e6 + index * (20e6 / 19));
+const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 450, acquisitionFormat: 'raw', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
+const powers = Array.from({ length: 450 }, (_, index) => index === 225 ? -50 : -90);
+const frequencies = Array.from({ length: 450 }, (_, index) => 88e6 + index * (20e6 / 449));
 const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity };
+let configuredAnalyzer = requested;
+let deviceEventListener: ((event: DeviceEvent) => void) | undefined;
+function acquiredSweep(config: AnalyzerConfig, id = 'runtime-sweep'): Sweep {
+  const frequencyHz = Array.from({ length: config.points }, (_, index) => config.startHz + index * ((config.stopHz - config.startHz) / Math.max(1, config.points - 1)));
+  return {
+    ...sweep,
+    id,
+    frequencyHz,
+    powerDbm: Array.from({ length: config.points }, (_, index) => index === Math.floor(config.points / 2) ? -50 : -90),
+    requested: structuredClone(config),
+    actualStartHz: frequencyHz[0]!,
+    actualStopHz: frequencyHz.at(-1)!,
+    source: config.acquisitionFormat === 'raw' ? 'scanraw-binary' : 'scan-text',
+  };
+}
 const zeroSpanCapture: ZeroSpanCapture = {
   kind: 'zero-span', id: 'z1', sequence: 2, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 100,
   frequencyHz: 433_920_000, samplePeriodSeconds: 0.1 / 290, powerDbm: Array(290).fill(-90),
@@ -46,6 +62,8 @@ const zeroSpanCapture: ZeroSpanCapture = {
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
+  configuredAnalyzer = structuredClone(requested);
+  deviceEventListener = undefined;
   HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
     fillRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
     fillStyle: '', strokeStyle: '', lineWidth: 1,
@@ -56,8 +74,8 @@ beforeEach(() => {
     connect: vi.fn().mockResolvedValue(ready),
     disconnect: vi.fn().mockResolvedValue(undefined),
     getSnapshot: vi.fn().mockResolvedValue(disconnected),
-    configureAnalyzer: vi.fn().mockResolvedValue({ ...ready, mode: 'analyzer', verification: 'verified' }),
-    acquireSweep: vi.fn().mockResolvedValue(sweep),
+    configureAnalyzer: vi.fn().mockImplementation(async (configuration: AnalyzerConfig) => { configuredAnalyzer = structuredClone(configuration); return { ...ready, mode: 'analyzer', verification: 'verified' }; }),
+    acquireSweep: vi.fn().mockImplementation(async () => acquiredSweep(configuredAnalyzer)),
     startStreaming: vi.fn().mockResolvedValue(undefined), stopStreaming: vi.fn().mockResolvedValue(undefined),
     acquireZeroSpan: vi.fn().mockResolvedValue(zeroSpanCapture),
     configureGenerator: vi.fn().mockResolvedValue({ ...ready, mode: 'generator' }),
@@ -65,7 +83,7 @@ beforeEach(() => {
     readDiagnostics: vi.fn(), captureScreen: vi.fn(), touch: vi.fn(), releaseTouch: vi.fn(), exportSweep: vi.fn(),
     getFirmwareUpdateState: vi.fn().mockResolvedValue({ phase: 'idle', target: OEM_ZS407_FIRMWARE_RELEASE, updateAvailable: false, dfuUtility: { available: false }, dfuDevice: { detected: false, count: 0 }, writeDisposition: 'not-started' }),
     downloadFirmwareUpdate: vi.fn(), prepareFirmwareUpdate: vi.fn(), detectDfuDevice: vi.fn(), flashFirmwareUpdate: vi.fn(),
-    subscribe: vi.fn().mockReturnValue(vi.fn()),
+    subscribe: vi.fn().mockImplementation((listener: (event: DeviceEvent) => void) => { deviceEventListener = listener; return vi.fn(); }),
   };
   window.atomAgent = {
     status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
@@ -214,6 +232,95 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.tinySA.stopStreaming).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledTimes(2));
     expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+  });
+
+  it('merges numeric frequency edits into the latest staged state before Run', async () => {
+    render(<App/>);
+    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+
+    fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
+    let editor = screen.getByRole('dialog', { name: /Stop frequency numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Stop frequency' }), { target: { value: '2500' } });
+    fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
+
+    fireEvent.click(screen.getByLabelText('Edit Start frequency'));
+    editor = screen.getByRole('dialog', { name: /Start frequency numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Start frequency' }), { target: { value: '2400' } });
+    fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
+    expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+  });
+
+  it('quarantines an in-flight sweep after a staged span supersedes it', async () => {
+    let releaseStop: (() => void) | undefined;
+    vi.mocked(window.tinySA.stopStreaming).mockImplementationOnce(() => new Promise<void>((resolve) => { releaseStop = resolve; }));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
+    await act(async () => { deviceEventListener?.({ type: 'sweep', sweep: acquiredSweep(requested, 'current-fm') }); });
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
+    await waitFor(() => expect(window.tinySA.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => { deviceEventListener?.({ type: 'sweep', sweep: acquiredSweep(requested, 'late-fm') }); });
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeNull();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('rejected stale sweep'), expect.objectContaining({ sweepId: 'late-fm' }));
+
+    await act(async () => { releaseStop?.(); });
+    await waitFor(() => expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 })));
+    warning.mockRestore();
+  });
+
+  it('offers explicit host trace Off and opt-in firmware overlays', async () => {
+    vi.mocked(window.tinySA.acquireSweep).mockImplementation(async () => {
+      const current = acquiredSweep(configuredAnalyzer, 'trace-sweep');
+      return {
+        ...current,
+        firmwareTraces: [
+          { traceId: 1, role: 'measured', unit: 'dBm', frozen: false, frequencyHz: current.frequencyHz, powerDbm: current.powerDbm, sourceSweepId: current.id, capturedAt: current.capturedAt, evidence: 'firmware-readback' },
+          { traceId: 2, role: 'stored', unit: 'dBm', frozen: true, frequencyHz: current.frequencyHz, powerDbm: current.powerDbm.map((value) => value - 5), sourceSweepId: current.id, capturedAt: current.capturedAt, evidence: 'firmware-readback' },
+        ],
+      };
+    });
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
+    expect(container.querySelector('.firmware-trace')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(within(container.querySelector('.measurement-tabs') as HTMLElement).getByRole('button', { name: /Traces/i }));
+    const traceToggle = screen.getByRole('button', { name: /Trace 1.*On/i });
+    fireEvent.click(traceToggle);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Trace 1.*Off/i })).toBeTruthy());
+    await waitFor(() => expect(container.querySelector('.trace-line.t1')).toBeNull());
+
+    const firmwareToggle = screen.getByRole('button', { name: /D2 · Stored · frozen.*Off/i });
+    fireEvent.click(firmwareToggle);
+    await waitFor(() => expect(container.querySelector('.firmware-trace.f2')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /D2 · Stored · frozen.*On/i }));
+    await waitFor(() => expect(container.querySelector('.firmware-trace.f2')).toBeNull());
   });
 
   it('lets Atom list, connect, verify, and acquire through typed tools', async () => {

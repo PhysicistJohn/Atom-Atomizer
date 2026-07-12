@@ -7,6 +7,7 @@ import {
   envelopeStftConfigurationSchema,
   firmwareUpdatePreflightSchema,
   firmwareUpdateStateSchema,
+  firmwareTraceVisibilitySchema,
   generatorConfigSchema,
   hertz,
   markerConfigurationSchema,
@@ -83,6 +84,10 @@ describe('domain units and firmware-derived validation', () => {
       { id: 3, mode: 'average', averageCount: 16 }, { id: 4, mode: 'blank', averageCount: 8 },
     ]).success).toBe(true);
     expect(traceBankConfigurationSchema.safeParse(Array(4).fill({ id: 1, mode: 'blank', averageCount: 8 })).success).toBe(false);
+    expect(firmwareTraceVisibilitySchema.parse([])).toEqual([]);
+    expect(firmwareTraceVisibilitySchema.parse([2, 4])).toEqual([2, 4]);
+    expect(firmwareTraceVisibilitySchema.safeParse([2, 2]).success).toBe(false);
+    expect(firmwareTraceVisibilitySchema.safeParse([5]).success).toBe(false);
     expect(markerConfigurationSchema.safeParse({ id: 2, enabled: true, traceId: 1, mode: 'delta', frequencyHz: 100_000_000, tracking: 'fixed' }).success).toBe(false);
     expect(markerConfigurationSchema.safeParse({ id: 2, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 100_000_000, tracking: 'fixed', referenceMarkerId: 1 }).success).toBe(false);
   });

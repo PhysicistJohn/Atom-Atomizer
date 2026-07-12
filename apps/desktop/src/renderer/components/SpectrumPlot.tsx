@@ -1,6 +1,6 @@
 import { Activity, Orbit } from 'lucide-react';
 import type { PointerEvent } from 'react';
-import type { DetectedSignal, FirmwareTraceFrame, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
+import type { DetectedSignal, FirmwareTraceFrame, FirmwareTraceId, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import { AtomicMark } from './AtomicMark.js';
 
@@ -8,6 +8,7 @@ export interface SpectrumPlotProps {
   sweep?: Sweep;
   traces?: readonly TraceFrame[];
   firmwareTraces?: readonly FirmwareTraceFrame[];
+  visibleFirmwareTraceIds?: readonly FirmwareTraceId[];
   activeTraceId?: TraceId;
   markers?: readonly MarkerReading[];
   activeMarkerId?: MarkerId;
@@ -20,13 +21,16 @@ export interface SpectrumPlotProps {
 
 const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
 
-export function SpectrumPlot({ sweep, traces = [], firmwareTraces = [], activeTraceId = 1, markers = [], activeMarkerId, detections = [], detectionOverlay = false, display = DEFAULT_DISPLAY, busy, onMarkerPlace }: SpectrumPlotProps) {
+export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwareTraceIds = [], activeTraceId = 1, markers = [], activeMarkerId, detections = [], detectionOverlay = false, display = DEFAULT_DISPLAY, busy, onMarkerPlace }: SpectrumPlotProps) {
   const width = 1200;
   const height = 430;
   const maximumDbm = display.referenceLevelDbm;
   const minimumDbm = maximumDbm - display.decibelsPerDivision * display.divisions;
-  const visibleTraces: readonly TraceFrame[] = traces.length ? traces : sweep ? [{ traceId: 1, mode: 'clear-write', frequencyHz: sweep.frequencyHz, powerDbm: sweep.powerDbm, sweepCount: 1, sourceSweepId: sweep.id, evidence: 'host-derived' }] : [];
-  const firmwareOverlays = firmwareTraces.filter((trace) => trace.traceId !== 1);
+  const visibleTraces: readonly TraceFrame[] = traces === undefined
+    ? sweep ? [{ traceId: 1, mode: 'clear-write', frequencyHz: sweep.frequencyHz, powerDbm: sweep.powerDbm, sweepCount: 1, sourceSweepId: sweep.id, evidence: 'host-derived' }] : []
+    : traces;
+  const visibleFirmwareIds = new Set(visibleFirmwareTraceIds);
+  const firmwareOverlays = firmwareTraces.filter((trace) => trace.traceId !== 1 && visibleFirmwareIds.has(trace.traceId));
   const paintOrder = [...visibleTraces].sort((left, right) => Number(left.traceId === activeTraceId) - Number(right.traceId === activeTraceId));
   const activeMarker = markers.find((marker) => marker.markerId === activeMarkerId);
   const pointerFrequency = (event: PointerEvent<SVGSVGElement>) => {

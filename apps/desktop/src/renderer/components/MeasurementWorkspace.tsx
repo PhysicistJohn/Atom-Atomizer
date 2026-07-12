@@ -3,10 +3,13 @@ import type { ReactNode } from 'react';
 import { Activity, AudioWaveform, BarChart3, Clock3, Crosshair, Layers3, RadioTower, Repeat2, SlidersHorizontal, Square, Zap } from 'lucide-react';
 import type {
   AnalyzerConfig,
+  AnalyzerConfigPatch,
   ChannelMeasurementConfiguration,
   DetectedSignal,
   EnvelopeStftConfiguration,
   FirmwareTraceFrame,
+  FirmwareTraceId,
+  FirmwareTraceVisibility,
   MarkerConfiguration,
   MarkerId,
   MarkerReading,
@@ -43,7 +46,7 @@ export interface MeasurementWorkspaceProps {
   busy: boolean;
   connected: boolean;
   streaming: boolean;
-  onAnalyzer(configuration: AnalyzerConfig): void;
+  onAnalyzer(patch: AnalyzerConfigPatch): void;
   sweep?: Sweep;
   history: readonly Sweep[];
   detections: readonly DetectedSignal[];
@@ -51,6 +54,8 @@ export interface MeasurementWorkspaceProps {
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
   firmwareFrames: readonly FirmwareTraceFrame[];
+  visibleFirmwareTraceIds: FirmwareTraceVisibility;
+  onFirmwareTraceVisibility(traceId: FirmwareTraceId, visible: boolean): void;
   activeTraceId: TraceId;
   onActiveTrace(traceId: TraceId): void;
   markers: readonly MarkerConfiguration[];
@@ -109,11 +114,11 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
       {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
         {overlay === 'setup'
           ? <AnalyzerInspector config={props.analyzer} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
-          : <MeasurementDock traces={props.traces} frames={props.frames} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
+          : <MeasurementDock traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }
       </div>}
       <div className="measurement-stage-content" role="tabpanel">
-        {props.view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
+        {props.view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
         {props.view === 'waterfall' && <WaterfallView history={props.history} configuration={props.waterfall} onConfiguration={props.onWaterfall}/>} 
         {props.view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} onConfiguration={props.onChannel}/>} 
         {props.view === 'envelope-stft' && <EnvelopeStftView zeroConfig={props.zeroConfig} capture={props.zeroCapture} configuration={props.stft} connected={props.connected} streaming={props.streaming} busy={props.busy} onZeroConfig={props.onZeroConfig} onConfiguration={props.onStft} onAcquire={props.onAcquireZero}/>} 

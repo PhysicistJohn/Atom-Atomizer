@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Delete, X } from 'lucide-react';
 import { formatFrequency } from '../format.js';
 
@@ -30,6 +31,7 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
   const [replaceOnDigit, setReplaceOnDigit] = useState(true);
   const [error, setError] = useState<string>();
   const [open, setOpen] = useState(false);
+  const [popoverPosition, setPopoverPosition] = useState<NumericPopoverPosition>();
 
   useEffect(() => {
     if (details.current?.open) return;
@@ -37,6 +39,19 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
     setDraft(next.draft);
     setActiveUnit(next.unit);
   }, [type, unit, value]);
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => positionNumericPopover(summary.current, setPopoverPosition);
+    reposition();
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    window.visualViewport?.addEventListener('resize', reposition);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+      window.visualViewport?.removeEventListener('resize', reposition);
+    };
+  }, [open]);
 
   function resetEntry(): void {
     const next = initialEntry(value, type, units);
@@ -49,6 +64,7 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
   function closeEditor(): void {
     if (details.current) details.current.open = false;
     setOpen(false);
+    setPopoverPosition(undefined);
     summary.current?.focus();
   }
 
@@ -98,7 +114,7 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
     setError(undefined);
   }
 
-  return <details ref={details} className={`parameter-row editable-parameter ${disabled ? 'disabled' : ''}`} data-agent-control={controlId} onToggle={(event) => setOpen(event.currentTarget.open)}>
+  return <details ref={details} className={`parameter-row editable-parameter ${disabled ? 'disabled' : ''}`} data-agent-control={open ? undefined : controlId} data-agent-exclusion={open && controlId ? 'parameter-editor-origin' : undefined} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary ref={summary} aria-label={`Edit ${label}`} aria-disabled={disabled} onClick={(event) => {
       event.preventDefault();
       if (disabled || !details.current) return;
@@ -110,14 +126,15 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
         if (item !== details.current) item.open = false;
       });
       details.current.open = true;
+      positionNumericPopover(summary.current, setPopoverPosition);
       setOpen(true);
       resetEntry();
       requestAnimationFrame(() => { input.current?.focus(); input.current?.select(); });
     }}>
       <span>{label}</span><strong>{displayValue ?? String(value)}{displayValue === undefined && unit && <em>{unit}</em>}</strong><ChevronDown size={15}/>
     </summary>
-    {open && <div className="numeric-entry-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEditor(); }}>
-      <section className="numeric-entry-panel" role="dialog" aria-modal="true" aria-label={`${label} numeric entry`} onKeyDown={(event) => {
+    {open && popoverPosition && createPortal(<div className="numeric-entry-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEditor(); }}>
+      <section className="numeric-entry-panel" data-agent-control={controlId} data-parameter-editor={controlId ?? label} data-placement={popoverPosition.placement} style={{ top: popoverPosition.top, left: popoverPosition.left }} role="dialog" aria-modal="false" aria-label={`${label} numeric entry`} onKeyDown={(event) => {
         if (event.key === 'Escape') { event.preventDefault(); closeEditor(); }
         if (event.key === 'Enter' && event.target === input.current) { event.preventDefault(); commit(); }
         if (event.key === 'Tab') {
@@ -150,11 +167,37 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
         </div>
         <footer><button type="button" onClick={closeEditor}>Cancel</button><button type="button" className="numeric-apply" aria-label={`Apply using ${activeUnit.label}`} onClick={() => commit()}><Check size={14}/>Apply {activeUnit.label === 'Enter' ? '' : activeUnit.label}</button></footer>
       </section>
-    </div>}
+    </div>, document.body)}
   </details>;
 }
 
 interface EntryUnit { label: string; multiplier: number }
+interface NumericPopoverPosition { top: number; left: number; placement: 'left' | 'right' | 'over' }
+
+const NUMERIC_POPOVER_WIDTH = 420;
+const NUMERIC_POPOVER_HEIGHT = 548;
+const NUMERIC_POPOVER_GAP = 12;
+const NUMERIC_POPOVER_EDGE = 16;
+
+function positionNumericPopover(anchor: HTMLElement | null, setPosition: (position: NumericPopoverPosition) => void): void {
+  if (!anchor) return;
+  const bounds = anchor.getBoundingClientRect();
+  const maximumLeft = Math.max(NUMERIC_POPOVER_EDGE, window.innerWidth - NUMERIC_POPOVER_WIDTH - NUMERIC_POPOVER_EDGE);
+  const fitsLeft = bounds.left - NUMERIC_POPOVER_GAP - NUMERIC_POPOVER_WIDTH >= NUMERIC_POPOVER_EDGE;
+  const fitsRight = bounds.right + NUMERIC_POPOVER_GAP + NUMERIC_POPOVER_WIDTH <= window.innerWidth - NUMERIC_POPOVER_EDGE;
+  const placement: NumericPopoverPosition['placement'] = fitsLeft ? 'left' : fitsRight ? 'right' : 'over';
+  const preferredLeft = placement === 'left'
+    ? bounds.left - NUMERIC_POPOVER_GAP - NUMERIC_POPOVER_WIDTH
+    : placement === 'right'
+      ? bounds.right + NUMERIC_POPOVER_GAP
+      : bounds.left + bounds.width / 2 - NUMERIC_POPOVER_WIDTH / 2;
+  const maximumTop = Math.max(NUMERIC_POPOVER_EDGE, window.innerHeight - NUMERIC_POPOVER_HEIGHT - NUMERIC_POPOVER_EDGE);
+  setPosition({
+    placement,
+    left: Math.min(maximumLeft, Math.max(NUMERIC_POPOVER_EDGE, preferredLeft)),
+    top: Math.min(maximumTop, Math.max(NUMERIC_POPOVER_EDGE, bounds.top - 36)),
+  });
+}
 
 function entryUnits(unit?: string): readonly EntryUnit[] {
   if (unit === 'Hz') return [{ label: 'GHz', multiplier: 1e9 }, { label: 'MHz', multiplier: 1e6 }, { label: 'kHz', multiplier: 1e3 }, { label: 'Hz', multiplier: 1 }];

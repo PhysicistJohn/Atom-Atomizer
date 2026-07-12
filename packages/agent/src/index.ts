@@ -4,6 +4,7 @@ import {
   analyzerConfigPatchSchema,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
+  firmwareTraceIdSchema,
   generatorConfigSchema,
   markerConfigurationSchema,
   markerIdSchema,
@@ -24,7 +25,7 @@ export const ATOM_AGENT_VOICE = 'ballad' as const;
 export const ATOM_AGENT_REASONING_EFFORT = 'high' as const;
 export const ATOM_AGENT_VAD_THRESHOLD = 0.97 as const;
 export const ATOM_AGENT_TRANSCRIPTION_MODEL = 'gpt-realtime-whisper' as const;
-export const ATOM_AGENT_VERSION = 5 as const;
+export const ATOM_AGENT_VERSION = 6 as const;
 
 export type AgentConnectionState = 'unconfigured' | 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 export type AgentToolRisk = 'observe' | 'operate' | 'high-impact';
@@ -37,7 +38,7 @@ export type AgentToolName =
   | 'computer_screenshot' | 'computer_click' | 'computer_type' | 'computer_key' | 'computer_scroll'
   | 'navigate_workspace' | 'configure_analyzer' | 'acquire_sweep'
   | 'start_continuous_sweeps' | 'stop_continuous_sweeps'
-  | 'get_measurement_state' | 'select_marker' | 'configure_marker' | 'configure_marker_search' | 'search_marker' | 'select_trace' | 'configure_trace' | 'reset_trace' | 'configure_spectrum_display' | 'auto_scale_spectrum_display'
+  | 'get_measurement_state' | 'select_marker' | 'configure_marker' | 'configure_marker_search' | 'search_marker' | 'select_trace' | 'configure_trace' | 'configure_firmware_trace_visibility' | 'reset_trace' | 'configure_spectrum_display' | 'auto_scale_spectrum_display'
   | 'set_measurement_view' | 'configure_waterfall' | 'configure_channel_measurement' | 'get_channel_measurement_results'
   | 'configure_envelope_stft' | 'get_envelope_stft_results' | 'acquire_envelope_stft'
   | 'configure_signal_detector' | 'select_classification_candidate' | 'configure_zero_span' | 'acquire_zero_span'
@@ -136,7 +137,8 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^marker\.search\.(threshold|excursion)$/, preferredTool: 'configure_marker_search', risk: 'operate', projection: 'host-derived', guarantee: 'Configures closed marker peak-search eligibility criteria.' },
   { pattern: /^marker\.search\.(peak|minimum|left|right)$/, preferredTool: 'search_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Moves the active marker using complete trace evidence.' },
   { pattern: /^trace\.[1-4]\.select$/, preferredTool: 'select_trace', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host trace without mutating its accumulator or mode.' },
-  { pattern: /^trace\.[1-4]\.(mode|average-count)$/, preferredTool: 'configure_trace', risk: 'operate', projection: 'host-derived', guarantee: 'Configures one of four host trace projections.' },
+  { pattern: /^trace\.[1-4]\.(enabled|mode|average-count)$/, preferredTool: 'configure_trace', risk: 'operate', projection: 'host-derived', guarantee: 'Configures one of four host trace projections, including an explicit Off state.' },
+  { pattern: /^firmware-trace\.[1-4]\.visible$/, preferredTool: 'configure_firmware_trace_visibility', risk: 'operate', projection: 'firmware-readback', guarantee: 'Changes only whether one separately identified firmware-readback trace is overlaid; it does not mutate firmware trace state.' },
   { pattern: /^trace\.[1-4]\.reset$/, preferredTool: 'reset_trace', risk: 'operate', projection: 'host-derived', guarantee: 'Clears only the selected host trace accumulator.' },
   { pattern: /^display\.(reference-level|scale)$/, preferredTool: 'configure_spectrum_display', risk: 'operate', projection: 'host-derived', guarantee: 'Configures the explicit host amplitude axis.' },
   { pattern: /^display\.auto-scale$/, preferredTool: 'auto_scale_spectrum_display', risk: 'operate', projection: 'host-derived', guarantee: 'Derives an amplitude axis from the latest complete sweep.' },
@@ -233,10 +235,10 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed TinySA Atomizer screenshot. Stale IDs, changed geometry, and protected targets fail closed.' },
   { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output guard as the visual UI.' },
   { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty patch to the staged swept-analyzer configuration without acquiring. Send only explicitly requested fields; omitted fields—including rbwKhz—are preserved exactly. If both edges are sent, stopHz must exceed startHz. Trigger is atomic: auto requires only mode; normal or single requires mode plus levelDbm. The merged full configuration is runtime-validated.' },
-  { type: 'function', name: 'acquire_sweep', description: 'Apply the staged analyzer configuration and acquire exactly one complete sweep.' },
-  { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the staged analyzer configuration and acquire serialized sweeps until explicitly stopped or a failure occurs.' },
+  { type: 'function', name: 'acquire_sweep', description: 'Apply the latest staged analyzer revision and acquire exactly one complete sweep; mismatched requested configuration is rejected before measurement reducers.' },
+  { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the latest staged analyzer revision and acquire serialized sweeps until explicitly stopped or a failure occurs; superseded in-flight sweeps are quarantined.' },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.' },
-  { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, eight marker configurations/readings, peak-search criteria, and amplitude display scale with evidence labels.' },
+  { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, separately labeled firmware-readback trace visibility, eight marker configurations/readings, peak-search criteria, and amplitude display scale with evidence labels.' },
   { type: 'function', name: 'set_measurement_view', description: 'Select Spectrum, Waterfall, Channel, or detected-envelope STFT as the active bounded analysis view.' },
   { type: 'function', name: 'configure_waterfall', description: 'Configure coherent sweep-history depth and the explicit dBm color scale for the host waterfall; ceilingDbm must exceed floorDbm. Frequency-grid changes are excluded, never resampled silently.' },
   { type: 'function', name: 'configure_channel_measurement', description: 'Configure main and adjacent integration bandwidths, channel spacing, adjacent pair count, percent-power OBW, and explicit OBW noise treatment. Main and adjacent integration windows must not overlap; all windows must fit the acquired span before measurement.' },
@@ -249,7 +251,8 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'configure_marker_search', description: 'Configure the minimum absolute level and local-peak excursion used by next-left and next-right marker searches.' },
   { type: 'function', name: 'search_marker', description: 'Enable and move a marker to the absolute peak, minimum, or next qualifying local peak left/right using its assigned trace plus staged threshold and excursion criteria. Fails when that trace has no data.' },
   { type: 'function', name: 'select_trace', description: 'Select one of four host traces for visual editing without changing its mode or accumulated data.' },
-  { type: 'function', name: 'configure_trace', description: 'Configure one of four host-derived simultaneous traces as Clear/Write, Max Hold, Min Hold, Average, View, or Blank.' },
+  { type: 'function', name: 'configure_trace', description: 'Configure one of four host-derived simultaneous traces as Clear/Write, Max Hold, Min Hold, Average, View, or Off.' },
+  { type: 'function', name: 'configure_firmware_trace_visibility', description: 'Show or hide exactly one separately identified D1–D4 firmware-readback overlay without commanding or relabeling the instrument trace.' },
   { type: 'function', name: 'reset_trace', description: 'Clear the accumulated memory for one host-derived trace.' },
   { type: 'function', name: 'configure_spectrum_display', description: 'Configure the host spectrum amplitude axis reference level and dB per division. This does not claim firmware display readback.' },
   { type: 'function', name: 'auto_scale_spectrum_display', description: 'Derive and apply a host spectrum amplitude axis from the latest complete sweep. Fails when no sweep exists.' },
@@ -308,6 +311,7 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   search_marker: operate('search_marker'),
   select_trace: operate('select_trace'),
   configure_trace: operate('configure_trace'),
+  configure_firmware_trace_visibility: operate('configure_firmware_trace_visibility'),
   reset_trace: operate('reset_trace'),
   configure_spectrum_display: operate('configure_spectrum_display'),
   auto_scale_spectrum_display: operate('auto_scale_spectrum_display'),
@@ -364,6 +368,7 @@ export const agentToolInputSchemas = {
   search_marker: z.object({ markerId: markerIdSchema, action: markerSearchActionSchema }).strict(),
   select_trace: z.object({ traceId: traceIdSchema }).strict(),
   configure_trace: traceConfigurationSchema,
+  configure_firmware_trace_visibility: z.object({ traceId: firmwareTraceIdSchema, visible: z.boolean() }).strict(),
   reset_trace: z.object({ traceId: traceIdSchema }).strict(),
   configure_spectrum_display: spectrumDisplayConfigurationSchema,
   auto_scale_spectrum_display: z.object({}).strict(),
@@ -417,6 +422,9 @@ const agentParameterDescriptions: Readonly<Record<string, string>> = Object.free
   'configure_envelope_stft.windowSize': 'Detected-envelope samples per Hann analysis window.',
   'configure_envelope_stft.hopSize': 'Samples advanced between frames; runtime validation requires hopSize not to exceed windowSize.',
   'configure_marker.referenceMarkerId': 'Required for delta mode, omitted otherwise, and must differ from id.',
+  'configure_trace.mode': 'Host trace accumulation mode; use blank for the operator-facing Off state.',
+  'configure_firmware_trace_visibility.traceId': 'Exact D1–D4 firmware-readback trace identifier reported by get_measurement_state.',
+  'configure_firmware_trace_visibility.visible': 'Whether to render this firmware-readback trace as a separately labeled device overlay.',
   'configure_signal_detector.threshold': 'Complete absolute or noise-relative threshold strategy.',
   'configure_signal_detector.threshold.strategy': 'Threshold strategy discriminator; supply only the fields in its matching branch.',
   'configure_signal_detector.threshold.levelDbm': 'Absolute detection threshold in dBm.',
@@ -532,6 +540,7 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 - configure_analyzer is a non-empty application-layer patch. Send only fields the user asked to change. Every omitted field remains exactly staged, including rbwKhz, attenuationDb, points, detector, and trigger.
 - A trigger patch is one complete discriminated object: use exactly {"mode":"auto"}, or provide both mode and levelDbm for normal or single. Never infer a trigger level.
 - Complete-configuration tools such as configure_generator, configure_zero_span, configure_marker, and configure_trace require every declared field. Read current state first when the user supplied only part of a complete configuration.
+- Host trace Off is configure_trace with mode "blank". Firmware D1–D4 visibility is a separate display projection through configure_firmware_trace_visibility and never changes firmware trace state.
 - Zero-span and envelope-STFT acquisition may temporarily reconfigure the instrument, but Atomizer restores the staged swept-analyzer configuration immediately afterward. Do not describe that temporary capture RBW as a change to swept-analyzer RBW.
 - Only claim success after the returned tool result says success. A blocked app-computer action is a failed action.
 - A schema rejection means nothing executed. Correct it once only when the missing value is unambiguous from the user's words or current verified state; otherwise ask.

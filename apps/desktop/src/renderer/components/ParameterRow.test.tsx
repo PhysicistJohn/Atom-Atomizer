@@ -14,10 +14,11 @@ describe('parameter-row contract', () => {
     expect(details?.open).toBe(false);
     fireEvent.click(screen.getByLabelText('Edit Center'));
     expect(details?.open).toBe(true);
-    const input = within(details!).getByRole('textbox', { name: 'Center' }) as HTMLInputElement;
+    const dialog = screen.getByRole('dialog', { name: /Center numeric entry/i });
+    const input = within(dialog).getByRole('textbox', { name: 'Center' }) as HTMLInputElement;
     expect(input.value).toBe('98');
     fireEvent.change(input, { target: { value: '100' } });
-    fireEvent.click(within(details!).getByRole('button', { name: /^Apply MHz$/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Apply MHz$/i }));
     expect(commit).toHaveBeenCalledWith('100000000');
     expect(details?.open).toBe(false);
   });
@@ -27,7 +28,11 @@ describe('parameter-row contract', () => {
     const { container } = render(<EditableParameter label="Stop frequency" value={108_000_000} displayValue="108 MHz" unit="Hz" minimum={1} maximum={17_922_600_000} step={1} controlId="analyzer.stop" onCommit={commit}/>);
     fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
     const dialog = screen.getByRole('dialog', { name: /Stop frequency numeric entry/i });
-    for (const interactive of dialog.querySelectorAll<HTMLElement>('button,input')) expect(interactive.closest('[data-agent-control]')).toBeTruthy();
+    expect(dialog.parentElement).toBe(document.body.querySelector('.numeric-entry-layer'));
+    expect(dialog.getAttribute('data-parameter-editor')).toBe('analyzer.stop');
+    expect(dialog.getAttribute('data-agent-control')).toBe('analyzer.stop');
+    expect(container.querySelector('details')?.getAttribute('data-agent-control')).toBeNull();
+    expect(container.querySelector('details')?.getAttribute('data-agent-exclusion')).toBe('parameter-editor-origin');
     for (const digit of ['9', '1', '5']) fireEvent.click(within(dialog).getByRole('button', { name: digit }));
     fireEvent.click(within(dialog).getByRole('button', { name: /^Apply MHz$/i }));
     expect(commit).toHaveBeenCalledWith('915000000');
@@ -49,8 +54,9 @@ describe('parameter-row contract', () => {
     const { container } = render(<EditableParameter label="Points" value={450} minimum={20} maximum={450} onCommit={commit}/>);
     const details = container.querySelector('details')!;
     fireEvent.click(screen.getByLabelText('Edit Points'));
-    fireEvent.change(within(details).getByRole('textbox', { name: 'Points' }), { target: { value: '451' } });
-    fireEvent.click(details.querySelector<HTMLButtonElement>('.numeric-apply')!);
+    const dialog = screen.getByRole('dialog', { name: /Points numeric entry/i });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Points' }), { target: { value: '451' } });
+    fireEvent.click(dialog.querySelector<HTMLButtonElement>('.numeric-apply')!);
     expect(screen.getByRole('alert').textContent).toContain('at most 450');
     expect(commit).not.toHaveBeenCalled();
   });

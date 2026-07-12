@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { BarChart3, ChevronLeft, ChevronRight, Crosshair, Gauge, RotateCcw, ScanSearch, Sigma } from 'lucide-react';
 import type {
   MarkerConfiguration,
+  FirmwareTraceFrame,
+  FirmwareTraceId,
+  FirmwareTraceVisibility,
   MarkerId,
   MarkerReading,
   MarkerSearchAction,
@@ -20,6 +23,9 @@ type Panel = 'markers' | 'traces' | 'display';
 export interface MeasurementDockProps {
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
+  firmwareFrames: readonly FirmwareTraceFrame[];
+  visibleFirmwareTraceIds: FirmwareTraceVisibility;
+  onFirmwareTraceVisibility(traceId: FirmwareTraceId, visible: boolean): void;
   activeTraceId: TraceId;
   onActiveTrace(traceId: TraceId): void;
   markers: readonly MarkerConfiguration[];
@@ -105,14 +111,21 @@ function TracePanel(props: MeasurementDockProps) {
   const trace = props.traces.find((item) => item.id === props.activeTraceId);
   if (!trace) throw new Error(`Trace ${props.activeTraceId} does not exist`);
   const frame = props.frames.find((item) => item.traceId === trace.id);
+  const firmwareOverlays = props.firmwareFrames.filter((item) => item.traceId !== 1);
+  const traceEnabled = trace.mode !== 'blank';
   return <div className="measurement-panel trace-panel">
     <div className="trace-selector">{props.traces.map((item) => <button key={item.id} className={`t${item.id} ${item.id === trace.id ? 'active' : ''}`} onClick={() => props.onActiveTrace(item.id)} data-agent-control={`trace.${item.id}.select`}><i className={`trace-color t${item.id}`}/><span>TRACE {item.id}</span></button>)}</div>
     <div className="trace-readout"><span><i className={`trace-color t${trace.id}`}/><small>TRACE {trace.id}</small></span><strong>{traceModeLabel(trace.mode)}</strong><em>{frame ? `${frame.sweepCount} sweep${frame.sweepCount === 1 ? '' : 's'} captured` : 'No data captured'}</em></div>
     <div className="parameter-stack trace-settings">
-      <SelectParameter label="Trace mode" value={trace.mode} options={[{ value: 'clear-write', label: 'Clear / Write' }, { value: 'max-hold', label: 'Maximum Hold' }, { value: 'min-hold', label: 'Minimum Hold' }, { value: 'average', label: 'Average' }, { value: 'view', label: 'View / Freeze' }, { value: 'blank', label: 'Blank' }]} controlId={`trace.${trace.id}.mode`} onValue={(value) => props.onTrace({ ...trace, mode: value as TraceConfiguration['mode'] })}/>
+      <ToggleParameter label={`Trace ${trace.id}`} value={traceEnabled} controlId={`trace.${trace.id}.enabled`} onToggle={(enabled) => props.onTrace({ ...trace, mode: enabled ? 'clear-write' : 'blank' })}/>
+      {traceEnabled && <SelectParameter label="Trace mode" value={trace.mode} options={[{ value: 'clear-write', label: 'Clear / Write' }, { value: 'max-hold', label: 'Maximum Hold' }, { value: 'min-hold', label: 'Minimum Hold' }, { value: 'average', label: 'Average' }, { value: 'view', label: 'View / Freeze' }]} controlId={`trace.${trace.id}.mode`} onValue={(value) => props.onTrace({ ...trace, mode: value as TraceConfiguration['mode'] })}/>}
       {trace.mode === 'average' && <EditableParameter label="Average count" value={trace.averageCount} displayValue={`${trace.averageCount} sweeps`} minimum={2} maximum={100} step={1} controlId={`trace.${trace.id}.average-count`} onCommit={(value) => props.onTrace({ ...trace, averageCount: Number(value) })}/>}
     </div>
     <div className="panel-action"><button className="secondary full" onClick={() => props.onTraceReset(trace.id)} data-agent-control={`trace.${trace.id}.reset`}><RotateCcw size={14}/>Reset Trace {trace.id}</button></div>
+    {firmwareOverlays.length > 0 && <section className="firmware-trace-bank">
+      <div className="panel-section-label"><span>Instrument overlays</span><small>Explicit readback · off by default</small></div>
+      <div className="parameter-stack">{firmwareOverlays.map((item) => <ToggleParameter key={item.traceId} label={`D${item.traceId} · ${firmwareTraceRole(item)}`} value={props.visibleFirmwareTraceIds.includes(item.traceId)} controlId={`firmware-trace.${item.traceId}.visible`} onToggle={(visible) => props.onFirmwareTraceVisibility(item.traceId, visible)}/>)}</div>
+    </section>}
   </div>;
 }
 
@@ -124,4 +137,11 @@ function formatMarkerReading(reading: MarkerReading | undefined): string {
 }
 
 function formatSignedFrequency(value: number): string { return `${value >= 0 ? '+' : '−'}${formatFrequency(Math.abs(value))}`; }
-function traceModeLabel(value: TraceConfiguration['mode']): string { return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase()).replace('Min ', 'Minimum ').replace('Max ', 'Maximum '); }
+function traceModeLabel(value: TraceConfiguration['mode']): string {
+  if (value === 'blank') return 'Off';
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase()).replace('Min ', 'Minimum ').replace('Max ', 'Maximum ');
+}
+function firmwareTraceRole(frame: FirmwareTraceFrame): string {
+  const role = frame.role === 'measured' ? 'Measured' : frame.role === 'raw' ? 'Raw' : 'Stored';
+  return frame.frozen === true ? `${role} · frozen` : frame.frozen === false ? role : `${role} · freeze unknown`;
+}

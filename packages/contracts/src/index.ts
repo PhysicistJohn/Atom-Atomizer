@@ -451,6 +451,10 @@ export interface AnalyzerState {
 
 export const firmwareTraceIdSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
 export type FirmwareTraceId = z.infer<typeof firmwareTraceIdSchema>;
+export const firmwareTraceVisibilitySchema = z.array(firmwareTraceIdSchema).max(4).superRefine((traceIds, context) => {
+  if (new Set(traceIds).size !== traceIds.length) context.addIssue({ code: 'custom', message: 'Firmware trace visibility cannot repeat a trace identifier' });
+});
+export type FirmwareTraceVisibility = z.infer<typeof firmwareTraceVisibilitySchema>;
 export interface FirmwareTraceFrame {
   traceId: FirmwareTraceId;
   role: 'measured' | 'stored' | 'raw';
