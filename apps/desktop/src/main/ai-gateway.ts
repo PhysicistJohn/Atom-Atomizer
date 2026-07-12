@@ -12,7 +12,6 @@ import { RealtimeTextSession, type RealtimeSocketFactory } from './realtime-text
 
 const OPENAI_API = 'https://api.openai.com/v1';
 const MAX_SDP_BYTES = 256_000;
-const MAX_CONTEXT_CHARS = 80_000;
 const MAX_TEXT_CONVERSATIONS = 4;
 const TEXT_CONVERSATION_IDLE_MS = 5 * 60_000;
 
@@ -67,7 +66,6 @@ export class OpenAiGateway {
   /** Text, tools and screenshots use one trusted Realtime WebSocket path. */
   async agentTurn(request: AgentTurnRequest): Promise<AgentTurnResult> {
     this.#requireKey();
-    if (request.applicationContext.length > MAX_CONTEXT_CHARS) throw new Error('Application context is too large');
 
     if (request.conversationId) {
       const entry = this.#realtimeConversations.get(request.conversationId);

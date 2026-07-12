@@ -57,7 +57,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, Atom surface v7, byte-identical trio composition v2, physical/OEM firmware provenance, updater, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict API v2, Atom surface v8, byte-identical trio composition v2, physical/OEM firmware provenance, updater, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
@@ -72,7 +72,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
 | Firmware update | pinned OEM download, exact byte/hash verification, private cache, audited human preflight, dfu-util 0.11/0483:df11 admission, one-shot write state, post-reboot identity verification | install prerequisite, physical pre/post self-test and first write/recovery evidence |
-| Atom | exact model, high reasoning, Ballad, VAD 0.97, identical voice/text tools, live DOM control topology, screenshots, policies, contextual approvals, updater observation/preparation boundary, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
+| Atom | exact full model, high reasoning, Ballad, VAD 0.97, one compact loader plus response-scoped concrete tools, live API usage/TPM telemetry, live DOM control topology, screenshots, policies, contextual approvals, updater observation/preparation boundary, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
 | UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 
 ## Execution gates
@@ -132,9 +132,9 @@ Complete only after clean install/connect/sweep on frozen macOS, Windows, and Li
 
 ## Atom plan
 
-The exact model is `gpt-realtime-2.1-mini`, which the official model catalog describes as a distilled reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
+The exact model is `gpt-realtime-2.1`, which the official model catalog describes as a reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
 
-Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1-mini" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, instructions, and all 54 tools. Chromium requests echo cancellation, noise suppression, and automatic gain control. Requested/applied microphone settings and sent/API-returned Realtime session settings are emitted to the console.
+Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 54-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
 
 Every application capability ships with a domain contract, closed agent schema, risk class, executor through the same application host, context projection, UI activity, tests, and docs. RF enable and remote physical-screen touch require action-time approval. Computer clicks are application-only and DOM-hit-tested; every coordinate action consumes a short-lived screenshot ID, focus-sensitive input verifies the expected target, and high-impact targets are blocked.
 

@@ -55,20 +55,20 @@ It owns 79 closed visual stimulus profiles and deterministic AWGN/Rayleigh chann
 
 Place `OPENAI_KEY` in `.env`. The key is read only by the trusted Electron main process and never crosses preload into the renderer.
 
-Both AI paths use exactly `gpt-realtime-2.1-mini`:
+Both AI paths use exactly `gpt-realtime-2.1`:
 
 | Path | Transport | Modalities |
 |---|---|---|
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both response paths use the identical 54-tool closed catalog, `reasoning.effort: high`, and no model/API/transport fallback. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical closed registry of 54 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
-Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls.
+Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
-WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the full voice, reasoning, transcription, instruction, and tool configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. This avoids putting the full 54-tool catalog in the call-creation gateway request without changing model or transport.
+WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the voice, reasoning, transcription, concise instruction, and compact loader configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. Text configures the same static loader contract once rather than rewriting instructions or injecting mutable application state every turn. Atomizer sets no output-token cap or reduced context/truncation window; throughput comes from response-scoped schema loading, not artificial token limits.
 
 Atom’s application surface is contract version 5:
 

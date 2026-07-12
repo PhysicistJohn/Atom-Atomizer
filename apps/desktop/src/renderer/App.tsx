@@ -69,6 +69,8 @@ import {
 import {
   ATOM_AGENT_MODEL,
   ATOM_AGENT_VERSION,
+  ATOM_MAX_LOADED_TOOLS,
+  ATOM_TOOL_LOADER_NAME,
   agentApiCoverage,
   agentControlBinding,
   agentControlBindings,
@@ -1043,7 +1045,8 @@ export function App() {
       case 'get_agent_surface': return {
         version: ATOM_AGENT_VERSION,
         model: ATOM_AGENT_MODEL,
-        tools: agentToolDefinitions.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters, policy: agentToolPolicies[tool.name] })),
+        loading: { startupTool: ATOM_TOOL_LOADER_NAME, maximumToolsPerResponse: ATOM_MAX_LOADED_TOOLS, fullToolCount: agentToolDefinitions.length, concreteSchemas: 'response-scoped' },
+        tools: agentToolDefinitions.map((tool) => ({ name: tool.name, description: tool.description, policy: agentToolPolicies[tool.name] })),
         controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
         apiCoverage: agentApiCoverage,
       };
@@ -1283,7 +1286,7 @@ export function App() {
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
       {workspace === 'device' && <DeviceWorkspace snapshot={snapshot} diagnostics={diagnostics} frame={screenFrame} busy={busy} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTouch={(point) => void touchScreen(point)} onRelease={(point) => void releaseScreen(point)}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog
       ports={ports}
       selectedId={selectedPortId}

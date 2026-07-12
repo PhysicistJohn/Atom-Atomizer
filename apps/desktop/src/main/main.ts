@@ -19,7 +19,7 @@ import {
 } from '@tinysa/contracts';
 import { TinySaDeviceService, NodeSerialTransport, PhysicalOrTwinTransport, RenodeDigitalTwinTransport } from '@tinysa/device';
 import { OpenAiGateway } from './ai-gateway.js';
-import type { AgentTurnRequest } from '@tinysa/agent';
+import { parseAtomLoadedToolNames, type AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
 import { selectStartupInstrument } from './startup-admission.js';
@@ -95,14 +95,18 @@ function validateComputerInput(value:unknown,fields:readonly string[]):Record<st
 }
 
 function validateAgentTurnRequest(value: unknown): AgentTurnRequest {
-  if(!value||typeof value!=='object')throw new TypeError('Agent turn must be an object');
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('Agent turn must be an object');
   const request=value as Partial<AgentTurnRequest>;
-  if(typeof request.applicationContext!=='string')throw new TypeError('applicationContext must be a string');
+  const allowed=new Set(['prompt','conversationId','toolOutputs','loadedToolNames']);
+  if(Object.keys(request).some(key=>!allowed.has(key)))throw new TypeError('Agent turn contains an undeclared field');
   if(request.prompt!==undefined&&(typeof request.prompt!=='string'||request.prompt.length>20_000))throw new TypeError('prompt must be a bounded string');
   if(request.conversationId!==undefined&&(typeof request.conversationId!=='string'||request.conversationId.length>256))throw new TypeError('conversationId must be a bounded string');
   if(request.toolOutputs!==undefined&&(!Array.isArray(request.toolOutputs)||request.toolOutputs.length>16||request.toolOutputs.some(item=>!item||typeof item.callId!=='string'||item.callId.length>256||typeof item.output!=='string'||item.output.length>200_000||(item.imageDataUrl!==undefined&&(typeof item.imageDataUrl!=='string'||!/^data:image\/(png|jpeg);base64,/.test(item.imageDataUrl)||item.imageDataUrl.length>12_000_000)))))throw new TypeError('toolOutputs are invalid');
+  if(request.loadedToolNames!==undefined)parseAtomLoadedToolNames(request.loadedToolNames);
   const hasPrompt=Boolean(request.prompt?.trim());const hasOutputs=Boolean(request.toolOutputs?.length);
   if(hasPrompt===hasOutputs)throw new TypeError('Agent turn requires either a prompt or tool outputs');
+  if(hasPrompt&&request.loadedToolNames!==undefined)throw new TypeError('A new Atom prompt cannot inherit response-scoped tools');
+  if(hasOutputs&&!request.loadedToolNames?.length)throw new TypeError('Atom tool results require an exact response-scoped tool selection');
   return request as AgentTurnRequest;
 }
 

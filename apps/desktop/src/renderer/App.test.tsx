@@ -86,7 +86,7 @@ beforeEach(() => {
     subscribe: vi.fn().mockImplementation((listener: (event: DeviceEvent) => void) => { deviceEventListener = listener; return vi.fn(); }),
   };
   window.atomAgent = {
-    status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
+    status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
     createRealtimeCall: vi.fn(), agentTurn: vi.fn(), computerScreenshot: vi.fn(), computerClick: vi.fn(), computerType: vi.fn(), computerKey: vi.fn(), computerScroll: vi.fn(),
   };
 });
@@ -324,14 +324,15 @@ describe('operator vertical slice', () => {
   });
 
   it('lets Atom list, connect, verify, and acquire through typed tools', async () => {
-    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'r0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'load-1', name: 'load_atom_tools', arguments: '{"toolNames":["list_connection_candidates","connect_device","get_instrument_state","configure_analyzer","acquire_sweep"]}' }] })
       .mockResolvedValueOnce({ conversationId: 'r1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'c1', name: 'list_connection_candidates', arguments: '{}' }] })
       .mockResolvedValueOnce({ conversationId: 'r2', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'c2', name: 'connect_device', arguments: '{"candidateId":"candidate-1"}' }] })
       .mockResolvedValueOnce({ conversationId: 'r3', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'c3', name: 'get_instrument_state', arguments: '{}' }] })
       .mockResolvedValueOnce({ conversationId: 'r4', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'c4', name: 'configure_analyzer', arguments: '{"startHz":93000000,"stopHz":95000000}' }] })
       .mockResolvedValueOnce({ conversationId: 'r5', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'c5', name: 'acquire_sweep', arguments: '{}' }] })
-      .mockResolvedValueOnce({ conversationId: 'r6', transport: 'realtime-websocket', text: 'Sweep complete.', toolCalls: [] });
+      .mockResolvedValueOnce({ conversationId: 'r6', transport: 'realtime-websocket', text: 'Sweep complete.', toolCalls: [], usage: { totalTokens: 1_200, inputTokens: 1_000, outputTokens: 200, cachedTokens: 640 }, rateLimits: [{ name: 'tokens', limit: 200_000, remaining: 190_000, resetSeconds: 60 }] });
 
     render(<App/>);
     await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
@@ -344,15 +345,17 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
     expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 93_000_000, stopHz: 95_000_000, rbwKhz: 'auto' }));
     expect(await screen.findByText('Sweep complete.')).toBeTruthy();
-    const candidateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[1]?.[0].toolOutputs?.[0]?.output ?? '';
+    expect(await screen.findByText(/TPM 10K\/200K/)).toBeTruthy();
+    const candidateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
     expect(candidateOutput).toContain('candidate-1');
     expect(candidateOutput).not.toContain('fake://');
     expect(candidateOutput).not.toContain('SIM-407');
   });
 
   it('restores swept-analyzer auto RBW after an Atom zero-span capture', async () => {
-    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'z0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'z-load', name: 'load_atom_tools', arguments: '{"toolNames":["list_connection_candidates","connect_device","acquire_zero_span"]}' }] })
       .mockResolvedValueOnce({ conversationId: 'z1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'z-list', name: 'list_connection_candidates', arguments: '{}' }] })
       .mockResolvedValueOnce({ conversationId: 'z2', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'z-connect', name: 'connect_device', arguments: '{"candidateId":"candidate-1"}' }] })
       .mockResolvedValueOnce({ conversationId: 'z3', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'z-capture', name: 'acquire_zero_span', arguments: '{}' }] })
@@ -370,9 +373,10 @@ describe('operator vertical slice', () => {
   });
 
   it('returns a blocked app-computer action to Atom as a failed tool result', async () => {
-    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1-mini', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.computerClick).mockResolvedValue({ ok: false, action: 'click', target: 'firmware.flash', reason: 'This control is a local human-only boundary' });
     vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'c0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'load-click', name: 'load_atom_tools', arguments: '{"toolNames":["computer_click"]}' }] })
       .mockResolvedValueOnce({ conversationId: 'c1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'blocked-click', name: 'computer_click', arguments: '{"screenshotId":"123e4567-e89b-42d3-a456-426614174000","x":100,"y":100}' }] })
       .mockResolvedValueOnce({ conversationId: 'c2', transport: 'realtime-websocket', text: 'That control is human-only.', toolCalls: [] });
 
@@ -381,8 +385,8 @@ describe('operator vertical slice', () => {
     fireEvent.change(composer, { target: { value: 'Click the final flash control.' } });
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
-    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(2));
-    const output = vi.mocked(window.atomAgent.agentTurn).mock.calls[1]?.[0].toolOutputs?.[0]?.output ?? '';
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const output = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
     expect(output).toContain('"ok":false');
     expect(output).toContain('human-only boundary');
   });

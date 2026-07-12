@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { TINYSA_API_V2_METHODS } from '@tinysa/contracts';
-import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeVoiceSessionConfig, realtimeToolDefinitions, validateAgentToolCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
+import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, ATOM_MAX_LOADED_TOOLS, ATOM_TOOL_LOADER_NAME, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeResponseTools, createAtomRealtimeToolResponseConfig, createAtomRealtimeVoiceSessionConfig, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, realtimeToolDefinitions, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
 
 const validToolArguments = {
   get_application_state: {}, get_system_topology: {}, get_agent_surface: {}, get_instrument_state: {}, get_latest_sweep_summary: {},
@@ -27,8 +27,8 @@ const validToolArguments = {
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
-  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1-mini'));
-  it('admits WebRTC with only the immutable exact model before enforcing the complete session',()=>expect(createAtomRealtimeCallBootstrapConfig()).toEqual({type:'realtime',model:'gpt-realtime-2.1-mini'}));
+  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1'));
+  it('admits WebRTC with only the immutable exact model before enforcing the complete session',()=>expect(createAtomRealtimeCallBootstrapConfig()).toEqual({type:'realtime',model:'gpt-realtime-2.1'}));
   it('locks Atom reasoning effort',()=>expect(ATOM_AGENT_REASONING_EFFORT).toBe('high'));
   it('locks Ballad and the explicit server VAD threshold',()=>{
     const session=createAtomRealtimeVoiceSessionConfig();
@@ -36,13 +36,16 @@ describe('Atom agent contracts',()=>{
     expect(session.audio.output.voice).toBe('ballad');expect(session.audio.input.turn_detection.threshold).toBe(0.97);
     expect(ATOM_AGENT_TRANSCRIPTION_MODEL).toBe('gpt-realtime-whisper');
     expect(session.audio.input.transcription).toEqual({model:'gpt-realtime-whisper'});
+    expect(session).not.toHaveProperty('parallel_tool_calls');
+    expect(session).not.toHaveProperty('max_output_tokens');
+    expect(session).not.toHaveProperty('truncation');
   });
   it('verifies every sent Realtime setting while reporting server defaults',()=>{
     const returned=structuredClone(createAtomRealtimeVoiceSessionConfig()) as Record<string,unknown>;
     returned.id='sess_test';returned.object='realtime.session';
     const verification=verifyAtomRealtimeVoiceSession(returned);
     expect(verification.ok).toBe(true);
-    expect(verification.checks.length).toBeGreaterThan(40);
+    expect(verification.checks.length).toBeGreaterThan(15);
     expect(verification.serverOnly).toEqual(expect.arrayContaining([{path:'session.id',value:'sess_test'},{path:'session.object',value:'realtime.session'}]));
   });
   it('reports an echoed Realtime setting mismatch',()=>{
@@ -81,18 +84,35 @@ describe('Atom agent contracts',()=>{
     expect(analyzer.parameters.minProperties).toBe(1);
     expect(agentToolInputSchemas.configure_analyzer.safeParse({}).success).toBe(false);
   });
-  it('locks Atom prompt behavior for state, patches, correction, provenance, and concise speech',()=>{
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Read system topology and application state');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty application-layer patch');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('A trigger patch is one complete discriminated object');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Correct it once only when');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('including rbwKhz');
+  it('locks Atom prompt behavior for just-in-time tools, patches, provenance, and concise speech',()=>{
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('startup surface contains only load_atom_tools');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Do not reflexively read topology or all application state');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty patch');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Omitted fields—including rbwKhz—remain staged');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
   });
-  it('exposes the identical complete tool surface to text and voice',()=>{
-    expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual(agentToolDefinitions.map(tool=>tool.name));
-    expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual(expect.arrayContaining(['computer_screenshot','computer_click','computer_type','computer_key','computer_scroll']));
+  it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
+    expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);
+    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(12_000);
+    const loaded=createAtomRealtimeResponseTools(['get_application_state','configure_analyzer']);
+    expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','configure_analyzer']);
+    expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='configure_analyzer'));
+    const response=createAtomRealtimeToolResponseConfig('audio',['configure_analyzer']);
+    expect(response.tools.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'configure_analyzer']);
+    expect(response).not.toHaveProperty('max_output_tokens');
+    expect(response).not.toHaveProperty('truncation');
+  });
+  it('validates the closed response-scoped loader contract',()=>{
+    expect(validateAtomToolLoadCall({callId:'load-1',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["get_application_state","configure_analyzer"]}'})).toEqual(['get_application_state','configure_analyzer']);
+    expect(()=>validateAtomToolLoadCall({callId:'load-2',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["get_application_state","get_application_state"]}'})).toThrow(/unique/i);
+    const tooMany=agentToolDefinitions.slice(0,ATOM_MAX_LOADED_TOOLS+1).map(tool=>tool.name);
+    expect(()=>validateAtomToolLoadCall({callId:'load-3',name:ATOM_TOOL_LOADER_NAME,arguments:JSON.stringify({toolNames:tooMany})})).toThrow();
+    expect(()=>validateAtomToolLoadCall({callId:'load-4',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["raw_serial"]}'})).toThrow();
+  });
+  it('parses exact Realtime usage and server rate telemetry',()=>{
+    expect(parseAtomRealtimeUsage({usage:{total_tokens:120,input_tokens:100,output_tokens:20,input_token_details:{cached_tokens:64}}})).toEqual({totalTokens:120,inputTokens:100,outputTokens:20,cachedTokens:64});
+    expect(parseAtomRealtimeRateLimits({type:'rate_limits.updated',event_id:'evt-1',rate_limits:[{name:'tokens',limit:40000,remaining:31000,reset_seconds:11.4}]})).toEqual([{name:'tokens',limit:40000,remaining:31000,resetSeconds:11.4}]);
   });
   it('binds every semantic and patterned UI hook to exactly one existing typed tool contract',()=>{
     const tools=new Set(agentToolDefinitions.map(tool=>tool.name));

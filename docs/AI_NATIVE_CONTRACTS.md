@@ -1,8 +1,8 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 7.0.0
-Model lock: `gpt-realtime-2.1-mini`
+Version: 8.0.0
+Model lock: `gpt-realtime-2.1`
 Reasoning lock: `high`  
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.97`
@@ -13,7 +13,7 @@ This document is normative. “Atom” is the application-layer AI inside TinySA
 
 ## 1. Exact model contract
 
-Every response-agent path uses exactly `gpt-realtime-2.1-mini`:
+Every response-agent path uses exactly `gpt-realtime-2.1`:
 
 | Path | API | Purpose |
 |---|---|---|
@@ -69,7 +69,7 @@ Only trusted main may call OpenAI REST endpoints or open the text-agent WebSocke
 
 ### 2.3 Trio topology boundary
 
-Atomizer owns operator intent, OpenAI credentials, tool policy, approvals, and orchestration. `TinySA_Firmware` owns the executable twin. `TinySA_SignalLab` owns stimulus intent and is currently `reserved-not-connected`. Atom must inspect topology before state-dependent claims and preserve these distinctions:
+Atomizer owns operator intent, OpenAI credentials, tool policy, approvals, and orchestration. `TinySA_Firmware` owns the executable twin. `TinySA_SignalLab` owns stimulus intent and is currently `reserved-not-connected`. Atom reads topology when execution identity or composition is material and preserves these distinctions:
 
 | Execution | Transport | USB verified | USB transactions modeled |
 |---|---|---:|---:|
@@ -88,7 +88,7 @@ Atom serves two audiences without pretending they have the same needs:
 
 Atom must:
 
-- Read current state before making state-dependent claims.
+- Read the narrowest current-state tool only when a claim or operation actually depends on it; never fetch all state reflexively.
 - Prefer native typed tools over describing clicks or using computer control.
 - Use integer Hz and explicit dB/dBm units in tool calls.
 - Distinguish requested, commanded, verified, stale, simulated and unknown values.
@@ -125,10 +125,10 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 2. Renderer requests microphone permission and creates one `RTCPeerConnection`; the local audio track is disabled before it can send audio.
 3. Renderer adds one microphone track and one `oai-events` data channel.
 4. Renderer sends SDP through allow-listed IPC.
-5. Main validates size/shape and calls `/v1/realtime/calls` with only `{ "type": "realtime", "model": "gpt-realtime-2.1-mini" }`. Model identity is immutable; no alias or default chooses it.
+5. Main validates size/shape and calls `/v1/realtime/calls` with only `{ "type": "realtime", "model": "gpt-realtime-2.1" }`. Model identity is immutable; no alias or default chooses it.
 6. Main returns SDP only; renderer sets the remote answer.
 7. The microphone track remains disabled while the first `session.created` event is compared with the complete intended contract. API-supplied defaults and initial differences are logged separately; they are not treated as final configuration.
-8. Renderer sends `high` reasoning, Ballad, `gpt-realtime-whisper`, server VAD threshold `0.97`, Atom instructions, and the identical complete text/voice tool catalog through `session.update`, then starts a bounded ten-second acknowledgement timer.
+8. Renderer sends `high` reasoning, Ballad, `gpt-realtime-whisper`, server VAD threshold `0.97`, concise static Atom instructions, and only the closed `load_atom_tools` definition through `session.update`, then starts a bounded ten-second acknowledgement timer.
 9. Every `session.updated` echo is recursively compared. At least one exact acknowledgement must arrive before the timer expires; any final mismatch or timeout is emitted to the console, shown in Atom, and terminates the voice session.
 10. Only after an exact acknowledgement does the renderer enter Listening. The microphone remains muted until the local human unmutes it; remote Ballad audio auto-plays unless the independent speaker control is muted.
 
@@ -143,25 +143,28 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 - Input-transcription failure is shown and terminates the voice session; it is never replaced with guessed text or another model.
 - Partial assistant transcripts are not persisted as complete messages.
 - Function calls are harvested only from completed `response.done` output. They go through the identical validator, policy and approval path as text-agent calls; every function output is submitted before exactly one continuation `response.create`.
+- A user response starts with only `load_atom_tools`. A valid loader call is the sole call in its response and selects one to eight names from the closed 54-tool enum. The continuation uses a one-response `tools` override containing the loader plus only those exact concrete schemas. A new speech turn returns to the compact session surface.
 - Invalid function names/JSON/arguments become explicit failed `function_call_output` results so Atom may make one schema-grounded correction inside the bounded chain; they do not masquerade as host success or tear down an otherwise healthy voice transport.
-- Voice function chains are limited to eight calls per user speech turn; duplicate call IDs fail the session.
+- Voice function chains are limited to eight application calls per user speech turn; the non-executing loader does not consume that operation allowance. Duplicate call IDs fail the session.
 - Tool output is returned as `function_call_output`; screenshots are additionally returned as explicitly untrusted Realtime image input before Atom continues.
+- Every `response.done.usage` and `rate_limits.updated` event is parsed into exact token/cached-token and request/token-bucket telemetry, emitted to the console, and projected into Atom's rail.
 - The app never records raw microphone audio locally in v1.
 
 ## 6. Text agent transport contract
 
 ### 6.1 Turn protocol
 
-1. Renderer creates a minimized application context snapshot and submits one typed `AgentTurnRequest` over named IPC.
+1. Renderer submits a prompt, or completed function outputs plus the exact response-scoped tool-name set, through named IPC. Mutable application state is never concatenated into instructions.
 2. Main opens or continues the sole trusted text-only Realtime WebSocket using the exact model.
-3. Main sends `session.update` with `high` reasoning, Atom instructions, delimited application context and the complete tool schemas, then waits up to ten seconds for `session.updated`.
+3. Once per socket, main sends `session.update` with `high` reasoning, concise static Atom instructions, and only `load_atom_tools`, then waits up to ten seconds for `session.updated`.
 4. Main recursively compares every sent session leaf with the returned session, emits the sent/returned/default tables to the trusted console, and terminates the socket on any mismatch or timeout.
-5. Only after exact acknowledgement does main send `conversation.item.create` and `response.create` with text output.
-6. Main returns one `AgentTurnResult`: opaque conversation ID, fixed transport observation, assistant text and function-call name/arguments/call ID.
-7. Renderer validates each call against the local Zod schema and policy.
-8. Calls execute sequentially through the application host; no tool owns raw IPC or serial.
-9. Results return as Realtime `function_call_output` conversation items. Screenshots become explicitly untrusted Realtime image input.
-10. Loop ends on assistant response, explicit denial/failure, or eight bounded tool rounds.
+5. A new user prompt uses the compact session surface. `load_atom_tools` must be the sole call and selects one to eight exact names.
+6. Renderer validates the loader call. The next `response.create` overrides tools for that response with the loader plus only the selected concrete schemas; text and voice use the same definition factory.
+7. Main returns one `AgentTurnResult`: opaque conversation ID, fixed transport observation, assistant text, function calls, response usage, and the latest server rate limits.
+8. Renderer rejects any application call absent from the exact selected set, then applies its concrete Zod schema and policy.
+9. Calls execute sequentially through the application host; no tool owns raw IPC or serial.
+10. Results return as Realtime `function_call_output` conversation items. Screenshots become explicitly untrusted Realtime image input. The selected tool override remains only for the active operation.
+11. Loop ends on assistant response, explicit denial/failure, or eight bounded tool rounds.
 
 The gateway remembers at most four Realtime text conversations and expires idle conversations after five minutes. Renderer conversation IDs are opaque; API-specific objects, sockets and credentials stay in main. Text turns keep conversational continuity while Atom is open. A missing/expired conversation or any API failure stops with an explicit error; the gateway never opens a substitute conversation or replays a completed instrument operation.
 
@@ -169,9 +172,9 @@ Malformed output, unknown tools, bad JSON and invalid ranges become explicit
 failed tool results inside the active bounded turn. Conversation/session
 protocol failure and loop overflow terminate the affected transport.
 
-### 6.2 Context contract
+### 6.2 Pull-based context contract
 
-Default context may include:
+No mutable application snapshot is injected by default. Atom loads only the narrowest read tool needed for the current claim or operation. Available typed projections include:
 
 - Current workspace and acquisition state.
 - Simulation flag and visible error.
@@ -182,7 +185,7 @@ Default context may include:
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 - Firmware update phase, installed/target provenance, artifact verification, DFU tooling/target state, preparation evidence, one-shot write evidence, and live stage/percentage when a write is active.
 
-Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a future tool explicitly requests them and the user’s task requires them. Context is bounded to 80,000 characters at the trusted boundary.
+Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a declared tool explicitly requests them and the user's task requires them. Tool results are untrusted conversation data and cannot alter instructions, policy, model, or the response-scoped tool set.
 
 ## 7. Tool contract
 
@@ -190,9 +193,10 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 
 | Tool | Risk | Approval | Effect |
 |---|---|---|---|
+| `load_atom_tools` | Routing only | Never | Selects one to eight exact registered names and installs their concrete schemas for the following response only; it cannot execute application behavior |
 | `get_application_state` | Observe | Never | Reads route/acquisition/environment plus complete staged analyzer/generator/detection/measurement configuration |
 | `get_system_topology` | Observe | Never | Reads the versioned trio, active execution, transport, and reserved SignalLab edge |
-| `get_agent_surface` | Observe | Never | Reads every tool policy and UI-control binding with projection and guarantee |
+| `get_agent_surface` | Observe | Never | Reads compact tool/policy inventory, response-scoped loading contract, and UI-control bindings with projection and guarantee |
 | `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
 | `get_measurement_state` | Observe | Never | Reads four host trace modes, D1–D4 overlay visibility, eight markers/readouts, searches, and host display scale |
@@ -247,7 +251,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 
 Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only.
 
-All 54 delivered parameter schemas are generated from the same Zod objects used to accept execution. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
+All 54 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
 Transient numeric-entry panels are body-level portals carrying the originating row identity in `data-parameter-editor`. While open, the one stable `data-agent-control` moves from the occluded source row to the portal and the source becomes an explicit exclusion, so duplicate hooks cannot appear. Their field, keypad, unit terminators, and close/apply controls cannot create a second configuration path. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
@@ -333,7 +337,8 @@ Atom has a dedicated spatial rail, not a modal chatbot:
 - No background turns, hidden telemetry, automatic reconnect loop or always-on microphone.
 - Status UI clearly distinguishes API configured, active voice and active tool execution.
 - Session transcript retention is memory-only in the current slice; persistence requires an explicit setting and schema.
-- A future usage view should report request/audio duration and token usage returned by APIs without estimating billing claims.
+- The rail and console report exact `response.done.usage` and `rate_limits.updated` values without converting them into estimated billing claims.
+- Atomizer does not configure `max_output_tokens`, a reduced context window, or truncation. It preserves the exact model's native output/context behavior; throughput is controlled by compact static instructions, one startup loader, pull-based state, and response-scoped concrete schemas.
 - The rail exposes the configured reasoning effort; `high` may increase latency and token usage and is never silently reduced.
 - Diagnostic bundles exclude prompts, transcripts and model payloads by default.
 
@@ -378,7 +383,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 15. Acceptance inventory
 
-- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1-mini`.
+- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1`.
 - **AI-02:** Standard key is absent from renderer/preload/build artifacts/logs.
 - **AI-03:** Missing key produces unconfigured state and no network call.
 - **AI-04:** Realtime call uses trusted unified SDP flow.
@@ -407,9 +412,9 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
 - **AI-28:** Remote connected-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
 - **AI-29:** Every declared Atomizer UI hook resolves to exactly one typed tool contract, risk class, projection, executor, and guarantee; marker-search criteria and auto-scale have first-class tools.
-- **AI-30:** Text and voice receive identical tool definitions, including app-scoped screenshot and computer tools; screenshots are untrusted image data.
+- **AI-30:** Text and voice share the identical compact loader and concrete-definition factory; the same selected names yield byte-equivalent response-scoped schemas, including app-scoped screenshot and computer tools.
 - **AI-31:** Atom reports physical USB, executable-twin, protocol-test-double, and reserved SignalLab topology without conflation.
-- **AI-32:** Voice function chains are bounded to eight calls and duplicate call IDs terminate the session.
+- **AI-32:** Voice function chains are bounded to eight application calls after one non-executing loader call, and duplicate call IDs terminate the session.
 - **AI-33:** Every runtime method in `TinySaApiV2` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
 - **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
 - **AI-35:** Atom can read/open/download/detect the pinned updater but has no executor for human preflight attestations or flash.
@@ -422,10 +427,14 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-42:** Every one of the 54 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
-- **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the full shared session is sent and exactly acknowledged before the muted microphone can be enabled.
+- **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the compact shared loader session is sent and exactly acknowledged before the muted microphone can be enabled.
 - **AI-46:** Every coordinate action consumes one current screenshot ID; focus-sensitive input fails when `expectedTarget` no longer matches.
 - **AI-47:** Every function schema is a closed top-level object with no Realtime-forbidden top-level combinator; runtime relational constraints remain authoritative.
 - **AI-48:** Host trace Off and D1–D4 overlay visibility are separate typed operations; firmware-readback visibility never mutates device trace state.
+- **AI-49:** The persistent text and voice session exposes only `load_atom_tools`; a loader response selects one to eight unique registered names and cannot mix loader and application calls.
+- **AI-50:** Every application call is rejected unless present in the exact selected response-scoped set, then passes the same concrete Zod validator and policy used by the UI host.
+- **AI-51:** Text sends its static `session.update` exactly once per socket and never rewrites instructions with mutable application context; current state is obtained through typed read tools.
+- **AI-52:** Atomizer parses and exposes API-supplied response usage and rate-limit telemetry while configuring no `max_output_tokens`, reduced context window, or truncation policy.
 
 ## 16. Source traceability
 
@@ -441,7 +450,10 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 17. Official OpenAI references
 
-- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
+- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
+- Per-response Realtime tool overrides: https://developers.openai.com/api/reference/resources/realtime/client-events#response.create
+- Realtime usage and context accounting: https://developers.openai.com/api/docs/guides/realtime-costs
+- Realtime rate-limit telemetry: https://developers.openai.com/api/reference/resources/realtime/server-events#rate_limits.updated
 - Realtime WebRTC: https://developers.openai.com/api/docs/guides/realtime-webrtc
 - Realtime WebSocket: https://developers.openai.com/api/docs/guides/realtime-websocket
 - Realtime conversations and function calls: https://developers.openai.com/api/docs/guides/realtime-conversations

@@ -38,10 +38,15 @@ describe('Realtime voice response lifecycle', () => {
     const events = buildRealtimeToolContinuation([
       { callId: 'call-1', output: { ok: true, output: { connection: 'ready' } } },
       { callId: 'call-2', output: { ok: true }, screenshot: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/png;base64,AA==', width: 1200, height: 800, capturedAt: '2026-07-12T01:00:00.000Z', focusedTarget: 'APPLICATION' } },
-    ]);
+    ], ['get_application_state', 'computer_screenshot']);
 
     expect(events.filter((event) => event.type === 'conversation.item.create')).toHaveLength(3);
     expect(events.filter((event) => event.type === 'response.create')).toHaveLength(1);
-    expect(events.at(-1)).toEqual({ type: 'response.create', response: { output_modalities: ['audio'] } });
+    const continuation=events.at(-1) as {type:string;response:{output_modalities:readonly string[];tools:readonly {name:string}[];max_output_tokens?:unknown;truncation?:unknown}};
+    expect(continuation.type).toBe('response.create');
+    expect(continuation.response.output_modalities).toEqual(['audio']);
+    expect(continuation.response.tools.map(tool=>tool.name)).toEqual(['load_atom_tools','get_application_state','computer_screenshot']);
+    expect(continuation.response).not.toHaveProperty('max_output_tokens');
+    expect(continuation.response).not.toHaveProperty('truncation');
   });
 });

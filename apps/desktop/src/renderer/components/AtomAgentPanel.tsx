@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronRight, Mic, MicOff, ShieldAlert, Volume2, VolumeX, Waves, X } from 'lucide-react';
-import { ATOM_AGENT_MODEL, type AgentApprovalRequest, type AgentConnectionState, type AgentMessage, type AgentStatus } from '@tinysa/agent';
+import { ATOM_AGENT_MODEL, type AgentApprovalRequest, type AgentConnectionState, type AgentMessage, type AgentStatus, type AtomRealtimeRateLimit, type AtomRealtimeUsage } from '@tinysa/agent';
 import type { ExecutionEnvironment } from '@tinysa/contracts';
 import { AtomicMark } from './AtomicMark.js';
 
-export function AtomAgentPanel({open,state,status,messages,approval,execution,microphoneMuted,speakerMuted,onClose,onSend,onVoice,onMicrophoneMute,onSpeakerMute,onApproval}:{
+export function AtomAgentPanel({open,state,status,messages,approval,execution,microphoneMuted,speakerMuted,usage,rateLimits,onClose,onSend,onVoice,onMicrophoneMute,onSpeakerMute,onApproval}:{
   open:boolean;state:AgentConnectionState;status?:AgentStatus;messages:readonly AgentMessage[];approval?:AgentApprovalRequest;
-  execution?:ExecutionEnvironment;microphoneMuted:boolean;speakerMuted:boolean;
+  execution?:ExecutionEnvironment;microphoneMuted:boolean;speakerMuted:boolean;usage?:AtomRealtimeUsage;rateLimits?:readonly AtomRealtimeRateLimit[];
   onClose():void;onSend(text:string):void;onVoice():void;onMicrophoneMute(muted:boolean):void;onSpeakerMute(muted:boolean):void;onApproval(approved:boolean):void;
 }){
   const [input,setInput]=useState('');const end=useRef<HTMLDivElement>(null);useEffect(()=>{if(typeof end.current?.scrollIntoView==='function')end.current.scrollIntoView({block:'end'});},[messages,approval]);
   if(!open)return null;
   const voiceActive=['connecting','listening','thinking','speaking'].includes(state);
   const voiceConnected=['listening','thinking','speaking'].includes(state);
+  const tokenRate=rateLimits?.find(limit=>limit.name==='tokens');
+  const tokenRateLabel=tokenRate&&tokenRate.limit!==undefined&&tokenRate.remaining!==undefined?`TPM ${compact(tokenRate.limit-tokenRate.remaining)}/${compact(tokenRate.limit)}`:undefined;
+  const tokenRateTitle=tokenRateLabel?`${tokenRateLabel}${tokenRate?.resetSeconds===undefined?'':` · resets in ${tokenRate?.resetSeconds.toFixed(1)}s`}${usage?` · last response ${usage.totalTokens.toLocaleString()} tokens (${usage.cachedTokens.toLocaleString()} cached)`:''}`:undefined;
   function submit(){if(input.trim()){onSend(input);setInput('');}}
   return <aside className="atom-panel" aria-label="Atom AI copilot">
     <div className="atom-head"><div className="atom-identity"><div className="atom-mark"><AtomicMark size={29} active={voiceActive}/></div><strong>Atom</strong></div><button data-agent-control="atom.close" className="icon-button" onClick={onClose} aria-label="Close Atom"><X size={17}/></button></div>
@@ -23,7 +26,8 @@ export function AtomAgentPanel({open,state,status,messages,approval,execution,mi
     </div>
     {!messages.some(message=>message.role==='user')&&<div className="atom-prompts"><button data-agent-exclusion="human-agent-boundary" onClick={()=>onSend('Set up an FM broadcast band sweep and explain what I should look for.')}><Waves size={14}/><strong>Survey the FM band</strong><ChevronRight size={14}/></button><button data-agent-exclusion="human-agent-boundary" onClick={()=>onSend('Inspect the current instrument state and tell me if anything looks unsafe or inconsistent.')}><ShieldAlert size={14}/><strong>Run a safety check</strong><ChevronRight size={14}/></button></div>}
     <div className="atom-composer"><textarea data-agent-exclusion="human-agent-boundary" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit();}}} placeholder={status?.configured?'Ask Atom anything about this RF session…':'OPENAI_KEY required'} disabled={!status?.configured}/><button data-agent-exclusion="human-agent-boundary" onClick={submit} disabled={!status?.configured||!input.trim()} aria-label="Send to Atom"><ArrowUp size={16}/></button></div>
-    <div className="atom-foot"><span><i className={status?.configured?'online':''}/>{state.toUpperCase()}</span><span>{ATOM_AGENT_MODEL} · {status?.voice.toUpperCase()??'NO VOICE'} · {status?.reasoningEffort?.toUpperCase()??'NO REASONING'}</span></div>
+    <div className="atom-foot"><span><i className={status?.configured?'online':''}/>{state.toUpperCase()}</span><span title={tokenRateTitle}>{tokenRateLabel?`${tokenRateLabel} · `:''}{ATOM_AGENT_MODEL} · {status?.voice.toUpperCase()??'NO VOICE'} · {status?.reasoningEffort?.toUpperCase()??'NO REASONING'}</span></div>
   </aside>;
 }
 function voiceLabel(state:AgentConnectionState){return state==='connecting'?'Connecting…':state==='listening'?'Listening':state==='thinking'?'Thinking':state==='speaking'?'Speaking':state==='unconfigured'?'Not configured':state==='error'?'Needs attention':'Start voice';}
+function compact(value:number){return value>=1_000?`${(value/1_000).toFixed(value>=10_000?0:1)}K`:Math.round(value).toString();}

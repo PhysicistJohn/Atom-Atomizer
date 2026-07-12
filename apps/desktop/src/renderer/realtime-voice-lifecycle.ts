@@ -1,3 +1,5 @@
+import { createAtomRealtimeToolResponseConfig, type AgentToolName } from '@tinysa/agent';
+
 export interface CompletedRealtimeFunctionCall {
   responseId: string;
   callId: string;
@@ -74,7 +76,10 @@ export class RealtimeResponseLifecycle {
   reset(): void { this.#activeResponseId = undefined; }
 }
 
-export function buildRealtimeToolContinuation(deliveries: readonly RealtimeToolDelivery[]): readonly Record<string, unknown>[] {
+export function buildRealtimeToolContinuation(
+  deliveries: readonly RealtimeToolDelivery[],
+  loadedToolNames: readonly AgentToolName[],
+): readonly Record<string, unknown>[] {
   if (!deliveries.length) throw new Error('A Realtime tool continuation requires at least one completed tool result');
   const events: Record<string, unknown>[] = [];
   for (const delivery of deliveries) {
@@ -96,7 +101,7 @@ export function buildRealtimeToolContinuation(deliveries: readonly RealtimeToolD
       });
     }
   }
-  events.push({ type: 'response.create', response: { output_modalities: ['audio'] } });
+  events.push({ type: 'response.create', response: createAtomRealtimeToolResponseConfig('audio', loadedToolNames) });
   return events;
 }
 
