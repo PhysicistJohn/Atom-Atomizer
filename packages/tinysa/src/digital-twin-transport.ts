@@ -291,7 +291,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
       case 'vbat': return '4170 mV';
       case 'deviceid': return 'deviceid 407';
       case 'status': return 'Resumed';
-      case 'trace':
+      case 'trace': return args.length === 0 ? '1: dBm 0.000000 10.000000' : '';
       case 'marker':
       case 'pause':
       case 'resume':

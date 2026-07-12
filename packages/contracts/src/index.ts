@@ -13,6 +13,7 @@ export type FirmwareSourceCommit =
   | typeof FIRMWARE_SOURCE_COMMIT
   | typeof ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT
   | typeof DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT;
+export type FirmwareQualification = 'supported-oem' | 'custom-unqualified' | 'executable-twin' | 'protocol-test';
 export const OEM_ZS407_FIRMWARE_RELEASE = Object.freeze({
   product: 'tinySA Ultra / Ultra+',
   version: 'tinySA4_v1.4-224-gc979386',
@@ -123,8 +124,10 @@ export interface DeviceIdentity {
   model: string;
   hardwareVersion: string;
   firmwareVersion: string;
-  firmwareReportedRevision?: SupportedZs407FirmwareRevision;
-  firmwareSourceCommit: FirmwareSourceCommit;
+  firmwareReportedRevision?: string;
+  firmwareSourceCommit?: FirmwareSourceCommit;
+  firmwareQualification: FirmwareQualification;
+  firmwareWarning?: string;
   port: PortCandidate;
   simulated: boolean;
   usbIdentityVerified: boolean;
@@ -177,9 +180,9 @@ export interface DeviceCapabilities {
   modulation: readonly ('off' | 'am' | 'fm')[];
   commands: readonly string[];
   evidence: CapabilityEvidence;
-  firmwareSourceCommit: FirmwareSourceCommit;
+  firmwareSourceCommit?: FirmwareSourceCommit;
   hostContractSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
-  qualification: 'device-observed-awaiting-rf-qualification' | 'executable-twin-observed' | 'protocol-test-only';
+  qualification: 'device-observed-awaiting-rf-qualification' | 'custom-firmware-unqualified' | 'executable-twin-observed' | 'protocol-test-only';
 }
 
 export type Verification = 'commanded' | 'verified' | 'unknown' | 'stale';
@@ -366,7 +369,7 @@ export const triggerConfigSchema = z.object({
 });
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 
-export const analyzerConfigSchema = z.object({
+const analyzerConfigShape = {
   startHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
   stopHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
   points: z.number().int().min(ZS407_FIRMWARE_LIMITS.minimumSweepPoints).max(ZS407_FIRMWARE_LIMITS.maximumSweepPoints),
@@ -379,8 +382,24 @@ export const analyzerConfigSchema = z.object({
   lna: z.enum(['off', 'on']),
   avoidSpurs: z.enum(['off', 'on', 'auto']),
   trigger: triggerConfigSchema,
-}).strict().refine((value) => value.stopHz > value.startHz, { message: 'stopHz must be greater than startHz', path: ['stopHz'] });
+} as const;
+
+export const analyzerConfigSchema = z.object(analyzerConfigShape).strict().refine((value) => value.stopHz > value.startHz, { message: 'stopHz must be greater than startHz', path: ['stopHz'] });
 export type AnalyzerConfig = z.infer<typeof analyzerConfigSchema>;
+
+/**
+ * Application-layer analyzer edits are patches. The host merges a patch into
+ * the current staged configuration and validates the resulting full config
+ * before it can reach TinySaApiV2.configureAnalyzer.
+ */
+export const analyzerConfigPatchSchema = z.object(analyzerConfigShape).partial().strict()
+  .refine((value) => Object.keys(value).length > 0, { message: 'Analyzer patch must change at least one field' })
+  .superRefine((value, context) => {
+    if (value.startHz !== undefined && value.stopHz !== undefined && value.stopHz <= value.startHz) {
+      context.addIssue({ code: 'custom', path: ['stopHz'], message: 'stopHz must be greater than startHz' });
+    }
+  });
+export type AnalyzerConfigPatch = z.infer<typeof analyzerConfigPatchSchema>;
 
 export const zeroSpanConfigSchema = z.object({
   frequencyHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
@@ -426,6 +445,20 @@ export interface AnalyzerState {
   requested: AnalyzerConfig;
   readback: AnalyzerReadback;
   verification: Verification;
+}
+
+export const firmwareTraceIdSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
+export type FirmwareTraceId = z.infer<typeof firmwareTraceIdSchema>;
+export interface FirmwareTraceFrame {
+  traceId: FirmwareTraceId;
+  role: 'measured' | 'stored' | 'raw';
+  unit: 'dBm';
+  frozen: boolean | 'unknown';
+  frequencyHz: readonly number[];
+  powerDbm: readonly number[];
+  sourceSweepId: string;
+  capturedAt: string;
+  evidence: 'firmware-readback';
 }
 export interface GeneratorState {
   commanded: GeneratorConfig;
@@ -477,6 +510,7 @@ export interface Sweep {
   actualAttenuationDb: number;
   source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state';
   rawSweepOffsetDb?: number;
+  firmwareTraces?: readonly FirmwareTraceFrame[];
   complete: true;
   identity: DeviceIdentity;
 }
@@ -521,6 +555,7 @@ export const signalDetectionConfigSchema = z.object({
     z.object({ strategy: z.literal('noise-relative'), marginDb: z.number().finite().min(0).max(100) }).strict(),
   ]),
   minimumBandwidthHz: z.number().int().nonnegative(),
+  minimumProminenceDb: z.number().finite().min(0).max(60),
   minimumConsecutiveSweeps: z.number().int().min(1).max(1_000),
   releaseAfterMissedSweeps: z.number().int().min(0).max(100),
 }).strict();
@@ -531,6 +566,8 @@ export interface DetectedSignal {
   stopHz: number;
   peakHz: number;
   peakDbm: number;
+  prominenceDb: number;
+  prominenceThresholdDb: number;
   bandwidthHz: number;
   thresholdDbm: number;
   noiseFloorDbm: number;
@@ -544,7 +581,7 @@ export interface DetectedSignal {
   detectorConfig: SignalDetectionConfig;
   qualityFlags: readonly ('touches-lower-boundary' | 'touches-upper-boundary' | 'single-bin')[];
 }
-export interface ClassificationCandidate { label: string; confidence: number; }
+export interface ClassificationCandidate { label: string; confidence: number; family?: string; }
 export type ClassificationUnknownReason = 'model-unavailable' | 'low-confidence' | 'out-of-domain' | 'insufficient-evidence' | 'inference-failed';
 export interface WaveformClassification {
   detectionId: string;
@@ -552,6 +589,16 @@ export interface WaveformClassification {
   confidence: number;
   candidates: readonly ClassificationCandidate[];
   modelId: string;
+  qualification: 'spectral-morphology' | 'signal-lab-synthetic-hypothesis' | 'unavailable';
+  scoreKind: 'relative-score' | 'model-posterior' | 'none';
+  decisionLevel: 'morphology' | 'profile' | 'family' | 'unknown';
+  modelProvenance?: {
+    producer: 'tinysa-signal-lab';
+    sourceCommit: string;
+    catalogSha256: string;
+    generatorSha256: string;
+    preprocessing: string;
+  };
   classifiedAt: string;
   unknownReason?: ClassificationUnknownReason;
   evidence: {
@@ -559,6 +606,8 @@ export interface WaveformClassification {
     bandwidthHz: number;
     peakDbm: number;
     sweepIds: readonly string[];
+    zeroSpanCaptureId?: string;
+    views?: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
     features?: Readonly<Record<string, number>>;
   };
 }
@@ -609,7 +658,7 @@ export type SweepExportResult =
 
 export const firmwareUpdatePhaseSchema = z.enum([
   'idle', 'available', 'downloading', 'verified', 'awaiting-dfu', 'ready-to-flash',
-  'flashing', 'reconnecting', 'completed', 'up-to-date', 'failed',
+  'flashing', 'reconnecting', 'completed', 'up-to-date', 'custom-firmware', 'failed',
 ]);
 export type FirmwareUpdatePhase = z.infer<typeof firmwareUpdatePhaseSchema>;
 export const firmwareWriteDispositionSchema = z.enum(['not-started', 'started', 'completed', 'indeterminate']);
@@ -637,11 +686,19 @@ export const firmwareUpdateStateSchema = z.object({
   phase: firmwareUpdatePhaseSchema,
   target: oemZs407FirmwareReleaseSchema,
   updateAvailable: z.boolean(),
-  current: z.object({
-    version: z.string().min(1),
-    revision: supportedZs407FirmwareRevisionSchema.optional(),
-    sourceCommit: firmwareSourceCommitSchema,
-  }).strict().optional(),
+  current: z.union([
+    z.object({
+      version: z.string().min(1),
+      revision: supportedZs407FirmwareRevisionSchema.optional(),
+      sourceCommit: firmwareSourceCommitSchema,
+      qualification: z.literal('supported-oem').optional(),
+    }).strict(),
+    z.object({
+      version: z.string().min(1),
+      revision: z.string().regex(/^[a-f0-9]{7,40}$/),
+      qualification: z.literal('custom-unqualified'),
+    }).strict(),
+  ]).optional(),
   artifact: z.object({
     sizeBytes: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sizeBytes),
     sha256: z.literal(OEM_ZS407_FIRMWARE_RELEASE.sha256),
@@ -670,6 +727,7 @@ export const firmwareUpdateStateSchema = z.object({
     updatedAt: z.string().datetime(),
   }).strict().optional(),
   completedAt: z.string().datetime().optional(),
+  warning: z.string().min(1).optional(),
   error: z.string().min(1).optional(),
 }).strict().superRefine((state, context) => {
   const issue = (message: string) => context.addIssue({ code: 'custom', message });
@@ -679,6 +737,7 @@ export const firmwareUpdateStateSchema = z.object({
   if (state.writeDisposition === 'indeterminate' && state.phase !== 'failed') issue('An indeterminate write disposition must remain failed');
   if (['flashing', 'reconnecting', 'completed'].includes(state.phase) && state.writeDisposition === 'not-started') issue(`${state.phase} requires durable write-attempt evidence`);
   if (state.phase === 'completed' && (state.writeDisposition !== 'completed' || !state.completedAt)) issue('Completed firmware state requires a completed write and post-reboot timestamp');
+  if (state.phase === 'custom-firmware' && (!state.current || state.current.qualification !== 'custom-unqualified' || state.updateAvailable || !state.warning)) issue('Custom-firmware state requires one warned, unqualified custom identity and no OEM update offer');
   if (state.phase === 'ready-to-flash' && (!state.dfuDevice.detected || state.dfuDevice.count !== 1)) issue('Ready-to-flash requires exactly one detected DFU target');
   if (state.writeStartedAt && state.writeCompletedAt && Date.parse(state.writeCompletedAt) < Date.parse(state.writeStartedAt)) issue('Firmware write completion cannot precede write start');
   if (state.writeCompletedAt && state.completedAt && Date.parse(state.completedAt) < Date.parse(state.writeCompletedAt)) issue('Post-reboot completion cannot precede firmware write completion');

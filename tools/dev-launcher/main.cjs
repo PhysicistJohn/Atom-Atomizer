@@ -238,6 +238,12 @@ async function launch() {
   buildDevelopmentEntries(contract);
   await startVite(contract);
   await app.whenReady();
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('console-message', (_consoleEvent, details) => log('RENDERER', details));
+    contents.on('did-fail-load', (_loadEvent, code, description, url, isMainFrame) => log('RENDERER-LOAD', { code, description, url, isMainFrame }));
+    contents.on('render-process-gone', (_goneEvent, details) => log('RENDERER-GONE', details));
+    contents.on('preload-error', (_preloadEvent, preloadPath, error) => log('PRELOAD', { preloadPath, error }));
+  });
   const icon = join(process.resourcesPath, 'atomizer-dev.png');
   if (!existsSync(icon)) throw new Error(`Installed application icon is missing: ${icon}`);
   app.dock.setIcon(icon);

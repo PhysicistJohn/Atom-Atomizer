@@ -42,6 +42,21 @@ describe('fail-closed firmware updater primitives', () => {
     expect(() => verifyFirmwareArtifact(new Uint8Array(OEM_ZS407_FIRMWARE_RELEASE.sizeBytes))).toThrow(/does not match pinned/);
   });
 
+  it('reports custom firmware as admitted but unavailable to the pinned OEM updater', async () => {
+    const directory = await temporaryDirectory();
+    const updater = new FirmwareUpdater(directory, customPhysicalDevice());
+
+    const state = await updater.state();
+
+    expect(state).toMatchObject({
+      phase: 'custom-firmware',
+      updateAvailable: false,
+      current: { revision: '43eb0f1', qualification: 'custom-unqualified' },
+      warning: expect.stringMatching(/OEM updater is disabled/i),
+    });
+    await expect(updater.download()).rejects.toThrow(/updater is disabled while custom unqualified firmware is connected/i);
+  });
+
   it('turns an interrupted write journal into a durable do-not-flash state after restart', async () => {
     const directory = await temporaryDirectory();
     await writeFile(join(directory, FIRMWARE_UPDATE_JOURNAL_FILENAME), JSON.stringify({
@@ -90,7 +105,17 @@ function physicalDevice() {
   return {
     snapshot: () => ({ connection: 'ready', identity: {
       execution: 'physical', usbIdentityVerified: true, firmwareVersion: 'tinySA4_v1.4-217-gc5dd31f',
-      firmwareReportedRevision: 'c5dd31f', firmwareSourceCommit: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+      firmwareReportedRevision: 'c5dd31f', firmwareSourceCommit: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'supported-oem',
+    } }),
+  } as never;
+}
+
+function customPhysicalDevice() {
+  return {
+    snapshot: () => ({ connection: 'ready', identity: {
+      execution: 'physical', usbIdentityVerified: true, firmwareVersion: 'tinySA4_custom-g43eb0f1',
+      firmwareReportedRevision: '43eb0f1', firmwareQualification: 'custom-unqualified',
+      firmwareWarning: 'Custom firmware revision 43eb0f1 is admitted without source qualification.',
     } }),
   } as never;
 }

@@ -39,12 +39,13 @@ export const analysisModes: readonly AnalysisModeDefinition[] = [
 const DEFAULT_DETECTION_CONFIG: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
   minimumBandwidthHz: 0,
+  minimumProminenceDb: 6,
   minimumConsecutiveSweeps: 2,
   releaseAfterMissedSweeps: 2,
 };
 
 export class SignalDetector {
-  static readonly id = 'robust-contiguous-v2';
+  static readonly id = 'robust-local-cfar-v5';
   constructor(private config: SignalDetectionConfig = DEFAULT_DETECTION_CONFIG) {}
   configure(config: SignalDetectionConfig): void { this.config = structuredClone(config); }
   get configuration(): SignalDetectionConfig { return structuredClone(this.config); }
@@ -55,12 +56,14 @@ export class SignalDetector {
     const thresholdDbm = this.config.threshold.strategy === 'absolute'
       ? this.config.threshold.levelDbm
       : noiseFloorDbm + this.config.threshold.marginDb;
+    const aboveThreshold = sweep.powerDbm.map((power) => power >= thresholdDbm);
+    bridgeShortGaps(aboveThreshold, 2);
     const groups: Array<{ start: number; end: number }> = [];
     let start: number | undefined;
     for (let index = 0; index < sweep.powerDbm.length; index++) {
-      if (sweep.powerDbm[index]! >= thresholdDbm && start === undefined) start = index;
-      if ((sweep.powerDbm[index]! < thresholdDbm || index === sweep.powerDbm.length - 1) && start !== undefined) {
-        const end = sweep.powerDbm[index]! >= thresholdDbm ? index : index - 1;
+      if (aboveThreshold[index] && start === undefined) start = index;
+      if ((!aboveThreshold[index] || index === sweep.powerDbm.length - 1) && start !== undefined) {
+        const end = aboveThreshold[index] ? index : index - 1;
         groups.push({ start, end });
         start = undefined;
       }
@@ -68,6 +71,9 @@ export class SignalDetector {
     return groups.map(({ start: first, end: last }, index) => {
       let peak = first;
       for (let cursor = first + 1; cursor <= last; cursor++) if (sweep.powerDbm[cursor]! > sweep.powerDbm[peak]!) peak = cursor;
+      const shoulders = localShoulderStatistics(sweep.powerDbm, first, last, noiseFloorDbm);
+      const prominenceDb = sweep.powerDbm[peak]! - shoulders.levelDbm;
+      const prominenceThresholdDb = Math.max(this.config.minimumProminenceDb, shoulders.robustSigmaDb * 4);
       const startHz = sweep.frequencyHz[first]!;
       const stopHz = sweep.frequencyHz[last]!;
       const qualityFlags: DetectedSignal['qualityFlags'][number][] = [];
@@ -80,6 +86,8 @@ export class SignalDetector {
         stopHz,
         peakHz: sweep.frequencyHz[peak]!,
         peakDbm: sweep.powerDbm[peak]!,
+        prominenceDb,
+        prominenceThresholdDb,
         bandwidthHz: Math.max(0, stopHz - startHz),
         thresholdDbm,
         noiseFloorDbm,
@@ -93,8 +101,36 @@ export class SignalDetector {
         detectorConfig: structuredClone(this.config),
         qualityFlags,
       } satisfies DetectedSignal;
-    }).filter((signal) => signal.bandwidthHz >= this.config.minimumBandwidthHz);
+    }).filter((signal) => signal.bandwidthHz >= this.config.minimumBandwidthHz && signal.prominenceDb >= signal.prominenceThresholdDb);
   }
+}
+
+function bridgeShortGaps(mask: boolean[], maximumGapBins: number): void {
+  let index = 0;
+  while (index < mask.length) {
+    if (mask[index]) { index++; continue; }
+    const start = index;
+    while (index < mask.length && !mask[index]) index++;
+    const bounded = start > 0 && index < mask.length;
+    if (bounded && index - start <= maximumGapBins) for (let cursor = start; cursor < index; cursor++) mask[cursor] = true;
+  }
+}
+
+function localShoulderStatistics(powerDbm: readonly number[], first: number, last: number, noiseFloorDbm: number): { levelDbm: number; robustSigmaDb: number } {
+  const width = last - first + 1;
+  const shoulderBins = Math.min(12, Math.max(3, width));
+  const shoulders = [
+    ...powerDbm.slice(Math.max(0, first - shoulderBins), first),
+    ...powerDbm.slice(last + 1, Math.min(powerDbm.length, last + 1 + shoulderBins)),
+  ];
+  if (!shoulders.length) return { levelDbm: noiseFloorDbm, robustSigmaDb: 0 };
+  const ordered = shoulders.slice().sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  const median = ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
+  const deviations = ordered.map((value) => Math.abs(value - median)).sort((left, right) => left - right);
+  const deviationMiddle = Math.floor(deviations.length / 2);
+  const medianAbsoluteDeviation = deviations.length % 2 ? deviations[deviationMiddle]! : (deviations[deviationMiddle - 1]! + deviations[deviationMiddle]!) / 2;
+  return { levelDbm: Math.max(noiseFloorDbm, median), robustSigmaDb: medianAbsoluteDeviation * 1.4826 };
 }
 
 interface Track { signal: DetectedSignal; released: boolean; }
@@ -586,6 +622,9 @@ export class SpectralMorphologyClassifier implements WaveformClassifier {
       detectionId: detection.id,
       candidates,
       modelId: this.modelId,
+      qualification: 'spectral-morphology' as const,
+      scoreKind: 'relative-score' as const,
+      decisionLevel: 'morphology' as const,
       classifiedAt: new Date().toISOString(),
       evidence: {
         centerHz: (detection.startHz + detection.stopHz) / 2,
@@ -651,7 +690,7 @@ export function classifyZeroSpanEnvelope(capture: ZeroSpanCapture): EnvelopeClas
 export function robustNoiseFloor(values: readonly number[]): number {
   if (!values.length) throw new Error('Noise-floor estimation requires samples');
   const sorted = [...values].sort((left, right) => left - right);
-  const cutoff = Math.max(1, Math.floor(sorted.length * 0.6));
+  const cutoff = Math.max(1, Math.floor(sorted.length * 0.2));
   return median(sorted.slice(0, cutoff));
 }
 
@@ -746,6 +785,9 @@ function unknownClassification(detection: DetectedSignal, modelId: string, unkno
     confidence: 0,
     candidates: [],
     modelId,
+    qualification: modelId === 'unconfigured' ? 'unavailable' : 'spectral-morphology',
+    scoreKind: 'none',
+    decisionLevel: 'unknown',
     unknownReason,
     classifiedAt: new Date().toISOString(),
     evidence: {
@@ -870,3 +912,6 @@ function median(values: readonly number[]): number {
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
+
+export { SIGNAL_LAB_EMSO_MODEL, SignalLabBayesianClassifier, signalLabWaveformHypotheses } from './signal-lab-classifier.js';
+export type { SignalLabWaveformHypothesis, WaveformEvidence } from './signal-lab-classifier.js';

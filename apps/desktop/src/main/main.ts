@@ -106,10 +106,10 @@ async function createWindow(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler((_webContents,permission,origin)=>permission==='media'&&allowedOrigin(origin));
   session.defaultSession.setPermissionRequestHandler((webContents,permission,callback)=>callback(permission==='media'&&allowedOrigin(webContents.getURL())));
   const workArea = screen.getPrimaryDisplay().workAreaSize;
-  const startupWidth = Math.min(1720, workArea.width);
-  const startupHeight = Math.min(1040, workArea.height);
+  const startupWidth = Math.min(1920, workArea.width);
+  const startupHeight = Math.min(1100, workArea.height);
   const win = new BrowserWindow({
-    width: startupWidth, height: startupHeight, minWidth: Math.min(1280, startupWidth), minHeight: Math.min(800, startupHeight), backgroundColor: '#070b0b',
+    width: startupWidth, height: startupHeight, minWidth: Math.min(1440, startupWidth), minHeight: Math.min(800, startupHeight), backgroundColor: '#070b0b',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 20 } } : {}),
     webPreferences: { preload: join(here, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true }
   });

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CircleAlert, Download, LoaderCircle, Play, Repeat2, StopCircle } from 'lucide-react';
 import {
+  analyzerConfigPatchSchema,
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
@@ -23,6 +24,7 @@ import {
   type DetectedSignal,
   type FirmwareUpdatePreflight,
   type FirmwareUpdateState,
+  type FirmwareTraceFrame,
   type GeneratorConfig,
   type EnvelopeStftConfiguration,
   type MarkerConfiguration,
@@ -47,8 +49,8 @@ import {
 } from '@tinysa/contracts';
 import {
   SignalDetector,
+  SignalLabBayesianClassifier,
   SignalTracker,
-  SpectralMorphologyClassifier,
   TraceAccumulator,
   autoScaleSpectrum,
   calculateSweepMetrics,
@@ -86,6 +88,7 @@ import { useAtomAgent } from './useAtomAgent.js';
 const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
   minimumBandwidthHz: 0,
+  minimumProminenceDb: 6,
   minimumConsecutiveSweeps: 2,
   releaseAfterMissedSweeps: 2,
 };
@@ -106,11 +109,11 @@ const DEFAULT_TRACES: TraceBankConfiguration = traceBankConfigurationSchema.pars
 ]);
 const DEFAULT_MARKERS: readonly MarkerConfiguration[] = Array.from({ length: 8 }, (_, index) => markerConfigurationSchema.parse({
   id: index + 1,
-  enabled: index === 0,
+  enabled: false,
   traceId: 1,
   mode: 'normal',
   frequencyHz: 98_000_000,
-  tracking: index === 0 ? 'peak' : 'fixed',
+  tracking: 'fixed',
 }));
 const DEFAULT_MARKER_SEARCH: MarkerSearchConfiguration = { minimumLevelDbm: -90, minimumExcursionDb: 6 };
 const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
@@ -137,10 +140,11 @@ export function App() {
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [analyzer, setAnalyzer] = useState<AnalyzerConfig>(() => loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER));
   const [generator, setGenerator] = useState<GeneratorConfig>(() => loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR));
-  const [detectionConfig, setDetectionConfig] = useState<SignalDetectionConfig>(() => loadStored('detector', signalDetectionConfigSchema.parse, DEFAULT_DETECTION));
+  const [detectionConfig, setDetectionConfig] = useState<SignalDetectionConfig>(() => loadStored('detector', parseStoredDetection, DEFAULT_DETECTION));
   const [zeroConfig, setZeroConfig] = useState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN));
   const [traceConfiguration, setTraceConfiguration] = useState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES));
   const [traceFrames, setTraceFrames] = useState<readonly TraceFrame[]>([]);
+  const [firmwareTraceFrames, setFirmwareTraceFrames] = useState<readonly FirmwareTraceFrame[]>([]);
   const [activeTraceId, setActiveTraceId] = useState<TraceId>(1);
   const [markers, setMarkers] = useState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS));
   const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
@@ -169,18 +173,24 @@ export function App() {
 
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
-  const classifier = useRef(new SpectralMorphologyClassifier());
+  const classifier = useRef(new SignalLabBayesianClassifier());
   const traceAccumulator = useRef(new TraceAccumulator(traceConfiguration));
+  const historyRef = useRef<readonly Sweep[]>([]);
+  const detectionsRef = useRef<readonly DetectedSignal[]>([]);
+  const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
   const snapshotRef = useRef<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const continuousRequested = useRef(false);
+  const analyzerRetuneBusy = useRef(false);
+  const remoteGestureQueue = useRef<Promise<void>>(Promise.resolve());
+  const remoteGesturePausedContinuous = useRef(false);
   const analysisSequence = useRef(0);
   const firmwareRevisionChecked = useRef<string | undefined>(undefined);
   const firmwareDfuPollBusy = useRef(false);
 
   const connected = snapshot.connection === 'ready';
   const transportBusy = snapshot.connection === 'connecting' || snapshot.connection === 'identifying' || snapshot.connection === 'disconnecting';
-  const operationBusy = acquisition === 'configuring' || acquisition === 'acquiring' || acquisition === 'streaming';
+  const operationBusy = acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring' || acquisition === 'streaming';
   const busy = connectionBusy || transportBusy || operationBusy;
   const simulated = snapshot.identity?.execution === 'firmware-digital-twin' || snapshot.identity?.execution === 'protocol-test-double' || snapshot.pendingPort?.execution === 'firmware-digital-twin';
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
@@ -200,6 +210,9 @@ export function App() {
     };
   }, []);
   useEffect(() => { analyzerRef.current = analyzer; saveStored('analyzer', analyzer); }, [analyzer]);
+  useEffect(() => {
+    setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, analyzer.startHz, analyzer.stopHz));
+  }, [analyzer.startHz, analyzer.stopHz]);
   useEffect(() => saveStored('generator', generator), [generator]);
   useEffect(() => saveStored('detector', detectionConfig), [detectionConfig]);
   useEffect(() => saveStored('zero-span', zeroConfig), [zeroConfig]);
@@ -226,6 +239,7 @@ export function App() {
   useEffect(() => {
     detector.current.configure(detectionConfig);
     tracker.current.configure(detectionConfig);
+    detectionsRef.current = [];
     setDetections([]);
     setClassifications([]);
   }, [detectionConfig]);
@@ -404,7 +418,7 @@ export function App() {
       const next = await window.tinySA.connect(port);
       acceptSnapshot(next);
       setConnectionOpen(false);
-      setNotice(`${next.identity?.model ?? 'Instrument'} connected and identified`);
+      setNotice(next.identity?.firmwareWarning ?? `${next.identity?.model ?? 'Instrument'} connected and identified`);
       return next;
     } catch (value) {
       setError(errorMessage(value));
@@ -449,26 +463,71 @@ export function App() {
     setSnapshot(next);
   }
 
-  async function configureAnalyzer(config: AnalyzerConfig): Promise<DeviceSnapshot> {
+  async function configureAnalyzer(config: AnalyzerConfig, operation: 'configuring' | 'retuning' = 'configuring'): Promise<DeviceSnapshot> {
     requireConnected();
     const validated = analyzerConfigSchema.parse(config);
     setError(undefined);
-    setAcquisition('configuring');
+    setAcquisition(operation);
     const next = await window.tinySA.configureAnalyzer(validated);
     acceptSnapshot(next);
     return next;
   }
 
+  async function updateAnalyzer(input: AnalyzerConfig): Promise<AnalyzerConfig> {
+    const next = analyzerConfigSchema.parse(input);
+    analyzerRef.current = next;
+    setAnalyzer(next);
+    setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, next.startHz, next.stopHz));
+    if (!continuousRequested.current) return next;
+    if (analyzerRetuneBusy.current) throw new Error('An analyzer retune is already in progress');
+    analyzerRetuneBusy.current = true;
+    let stopped = false;
+    try {
+      setAcquisition('retuning');
+      setNotice('Retuning continuous acquisition…');
+      await window.tinySA.stopStreaming();
+      stopped = true;
+      continuousRequested.current = false;
+      setContinuous(false);
+      await configureAnalyzer(next, 'retuning');
+      await window.tinySA.startStreaming();
+      continuousRequested.current = true;
+      setContinuous(true);
+      setAcquisition('streaming');
+      setNotice('Continuous acquisition retuned');
+      return next;
+    } catch (value) {
+      if (stopped) {
+        continuousRequested.current = false;
+        setContinuous(false);
+      }
+      setAcquisition('failed');
+      setError(`Analyzer retune failed: ${errorMessage(value)}`);
+      throw value;
+    } finally {
+      analyzerRetuneBusy.current = false;
+    }
+  }
+
+  async function updateAnalyzerFromUi(input: AnalyzerConfig): Promise<void> {
+    try { await updateAnalyzer(input); }
+    catch { /* The failed retune remains visible and continuous mode is not silently restored. */ }
+  }
+
   async function recordSweep(next: Sweep): Promise<void> {
     const sequence = ++analysisSequence.current;
+    const nextHistory = [next, ...historyRef.current].slice(0, HISTORY_LIMIT);
+    historyRef.current = nextHistory;
     setSweep(next);
-    setHistory((current) => [next, ...current].slice(0, HISTORY_LIMIT));
+    setHistory(nextHistory);
     setTraceFrames(traceAccumulator.current.update(next));
+    setFirmwareTraceFrames(next.firmwareTraces ?? []);
     const candidates = detector.current.analyze(next);
     const tracked = tracker.current.update(next, candidates);
+    detectionsRef.current = tracked;
     setDetections(tracked);
-    const currentSignals = tracked.filter((item) => item.state !== 'released' && item.sweepIds.includes(next.id));
-    const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, next)));
+    const currentSignals = tracked.filter((item) => item.state === 'active');
+    const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, { sweeps: nextHistory, zeroSpan: zeroCaptureRef.current })));
     if (sequence === analysisSequence.current) setClassifications(results);
   }
 
@@ -524,8 +583,13 @@ export function App() {
     setAcquisition('acquiring');
     try {
       const capture = await window.tinySA.acquireZeroSpan(validated);
+      zeroCaptureRef.current = capture;
       setZeroCapture(capture);
       setEnvelope(classifyZeroSpanEnvelope(capture));
+      const sequence = ++analysisSequence.current;
+      const active = detectionsRef.current.filter((item) => item.state === 'active');
+      const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
+      if (sequence === analysisSequence.current) setClassifications(results);
       setAcquisition('complete');
       return capture;
     } catch (value) {
@@ -611,8 +675,47 @@ export function App() {
   }
 
   async function captureScreenFromUi(): Promise<void> { try { await captureScreen(); } catch { /* Visible in the workspace alert. */ } }
-  async function touchScreen(point: ScreenPoint): Promise<void> { try { await window.tinySA.touch(point); } catch (value) { setError(errorMessage(value)); } }
-  async function releaseScreen(point?: ScreenPoint): Promise<void> { try { await window.tinySA.releaseTouch(point); } catch (value) { setError(errorMessage(value)); } }
+  function queueRemoteGesture(gesture: 'press' | 'release', point?: ScreenPoint): Promise<void> {
+    const task = remoteGestureQueue.current.then(() => performRemoteGesture(gesture, point));
+    remoteGestureQueue.current = task.catch(() => undefined);
+    return task;
+  }
+
+  async function performRemoteGesture(gesture: 'press' | 'release', point?: ScreenPoint): Promise<void> {
+    requireConnected();
+    try {
+      if (gesture === 'press') {
+        if (!point) throw new Error('Remote touch press requires a screen coordinate');
+        if (continuousRequested.current) {
+          setAcquisition('retuning');
+          setNotice('Pausing continuous acquisition for remote screen gesture…');
+          await window.tinySA.stopStreaming();
+          continuousRequested.current = false;
+          remoteGesturePausedContinuous.current = true;
+          setContinuous(false);
+        }
+        await window.tinySA.touch(point);
+        return;
+      }
+      await window.tinySA.releaseTouch(point);
+      if (remoteGesturePausedContinuous.current) {
+        await configureAnalyzer(analyzerRef.current, 'retuning');
+        await window.tinySA.startStreaming();
+        remoteGesturePausedContinuous.current = false;
+        continuousRequested.current = true;
+        setContinuous(true);
+        setAcquisition('streaming');
+        setNotice('Continuous acquisition resumed after remote screen gesture');
+      }
+    } catch (value) {
+      setAcquisition('failed');
+      setError(`Remote screen ${gesture} failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
+  async function touchScreen(point: ScreenPoint): Promise<void> { try { await queueRemoteGesture('press', point); } catch { /* Visible in the workspace alert. */ } }
+  async function releaseScreen(point?: ScreenPoint): Promise<void> { try { await queueRemoteGesture('release', point); } catch { /* Visible in the workspace alert. */ } }
 
   async function exportLatest(format: 'csv' | 'json'): Promise<unknown> {
     if (!sweep) throw new Error('Acquire a complete spectrum sweep before exporting');
@@ -767,6 +870,7 @@ export function App() {
       measurement: {
         activeView: measurementView,
         traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
+        firmwareTraces: firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
         activeTraceId,
         markers: markerReadings,
         activeMarkerId,
@@ -783,7 +887,25 @@ export function App() {
 
   async function executeAgentTool(name: AgentToolName, args: unknown): Promise<unknown> {
     switch (name) {
-      case 'get_application_state': return { workspace, measurementView, acquisition, continuous, simulated, error: error ?? null, historyCount: history.length, topology: systemTopology(), firmwareUpdate: firmwareUpdate ?? null, agentSurfaceVersion: ATOM_AGENT_VERSION };
+      case 'get_application_state': return {
+        workspace,
+        measurementView,
+        acquisition,
+        continuous,
+        simulated,
+        error: error ?? null,
+        historyCount: history.length,
+        topology: systemTopology(),
+        connection: snapshot.connection,
+        analyzer,
+        generator,
+        detection: detectionConfig,
+        zeroSpan: zeroConfig,
+        measurement: JSON.parse(applicationContext()).measurement,
+        latestSweep: JSON.parse(applicationContext()).latestSweep,
+        firmwareUpdate: firmwareUpdate ?? null,
+        agentSurfaceVersion: ATOM_AGENT_VERSION,
+      };
       case 'get_system_topology': return systemTopology();
       case 'get_agent_surface': return {
         version: ATOM_AGENT_VERSION,
@@ -811,7 +933,7 @@ export function App() {
         setSelectedPortId(port.id);
         const next = await connectPort(port);
         if (!next.identity) throw new Error('Connected device did not provide an identity');
-        return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, simulated: next.identity.simulated, verification: next.verification };
+        return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, firmwareQualification: next.identity.firmwareQualification, firmwareWarning: next.identity.firmwareWarning ?? null, simulated: next.identity.simulated, verification: next.verification };
       }
       case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: (await window.tinySA.getSnapshot()).connection };
       case 'inspect_interface': {
@@ -825,6 +947,7 @@ export function App() {
         const targets = [...document.querySelectorAll<HTMLElement>('[data-agent-control]')].filter((element) => element.dataset.agentControl === control);
         if (targets.length !== 1) throw new Error(`Semantic control ${control} has ${targets.length} rendered targets; expected exactly one`);
         const target = targets[0]!;
+        if (target.closest('[data-agent-exclusion]')) throw new Error(`Semantic control ${control} is a local human-only boundary`);
         if (isDisabledControl(target)) throw new Error(`Semantic control ${control} is disabled`);
         if (target instanceof HTMLDetailsElement) target.open = !target.open;
         else target.click();
@@ -836,7 +959,13 @@ export function App() {
       case 'computer_key': return window.atomAgent.computerKey((args as { key: string }).key);
       case 'computer_scroll': return window.atomAgent.computerScroll(args as { x: number; y: number; deltaX: number; deltaY: number });
       case 'navigate_workspace': changeWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: (args as { workspace: WorkspaceId }).workspace };
-      case 'configure_analyzer': { const next = analyzerConfigSchema.parse(args); setAnalyzer(next); setWorkspace('spectrum'); return next; }
+      case 'configure_analyzer': {
+        const patch = analyzerConfigPatchSchema.parse(args);
+        const next = analyzerConfigSchema.parse({ ...analyzerRef.current, ...patch });
+        await updateAnalyzer(next);
+        setWorkspace('spectrum');
+        return { patch, configuration: next, continuous: continuousRequested.current };
+      }
       case 'acquire_sweep': { const result = await acquire(); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source }; }
       case 'start_continuous_sweeps': await startContinuous(); return { streaming: true };
       case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
@@ -954,9 +1083,9 @@ export function App() {
       case 'remote_device_touch': {
         const value = args as ScreenPoint & { gesture: 'tap' | 'press' | 'release' };
         const point = { x: value.x, y: value.y };
-        if (value.gesture === 'tap') { await window.tinySA.touch(point); await window.tinySA.releaseTouch(point); }
-        else if (value.gesture === 'press') await window.tinySA.touch(point);
-        else await window.tinySA.releaseTouch(point);
+        if (value.gesture === 'tap') { await queueRemoteGesture('press', point); await queueRemoteGesture('release', point); }
+        else if (value.gesture === 'press') await queueRemoteGesture('press', point);
+        else await queueRemoteGesture('release', point);
         return { completed: value.gesture, point };
       }
       case 'export_latest_sweep': return exportLatest((args as { format: 'csv' | 'json' }).format);
@@ -982,16 +1111,16 @@ export function App() {
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
     <TopBar snapshot={snapshot} simulated={simulated} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} firmwareUpdateAvailable={Boolean(firmwareUpdate?.updateAvailable)} onConnection={() => setConnectionOpen(true)} onFirmwareUpdate={() => void openFirmwareUpdate()} onAgent={() => setAgentOpen((value) => !value)}/>
     <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
-    <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''}`}>
+    <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' ? 'classification-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button data-agent-control="notice.dismiss" onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {workspace === 'spectrum' && <MeasurementWorkspace
         acquisitionActions={acquisitionActions}
         view={measurementView} onView={changeMeasurementView}
-        analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={setAnalyzer}
+        analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
-        traces={traceConfiguration} frames={traceFrames} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
+        traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
         onTrace={configureTrace} onTraceReset={resetTrace} onMarker={configureMarker} onActiveMarker={setActiveMarkerId}
         onSearch={runMarkerSearch} onSearchConfiguration={configureMarkerSearch} onDisplay={configureDisplay}
@@ -1006,7 +1135,7 @@ export function App() {
       {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
       {workspace === 'device' && <DeviceWorkspace snapshot={snapshot} diagnostics={diagnostics} frame={screenFrame} busy={busy} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTouch={(point) => void touchScreen(point)} onRelease={(point) => void releaseScreen(point)}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog
       ports={ports}
       selectedId={selectedPortId}
@@ -1028,11 +1157,53 @@ function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): 
   return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
 }
 function saveStored(name: string, value: unknown): void { localStorage.setItem(`tinysa-atomizer:v2:${name}`, JSON.stringify(value)); }
+export function parseStoredDetection(value: unknown): SignalDetectionConfig {
+  if (value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'minimumProminenceDb')) {
+    return signalDetectionConfigSchema.parse({ ...value, minimumProminenceDb: DEFAULT_DETECTION.minimumProminenceDb });
+  }
+  return signalDetectionConfigSchema.parse(value);
+}
 function parseMarkerBank(value: unknown): readonly MarkerConfiguration[] {
   if (!Array.isArray(value) || value.length !== 8) throw new Error('Marker bank must contain exactly eight markers');
   const markers = value.map((marker) => markerConfigurationSchema.parse(marker));
   if (new Set(markers.map((marker) => marker.id)).size !== 8) throw new Error('Marker bank must contain markers 1 through 8 exactly once');
+  const legacyUntouchedDefault = markers.every((marker, index) => marker.id === index + 1
+    && marker.enabled === (index === 0)
+    && marker.traceId === 1
+    && marker.mode === 'normal'
+    && marker.frequencyHz === 98_000_000
+    && marker.tracking === (index === 0 ? 'peak' : 'fixed')
+    && marker.referenceMarkerId === undefined);
+  if (legacyUntouchedDefault) return structuredClone(DEFAULT_MARKERS);
   return markers;
+}
+export function fitChannelConfigurationToSpan(input: ChannelMeasurementConfiguration, startHz: number, stopHz: number): ChannelMeasurementConfiguration {
+  const current = channelMeasurementConfigurationSchema.parse(input);
+  if (!Number.isInteger(startHz) || !Number.isInteger(stopHz) || stopHz <= startHz) throw new Error('Channel measurement reconciliation requires a valid analyzer span');
+  const spanHz = stopHz - startHz;
+  const extent = (configuration: ChannelMeasurementConfiguration) => Math.max(
+    configuration.mainBandwidthHz / 2,
+    configuration.adjacentChannelCount * configuration.channelSpacingHz + configuration.adjacentBandwidthHz / 2,
+  );
+  const requestedExtent = extent(current);
+  const marginHz = spanHz * 0.01;
+  if (current.centerHz - requestedExtent >= startHz + marginHz && current.centerHz + requestedExtent <= stopHz - marginHz) return current;
+
+  const centerHz = Math.round((startHz + stopHz) / 2);
+  if (requestedExtent <= spanHz * 0.45) return channelMeasurementConfigurationSchema.parse({ ...current, centerHz });
+  if (spanHz < 16) return current;
+
+  const unitHz = Math.max(1, Math.floor(spanHz / (3 * current.adjacentChannelCount + 4)));
+  const mainBandwidthHz = Math.max(1, unitHz * 2);
+  const adjacentBandwidthHz = unitHz;
+  const channelSpacingHz = Math.max(1, Math.ceil((mainBandwidthHz + adjacentBandwidthHz) / 2));
+  return channelMeasurementConfigurationSchema.parse({
+    ...current,
+    centerHz,
+    mainBandwidthHz,
+    adjacentBandwidthHz,
+    channelSpacingHz,
+  });
 }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
 function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {
@@ -1052,9 +1223,11 @@ function inspectRenderedAgentControls() {
     const controlId = element.dataset.agentControl;
     if (!controlId) throw new Error('Rendered agent control is missing its control ID');
     const binding = agentControlBinding(controlId);
+    const humanOnly = Boolean(element.closest('[data-agent-exclusion]'));
     return {
       controlId,
-      enabled: !isDisabledControl(element),
+      enabled: !humanOnly && !isDisabledControl(element),
+      humanOnly,
       risk: binding.risk,
       preferredTool: binding.preferredTool,
       projection: binding.projection,

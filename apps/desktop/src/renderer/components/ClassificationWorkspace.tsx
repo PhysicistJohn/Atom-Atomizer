@@ -23,12 +23,22 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
   }, [detections, selectedId, onSelectedId]);
   const selected = detections.find((item) => item.id === selectedId);
   const result = classifications.find((item) => item.detectionId === selectedId);
+  const qualification = result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'SIGNALLAB MODEL · MEASURED HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
+  const scoreLabel = result?.scoreKind === 'model-posterior' ? 'model posterior' : 'relative score';
 
   return <div className="classification-grid">
     <section className="pipeline-panel"><div className="pipeline"><PipelineStep icon={<Database/>} label="Capture" detail={sweep ? `${sweep.frequencyHz.length} points · ${sweep.source}` : 'No sweep'} ready={Boolean(sweep)}/><ArrowRight/><PipelineStep icon={<Fingerprint/>} label="Detect" detail={`${detections.length} candidate${detections.length === 1 ? '' : 's'}`} ready={detections.length > 0}/><ArrowRight/><PipelineStep icon={<BrainCircuit/>} label="Classify" detail={result?.modelId ?? 'No result'} ready={Boolean(result)}/></div></section>
 
     <section className="classification-result">
-      {result ? <div className="result-card"><span className="result-qualification">TRACE SHAPE · NOT PROTOCOL</span><h2>{humanLabel(result.label)}</h2>{result.label === 'unknown' && <p>{result.unknownReason?.replaceAll('-', ' ') ?? 'Evidence rejected'}</p>}<div className="confidence-gauge"><span style={{ width: `${result.confidence * 100}%` }}/></div><strong>{Math.round(result.confidence * 100)}% relative score</strong><div className="ranked-candidates">{result.candidates.map((candidate) => <div key={candidate.label}><span>{humanLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}</div><div className="result-provenance"><span>{selected ? `${formatFrequency(selected.peakHz)} · ${formatLevel(selected.peakDbm)} · ${formatFrequency(selected.bandwidthHz)}` : 'Detection unavailable'}</span><span>{result.evidence.sweepIds.length} sweep{result.evidence.sweepIds.length === 1 ? '' : 's'} · {result.modelId}</span></div></div> : <div className="result-empty"><Fingerprint size={28}/><h2>{detections.length ? 'Select an emission' : 'No candidate'}</h2>{detections.length === 0 && <p>Acquire a sweep to detect candidates.</p>}</div>}
+      {result ? <div className="result-card">
+        <span className="result-qualification">{qualification}</span>
+        <h2>{humanLabel(result.label)}</h2>
+        {result.label === 'unknown' && <p>{result.unknownReason?.replaceAll('-', ' ') ?? 'Evidence rejected'}</p>}
+        <div className="confidence-gauge"><span style={{ width: `${result.confidence * 100}%` }}/></div>
+        <strong>{Math.round(result.confidence * 100)}% {scoreLabel}</strong>
+        <div className="ranked-candidates">{result.candidates.slice(0, 4).map((candidate) => <div key={candidate.label}><span>{humanLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}{result.candidates.length > 4 && <small>+{result.candidates.length - 4} lower-ranked hypotheses</small>}</div>
+        <div className="result-provenance"><span>{selected ? `${formatFrequency(selected.peakHz)} · ${formatLevel(selected.peakDbm)} · ${formatFrequency(selected.bandwidthHz)}` : 'Detection unavailable'}</span><span>{result.evidence.sweepIds.length} sweep{result.evidence.sweepIds.length === 1 ? '' : 's'}{result.evidence.zeroSpanCaptureId ? ' + envelope' : ''} · {result.modelId}</span></div>
+      </div> : <div className="result-empty"><Fingerprint size={28}/><h2>{detections.length ? 'Select an emission' : 'No candidate'}</h2>{detections.length === 0 && <p>Acquire a sweep to detect candidates.</p>}</div>}
     </section>
 
     <section className="candidate-panel"><div className="panel-header"><span>Candidates</span><span>{detections.length}</span></div>{detections.length ? <div className="candidate-list">{detections.map((detection, index) => <button data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}><span className="candidate-index">{String(index + 1).padStart(2, '0')}</span><span><strong>{formatFrequency(detection.peakHz)}</strong><small>{formatFrequency(detection.bandwidthHz)} · {formatLevel(detection.peakDbm)} · {detection.persistenceSweeps}×</small></span><em>{classifications.find((item) => item.detectionId === detection.id)?.label.toUpperCase() ?? 'PENDING'}</em></button>)}</div> : <div className="table-empty"><Fingerprint size={20}/><strong>No candidates</strong><span>Run a sweep.</span></div>}</section>
@@ -47,4 +57,7 @@ function EnvelopePlot({ capture }: { capture?: ZeroSpanCapture }) {
   return <div className="envelope-plot"><svg viewBox="0 0 600 100" preserveAspectRatio="none"><line x1="0" x2="600" y1="50" y2="50"/><polyline points={points}/></svg><span>0</span><span>{Math.round(capture.requested.sweepTimeSeconds * 1_000)} ms</span></div>;
 }
 
-function humanLabel(value: string): string { return value.replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function humanLabel(value: string): string {
+  const scoped = value.replace(/^signal-lab-family:/, 'SignalLab family · ').replace(/^signal-lab:/, 'SignalLab · ');
+  return scoped.replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}

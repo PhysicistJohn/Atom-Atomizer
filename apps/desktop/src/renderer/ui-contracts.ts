@@ -1,7 +1,7 @@
 import type { AnalyzerConfig, DeviceSnapshot, GeneratorConfig, PortCandidate, Sweep } from '@tinysa/contracts';
 
 export type WorkspaceId = 'spectrum' | 'detection' | 'classification' | 'generator' | 'device';
-export type AcquisitionState = 'idle' | 'configuring' | 'acquiring' | 'streaming' | 'complete' | 'failed';
+export type AcquisitionState = 'idle' | 'configuring' | 'retuning' | 'acquiring' | 'streaming' | 'complete' | 'failed';
 export type ConnectionPanelState = 'closed' | 'selecting' | 'connecting' | 'failed';
 export type InspectorSection = 'frequency' | 'acquisition' | 'detection' | 'model' | 'generator';
 

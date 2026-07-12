@@ -22,7 +22,7 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
   return <div className="dialog-backdrop firmware-backdrop" role="presentation">
     <section className="firmware-dialog" role="dialog" aria-modal="true" aria-labelledby="firmware-title">
       <header className="firmware-head">
-        <div><span className="firmware-icon"><ShieldCheck size={20}/></span><span><small>VERIFIED OEM RELEASE</small><h2 id="firmware-title">Firmware update</h2></span></div>
+        <div><span className="firmware-icon"><ShieldCheck size={20}/></span><span><small>{state.phase === 'custom-firmware' ? 'CUSTOM FIRMWARE SESSION' : 'VERIFIED OEM RELEASE'}</small><h2 id="firmware-title">Firmware update</h2></span></div>
         <button data-agent-control="firmware.close" className="icon-button" disabled={locked} onClick={onClose} aria-label="Close firmware update"><X size={17}/></button>
       </header>
 
@@ -33,10 +33,10 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
         <Step label="Flash" active={['ready-to-flash','flashing','reconnecting'].includes(state.phase)} complete={state.phase === 'completed'}/>
       </div>
 
-      <div className="firmware-release-card">
+      <div className={`firmware-release-card ${state.phase === 'custom-firmware' ? 'custom-firmware' : ''}`}>
         <div><small>INSTALLED</small><strong>{state.current?.version ?? 'Captured in preflight'}</strong></div>
-        <span>→</span>
-        <div><small>TARGET</small><strong>{state.target.version}</strong></div>
+        <span>{state.phase === 'custom-firmware' ? '×' : '→'}</span>
+        <div><small>{state.phase === 'custom-firmware' ? 'OEM UPDATER' : 'TARGET'}</small><strong>{state.phase === 'custom-firmware' ? 'Disabled for this session' : state.target.version}</strong></div>
       </div>
 
       <div className="firmware-stage">
@@ -90,6 +90,12 @@ export function FirmwareUpdateDialog({ state, busy, preflight, onPreflight, onDo
         </Stage>}
 
         {state.phase === 'up-to-date' && <Stage icon={<Check/>} title="Firmware is current"><p>The connected physical ZS407 already matches Atomizer’s pinned OEM release.</p><button data-agent-control="firmware.done" className="primary firmware-primary" onClick={onClose}>Done</button></Stage>}
+
+        {state.phase === 'custom-firmware' && <Stage icon={<AlertTriangle/>} title="Custom firmware is connected">
+          <p>{state.warning}</p>
+          <p>Normal instrument control remains available through the verified ZS407 command contract. Atomizer will not assign OEM source provenance or offer the pinned OEM flasher in this session.</p>
+          <button data-agent-control="firmware.done" className="primary firmware-primary" onClick={onClose}>Continue with custom firmware</button>
+        </Stage>}
 
         {state.phase === 'failed' && <Stage icon={<AlertTriangle/>} title={state.writeDisposition !== 'not-started' ? 'Firmware write state needs attention' : 'Update stopped safely'} danger>
           <p>{state.error}</p>

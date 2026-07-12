@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { BatteryCharging, CheckCircle2, Cpu, Fingerprint, MonitorUp, RefreshCw, TerminalSquare, Usb } from 'lucide-react';
+import { AlertTriangle, BatteryCharging, CheckCircle2, Cpu, Fingerprint, MonitorUp, RefreshCw, TerminalSquare, Usb } from 'lucide-react';
 import type { DeviceDiagnostics, DeviceSnapshot, ScreenFrame, ScreenPoint } from '@tinysa/contracts';
 
 export function DeviceWorkspace({ snapshot, diagnostics, frame, busy, onRefresh, onCapture, onTouch, onRelease }: {
@@ -31,9 +31,10 @@ export function DeviceWorkspace({ snapshot, diagnostics, frame, busy, onRefresh,
     <section className="device-overview">
       <div className="panel-header"><div><Cpu size={14}/>Instrument</div><span>{snapshot.identity?.usbIdentityVerified ? 'VERIFIED' : 'NOT VERIFIED'}</span></div>
       <div className="identity-hero"><div className="identity-chip"><span/><span/><span/><Cpu size={34}/></div><div><h2>{snapshot.identity?.model ?? 'Not connected'}</h2>{snapshot.identity && <p>{snapshot.identity.hardwareVersion} · {snapshot.identity.firmwareVersion}</p>}</div></div>
+      {snapshot.identity?.firmwareWarning && <div className="custom-firmware-warning" role="status"><AlertTriangle size={15}/><span><strong>Custom firmware · source unqualified</strong><small>{snapshot.identity.firmwareWarning}</small></span></div>}
       <div className="device-facts">
         <Fact icon={<Usb/>} label="USB identity" value={snapshot.identity ? `${snapshot.identity.port.vendorId ?? '—'}:${snapshot.identity.port.productId ?? '—'}` : '—'} detail={snapshot.identity?.port.product ?? snapshot.identity?.port.path ?? 'Disconnected'}/>
-        <Fact icon={<Fingerprint/>} label="Firmware source" value={snapshot.identity?.firmwareSourceCommit.slice(0, 12) ?? '—'}/>
+        <Fact icon={<Fingerprint/>} label="Firmware source" value={snapshot.identity?.firmwareSourceCommit?.slice(0, 12) ?? (snapshot.identity?.firmwareReportedRevision ? `unresolved · ${snapshot.identity.firmwareReportedRevision}` : '—')}/>
         <Fact icon={<BatteryCharging/>} label="Battery" value={snapshot.telemetry ? `${(snapshot.telemetry.batteryMillivolts / 1_000).toFixed(2)} V` : '—'} detail={snapshot.telemetry ? `Device ID ${snapshot.telemetry.deviceId}` : 'Refresh diagnostics'}/>
         <Fact icon={<TerminalSquare/>} label="Shell surface" value={diagnostics ? `${diagnostics.commands.length} commands` : '—'} detail={snapshot.capabilities ? `${snapshot.capabilities.protocol.prompt} · CR terminated` : 'Not identified'}/>
       </div>

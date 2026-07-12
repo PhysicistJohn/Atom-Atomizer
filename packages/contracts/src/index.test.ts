@@ -60,8 +60,8 @@ describe('domain units and firmware-derived validation', () => {
     expect(portCandidateSchema.safeParse({ id: 'x', path: 'fake://x', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' }).success).toBe(true);
     expect(portCandidateSchema.safeParse({ id: 'x', path: 'fake://x', usbMatch: 'exact-zs407-cdc', transport: 'protocol-test-double', execution: 'protocol-test-double' }).success).toBe(false);
     expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'guessed', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(false);
-    expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 }).success).toBe(true);
-    expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: -1 }, minimumBandwidthHz: 0, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 0 }).success).toBe(false);
+    expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 }).success).toBe(true);
+    expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: -1 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 0 }).success).toBe(false);
   });
   it('rejects malformed model package hashes', () => {
     expect(modelPackageManifestSchema.safeParse({ schemaVersion: 1, modelId: 'm', version: '1', assetSha256: 'not-a-hash' }).success).toBe(false);

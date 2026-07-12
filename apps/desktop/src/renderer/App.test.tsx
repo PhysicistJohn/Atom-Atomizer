@@ -14,11 +14,11 @@ import {
   type PortCandidate,
   type Sweep,
 } from '@tinysa/contracts';
-import { App } from './App.js';
+import { App, fitChannelConfigurationToSpan, parseStoredDetection } from './App.js';
 import { agentControlBinding } from '@tinysa/agent';
 
 const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' };
-const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
+const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'protocol-test', port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
 const capabilities: DeviceCapabilities = {
   profile: 'tinySA4-zs407',
   protocol: { transport: 'protocol-test-double', prompt: TINYSA_SHELL_PROMPT, commandTerminator: '\r', echoesCommands: true, maximumCommandCharacters: 47, usbTransactionsModeled: false },
@@ -67,6 +67,31 @@ beforeEach(() => {
 });
 
 describe('operator vertical slice', () => {
+  it('fits stale channel geometry inside the active analyzer span', () => {
+    const fitted = fitChannelConfigurationToSpan({
+      centerHz: 98_000_000,
+      mainBandwidthHz: 200_000,
+      adjacentBandwidthHz: 200_000,
+      channelSpacingHz: 200_000,
+      adjacentChannelCount: 2,
+      occupiedPowerPercent: 99,
+      obwNoiseCorrection: 'none',
+    }, 93_000_000, 95_000_000);
+    const extent = fitted.adjacentChannelCount * fitted.channelSpacingHz + fitted.adjacentBandwidthHz / 2;
+    expect(fitted.centerHz).toBe(94_000_000);
+    expect(fitted.centerHz - extent).toBeGreaterThanOrEqual(93_000_000);
+    expect(fitted.centerHz + extent).toBeLessThanOrEqual(95_000_000);
+  });
+  it('migrates the pre-prominence detector preference deterministically', () => {
+    expect(parseStoredDetection({
+      threshold: { strategy: 'noise-relative', marginDb: 10 },
+      minimumBandwidthHz: 0,
+      minimumConsecutiveSweeps: 2,
+      releaseAfterMissedSweeps: 2,
+    })).toMatchObject({ minimumProminenceDb: 6 });
+    expect(() => parseStoredDetection({ threshold: 'corrupt' })).toThrow();
+  });
+
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());
@@ -99,8 +124,13 @@ describe('operator vertical slice', () => {
   it('allows marker 1 and the entire marker bank to remain off', async () => {
     const { container } = render(<App/>);
     fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
-    const markerOne = screen.getByRole('button', { name: /Marker 1, visible, selected/i });
+    const markerOne = screen.getByRole('button', { name: /Marker 1, hidden, selected/i });
+    expect(markerOne.getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelectorAll('.marker-selector button.enabled')).toHaveLength(0);
     fireEvent.click(markerOne);
+    expect(screen.getByRole('button', { name: /Marker 1, visible, selected/i }).getAttribute('aria-pressed')).toBe('true');
+    const visibleMarkerOne = screen.getByRole('button', { name: /Marker 1, visible, selected/i });
+    fireEvent.click(visibleMarkerOne);
     expect(screen.getByRole('button', { name: /Marker 1, hidden, selected/i }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByRole('button', { name: /Marker M1 visibility/i }).textContent).toContain('Off');
     expect(container.querySelectorAll('.marker-selector button.enabled')).toHaveLength(0);
@@ -153,6 +183,23 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
     expect(await screen.findByLabelText('Measured power by frequency')).toBeTruthy();
     expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.acquireSweep));
+  });
+
+  it('pauses, verifies, and resumes continuous acquisition when analyzer settings change', async () => {
+    render(<App/>);
+    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
+    await waitFor(() => expect(window.tinySA.stopStreaming).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledTimes(2));
+    expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
   });
 
   it('lets Atom list, connect, verify, and acquire through typed tools', async () => {

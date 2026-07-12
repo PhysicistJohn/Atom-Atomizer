@@ -20,6 +20,7 @@ import {
   type DeviceIdentity,
   type DeviceSnapshot,
   type DeviceTelemetry,
+  type FirmwareTraceFrame,
   type GeneratorConfig,
   type PortCandidate,
   type ScreenFrame,
@@ -231,15 +232,18 @@ export class TinySaDeviceService {
       const transportEvidence = this.transport.consumeAcquisitionMetadata();
       assertTransportEvidence(identity, config.startHz, config.stopHz, config.points, transportEvidence);
       if (transportEvidence) source = transportEvidence.source;
-      const elapsedMilliseconds = performance.now() - started;
       const first = frequencyHz[0];
       const last = frequencyHz.at(-1);
       if (first === undefined || last === undefined) throw new TinySaDeviceError('protocol', 'Sweep response contained no points', false);
+      const sweepId = crypto.randomUUID();
+      const capturedAt = new Date().toISOString();
+      const firmwareTraces = await this.#readFirmwareTraceFrames(frequencyHz, powerDbm, sweepId, capturedAt, timeoutMs);
+      const elapsedMilliseconds = performance.now() - started;
       const sweep: Sweep = {
         kind: 'spectrum',
-        id: crypto.randomUUID(),
+        id: sweepId,
         sequence: ++this.#sequence,
-        capturedAt: new Date().toISOString(),
+        capturedAt,
         elapsedMilliseconds,
         frequencyHz,
         powerDbm,
@@ -250,6 +254,7 @@ export class TinySaDeviceService {
         actualAttenuationDb: transportEvidence?.actualAttenuationDb ?? analyzer.readback.attenuationDb,
         source,
         ...(rawSweepOffsetDb === undefined ? {} : { rawSweepOffsetDb }),
+        firmwareTraces,
         complete: true,
         identity,
       };
@@ -476,6 +481,35 @@ export class TinySaDeviceService {
     this.#unsubscribeTransport();
   }
 
+  async #readFirmwareTraceFrames(
+    frequencyHz: readonly number[],
+    measuredPowerDbm: readonly number[],
+    sourceSweepId: string,
+    capturedAt: string,
+    timeoutMs: number,
+  ): Promise<readonly FirmwareTraceFrame[]> {
+    const scheduler = this.#ready();
+    const metadata = parseFirmwareTraceMetadata(await scheduler.execute('trace', Math.max(10_000, timeoutMs)));
+    const frames: FirmwareTraceFrame[] = [];
+    for (const trace of metadata) {
+      const powerDbm = trace.traceId === 1
+        ? [...measuredPowerDbm]
+        : parseFirmwareTraceValues(await scheduler.execute(`trace ${trace.traceId} value`, Math.max(20_000, timeoutMs)), trace.traceId, frequencyHz.length);
+      frames.push({
+        traceId: trace.traceId,
+        role: trace.traceId === 1 ? 'measured' : trace.traceId === 4 ? 'raw' : 'stored',
+        unit: 'dBm',
+        frozen: trace.frozen,
+        frequencyHz: [...frequencyHz],
+        powerDbm,
+        sourceSweepId,
+        capturedAt,
+        evidence: 'firmware-readback',
+      });
+    }
+    return frames;
+  }
+
   async #configureTrigger(trigger: AnalyzerConfig['trigger'] | ZeroSpanConfig['trigger']): Promise<void> {
     await this.#command(`trigger ${trigger.mode}`);
     if (trigger.levelDbm !== undefined) await this.#command(`trigger ${formatDecimal(trigger.levelDbm)}`);
@@ -644,9 +678,15 @@ function buildCapabilities(commands: readonly string[], identity: DeviceIdentity
     modulation: ['off', 'am', 'fm'],
     commands: [...commands],
     evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'device-observed',
-    firmwareSourceCommit: identity.firmwareSourceCommit,
+    ...(identity.firmwareSourceCommit ? { firmwareSourceCommit: identity.firmwareSourceCommit } : {}),
     hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
-    qualification: twin ? 'executable-twin-observed' : testDouble ? 'protocol-test-only' : 'device-observed-awaiting-rf-qualification',
+    qualification: identity.firmwareQualification === 'custom-unqualified'
+      ? 'custom-firmware-unqualified'
+      : twin
+        ? 'executable-twin-observed'
+        : testDouble
+          ? 'protocol-test-only'
+          : 'device-observed-awaiting-rf-qualification',
   };
 }
 
@@ -690,18 +730,28 @@ function parseIdentity(versionResponse: string, infoResponse: string, port: Port
 function resolveFirmwareProvenance(
   firmwareVersion: string,
   port: PortCandidate,
-): Pick<DeviceIdentity, 'firmwareSourceCommit' | 'firmwareReportedRevision'> {
+): Pick<DeviceIdentity, 'firmwareSourceCommit' | 'firmwareReportedRevision' | 'firmwareQualification' | 'firmwareWarning'> {
   if (port.execution === 'firmware-digital-twin') {
     if (port.digitalTwin?.repositoryCommit !== DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT) {
       throw new TinySaDeviceError('identity-mismatch', 'Digital twin firmware source does not match its contract', false);
     }
-    return { firmwareSourceCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT };
+    return { firmwareSourceCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'executable-twin' };
   }
   const revision = firmwareVersion.match(/-g([0-9a-f]{7,40})(?:\b|$)/i)?.[1]?.toLowerCase();
   if (!revision) throw new TinySaDeviceError('unsupported', `Firmware ${firmwareVersion} did not report a source revision`, false);
   const firmwareSourceCommit = SUPPORTED_ZS407_FIRMWARE_REVISIONS[revision as SupportedZs407FirmwareRevision];
-  if (!firmwareSourceCommit) throw new TinySaDeviceError('unsupported', `Firmware revision ${revision} is outside Atomizer's closed support registry`, false);
-  return { firmwareReportedRevision: revision as SupportedZs407FirmwareRevision, firmwareSourceCommit };
+  if (firmwareSourceCommit) {
+    return {
+      firmwareReportedRevision: revision,
+      firmwareSourceCommit,
+      firmwareQualification: port.execution === 'protocol-test-double' ? 'protocol-test' : 'supported-oem',
+    };
+  }
+  return {
+    firmwareReportedRevision: revision,
+    firmwareQualification: 'custom-unqualified',
+    firmwareWarning: `Custom firmware revision ${revision} is admitted without source qualification. Atomizer verified the ZS407 identity and required command surface, but has not qualified this firmware build.`,
+  };
 }
 
 function assertTransportEvidence(
@@ -777,6 +827,39 @@ function parseRawSweepOffset(response: string): number {
   const value = Number(line?.replace(/\s*dBm$/i, ''));
   if (!Number.isInteger(value) || value < -300 || value > 300) throw new TinySaDeviceError('protocol', `Malformed scanraw offset readback: ${response}`, false);
   return value;
+}
+
+function parseFirmwareTraceMetadata(response: string): readonly { traceId: 1 | 2 | 3 | 4; frozen: boolean | 'unknown' }[] {
+  const number = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
+  const pattern = new RegExp(`^([1-4]):\\s+dBm\\s+${number}\\s+${number}(?:\\s*,?\\s*(frozen))?\\s*$`, 'i');
+  const traces = nonEmptyLines(response).map((line) => {
+    const match = pattern.exec(line);
+    if (!match) throw new TinySaDeviceError('protocol', `Malformed firmware trace summary line: ${line}`, false);
+    return { traceId: Number(match[1]) as 1 | 2 | 3 | 4, frozen: match[2] ? true : 'unknown' as const };
+  });
+  if (!traces.length) throw new TinySaDeviceError('protocol', 'Firmware trace summary contained no enabled traces', false);
+  if (new Set(traces.map((trace) => trace.traceId)).size !== traces.length) throw new TinySaDeviceError('protocol', 'Firmware trace summary repeated a trace identifier', false);
+  return traces.sort((left, right) => left.traceId - right.traceId);
+}
+
+function parseFirmwareTraceValues(response: string, traceId: 1 | 2 | 3 | 4, expectedPoints: number): readonly number[] {
+  const values = new Array<number>(expectedPoints);
+  const seen = new Set<number>();
+  for (const line of nonEmptyLines(response)) {
+    const match = line.match(/^trace\s+([1-4])\s+value\s+(\d+)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$/i);
+    if (!match || Number(match[1]) !== traceId) throw new TinySaDeviceError('protocol', `Malformed firmware trace ${traceId} value line: ${line}`, false);
+    const index = Number(match[2]);
+    const powerDbm = Number(match[3]);
+    if (!Number.isInteger(index) || index < 0 || index >= expectedPoints || seen.has(index) || !Number.isFinite(powerDbm)) {
+      throw new TinySaDeviceError('protocol', `Firmware trace ${traceId} contains an invalid or duplicate point`, false);
+    }
+    seen.add(index);
+    values[index] = powerDbm;
+  }
+  if (seen.size !== expectedPoints || values.some((value) => !Number.isFinite(value))) {
+    throw new TinySaDeviceError('protocol', `Firmware trace ${traceId} returned ${seen.size}/${expectedPoints} points`, false);
+  }
+  return values;
 }
 
 function parseStatus(response: string): SweepStatus {

@@ -6,10 +6,12 @@ export function TopBar({ snapshot, simulated, agentOpen, agentConfigured, firmwa
   const ready = snapshot.connection === 'ready';
   const connecting = snapshot.connection === 'connecting' || snapshot.connection === 'identifying';
   const twin = snapshot.identity?.execution === 'firmware-digital-twin' || snapshot.pendingPort?.execution === 'firmware-digital-twin';
+  const customFirmware = snapshot.identity?.firmwareQualification === 'custom-unqualified';
   return <header className="topbar">
     <div className="brand-lockup"><div className="brand-symbol"><AtomicMark size={27}/></div><div><small>tinySA</small><strong>Atomizer</strong></div></div>
     <div className="topbar-actions">
       {simulated && <span className="environment-badge">{connecting ? 'TWIN BOOTING' : 'DIGITAL TWIN'}</span>}
+      {customFirmware && <span className="environment-badge custom-firmware" title={snapshot.identity?.firmwareWarning}>CUSTOM FW · UNQUALIFIED</span>}
       {firmwareUpdateAvailable && <button data-agent-control="firmware.open" className="firmware-update-launch" onClick={onFirmwareUpdate}><ShieldCheck size={14}/><span><b>Firmware</b><small>Update ready</small></span></button>}
       {snapshot.generatorOutput !== 'off' && <span className={`top-rf-state ${snapshot.generatorOutput}`}>RF {snapshot.generatorOutput.toUpperCase()}</span>}
       <button data-agent-control="connection.open" className={`connection-pill ${ready ? 'is-ready' : ''}`} onClick={onConnection} aria-haspopup="dialog">

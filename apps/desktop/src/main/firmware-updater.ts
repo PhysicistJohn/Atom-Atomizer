@@ -5,6 +5,7 @@ import { access, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/pr
 import { delimiter, join } from 'node:path';
 import {
   OEM_ZS407_FIRMWARE_RELEASE,
+  SUPPORTED_ZS407_FIRMWARE_REVISIONS,
   firmwareFlashRequestSchema,
   firmwareUpdateJournalSchema,
   firmwareUpdatePreflightSchema,
@@ -15,6 +16,7 @@ import {
   type FirmwareUpdateState,
   type PortCandidate,
   type ScreenFrame,
+  type SupportedZs407FirmwareRevision,
 } from '@tinysa/contracts';
 
 const MINIMUM_UPDATE_BATTERY_MV = 4_000;
@@ -216,7 +218,7 @@ export class FirmwareUpdater {
         ...this.#state,
         phase: 'completed',
         updateAvailable: false,
-        current: { version: connected.identity.firmwareVersion, revision: connected.identity.firmwareReportedRevision, sourceCommit: connected.identity.firmwareSourceCommit },
+        current: { version: connected.identity.firmwareVersion, revision: connected.identity.firmwareReportedRevision, sourceCommit: connected.identity.firmwareSourceCommit, qualification: 'supported-oem' },
         flashProgress: { stage: 'complete', percent: 100, stagePercent: 100, updatedAt: completedAt },
         completedAt,
         error: undefined,
@@ -237,22 +239,9 @@ export class FirmwareUpdater {
   async #loadJournal(): Promise<void> {
     if (this.#journalLoaded) return;
     this.#journalLoaded = true;
+    let journal: ReturnType<typeof firmwareUpdateJournalSchema.parse>;
     try {
-      const journal = firmwareUpdateJournalSchema.parse(JSON.parse(await readFile(this.#journalPath, 'utf8')));
-      this.#state = journal.state;
-      if (this.#state.phase === 'ready-to-flash') {
-        this.#state = { ...this.#state, phase: 'awaiting-dfu', dfuDevice: { detected: false, count: 0 }, error: undefined };
-        await this.#persistJournal();
-      } else if (this.#state.phase === 'flashing' || this.#state.phase === 'reconnecting') {
-        this.#state = {
-          ...this.#state,
-          phase: 'failed',
-          error: this.#state.writeDisposition === 'completed'
-            ? 'The previous Atomizer process ended after firmware bytes were written. Do not flash again; verify the rebooted USB identity.'
-            : 'The previous Atomizer process ended after the firmware write attempt began. Completion is unknown; do not flash again.',
-        };
-        await this.#persistJournal();
-      }
+      journal = firmwareUpdateJournalSchema.parse(JSON.parse(await readFile(this.#journalPath, 'utf8')));
     } catch (value) {
       if (isFileMissing(value)) return;
       this.#state = {
@@ -261,6 +250,26 @@ export class FirmwareUpdater {
         writeDisposition: 'indeterminate',
         error: `Firmware update journal is invalid or unreadable. Flashing is locked pending manual inspection: ${message(value)}`,
       };
+      return;
+    }
+    this.#state = journal.state;
+    if (this.#state.phase === 'ready-to-flash') {
+      this.#state = { ...this.#state, phase: 'awaiting-dfu', dfuDevice: { detected: false, count: 0 }, error: undefined };
+    } else if (this.#state.phase === 'flashing' || this.#state.phase === 'reconnecting') {
+      this.#state = {
+        ...this.#state,
+        phase: 'failed',
+        error: this.#state.writeDisposition === 'completed'
+          ? 'The previous Atomizer process ended after firmware bytes were written. Do not flash again; verify the rebooted USB identity.'
+          : 'The previous Atomizer process ended after the firmware write attempt began. Completion is unknown; do not flash again.',
+      };
+    } else {
+      return;
+    }
+    try {
+      await this.#persistJournal();
+    } catch (value) {
+      this.#state = { ...this.#state, error: `${this.#state.error ?? 'Recovered firmware journal state.'} Recovery state could not be persisted: ${message(value)}` };
     }
   }
 
@@ -282,8 +291,6 @@ export class FirmwareUpdater {
         await handle.close();
       }
       await rename(temporaryPath, this.#journalPath);
-      const committed = await open(this.#journalPath, 'r');
-      try { await committed.sync(); } finally { await committed.close(); }
       if (process.platform !== 'win32') {
         const directory = await open(this.cacheDirectory, 'r');
         try { await directory.sync(); } finally { await directory.close(); }
@@ -310,10 +317,26 @@ export class FirmwareUpdater {
       if (this.#state.phase !== 'failed') this.#state = { ...initialState(), dfuUtility: this.#state.dfuUtility };
       return;
     }
-    const current = { version: identity.firmwareVersion, revision: identity.firmwareReportedRevision, sourceCommit: identity.firmwareSourceCommit };
+    if (identity.firmwareQualification === 'custom-unqualified') {
+      if (this.#state.phase === 'failed') return;
+      if (!identity.firmwareReportedRevision || !identity.firmwareWarning) throw new Error('Custom firmware identity omitted its required revision or warning');
+      this.#state = {
+        ...initialState(),
+        phase: 'custom-firmware',
+        current: { version: identity.firmwareVersion, revision: identity.firmwareReportedRevision, qualification: 'custom-unqualified' },
+        dfuUtility: this.#state.dfuUtility,
+        warning: `${identity.firmwareWarning} The pinned OEM updater is disabled for this session.`,
+      };
+      return;
+    }
+    const revision = identity.firmwareReportedRevision;
+    if (identity.firmwareQualification !== 'supported-oem' || !identity.firmwareSourceCommit || !revision || !Object.hasOwn(SUPPORTED_ZS407_FIRMWARE_REVISIONS, revision)) {
+      throw new Error(`Physical firmware identity has inconsistent qualification ${identity.firmwareQualification}`);
+    }
+    const current = { version: identity.firmwareVersion, revision: revision as SupportedZs407FirmwareRevision, sourceCommit: identity.firmwareSourceCommit, qualification: 'supported-oem' as const };
     const updateAvailable = identity.firmwareReportedRevision !== OEM_ZS407_FIRMWARE_RELEASE.revision;
     const phase = this.#state.phase === 'failed' ? 'failed' : updateAvailable ? (this.#state.artifact ? 'verified' : 'available') : 'up-to-date';
-    this.#state = { ...this.#state, phase, current, updateAvailable, error: phase === 'failed' ? this.#state.error : undefined };
+    this.#state = { ...this.#state, phase, current, updateAvailable, warning: undefined, error: phase === 'failed' ? this.#state.error : undefined };
   }
 
   #requireOutdatedPhysicalDevice(): void {
@@ -321,6 +344,9 @@ export class FirmwareUpdater {
     const snapshot = this.device.snapshot();
     if (snapshot.connection !== 'ready' || snapshot.identity?.execution !== 'physical' || !snapshot.identity.usbIdentityVerified) {
       throw new Error('Firmware update requires one connected, exactly verified physical ZS407');
+    }
+    if (snapshot.identity.firmwareQualification === 'custom-unqualified') {
+      throw new Error('The pinned OEM updater is disabled while custom unqualified firmware is connected');
     }
     if (!this.#state.updateAvailable) throw new Error('The connected ZS407 already runs the pinned OEM firmware');
   }

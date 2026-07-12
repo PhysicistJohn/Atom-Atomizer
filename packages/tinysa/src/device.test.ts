@@ -34,6 +34,7 @@ describe('device fail-loud lifecycle', () => {
       hardwareVersion: 'V0.5.4 max2871',
       firmwareReportedRevision: 'c5dd31f',
       firmwareSourceCommit: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+      firmwareQualification: 'supported-oem',
       usbIdentityVerified: true,
       execution: 'physical',
     });
@@ -72,13 +73,36 @@ describe('device fail-loud lifecycle', () => {
     await expect(new TinySaDeviceService(transport).connect(transport.port)).rejects.toThrow(/not a ZS407/);
   });
 
-  it('rejects an otherwise valid ZS407 on an unknown firmware revision', async () => {
+  it('admits an otherwise valid ZS407 custom revision with explicit unqualified provenance', async () => {
     const bytes = new FakeTinySaTransport({
       versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
       infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
     });
     const transport = new PhysicalFixtureTransport(bytes);
-    await expect(new TinySaDeviceService(transport).connect(transport.port)).rejects.toThrow(/closed support registry/);
+    const service = new TinySaDeviceService(transport);
+    const connected = await service.connect(transport.port);
+
+    expect(connected.identity).toMatchObject({
+      firmwareReportedRevision: 'deadbee',
+      firmwareQualification: 'custom-unqualified',
+      firmwareWarning: expect.stringMatching(/admitted without source qualification/i),
+      usbIdentityVerified: true,
+    });
+    expect(connected.identity).not.toHaveProperty('firmwareSourceCommit');
+    expect(connected.capabilities).toMatchObject({ qualification: 'custom-firmware-unqualified' });
+    expect(connected.capabilities).not.toHaveProperty('firmwareSourceCommit');
+    expect(bytes.writes.slice(0, 6)).toEqual(['output off', 'version', 'info', 'help', 'output off', 'mode input']);
+    expect(connected.generatorOutput).toBe('off');
+    await service.disconnect();
+  });
+
+  it('still rejects firmware that omits a parseable source revision', async () => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_custom\r\nHW Version:V0.5.4 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_custom',
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    await expect(new TinySaDeviceService(transport).connect(transport.port)).rejects.toThrow(/did not report a source revision/);
   });
 
   it('reports RF-off failure during disconnect and enters faulted/unknown state', async () => {

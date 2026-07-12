@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   SignalDetector,
+  SIGNAL_LAB_EMSO_MODEL,
+  SignalLabBayesianClassifier,
   SignalTracker,
   SpectralMorphologyClassifier,
   TraceAccumulator,
@@ -13,11 +15,13 @@ import {
   measureOccupiedBandwidth,
   readMarkers,
   searchMarker,
+  signalLabWaveformHypotheses,
 } from './index.js';
 import { FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
 import type {
   AnalyzerConfig,
   DeviceIdentity,
+  DetectedSignal,
   MarkerConfiguration,
   SignalDetectionConfig,
   Sweep,
@@ -31,6 +35,7 @@ const identity: DeviceIdentity = {
   hardwareVersion: 'V0.5.4 + ZS407',
   firmwareVersion: 'sim-c979386',
   firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT,
+  firmwareQualification: 'protocol-test',
   port: {
     id: 'simulator:zs407',
     path: 'simulator://zs407',
@@ -63,6 +68,7 @@ const analyzer: AnalyzerConfig = {
 const detectionConfig: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
   minimumBandwidthHz: 0,
+  minimumProminenceDb: 6,
   minimumConsecutiveSweeps: 2,
   releaseAfterMissedSweeps: 1,
 };
@@ -101,9 +107,43 @@ describe('signal analysis', () => {
       bandwidthHz: 200,
       thresholdDbm: -80,
       noiseFloorDbm: -90,
-      detectorId: 'robust-contiguous-v2',
+      detectorId: 'robust-local-cfar-v5',
+      prominenceDb: 42,
       state: 'active',
     });
+  });
+
+  it('retains a noise estimate when a wideband emission occupies most of the displayed span', () => {
+    const frequencyHz = Array.from({ length: 101 }, (_, index) => index * 100_000);
+    const powerDbm = frequencyHz.map((_frequency, index) => index >= 9 && index <= 91 ? -62 + 0.4 * Math.sin(index) : -108 + 0.5 * Math.cos(index));
+    const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 10_000_000 });
+    const result = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(sweep);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ startHz: 900_000, stopHz: 9_100_000, detectorId: 'robust-local-cfar-v5' });
+    expect(result[0]!.noiseFloorDbm).toBeLessThan(-105);
+  });
+
+  it('rejects threshold crossings without the configured local prominence', () => {
+    const frequencyHz = Array.from({ length: 101 }, (_, index) => index * 10_000);
+    const powerDbm = frequencyHz.map((_frequency, index) => index < 25 ? -100 : index >= 40 && index % 5 === 0 ? -88 : -93);
+    const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 1_000_000 });
+
+    const result = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(sweep);
+
+    expect(result).toHaveLength(0);
+  });
+
+  it('bridges two-bin ripple gaps into one prominent emission', () => {
+    const frequencyHz = Array.from({ length: 101 }, (_, index) => index * 10_000);
+    const powerDbm = frequencyHz.map((_frequency, index) => index >= 30 && index <= 70 ? -70 : -105);
+    powerDbm[45] = -105;
+    powerDbm[46] = -105;
+    const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 1_000_000 });
+
+    const result = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(sweep);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ startHz: 300_000, stopHz: 700_000, prominenceDb: 35 });
   });
 
   it('promotes persistent detections and explicitly releases missed tracks', () => {
@@ -186,6 +226,47 @@ describe('signal analysis', () => {
 
     const unknown = await new UnknownClassifier().classify(detection);
     expect(unknown).toMatchObject({ label: 'unknown', confidence: 0, unknownReason: 'model-unavailable' });
+  });
+
+  it('performs open-set SignalLab hypothesis inference from measurements rather than selected profile state', async () => {
+    expect(signalLabWaveformHypotheses).toHaveLength(79);
+    expect(new Set(signalLabWaveformHypotheses.map((item) => item.id)).size).toBe(79);
+    expect(SIGNAL_LAB_EMSO_MODEL).toMatchObject({ producer: 'tinysa-signal-lab', taxonomySize: 79, preprocessing: 'scalar-spectrum-envelope-features-v1' });
+    const sweeps = Array.from({ length: 4 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => {
+      const offset = frequency - 98_000_000;
+      return Math.max(-110 + 0.35 * Math.sin(frequency / 71_000 + index), -48 - 4.3429 * (offset / 3_000) ** 2);
+    }));
+    const detection = emsoDetection('cw-observed', 98_000_000, 20_000, sweeps);
+    const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
+    expect(result).toMatchObject({
+      label: 'signal-lab:cw', decisionLevel: 'profile', qualification: 'signal-lab-synthetic-hypothesis', scoreKind: 'model-posterior',
+      modelId: 'signal-lab-emso-bayes-v1',
+    });
+    expect(result.modelProvenance).toMatchObject({ producer: 'tinysa-signal-lab', sourceCommit: SIGNAL_LAB_EMSO_MODEL.sourceCommit });
+    expect(result.evidence.views).toEqual(['scalar-spectrum']);
+  });
+
+  it('keeps underdetermined cellular test models hierarchical and rejects an unknown center', async () => {
+    const sweeps = Array.from({ length: 4 }, (_, index) => emsoSweep(1_840_000_000, 30_000_000, index + 1, (frequency) => {
+      const offset = Math.abs(frequency - 1_840_000_000);
+      return offset <= 9_000_000 ? -64 + 0.8 * Math.sin(frequency / 390_000 + index * 0.4) : -110 + 0.25 * Math.cos(frequency / 510_000);
+    }));
+    const detection = emsoDetection('cellular-observed', 1_840_000_000, 18_000_000, sweeps);
+    const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
+    expect(result).toMatchObject({ label: 'unknown', decisionLevel: 'unknown', unknownReason: 'insufficient-evidence' });
+    expect(result.candidates.length).toBeGreaterThan(1);
+    expect(result.candidates.every((candidate) => candidate.family === 'e-utra')).toBe(true);
+
+    const unknownSweeps = Array.from({ length: 3 }, (_, index) => emsoSweep(433_920_000, 2_000_000, index + 1, (frequency) => Math.max(-108, -52 - Math.abs(frequency - 433_920_000) / 5_000)));
+    const rejected = await new SignalLabBayesianClassifier().classify(emsoDetection('unknown-observed', 433_920_000, 25_000, unknownSweeps), { sweeps: unknownSweeps });
+    expect(rejected).toMatchObject({ label: 'unknown', decisionLevel: 'unknown', unknownReason: 'out-of-domain' });
+  });
+
+  it('requires repeated spectral evidence before making a SignalLab profile decision', async () => {
+    const sweep = emsoSweep(98_000_000, 2_000_000, 1, (frequency) => Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 1_000));
+    const result = await new SignalLabBayesianClassifier().classify(emsoDetection('one-look', 98_000_000, 20_000, [sweep]), { sweeps: [sweep] });
+    expect(result).toMatchObject({ label: 'unknown', unknownReason: 'insufficient-evidence', decisionLevel: 'unknown' });
+    expect(result.candidates.length).toBeGreaterThan(0);
   });
 
   it('classifies pulsed zero-span envelope evidence', () => {
@@ -271,3 +352,27 @@ describe('signal analysis', () => {
     expect(() => detector.analyze(makeSweep({ powerDbm: [-90, -89, Number.NaN, ...Array(17).fill(-91)] }))).toThrow(/finite/i);
   });
 });
+
+function emsoSweep(centerHz: number, spanHz: number, sequence: number, power: (frequencyHz: number) => number): Sweep {
+  const points = 401;
+  const startHz = centerHz - spanHz / 2;
+  const stopHz = centerHz + spanHz / 2;
+  const frequencyHz = Array.from({ length: points }, (_, index) => startHz + spanHz * index / (points - 1));
+  return makeSweep({
+    id: `emso-${centerHz}-${sequence}`, sequence, capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, sequence)).toISOString(),
+    frequencyHz, powerDbm: frequencyHz.map(power), actualStartHz: startHz, actualStopHz: stopHz,
+    actualRbwHz: spanHz / (points - 1), requested: { ...analyzer, startHz, stopHz, points },
+  });
+}
+
+function emsoDetection(id: string, peakHz: number, bandwidthHz: number, sweeps: readonly Sweep[]): DetectedSignal {
+  const latest = sweeps.at(-1)!;
+  const peakIndex = latest.frequencyHz.reduce((best, frequency, index) => Math.abs(frequency - peakHz) < Math.abs(latest.frequencyHz[best]! - peakHz) ? index : best, 0);
+  return {
+    id, startHz: peakHz - bandwidthHz / 2, stopHz: peakHz + bandwidthHz / 2, peakHz,
+    peakDbm: latest.powerDbm[peakIndex]!, prominenceDb: 30, prominenceThresholdDb: 6, bandwidthHz, thresholdDbm: -98, noiseFloorDbm: -110,
+    firstSeenAt: sweeps[0]!.capturedAt, lastSeenAt: latest.capturedAt, sweepIds: sweeps.map((sweep) => sweep.id),
+    persistenceSweeps: sweeps.length, missedSweeps: 0, state: 'active', detectorId: 'fixture-observation',
+    detectorConfig: { ...detectionConfig, minimumConsecutiveSweeps: 1 }, qualityFlags: [],
+  };
+}

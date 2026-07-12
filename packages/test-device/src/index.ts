@@ -18,6 +18,7 @@ export interface FakeOptions {
   versionResponse?: string;
   infoResponse?: string;
   screenCaptureByteOrder?: 'big-endian' | 'little-endian';
+  firmwareTraceIds?: readonly (1 | 2 | 3 | 4)[];
 }
 
 const encoder = new TextEncoder();
@@ -48,6 +49,7 @@ export class FakeTinySaTransport implements ByteTransport {
   #sweepTimeSeconds = 0;
   #sweepIndex = 0;
   #rawSweepOffsetDb = 174;
+  #lastPowers: readonly number[] = [];
 
   constructor(private readonly options: FakeOptions = {}) {
     this.port = portCandidateSchema.parse({
@@ -141,10 +143,10 @@ export class FakeTinySaTransport implements ByteTransport {
         this.#stopHz,
         this.options.screenCaptureByteOrder ?? 'little-endian',
       );
+      case 'trace': return this.#traceCommand(args);
       case 'freq':
       case 'level':
       case 'modulation':
-      case 'trace':
       case 'calc':
       case 'spur':
       case 'avoid':
@@ -166,6 +168,20 @@ export class FakeTinySaTransport implements ByteTransport {
     else if (option === 'off') this.#output = false;
     else if (option !== 'normal' && option !== 'mixer') return 'usage: output on|off|normal|mixer';
     return '';
+  }
+
+  #traceCommand(args: string[]): string {
+    if (args.length === 1 && args[0] === 'dBm') return '';
+    const enabled = this.options.firmwareTraceIds ?? [1];
+    if (!args.length) return enabled.map((traceId) => `${traceId}: dBm 0.000000 10.000000${traceId === 2 ? ' , frozen' : ''}`).join('\r\n');
+    if (args.length !== 2 || args[1] !== 'value' || !/^[1-4]$/.test(args[0] ?? '')) return 'usage: trace';
+    const traceId = Number(args[0]) as 1 | 2 | 3 | 4;
+    if (!enabled.includes(traceId)) return 'usage: trace';
+    if (!this.#lastPowers.length) return 'trace unavailable';
+    return this.#lastPowers.map((power, index) => {
+      const value = traceId === 1 ? power : traceId === 2 ? Math.max(power, -72 + Math.sin(index / 7) * 2) : traceId === 3 ? Math.min(power, -96 + Math.cos(index / 9)) : power - 4 + Math.cos(index / 5);
+      return `trace ${traceId} value ${index} ${value.toFixed(2)}`;
+    }).join('\r\n');
   }
 
   #modeCommand(args: string[]): string {
@@ -253,6 +269,7 @@ export class FakeTinySaTransport implements ByteTransport {
     if (start > stop) return 'frequency range is invalid';
     if (points < 1 || points > ZS407_FIRMWARE_LIMITS.maximumSweepPoints) return `sweep points exceeds range ${ZS407_FIRMWARE_LIMITS.maximumSweepPoints}`;
     const values = this.#powers(start, stop, points);
+    this.#lastPowers = values;
     this.#sweepIndex++;
     if (outmask !== 3) return '';
     return values.map((power, index) => {
@@ -268,6 +285,7 @@ export class FakeTinySaTransport implements ByteTransport {
     const points = args[2] === undefined ? this.#points : strictInteger(args[2], 'scanraw points');
     if (start > stop) return 'frequency range is invalid';
     const values = this.#powers(start, stop, points);
+    this.#lastPowers = values;
     this.#sweepIndex++;
     const payload = new Uint8Array(2 + points * 3);
     payload[0] = 0x7b;

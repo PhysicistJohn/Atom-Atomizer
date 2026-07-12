@@ -37,7 +37,7 @@ const zeroSpan: ZeroSpanConfig = {
 
 describe('device service against byte-level simulator', () => {
   it('identifies, verifies, acquires, diagnoses, and captures without enabling RF', async () => {
-    const transport = new FakeTinySaTransport({ chunkSize: 3 });
+    const transport = new FakeTinySaTransport({ chunkSize: 3, firmwareTraceIds: [1, 2, 3, 4] });
     const device = new TinySaDeviceService(transport);
     const connected = await device.connect(transport.port);
     expect(connected.identity).toMatchObject({ model: 'tinySA Ultra+ ZS407', hardwareVersion: expect.stringContaining('ZS407') });
@@ -50,6 +50,11 @@ describe('device service against byte-level simulator', () => {
     expect(sweep.frequencyHz).toHaveLength(64);
     expect(sweep.powerDbm).toHaveLength(64);
     expect(sweep.source).toBe('scan-text');
+    expect(sweep.firmwareTraces?.map((trace) => trace.traceId)).toEqual([1, 2, 3, 4]);
+    expect(sweep.firmwareTraces?.map((trace) => trace.role)).toEqual(['measured', 'stored', 'stored', 'raw']);
+    expect(sweep.firmwareTraces?.find((trace) => trace.traceId === 2)).toMatchObject({ frozen: true, evidence: 'firmware-readback' });
+    expect(sweep.firmwareTraces?.every((trace) => trace.powerDbm.length === 64)).toBe(true);
+    expect(transport.writes).toEqual(expect.arrayContaining(['trace', 'trace 2 value', 'trace 3 value', 'trace 4 value']));
 
     const diagnostics = await device.readDiagnostics();
     expect(diagnostics.telemetry).toMatchObject({ batteryMillivolts: 4_170, deviceId: 407 });
