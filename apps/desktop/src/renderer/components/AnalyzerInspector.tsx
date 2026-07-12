@@ -29,6 +29,8 @@ export function AnalyzerInspector({ config, disabled, onChange }: { config: Anal
     ...(typeof config.sweepTimeSeconds === 'number' && !SWEEP_TIME_OPTIONS.includes(config.sweepTimeSeconds as typeof SWEEP_TIME_OPTIONS[number]) ? [{ value: config.sweepTimeSeconds, label: `${config.sweepTimeSeconds} s · custom` }] : []),
     { value: 0.05, label: '50 ms' }, { value: 0.1, label: '100 ms' }, { value: 0.5, label: '500 ms' }, { value: 1, label: '1 second' },
   ];
+  const trigger = config.trigger;
+  const triggerLevelDbm = trigger.mode === 'auto' ? -60 : trigger.levelDbm;
 
   return <aside className="inspector inspector-setup">
     <fieldset disabled={disabled} className="acquisition-dock parameter-stack">
@@ -52,8 +54,8 @@ export function AnalyzerInspector({ config, disabled, onChange }: { config: Anal
         <SelectParameter label="Spur rejection" value={config.spurRejection} options={AUTO_SWITCH_OPTIONS} disabled={disabled} controlId="analyzer.spur-rejection" onValue={(value) => onChange({ ...config, spurRejection: value as AnalyzerConfig['spurRejection'] })}/>
         <SelectParameter label="Avoid spurs" value={config.avoidSpurs} options={AUTO_SWITCH_OPTIONS} disabled={disabled} controlId="analyzer.avoid-spurs" onValue={(value) => onChange({ ...config, avoidSpurs: value as AnalyzerConfig['avoidSpurs'] })}/>
         <SelectParameter label="Low-noise amplifier" value={config.lna} options={[{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }]} disabled={disabled} controlId="analyzer.lna" onValue={(value) => onChange({ ...config, lna: value as AnalyzerConfig['lna'] })}/>
-        <SelectParameter label="Trigger" value={config.trigger.mode} options={[{ value: 'auto', label: 'Free run' }, { value: 'normal', label: 'Normal' }, { value: 'single', label: 'Single' }]} disabled={disabled} controlId="analyzer.trigger" onValue={(value) => { const mode = value as AnalyzerConfig['trigger']['mode']; onChange({ ...config, trigger: mode === 'auto' ? { mode } : { mode, levelDbm: config.trigger.levelDbm ?? -60 } }); }}/>
-        {config.trigger.mode !== 'auto' && <EditableParameter label="Trigger level" value={config.trigger.levelDbm ?? -60} displayValue={`${config.trigger.levelDbm ?? -60} dBm`} unit="dBm" minimum={-174} maximum={30} disabled={disabled} controlId="analyzer.trigger-level" onCommit={(value) => onChange({ ...config, trigger: { ...config.trigger, levelDbm: Number(value) } })}/>}
+        <SelectParameter label="Trigger" value={trigger.mode} options={[{ value: 'auto', label: 'Free run' }, { value: 'normal', label: 'Normal' }, { value: 'single', label: 'Single' }]} disabled={disabled} controlId="analyzer.trigger" onValue={(value) => { const mode = value as AnalyzerConfig['trigger']['mode']; onChange({ ...config, trigger: mode === 'auto' ? { mode } : { mode, levelDbm: triggerLevelDbm } }); }}/>
+        {trigger.mode !== 'auto' && <EditableParameter label="Trigger level" value={trigger.levelDbm} displayValue={`${trigger.levelDbm} dBm`} unit="dBm" minimum={-174} maximum={30} disabled={disabled} controlId="analyzer.trigger-level" onCommit={(value) => onChange({ ...config, trigger: { mode: trigger.mode, levelDbm: Number(value) } })}/>}
       </fieldset>
     </details>
     {harmonicRange && <div className="range-warning">Harmonic path above 7.3701 GHz · amplitude accuracy remains unqualified until this instrument is characterized.</div>}

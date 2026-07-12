@@ -50,8 +50,8 @@ contextBridge.exposeInMainWorld('atomAgent', {
   createRealtimeCall: (sdp: string) => ipcRenderer.invoke('ai:realtime:call', sdp),
   agentTurn: (request: AgentTurnRequest) => ipcRenderer.invoke('ai:agent:turn', request),
   computerScreenshot: () => ipcRenderer.invoke('ai:computer:screenshot'),
-  computerClick: (point: {x:number;y:number}) => ipcRenderer.invoke('ai:computer:click', point),
-  computerType: (text:string) => ipcRenderer.invoke('ai:computer:type', text),
-  computerKey: (key:string) => ipcRenderer.invoke('ai:computer:key', key),
-  computerScroll: (value:{x:number;y:number;deltaX:number;deltaY:number}) => ipcRenderer.invoke('ai:computer:scroll', value)
+  computerClick: (value: {screenshotId:string;x:number;y:number}) => ipcRenderer.invoke('ai:computer:click', value),
+  computerType: (value:{expectedTarget:string;text:string}) => ipcRenderer.invoke('ai:computer:type', value),
+  computerKey: (value:{expectedTarget:string;key:string}) => ipcRenderer.invoke('ai:computer:key', value),
+  computerScroll: (value:{screenshotId:string;x:number;y:number;deltaX:number;deltaY:number}) => ipcRenderer.invoke('ai:computer:scroll', value)
 });

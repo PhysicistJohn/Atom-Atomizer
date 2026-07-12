@@ -14,7 +14,7 @@ export interface CompletedRealtimeResponse {
 export interface RealtimeToolDelivery {
   callId: string;
   output: unknown;
-  screenshot?: { imageDataUrl: string; width: number; height: number; capturedAt: string };
+  screenshot?: { screenshotId: string; imageDataUrl: string; width: number; height: number; capturedAt: string; focusedTarget: string };
 }
 
 /**
@@ -62,7 +62,8 @@ export class RealtimeResponseLifecycle {
     if (new Set(calls.map((call) => call.callId)).size !== calls.length) {
       throw new Error(`Realtime response ${responseId} repeated a function call ID`);
     }
-    if (status !== 'completed' && calls.length) throw new Error(`Realtime response ${responseId} contained function calls with status ${status}`);
+    if (status === 'cancelled' && calls.length) throw new Error(`Cancelled Realtime response ${responseId} contained function calls`);
+    if (status !== 'completed' && status !== 'cancelled') throw new Error(`Realtime response ${responseId} ended with status ${status}${responseStatusDetail(response.status_details)}`);
     return { responseId, status, calls };
   }
 
@@ -107,4 +108,17 @@ function record(value: unknown, label: string): Record<string, unknown> {
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.length) throw new Error(`${label} is missing`);
   return value;
+}
+
+function responseStatusDetail(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  const details = value as Record<string, unknown>;
+  const error = details.error && typeof details.error === 'object' && !Array.isArray(details.error)
+    ? details.error as Record<string, unknown>
+    : undefined;
+  const message = typeof error?.message === 'string' ? error.message : undefined;
+  const code = typeof error?.code === 'string' ? error.code : undefined;
+  const reason = typeof details.reason === 'string' ? details.reason : undefined;
+  const detail = [code, message, reason].filter((item, index, values): item is string => Boolean(item) && values.indexOf(item) === index).join(' · ');
+  return detail ? `: ${detail.slice(0, 600)}` : '';
 }

@@ -81,13 +81,18 @@ function registerIpc(): void {
   ipcMain.handle('ai:realtime:call', (_event, sdp: unknown) => { if(typeof sdp!=='string')throw new TypeError('sdp must be a string');return ai.createRealtimeCall(sdp); });
   ipcMain.handle('ai:agent:turn', (_event, request: unknown) => ai.agentTurn(validateAgentTurnRequest(request)));
   ipcMain.handle('ai:computer:screenshot', () => computer.screenshot(requireWindow()));
-  ipcMain.handle('ai:computer:click', (_event,point:unknown) => {const {x,y}=validatePoint(point);return computer.click(requireWindow(),x,y);});
-  ipcMain.handle('ai:computer:type', (_event,text:unknown) => {if(typeof text!=='string')throw new TypeError('text must be a string');return computer.type(requireWindow(),text);});
-  ipcMain.handle('ai:computer:key', (_event,key:unknown) => {if(typeof key!=='string')throw new TypeError('key must be a string');return computer.key(requireWindow(),key);});
-  ipcMain.handle('ai:computer:scroll', (_event,value:unknown) => {if(!value||typeof value!=='object')throw new TypeError('scroll must be an object');const input=value as Record<string,unknown>;for(const key of ['x','y','deltaX','deltaY'])if(!Number.isInteger(input[key]))throw new TypeError(`${key} must be an integer`);return computer.scroll(requireWindow(),input.x as number,input.y as number,input.deltaX as number,input.deltaY as number);});
+  ipcMain.handle('ai:computer:click', (_event,value:unknown) => {const input=validateComputerInput(value,['screenshotId','x','y']);return computer.click(requireWindow(),input.screenshotId as string,input.x as number,input.y as number);});
+  ipcMain.handle('ai:computer:type', (_event,value:unknown) => {const input=validateComputerInput(value,['expectedTarget','text']);return computer.type(requireWindow(),input.expectedTarget as string,input.text as string);});
+  ipcMain.handle('ai:computer:key', (_event,value:unknown) => {const input=validateComputerInput(value,['expectedTarget','key']);return computer.key(requireWindow(),input.expectedTarget as string,input.key as string);});
+  ipcMain.handle('ai:computer:scroll', (_event,value:unknown) => {const input=validateComputerInput(value,['screenshotId','x','y','deltaX','deltaY']);return computer.scroll(requireWindow(),input.screenshotId as string,input.x as number,input.y as number,input.deltaX as number,input.deltaY as number);});
 }
 function requireWindow():BrowserWindow{if(!mainWindow||mainWindow.isDestroyed())throw new Error('TinySA Atomizer window is unavailable');return mainWindow;}
-function validatePoint(value:unknown):{x:number;y:number}{if(!value||typeof value!=='object')throw new TypeError('point must be an object');const point=value as Record<string,unknown>;if(!Number.isInteger(point.x)||!Number.isInteger(point.y))throw new TypeError('point coordinates must be integers');return {x:point.x as number,y:point.y as number};}
+function validateComputerInput(value:unknown,fields:readonly string[]):Record<string,unknown>{
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('computer input must be an object');
+  const input=value as Record<string,unknown>;if(Object.keys(input).length!==fields.length||fields.some(field=>!Object.hasOwn(input,field)))throw new TypeError(`computer input must contain exactly ${fields.join(', ')}`);
+  for(const field of fields){if(['x','y','deltaX','deltaY'].includes(field)){if(!Number.isInteger(input[field]))throw new TypeError(`${field} must be an integer`);}else if(typeof input[field]!=='string'||!(input[field] as string).length)throw new TypeError(`${field} must be a non-empty string`);}
+  return input;
+}
 
 function validateAgentTurnRequest(value: unknown): AgentTurnRequest {
   if(!value||typeof value!=='object')throw new TypeError('Agent turn must be an object');
@@ -114,6 +119,12 @@ async function createWindow(): Promise<void> {
     webPreferences: { preload: join(here, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true }
   });
   mainWindow=win;win.on('closed',()=>{mainWindow=undefined;});
+  win.webContents.on('console-message', (_details, level, message, line, sourceId) => {
+    const rendered = `[RENDERER:${level}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`;
+    if (level >= 3) console.error(rendered);
+    else if (level === 2) console.warn(rendered);
+    else console.info(rendered);
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedOfficialReference(url)) {
       void shell.openExternal(url).catch((error) => {

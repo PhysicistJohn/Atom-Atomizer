@@ -24,10 +24,20 @@ describe('Realtime voice response lifecycle', () => {
     expect(() => lifecycle.complete(done('resp-2'))).toThrow(/active response was resp-1/);
   });
 
+  it('accepts a call-free user interruption but rejects other incomplete response states', () => {
+    const interrupted = new RealtimeResponseLifecycle();
+    interrupted.begin(created('resp-cancelled'));
+    expect(interrupted.complete({ type: 'response.done', response: { id: 'resp-cancelled', status: 'cancelled', output: [] } })).toMatchObject({ status: 'cancelled', calls: [] });
+
+    const failed = new RealtimeResponseLifecycle();
+    failed.begin(created('resp-failed'));
+    expect(() => failed.complete({ type: 'response.done', response: { id: 'resp-failed', status: 'failed', status_details: { type: 'failed', error: { code: 'server_error', message: 'Realtime generation failed upstream' } }, output: [] } })).toThrow(/status failed: server_error · Realtime generation failed upstream/);
+  });
+
   it('delivers every tool output before exactly one response continuation', () => {
     const events = buildRealtimeToolContinuation([
       { callId: 'call-1', output: { ok: true, output: { connection: 'ready' } } },
-      { callId: 'call-2', output: { ok: true }, screenshot: { imageDataUrl: 'data:image/png;base64,AA==', width: 1200, height: 800, capturedAt: '2026-07-12T01:00:00.000Z' } },
+      { callId: 'call-2', output: { ok: true }, screenshot: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/png;base64,AA==', width: 1200, height: 800, capturedAt: '2026-07-12T01:00:00.000Z', focusedTarget: 'APPLICATION' } },
     ]);
 
     expect(events.filter((event) => event.type === 'conversation.item.create')).toHaveLength(3);

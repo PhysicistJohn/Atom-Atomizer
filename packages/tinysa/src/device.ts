@@ -512,7 +512,7 @@ export class TinySaDeviceService {
 
   async #configureTrigger(trigger: AnalyzerConfig['trigger'] | ZeroSpanConfig['trigger']): Promise<void> {
     await this.#command(`trigger ${trigger.mode}`);
-    if (trigger.levelDbm !== undefined) await this.#command(`trigger ${formatDecimal(trigger.levelDbm)}`);
+    if (trigger.mode !== 'auto') await this.#command(`trigger ${formatDecimal(trigger.levelDbm)}`);
   }
 
   async #runStreaming(): Promise<void> {

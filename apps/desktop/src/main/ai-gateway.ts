@@ -2,6 +2,7 @@ import {
   ATOM_AGENT_MODEL,
   ATOM_AGENT_REASONING_EFFORT,
   ATOM_AGENT_VOICE,
+  createAtomRealtimeCallBootstrapConfig,
   createAtomRealtimeVoiceSessionConfig,
   type AgentStatus,
   type AgentTurnRequest,
@@ -53,12 +54,12 @@ export class OpenAiGateway {
     }
     const form = new FormData();
     form.set('sdp', sdp);
-    form.set('session', JSON.stringify(createAtomRealtimeVoiceSessionConfig()));
+    form.set('session', JSON.stringify(createAtomRealtimeCallBootstrapConfig()));
     const response = await fetch(`${OPENAI_API}/realtime/calls`, {
       method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form
     });
     const answer = await response.text();
-    if (!response.ok) throw apiError('Realtime session', response.status, answer);
+    if (!response.ok) throw apiError('Realtime session', response, answer);
     if (!answer.startsWith('v=0')) throw new Error('OpenAI returned an invalid WebRTC answer');
     return answer;
   }
@@ -136,13 +137,14 @@ export class OpenAiGateway {
   }
 }
 
-function apiError(operation: string, status: number, raw: string): Error {
+function apiError(operation: string, response: Response, raw: string): Error {
   let detail = '';
   try {
     const value = JSON.parse(raw) as { error?: { message?: unknown } };
     if (typeof value.error?.message === 'string') detail = safeApiMessage(value.error.message);
   } catch { /* Avoid returning HTML or opaque response bodies. */ }
-  return new Error(`${operation} failed (${status})${detail ? `: ${detail}` : ''}`);
+  const requestId = response.headers.get('x-request-id')?.trim();
+  return new Error(`${operation} failed (${response.status})${requestId ? ` [request ${safeApiMessage(requestId)}]` : ''}${detail ? `: ${detail}` : ''}`);
 }
 
 function safeApiMessage(message: string): string {

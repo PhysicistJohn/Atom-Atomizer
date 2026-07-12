@@ -10,6 +10,7 @@ import {
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
   OEM_ZS407_SELF_TEST_PROCEDURE,
+  portCandidateSchema,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   traceBankConfigurationSchema,
@@ -180,6 +181,7 @@ export function App() {
   const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
   const snapshotRef = useRef<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
+  const agentConnectionCandidates = useRef(new Map<string, PortCandidate>());
   const continuousRequested = useRef(false);
   const analyzerRetuneBusy = useRef(false);
   const remoteGestureQueue = useRef<Promise<void>>(Promise.resolve());
@@ -586,6 +588,12 @@ export function App() {
       zeroCaptureRef.current = capture;
       setZeroCapture(capture);
       setEnvelope(classifyZeroSpanEnvelope(capture));
+      try {
+        const restored = await window.tinySA.configureAnalyzer(analyzerRef.current);
+        acceptSnapshot(restored);
+      } catch (value) {
+        throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
+      }
       const sequence = ++analysisSequence.current;
       const active = detectionsRef.current.filter((item) => item.state === 'active');
       const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
@@ -659,12 +667,13 @@ export function App() {
 
   async function captureScreen(): Promise<ScreenFrame> {
     requireConnected();
+    assertWorkspaceTransition(workspace, 'device', snapshotRef.current.generatorOutput);
     setError(undefined);
     setAcquisition('acquiring');
     try {
       const frame = await window.tinySA.captureScreen();
       setScreenFrame(frame);
-      setWorkspace('device');
+      applyWorkspace('device');
       setAcquisition('complete');
       return frame;
     } catch (value) {
@@ -730,20 +739,27 @@ export function App() {
     }
   }
 
+  function applyWorkspace(next: WorkspaceId): void {
+    assertWorkspaceTransition(workspace, next, snapshotRef.current.generatorOutput);
+    setWorkspace(next);
+    setError(undefined);
+  }
+
   function changeWorkspace(next: WorkspaceId): void {
-    try {
-      assertWorkspaceTransition(workspace, next, snapshot.generatorOutput);
-      setWorkspace(next);
-      setError(undefined);
-    } catch (value) { setError(errorMessage(value)); }
+    try { applyWorkspace(next); }
+    catch (value) { setError(errorMessage(value)); }
+  }
+
+  function applyTrace(input: TraceConfiguration): TraceConfiguration {
+    const trace = traceConfigurationSchema.parse(input);
+    setTraceConfiguration((current) => traceBankConfigurationSchema.parse(current.map((item) => item.id === trace.id ? trace : item)));
+    setError(undefined);
+    return trace;
   }
 
   function configureTrace(input: TraceConfiguration): void {
-    try {
-      const trace = traceConfigurationSchema.parse(input);
-      setTraceConfiguration((current) => traceBankConfigurationSchema.parse(current.map((item) => item.id === trace.id ? trace : item)));
-      setError(undefined);
-    } catch (value) { setError(`Trace configuration failed: ${errorMessage(value)}`); }
+    try { applyTrace(input); }
+    catch (value) { setError(`Trace configuration failed: ${errorMessage(value)}`); }
   }
 
   function resetTrace(traceId: TraceId): void {
@@ -754,19 +770,23 @@ export function App() {
     } catch (value) { setError(`Trace reset failed: ${errorMessage(value)}`); }
   }
 
+  function applyMarker(input: MarkerConfiguration): MarkerConfiguration {
+    const marker = markerConfigurationSchema.parse(input);
+    setMarkers((current) => {
+      const next = current.map((item) => item.id === marker.id ? marker : item);
+      if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
+        return next.map((item) => item.id === marker.referenceMarkerId && !item.enabled ? { ...item, enabled: true } : item);
+      }
+      return next;
+    });
+    setActiveMarkerId(marker.id);
+    setError(undefined);
+    return marker;
+  }
+
   function configureMarker(input: MarkerConfiguration): void {
-    try {
-      const marker = markerConfigurationSchema.parse(input);
-      setMarkers((current) => {
-        const next = current.map((item) => item.id === marker.id ? marker : item);
-        if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
-          return next.map((item) => item.id === marker.referenceMarkerId && !item.enabled ? { ...item, enabled: true } : item);
-        }
-        return next;
-      });
-      setActiveMarkerId(marker.id);
-      setError(undefined);
-    } catch (value) { setError(`Marker configuration failed: ${errorMessage(value)}`); }
+    try { applyMarker(input); }
+    catch (value) { setError(`Marker configuration failed: ${errorMessage(value)}`); }
   }
 
   function placeActiveMarker(frequencyHz: number): void {
@@ -782,42 +802,80 @@ export function App() {
       const frame = traceFrames.find((item) => item.traceId === marker.traceId);
       if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
       const frequencyHz = searchMarker(frame, marker.frequencyHz, action, markerSearchConfiguration);
-      configureMarker({ ...marker, enabled: true, tracking: action === 'peak' ? 'peak' : 'fixed', frequencyHz });
+      applyMarker({ ...marker, enabled: true, tracking: action === 'peak' ? 'peak' : 'fixed', frequencyHz });
       setNotice(`M${marker.id} moved by ${action.replace('-', ' ')} search`);
     } catch (value) { setError(`Marker search failed: ${errorMessage(value)}`); }
   }
 
+  function applyMarkerSearch(input: MarkerSearchConfiguration): MarkerSearchConfiguration {
+    const configuration = markerSearchConfigurationSchema.parse(input);
+    setMarkerSearchConfiguration(configuration);
+    setError(undefined);
+    return configuration;
+  }
+
   function configureMarkerSearch(input: MarkerSearchConfiguration): void {
-    try { setMarkerSearchConfiguration(markerSearchConfigurationSchema.parse(input)); setError(undefined); }
+    try { applyMarkerSearch(input); }
     catch (value) { setError(`Marker search criteria failed: ${errorMessage(value)}`); }
   }
 
+  function applyDisplay(input: SpectrumDisplayConfiguration): SpectrumDisplayConfiguration {
+    const configuration = spectrumDisplayConfigurationSchema.parse(input);
+    setDisplayConfiguration(configuration);
+    setError(undefined);
+    return configuration;
+  }
+
   function configureDisplay(input: SpectrumDisplayConfiguration): void {
-    try { setDisplayConfiguration(spectrumDisplayConfigurationSchema.parse(input)); setError(undefined); }
+    try { applyDisplay(input); }
     catch (value) { setError(`Display configuration failed: ${errorMessage(value)}`); }
   }
 
+  function applyMeasurementView(input: MeasurementViewId): MeasurementViewId {
+    const next = measurementViewIdSchema.parse(input);
+    applyWorkspace('spectrum');
+    setMeasurementView(next);
+    return next;
+  }
+
   function changeMeasurementView(input: MeasurementViewId): void {
-    try {
-      const next = measurementViewIdSchema.parse(input);
-      setMeasurementView(next);
-      setWorkspace('spectrum');
-      setError(undefined);
-    } catch (value) { setError(`Measurement view failed: ${errorMessage(value)}`); }
+    try { applyMeasurementView(input); }
+    catch (value) { setError(`Measurement view failed: ${errorMessage(value)}`); }
+  }
+
+  function applyWaterfall(input: WaterfallConfiguration): WaterfallConfiguration {
+    const configuration = waterfallConfigurationSchema.parse(input);
+    setWaterfallConfiguration(configuration);
+    setError(undefined);
+    return configuration;
   }
 
   function configureWaterfall(input: WaterfallConfiguration): void {
-    try { setWaterfallConfiguration(waterfallConfigurationSchema.parse(input)); setError(undefined); }
+    try { applyWaterfall(input); }
     catch (value) { setError(`Waterfall configuration failed: ${errorMessage(value)}`); }
   }
 
+  function applyChannelMeasurement(input: ChannelMeasurementConfiguration): ChannelMeasurementConfiguration {
+    const configuration = channelMeasurementConfigurationSchema.parse(input);
+    setChannelConfiguration(configuration);
+    setError(undefined);
+    return configuration;
+  }
+
   function configureChannelMeasurement(input: ChannelMeasurementConfiguration): void {
-    try { setChannelConfiguration(channelMeasurementConfigurationSchema.parse(input)); setError(undefined); }
+    try { applyChannelMeasurement(input); }
     catch (value) { setError(`Channel measurement configuration failed: ${errorMessage(value)}`); }
   }
 
+  function applyEnvelopeStft(input: EnvelopeStftConfiguration): EnvelopeStftConfiguration {
+    const configuration = envelopeStftConfigurationSchema.parse(input);
+    setStftConfiguration(configuration);
+    setError(undefined);
+    return configuration;
+  }
+
   function configureEnvelopeStft(input: EnvelopeStftConfiguration): void {
-    try { setStftConfiguration(envelopeStftConfigurationSchema.parse(input)); setError(undefined); }
+    try { applyEnvelopeStft(input); }
     catch (value) { setError(`Envelope STFT configuration failed: ${errorMessage(value)}`); }
   }
 
@@ -872,11 +930,11 @@ export function App() {
         traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
         firmwareTraces: firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
         activeTraceId,
-        markers: markerReadings,
+        markers: { configurations: markers, readings: markerReadings },
         activeMarkerId,
         markerSearch: markerSearchConfiguration,
         display: displayConfiguration,
-        waterfall: { configuration: waterfallConfiguration, coherentSweeps: history.length },
+        waterfall: { configuration: waterfallConfiguration, coherentSweeps: coherentSweepCount(history, waterfallConfiguration.historyDepth) },
         channel: { configuration: channelConfiguration, analysis: channelMeasurement },
         envelopeStft: { configuration: stftConfiguration, analysis: envelopeStft },
         evidence: 'host-derived',
@@ -923,13 +981,24 @@ export function App() {
       case 'open_firmware_update': { const state = await window.tinySA.getFirmwareUpdateState(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return { opened: true, state }; }
       case 'download_firmware_update': { const state = await window.tinySA.downloadFirmwareUpdate(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return state; }
       case 'detect_firmware_dfu': { const state = await window.tinySA.detectDfuDevice(); setFirmwareUpdate(state); setFirmwareUpdateOpen(true); return state; }
-      case 'list_connection_candidates': return ports.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, execution: port.execution, transport: port.transport, simulated: port.execution !== 'physical', selected: port.id === selectedPortId }));
+      case 'list_connection_candidates': {
+        const currentPorts = (await window.tinySA.listDevices()).map((port) => portCandidateSchema.parse(port));
+        setPorts(currentPorts);
+        setSelectedPortId((current) => current && currentPorts.some((port) => port.id === current) ? current : currentPorts[0]?.id);
+        const candidates = currentPorts.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, execution: port.execution, transport: port.transport, simulated: port.execution !== 'physical', selected: port.id === selectedPortId }));
+        agentConnectionCandidates.current = new Map(candidates.map((candidate, index) => [candidate.candidateId, currentPorts[index]!]));
+        return candidates;
+      }
       case 'connect_device': {
         const candidateId = (args as { candidateId: string }).candidateId;
-        const match = /^candidate-([1-9][0-9]*)$/.exec(candidateId);
-        if (!match) throw new Error('Invalid connection candidate ID');
-        const port = ports[Number(match[1]) - 1];
-        if (!port) throw new Error(`Connection candidate ${candidateId} is no longer available`);
+        const issued = agentConnectionCandidates.current.get(candidateId);
+        agentConnectionCandidates.current.clear();
+        if (!issued) throw new Error(`Connection candidate ${candidateId} was not issued by the latest list_connection_candidates result`);
+        const currentPorts = (await window.tinySA.listDevices()).map((port) => portCandidateSchema.parse(port));
+        setPorts(currentPorts);
+        const port = currentPorts.find((candidate) => candidate.id === issued.id);
+        if (!port) throw new Error(`Connection candidate ${candidateId} is no longer available; list candidates again`);
+        if (JSON.stringify(port) !== JSON.stringify(issued)) throw new Error(`Connection candidate ${candidateId} changed after it was listed; list candidates again`);
         setSelectedPortId(port.id);
         const next = await connectPort(port);
         if (!next.identity) throw new Error('Connected device did not provide an identity');
@@ -954,74 +1023,72 @@ export function App() {
         return { activated: control, preferredTool: binding.preferredTool, projection: binding.projection };
       }
       case 'computer_screenshot': return window.atomAgent.computerScreenshot();
-      case 'computer_click': return window.atomAgent.computerClick(args as { x: number; y: number });
-      case 'computer_type': return window.atomAgent.computerType((args as { text: string }).text);
-      case 'computer_key': return window.atomAgent.computerKey((args as { key: string }).key);
-      case 'computer_scroll': return window.atomAgent.computerScroll(args as { x: number; y: number; deltaX: number; deltaY: number });
-      case 'navigate_workspace': changeWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: (args as { workspace: WorkspaceId }).workspace };
+      case 'computer_click': return requireComputerActionResult(await window.atomAgent.computerClick(args as { screenshotId: string; x: number; y: number }));
+      case 'computer_type': return requireComputerActionResult(await window.atomAgent.computerType(args as { expectedTarget: string; text: string }));
+      case 'computer_key': return requireComputerActionResult(await window.atomAgent.computerKey(args as { expectedTarget: string; key: string }));
+      case 'computer_scroll': return requireComputerActionResult(await window.atomAgent.computerScroll(args as { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }));
+      case 'navigate_workspace': applyWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: (args as { workspace: WorkspaceId }).workspace };
       case 'configure_analyzer': {
+        assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput);
         const patch = analyzerConfigPatchSchema.parse(args);
         const next = analyzerConfigSchema.parse({ ...analyzerRef.current, ...patch });
         await updateAnalyzer(next);
-        setWorkspace('spectrum');
+        applyWorkspace('spectrum');
         return { patch, configuration: next, continuous: continuousRequested.current };
       }
-      case 'acquire_sweep': { const result = await acquire(); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source }; }
-      case 'start_continuous_sweeps': await startContinuous(); return { streaming: true };
+      case 'acquire_sweep': { assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source }; }
+      case 'start_continuous_sweeps': assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
       case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
       case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
       case 'set_measurement_view': {
         const view = measurementViewIdSchema.parse((args as { view: MeasurementViewId }).view);
-        changeMeasurementView(view);
+        applyMeasurementView(view);
         return { workspace: 'spectrum', view };
       }
       case 'configure_waterfall': {
         const configuration = waterfallConfigurationSchema.parse(args);
-        configureWaterfall(configuration);
-        setWorkspace('spectrum');
-        setMeasurementView('waterfall');
-        return { configuration, retainedSweeps: history.length, evidence: 'host-derived-scalar-sweep' };
+        applyMeasurementView('waterfall');
+        applyWaterfall(configuration);
+        return { configuration, retainedSweeps: coherentSweepCount(history, configuration.historyDepth), evidence: 'host-derived-scalar-sweep' };
       }
       case 'configure_channel_measurement': {
         const configuration = channelMeasurementConfigurationSchema.parse(args);
-        configureChannelMeasurement(configuration);
-        setWorkspace('spectrum');
-        setMeasurementView('channel');
+        applyMeasurementView('channel');
+        applyChannelMeasurement(configuration);
         return configuration;
       }
       case 'get_channel_measurement_results': return requireChannelMeasurement();
       case 'configure_envelope_stft': {
         const configuration = envelopeStftConfigurationSchema.parse(args);
-        configureEnvelopeStft(configuration);
-        setWorkspace('spectrum');
-        setMeasurementView('envelope-stft');
+        applyMeasurementView('envelope-stft');
+        applyEnvelopeStft(configuration);
         return configuration;
       }
       case 'get_envelope_stft_results': return requireEnvelopeStft();
       case 'acquire_envelope_stft': {
+        assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput);
         const capture = await acquireZeroSpan();
         const result = computeEnvelopeStft(capture, stftConfiguration);
-        setWorkspace('spectrum');
-        setMeasurementView('envelope-stft');
+        applyMeasurementView('envelope-stft');
         return result;
       }
       case 'select_marker': {
         const markerId = (args as { markerId: MarkerId }).markerId;
         if (!markers.some((marker) => marker.id === markerId)) throw new Error(`Marker M${markerId} is unavailable`);
+        applyWorkspace('spectrum');
         setActiveMarkerId(markerId);
-        setWorkspace('spectrum');
         return { markerId, selected: true, evidence: 'ui-only' };
       }
       case 'configure_marker': {
         const marker = markerConfigurationSchema.parse(args);
-        configureMarker(marker);
-        setWorkspace('spectrum');
+        applyWorkspace('spectrum');
+        applyMarker(marker);
         return { marker, evidence: 'host-derived' };
       }
       case 'configure_marker_search': {
         const configuration = markerSearchConfigurationSchema.parse(args);
-        configureMarkerSearch(configuration);
-        setWorkspace('spectrum');
+        applyWorkspace('spectrum');
+        applyMarkerSearch(configuration);
         return { configuration, evidence: 'host-derived' };
       }
       case 'search_marker': {
@@ -1030,25 +1097,26 @@ export function App() {
         if (!marker) throw new Error(`Marker M${value.markerId} is unavailable`);
         const frame = traceFrames.find((item) => item.traceId === marker.traceId);
         if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
+        applyWorkspace('spectrum');
         const frequencyHz = searchMarker(frame, marker.frequencyHz, value.action, markerSearchConfiguration);
-        configureMarker({ ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' : 'fixed', frequencyHz });
-        setWorkspace('spectrum');
+        applyMarker({ ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' : 'fixed', frequencyHz });
         return { markerId: value.markerId, action: value.action, frequencyHz, evidence: 'host-derived' };
       }
       case 'select_trace': {
         const traceId = (args as { traceId: TraceId }).traceId;
         if (!traceConfiguration.some((trace) => trace.id === traceId)) throw new Error(`Trace ${traceId} is unavailable`);
+        applyWorkspace('spectrum');
         setActiveTraceId(traceId);
-        setWorkspace('spectrum');
         return { traceId, selected: true, evidence: 'ui-only' };
       }
       case 'configure_trace': {
         const trace = traceConfigurationSchema.parse(args);
-        configureTrace(trace);
-        setWorkspace('spectrum');
+        applyWorkspace('spectrum');
+        applyTrace(trace);
         return { trace, evidence: 'host-derived' };
       }
       case 'reset_trace': {
+        applyWorkspace('spectrum');
         const traceId = (args as { traceId: TraceId }).traceId;
         traceAccumulator.current.reset(traceId);
         setTraceFrames(traceAccumulator.current.frames());
@@ -1056,28 +1124,28 @@ export function App() {
       }
       case 'configure_spectrum_display': {
         const display = spectrumDisplayConfigurationSchema.parse(args);
-        configureDisplay(display);
-        setWorkspace('spectrum');
+        applyWorkspace('spectrum');
+        applyDisplay(display);
         return { display, evidence: 'host-derived' };
       }
       case 'auto_scale_spectrum_display': {
         if (!sweep) throw new Error('Acquire a complete spectrum sweep before auto-scaling the display');
+        applyWorkspace('spectrum');
         const display = autoScaleSpectrum(sweep);
-        configureDisplay(display);
-        setWorkspace('spectrum');
+        applyDisplay(display);
         return { display, sweepId: sweep.id, evidence: 'host-derived-complete-sweep' };
       }
-      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); setDetectionConfig(next); setWorkspace('detection'); return next; }
+      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); applyWorkspace('detection'); setDetectionConfig(next); return next; }
       case 'select_classification_candidate': {
         const detectionId = (args as { detectionId: string }).detectionId;
         if (!detections.some((item) => item.id === detectionId)) throw new Error(`Detection ${detectionId} is no longer available`);
+        applyWorkspace('classification');
         setSelectedClassificationId(detectionId);
-        setWorkspace('classification');
         return { detectionId, selected: true, evidence: 'ui-only' };
       }
-      case 'configure_zero_span': { const next = zeroSpanConfigSchema.parse(args); setZeroConfig(next); setWorkspace('classification'); return next; }
-      case 'acquire_zero_span': { const result = await acquireZeroSpan(); setWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result) }; }
-      case 'configure_generator': { const next = generatorConfigSchema.parse(args); setGenerator(next); const configured = await configureGeneratorWith(next); setWorkspace('generator'); return configured.generator; }
+      case 'configure_zero_span': { const next = zeroSpanConfigSchema.parse(args); applyWorkspace('classification'); setZeroConfig(next); return next; }
+      case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', snapshotRef.current.generatorOutput); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result) }; }
+      case 'configure_generator': { const next = generatorConfigSchema.parse(args); setGenerator(next); const configured = await configureGeneratorWith(next); applyWorkspace('generator'); return configured.generator; }
       case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; const next = await setOutput(enabled); return { enabled, verification: next.verification, execution: next.identity?.execution ?? 'unknown' }; }
       case 'capture_device_screen': { const frame = await captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.format, capturedAt: frame.capturedAt }; }
       case 'remote_device_touch': {
@@ -1204,6 +1272,16 @@ export function fitChannelConfigurationToSpan(input: ChannelMeasurementConfigura
     adjacentBandwidthHz,
     channelSpacingHz,
   });
+}
+export function coherentSweepCount(history: readonly Sweep[], depth: number): number {
+  const reference = history[0];
+  if (!reference) return 0;
+  return history.filter((candidate) => candidate.frequencyHz.length === reference.frequencyHz.length
+    && candidate.frequencyHz.every((frequency, index) => frequency === reference.frequencyHz[index])).slice(0, depth).length;
+}
+function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {
+  if (!result.ok) throw new Error(`App-scoped computer ${result.action} was rejected${result.target ? ` at ${result.target}` : ''}: ${result.reason ?? 'no rejection reason was returned'}`);
+  return result;
 }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
 function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {

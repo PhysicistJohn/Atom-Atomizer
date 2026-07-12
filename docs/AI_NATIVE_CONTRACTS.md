@@ -1,8 +1,8 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 4.0.0
-Model lock: `gpt-realtime-2.1-mini`  
+Version: 5.0.0
+Model lock: `gpt-realtime-2.1`
 Reasoning lock: `high`  
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.97`
@@ -13,7 +13,7 @@ This document is normative. “Atom” is the application-layer AI inside TinySA
 
 ## 1. Exact model contract
 
-Every response-agent path uses exactly `gpt-realtime-2.1-mini`:
+Every response-agent path uses exactly `gpt-realtime-2.1`:
 
 | Path | API | Purpose |
 |---|---|---|
@@ -59,7 +59,7 @@ Realtime API                typed device + UI APIs
 - `.env` is loaded only by main and is git-ignored.
 - The credential is never placed in Vite variables, preload, renderer state, WebRTC events, logs, diagnostics, session files or exports.
 - Renderer IPC can ask whether AI is configured; it cannot read, set, validate or export the key.
-- Realtime uses the unified WebRTC interface: main posts SDP plus session configuration to `/v1/realtime/calls` with the standard key and returns only the SDP answer.
+- Realtime uses the unified WebRTC interface: main posts SDP plus only the immutable exact-model bootstrap to `/v1/realtime/calls` with the standard key and returns only the SDP answer. The full mutable contract is enforced over the data channel before microphone capture is enabled.
 - Text uses a server-side Realtime WebSocket with an authorization header. The socket and key never cross preload.
 - Production credential storage must migrate from plaintext `.env` to OS keychain or an owner-approved local broker before public distribution.
 
@@ -125,10 +125,10 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 2. Renderer requests microphone permission and creates one `RTCPeerConnection`; the local audio track is disabled before it can send audio.
 3. Renderer adds one microphone track and one `oai-events` data channel.
 4. Renderer sends SDP through allow-listed IPC.
-5. Main validates size/shape and calls `/v1/realtime/calls` with the exact response model, `high` reasoning, `ballad` voice, `gpt-realtime-whisper` input transcription, `server_vad` threshold `0.97`, Atom instructions and the identical complete text/voice tool catalog.
+5. Main validates size/shape and calls `/v1/realtime/calls` with only `{ "type": "realtime", "model": "gpt-realtime-2.1" }`. Model identity is immutable; no alias or default chooses it.
 6. Main returns SDP only; renderer sets the remote answer.
-7. The microphone track remains muted while the first `session.created` event is recursively compared with every setting in the exact object sent by main. API-supplied defaults and initial differences are logged separately.
-8. Renderer sends the identical shared configuration through `session.update` and starts a bounded ten-second acknowledgement timer.
+7. The microphone track remains disabled while the first `session.created` event is compared with the complete intended contract. API-supplied defaults and initial differences are logged separately; they are not treated as final configuration.
+8. Renderer sends `high` reasoning, Ballad, `gpt-realtime-whisper`, server VAD threshold `0.97`, Atom instructions, and the identical complete text/voice tool catalog through `session.update`, then starts a bounded ten-second acknowledgement timer.
 9. Every `session.updated` echo is recursively compared. At least one exact acknowledgement must arrive before the timer expires; any final mismatch or timeout is emitted to the console, shown in Atom, and terminates the voice session.
 10. Only after an exact acknowledgement does the renderer enter Listening. The microphone remains muted until the local human unmutes it; remote Ballad audio auto-plays unless the independent speaker control is muted.
 
@@ -214,12 +214,12 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
 | `inspect_interface` | Observe | Never | Derives rendered controls, availability, risk, preferred tool, projection, and guarantee from the live DOM |
-| `computer_action` | Operate | Never* | Activates an allow-listed TinySA Atomizer control |
-| `computer_screenshot` | Observe | Never | Captures only the TinySA Atomizer content area |
-| `computer_click` | Operate | Never* | Hit-tested screenshot-coordinate click inside the app |
-| `computer_type` | Operate | Never | Bounded text into the focused app control |
-| `computer_key` | Operate | Never | One allow-listed key/shortcut inside the app |
-| `computer_scroll` | Operate | Never | Bounded scroll inside the app |
+| `computer_action` | Operate | Never* | Activates only synchronous UI-only controls; domain operations are excluded |
+| `computer_screenshot` | Observe | Never | Captures only Atomizer and issues a short-lived one-use screenshot ID plus focused-target identity |
+| `computer_click` | Operate | Never* | Consumes the latest screenshot ID for one hit-tested coordinate click |
+| `computer_type` | Operate | Never | Inserts bounded text only when current focus equals `expectedTarget` |
+| `computer_key` | Operate | Never | Sends one allow-listed key only when current focus equals `expectedTarget` |
+| `computer_scroll` | Operate | Never | Consumes the latest screenshot ID for one bounded scroll |
 | `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
 | `configure_analyzer` | Operate | Never | Applies a non-empty partial patch to staged analyzer settings; omitted fields are preserved and the merged full config is validated |
 | `select_marker` | Operate | Never | Selects one marker for editing without changing its configuration |
@@ -244,7 +244,9 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
 
-Computer tools cannot access other windows, open external URLs, or bypass tool policies. Screenshot-relative clicks are hit-tested against the live DOM immediately before activation. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only. Text, key, and scroll inputs are bounded, reject focused/pointed human-only boundaries, and remain targeted at TinySA Atomizer.
+Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only.
+
+All 53 delivered parameter schemas are generated from the same Zod objects used to accept execution. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
 Transient numeric-entry panels inherit the originating row's stable `data-agent-control` policy boundary. Their field, keypad, unit terminators, and close/apply controls are therefore inspectable and cannot become ungoverned DOM targets. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
@@ -270,9 +272,9 @@ A feature is not complete when only its visual control exists.
 Atom’s computer use is confined to TinySA Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
 
 1. Electron captures only its own `BrowserWindow` content—never the desktop.
-2. The screenshot is normalized to application CSS coordinates and sent as explicitly untrusted image input on the active trusted Realtime text or voice transport.
-3. Atom returns bounded click/type/key/scroll function calls.
-4. Main validates coordinates/input and hit-tests the current app DOM.
+2. The screenshot is normalized to application CSS coordinates, assigned a 15-second one-use ID, and sent as explicitly untrusted image input with its focused-target identity on the active trusted Realtime transport.
+3. Atom returns bounded click/scroll calls containing that exact ID, or type/key calls containing the exact expected focus target.
+4. Main consumes the coordinate token, verifies unchanged window dimensions or exact focus, validates input, and hit-tests the current app DOM.
 5. A high-impact target is blocked before activation and redirected to its typed approval tool.
 6. Atom captures again to verify the result.
 
@@ -375,7 +377,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 15. Acceptance inventory
 
-- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1-mini`.
+- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1`.
 - **AI-02:** Standard key is absent from renderer/preload/build artifacts/logs.
 - **AI-03:** Missing key produces unconfigured state and no network call.
 - **AI-04:** Realtime call uses trusted unified SDP flow.
@@ -419,6 +421,9 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-42:** Every one of the 53 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
+- **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the full shared session is sent and exactly acknowledged before the muted microphone can be enabled.
+- **AI-46:** Every coordinate action consumes one current screenshot ID; focus-sensitive input fails when `expectedTarget` no longer matches.
+- **AI-47:** Every function schema is a closed top-level object with no Realtime-forbidden top-level combinator; runtime relational constraints remain authoritative.
 
 ## 16. Source traceability
 
@@ -434,7 +439,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 17. Official OpenAI references
 
-- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
+- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
 - Realtime WebRTC: https://developers.openai.com/api/docs/guides/realtime-webrtc
 - Realtime WebSocket: https://developers.openai.com/api/docs/guides/realtime-websocket
 - Realtime conversations and function calls: https://developers.openai.com/api/docs/guides/realtime-conversations

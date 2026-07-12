@@ -71,7 +71,7 @@ export function MeasurementDock(props: MeasurementDockProps) {
         <ToggleParameter label={`Marker M${activeMarker.id} visibility`} value={activeMarker.enabled} controlId={`marker.${activeMarker.id}.enabled`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled })}/>
         <EditableParameter label="Frequency" value={activeMarker.frequencyHz} displayValue={formatFrequency(activeMarker.frequencyHz)} unit="Hz" minimum={0} maximum={17_922_600_000} controlId={`marker.${activeMarker.id}.frequency`} onCommit={(value) => props.onMarker({ ...activeMarker, enabled: true, tracking: 'fixed', frequencyHz: Number(value) })}/>
         <SelectParameter label="Trace" value={activeMarker.traceId} options={props.traces.map((trace) => ({ value: trace.id, label: `Trace ${trace.id} · ${traceModeLabel(trace.mode)}` }))} controlId={`marker.${activeMarker.id}.trace`} onValue={(value) => props.onMarker({ ...activeMarker, traceId: Number(value) as TraceId })}/>
-        <SelectParameter label="Readout" value={activeMarker.mode} options={[{ value: 'normal', label: 'Normal' }, { value: 'delta', label: 'Delta' }, { value: 'noise-density', label: 'Noise density' }]} controlId={`marker.${activeMarker.id}.readout`} onValue={(value) => { const mode = value as MarkerConfiguration['mode']; props.onMarker({ ...activeMarker, mode, ...(mode === 'delta' && activeMarker.referenceMarkerId === undefined ? { referenceMarkerId: activeMarker.id === 1 ? 2 : 1 } : {}) }); }}/>
+        <SelectParameter label="Readout" value={activeMarker.mode} options={[{ value: 'normal', label: 'Normal' }, { value: 'delta', label: 'Delta' }, { value: 'noise-density', label: 'Noise density' }]} controlId={`marker.${activeMarker.id}.readout`} onValue={(value) => props.onMarker(markerWithMode(activeMarker, value as MarkerConfiguration['mode']))}/>
         {activeMarker.mode === 'delta' && <SelectParameter label="Reference marker" value={activeMarker.referenceMarkerId ?? (activeMarker.id === 1 ? 2 : 1)} options={props.markers.filter((marker) => marker.id !== activeMarker.id).map((marker) => ({ value: marker.id, label: `Marker ${marker.id}` }))} controlId={`marker.${activeMarker.id}.reference`} onValue={(value) => props.onMarker({ ...activeMarker, referenceMarkerId: Number(value) as MarkerId })}/>}
         <ToggleParameter label="Peak tracking" value={activeMarker.tracking === 'peak'} controlId={`marker.${activeMarker.id}.peak-track`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled: true, tracking: enabled ? 'peak' : 'fixed' })}/>
       </div>
@@ -93,6 +93,12 @@ export function MeasurementDock(props: MeasurementDockProps) {
       <div className="panel-action"><button className="secondary full" onClick={props.onAutoScale} data-agent-control="display.auto-scale"><Gauge size={14}/>Auto scale latest trace</button></div>
     </div>}
   </section>;
+}
+
+function markerWithMode(marker: MarkerConfiguration, mode: MarkerConfiguration['mode']): MarkerConfiguration {
+  const common = { id: marker.id, enabled: marker.enabled, traceId: marker.traceId, frequencyHz: marker.frequencyHz, tracking: marker.tracking };
+  if (mode === 'delta') return { ...common, mode, referenceMarkerId: marker.mode === 'delta' ? marker.referenceMarkerId : marker.id === 1 ? 2 : 1 };
+  return { ...common, mode };
 }
 
 function TracePanel(props: MeasurementDockProps) {

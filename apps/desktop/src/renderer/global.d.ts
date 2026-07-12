@@ -3,11 +3,11 @@ import type { AgentStatus, AgentTurnRequest, AgentTurnResult } from '@tinysa/age
 declare global { interface Window {
   tinySA: TinySaApiV2;
   atomAgent: { status():Promise<AgentStatus>; createRealtimeCall(sdp:string):Promise<string>; agentTurn(request:AgentTurnRequest):Promise<AgentTurnResult>;
-    computerScreenshot():Promise<{kind:'tinysa-atomizer-screenshot';imageDataUrl:string;width:number;height:number;capturedAt:string}>;
-    computerClick(point:{x:number;y:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
-    computerType(text:string):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
-    computerKey(key:string):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
-    computerScroll(value:{x:number;y:number;deltaX:number;deltaY:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
+    computerScreenshot():Promise<{kind:'tinysa-atomizer-screenshot';screenshotId:string;imageDataUrl:string;width:number;height:number;capturedAt:string;focusedTarget:string}>;
+    computerClick(value:{screenshotId:string;x:number;y:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
+    computerType(value:{expectedTarget:string;text:string}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
+    computerKey(value:{expectedTarget:string;key:string}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
+    computerScroll(value:{screenshotId:string;x:number;y:number;deltaX:number;deltaY:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
   };
 } }
 export {};

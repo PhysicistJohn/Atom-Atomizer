@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  analyzerConfigPatchSchema,
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
   dBm,
@@ -16,6 +17,7 @@ import {
   portCandidateSchema,
   signalDetectionConfigSchema,
   traceBankConfigurationSchema,
+  triggerConfigSchema,
   waterfallConfigurationSchema,
 } from './index.js';
 
@@ -47,6 +49,15 @@ describe('domain units and firmware-derived validation', () => {
     expect(analyzerConfigSchema.safeParse({ ...analyzer, points: 451 }).success).toBe(false);
     expect(analyzerConfigSchema.safeParse({ ...analyzer, rbwKhz: 851 }).success).toBe(false);
   });
+  it('makes trigger configuration an exact discriminated object', () => {
+    expect(triggerConfigSchema.parse({ mode: 'auto' })).toEqual({ mode: 'auto' });
+    expect(triggerConfigSchema.safeParse({ mode: 'auto', levelDbm: -60 }).success).toBe(false);
+    expect(triggerConfigSchema.safeParse({ mode: 'normal' }).success).toBe(false);
+    expect(triggerConfigSchema.parse({ mode: 'normal', levelDbm: -60 })).toEqual({ mode: 'normal', levelDbm: -60 });
+    expect(triggerConfigSchema.parse({ mode: 'single', levelDbm: -72.5 })).toEqual({ mode: 'single', levelDbm: -72.5 });
+    expect(analyzerConfigPatchSchema.safeParse({ trigger: { mode: 'single' } }).success).toBe(false);
+    expect(analyzerConfigPatchSchema.parse({ trigger: { mode: 'single', levelDbm: -72.5 } })).toEqual({ trigger: { mode: 'single', levelDbm: -72.5 } });
+  });
   it('enforces ZS407 FM and output-path limits', () => {
     const base = { frequencyHz: 100_000_000, levelDbm: -30, path: 'mixer', modulation: 'fm', modulationFrequencyHz: 3_500, amDepthPercent: 80, fmDeviationHz: 3_000 } as const;
     expect(generatorConfigSchema.safeParse(base).success).toBe(true);
@@ -73,6 +84,7 @@ describe('domain units and firmware-derived validation', () => {
     ]).success).toBe(true);
     expect(traceBankConfigurationSchema.safeParse(Array(4).fill({ id: 1, mode: 'blank', averageCount: 8 })).success).toBe(false);
     expect(markerConfigurationSchema.safeParse({ id: 2, enabled: true, traceId: 1, mode: 'delta', frequencyHz: 100_000_000, tracking: 'fixed' }).success).toBe(false);
+    expect(markerConfigurationSchema.safeParse({ id: 2, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 100_000_000, tracking: 'fixed', referenceMarkerId: 1 }).success).toBe(false);
   });
   it('closes advanced swept-measurement configuration and rejects silent ambiguity', () => {
     expect(waterfallConfigurationSchema.safeParse({ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }).success).toBe(true);

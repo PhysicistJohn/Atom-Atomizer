@@ -229,6 +229,9 @@ export const markerConfigurationSchema = z.object({
   if (marker.mode === 'delta' && marker.referenceMarkerId === undefined) {
     context.addIssue({ code: 'custom', path: ['referenceMarkerId'], message: 'Delta markers require a reference marker' });
   }
+  if (marker.mode !== 'delta' && marker.referenceMarkerId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['referenceMarkerId'], message: 'Only delta markers accept a reference marker' });
+  }
   if (marker.referenceMarkerId === marker.id) {
     context.addIssue({ code: 'custom', path: ['referenceMarkerId'], message: 'A marker cannot reference itself' });
   }
@@ -359,14 +362,13 @@ export interface MarkerReading {
   evidence: 'host-derived';
 }
 
-export const triggerConfigSchema = z.object({
-  mode: z.enum(['auto', 'normal', 'single']),
-  levelDbm: z.number().finite().min(-174).max(30).optional(),
-}).strict().superRefine((value, context) => {
-  if (value.mode !== 'auto' && value.levelDbm === undefined) {
-    context.addIssue({ code: 'custom', path: ['levelDbm'], message: 'A trigger level is required for normal and single trigger modes' });
-  }
-});
+export const triggerConfigSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('auto') }).strict(),
+  z.object({
+    mode: z.enum(['normal', 'single']),
+    levelDbm: z.number().finite().min(-174).max(30),
+  }).strict(),
+]);
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 
 const analyzerConfigShape = {

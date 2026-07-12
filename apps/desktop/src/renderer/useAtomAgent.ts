@@ -63,7 +63,7 @@ export function useAtomAgent(host: AtomAgentHost) {
         const outputs=[];
         for(const call of turn.toolCalls){
           const execution=await executeCall(call);const value=execution as {ok:boolean;output?:unknown;error?:string};
-          if(value.ok&&isScreenshot(value.output))outputs.push({callId:call.callId,output:JSON.stringify({ok:true,screenshot:{width:value.output.width,height:value.output.height,capturedAt:value.output.capturedAt}}),imageDataUrl:value.output.imageDataUrl});
+          if(value.ok&&isScreenshot(value.output))outputs.push({callId:call.callId,output:JSON.stringify({ok:true,screenshot:{screenshotId:value.output.screenshotId,width:value.output.width,height:value.output.height,capturedAt:value.output.capturedAt,focusedTarget:value.output.focusedTarget}}),imageDataUrl:value.output.imageDataUrl});
           else outputs.push({callId:call.callId,output:JSON.stringify(execution)});
         }
         turn=await window.atomAgent.agentTurn({conversationId:turn.conversationId,toolOutputs:outputs,applicationContext:hostRef.current.applicationContext()});textConversation.current=turn.conversationId;setStatus(current=>current?{...current,textTransport:turn.transport}:current);
@@ -91,7 +91,7 @@ export function useAtomAgent(host: AtomAgentHost) {
       const track=stream.getAudioTracks()[0];if(!track)throw new Error('No microphone audio track is available');track.enabled=false;realtimeConnection.addTrack(track,stream);
       emitMicrophoneCaptureCheck(track);
       const channel=realtimeConnection.createDataChannel('oai-events');dc.current=channel;
-      channel.onopen=()=>{voiceVerificationTimeout.current=setTimeout(()=>{append('system','Realtime voice session configuration was not acknowledged within 10 seconds','failed');stopVoice('error');},10_000);};channel.onclose=()=>setState('idle');channel.onerror=()=>{append('system','Realtime voice data channel failed','failed');setState('error');};channel.onmessage=event=>{void handleRealtimeEvent(event.data).catch(error=>{append('system',`Realtime voice orchestration failed: ${error instanceof Error?error.message:String(error)}`,'failed');stopVoice('error');});};
+      channel.onopen=()=>{voiceVerificationTimeout.current=setTimeout(()=>{append('system','Realtime voice session configuration was not acknowledged within 10 seconds','failed');stopVoice('error');},10_000);};channel.onclose=()=>setState('idle');channel.onerror=()=>{append('system','Realtime voice data channel failed','failed');setState('error');};channel.onmessage=event=>{void handleRealtimeEvent(event.data).catch(error=>{const message=error instanceof Error?error.message:String(error);console.error('[Atom Realtime] voice orchestration failed',message);append('system',`Realtime voice orchestration failed: ${message}`,'failed');stopVoice('error');});};
       realtimeConnection.onconnectionstatechange=()=>{if(realtimeConnection.connectionState==='failed'||realtimeConnection.connectionState==='disconnected'){append('system',`Realtime voice connection ${realtimeConnection.connectionState}`,'failed');stopVoice('error');}else if(realtimeConnection.connectionState==='closed')stopVoice();};
       const offer=await realtimeConnection.createOffer();await realtimeConnection.setLocalDescription(offer);if(voiceStartToken.current!==startToken||pc.current!==realtimeConnection)return;
       if(!offer.sdp)throw new Error('WebRTC did not produce an SDP offer');
@@ -150,7 +150,7 @@ export function useAtomAgent(host: AtomAgentHost) {
         const result=await executeCall(call);
         const value=result as {ok:boolean;output?:unknown;error?:string};
         const screenshot=value.ok&&isScreenshot(value.output)?value.output:undefined;
-        deliveries.push({callId:call.callId,output:screenshot?{ok:true,screenshot:{width:screenshot.width,height:screenshot.height,capturedAt:screenshot.capturedAt}}:result,...(screenshot?{screenshot}: {})});
+        deliveries.push({callId:call.callId,output:screenshot?{ok:true,screenshot:{screenshotId:screenshot.screenshotId,width:screenshot.width,height:screenshot.height,capturedAt:screenshot.capturedAt,focusedTarget:screenshot.focusedTarget}}:result,...(screenshot?{screenshot}: {})});
       }
       voiceResponseLifecycle.current.assertIdle();
       const channel=dc.current;if(!channel||channel.readyState!=='open')throw new Error('Realtime voice data channel closed before tool result delivery');
@@ -165,7 +165,7 @@ export function useAtomAgent(host: AtomAgentHost) {
   function stopVoice(finalState?:AgentConnectionState){if(voiceVerificationTimeout.current)clearTimeout(voiceVerificationTimeout.current);voiceVerificationTimeout.current=undefined;voiceSessionVerified.current=false;voiceStarting.current=false;voiceStartToken.current=undefined;if(voiceRuntime[ACTIVE_VOICE_OWNER_KEY]===voiceOwner.current)delete voiceRuntime[ACTIVE_VOICE_OWNER_KEY];for(const track of media.current?.getTracks()??[])track.stop();media.current=undefined;const audio=remoteAudio.current;remoteAudio.current=undefined;if(audio){audio.pause();audio.srcObject=null;}remoteAudioTrackIds.current.clear();const channel=dc.current;dc.current=undefined;if(channel){channel.onclose=null;channel.onerror=null;channel.close();}const connection=pc.current;pc.current=undefined;if(connection){connection.ontrack=null;connection.onconnectionstatechange=null;connection.close();}finalizeStreamingMessage('assistant',assistantStreamId,assistantDraft.current);finalizeStreamingMessage('user',userStreamId,userDraft.current);assistantDraft.current='';userDraft.current='';voiceToolCount.current=0;voiceCallIds.current.clear();voiceResponseLifecycle.current.reset();setState(current=>finalState??(current==='unconfigured'?'unconfigured':'idle'));}
   return {status,state,messages,approval,microphoneMuted,speakerMuted,sendText,startVoice,stopVoice,setMicrophoneMute,setSpeakerMute,resolveApproval};
 }
-function isScreenshot(value:unknown):value is {kind:'tinysa-atomizer-screenshot';imageDataUrl:string;width:number;height:number;capturedAt:string}{return Boolean(value&&typeof value==='object'&&(value as {kind?:unknown}).kind==='tinysa-atomizer-screenshot');}
+function isScreenshot(value:unknown):value is {kind:'tinysa-atomizer-screenshot';screenshotId:string;imageDataUrl:string;width:number;height:number;capturedAt:string;focusedTarget:string}{return Boolean(value&&typeof value==='object'&&(value as {kind?:unknown}).kind==='tinysa-atomizer-screenshot');}
 function activeExecution(context:string):string|undefined{try{const value=JSON.parse(context) as {topology?:{instrument?:{execution?:unknown}|null}};return typeof value.topology?.instrument?.execution==='string'?value.topology.instrument.execution:undefined;}catch(error){throw new Error(`Atom application context is malformed: ${error instanceof Error?error.message:String(error)}`);}}
 
 function emitRealtimeSessionCheck(eventType:string,verification:AtomRealtimeSessionVerification,phase:'initial'|'enforced'):void{

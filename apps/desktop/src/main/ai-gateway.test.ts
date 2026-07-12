@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, createAtomRealtimeVoiceSessionConfig } from '@tinysa/agent';
+import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeVoiceSessionConfig } from '@tinysa/agent';
 import { OpenAiGateway } from './ai-gateway.js';
 
 const originalKey = process.env.OPENAI_KEY;
@@ -34,15 +34,23 @@ describe('trusted OpenAI gateway', () => {
     } finally { gateway.close(); }
   });
 
-  it('keeps the exact model in the trusted Realtime voice session config', async () => {
+  it('keeps the exact immutable model in the minimal Realtime WebRTC bootstrap', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('v=0\r\no=- answer', { status: 200 }));
     await new OpenAiGateway().createRealtimeCall('v=0\r\no=- offer');
     const form = fetchMock.mock.calls[0]?.[1]?.body as FormData;
     const session = JSON.parse(String(form.get('session')));
-    expect(session).toEqual(createAtomRealtimeVoiceSessionConfig());
-    expect(session.model).toBe(ATOM_AGENT_MODEL);expect(session.reasoning.effort).toBe(ATOM_AGENT_REASONING_EFFORT);
-    expect(session.audio.output.voice).toBe(ATOM_AGENT_VOICE);expect(session.audio.input.turn_detection.threshold).toBe(ATOM_AGENT_VAD_THRESHOLD);
-    expect(session.tools.length).toBeGreaterThan(5);
+    expect(session).toEqual(createAtomRealtimeCallBootstrapConfig());
+    expect(session.model).toBe(ATOM_AGENT_MODEL);
+    const enforced = createAtomRealtimeVoiceSessionConfig();
+    expect(enforced.reasoning.effort).toBe(ATOM_AGENT_REASONING_EFFORT);
+    expect(enforced.audio.output.voice).toBe(ATOM_AGENT_VOICE);expect(enforced.audio.input.turn_detection.threshold).toBe(ATOM_AGENT_VAD_THRESHOLD);
+    expect(enforced.tools.length).toBeGreaterThan(5);
+  });
+
+  it('surfaces a Realtime call gateway timeout with its request ID and no retry', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 504, headers: { 'x-request-id': 'req_voice_timeout' } }));
+    await expect(new OpenAiGateway().createRealtimeCall('v=0\r\no=- offer')).rejects.toThrow(/failed \(504\) \[request req_voice_timeout\]/);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('continues Realtime function calls with app-only screenshot image input', async () => {

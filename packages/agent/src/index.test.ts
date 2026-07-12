@@ -1,9 +1,34 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { TINYSA_API_V2_METHODS } from '@tinysa/contracts';
-import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, agentApiCoverage, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolPolicies, createAtomRealtimeVoiceSessionConfig, realtimeToolDefinitions, validateAgentToolCall, verifyAtomRealtimeVoiceSession } from './index.js';
+import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeVoiceSessionConfig, realtimeToolDefinitions, validateAgentToolCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
+
+const validToolArguments = {
+  get_application_state: {}, get_system_topology: {}, get_agent_surface: {}, get_instrument_state: {}, get_latest_sweep_summary: {},
+  get_detection_results: {}, get_classification_results: {}, read_device_diagnostics: {}, get_firmware_update_status: {}, open_firmware_update: {},
+  download_firmware_update: {}, detect_firmware_dfu: {}, list_connection_candidates: {}, connect_device: { candidateId: 'candidate-1' }, disconnect_device: {},
+  inspect_interface: {}, computer_action: { controlId: 'measurement.setup', action: 'activate' }, computer_screenshot: {}, computer_click: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20 },
+  computer_type: { expectedTarget: 'analyzer.start', text: '98000000' }, computer_key: { expectedTarget: 'analyzer.start', key: 'ENTER' }, computer_scroll: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20, deltaX: 0, deltaY: 120 },
+  navigate_workspace: { workspace: 'spectrum' }, configure_analyzer: { startHz: 93_000_000, stopHz: 95_000_000 }, acquire_sweep: {},
+  start_continuous_sweeps: {}, stop_continuous_sweeps: {}, get_measurement_state: {}, select_marker: { markerId: 1 },
+  configure_marker: { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 94_000_000, tracking: 'fixed' },
+  configure_marker_search: { minimumLevelDbm: -95, minimumExcursionDb: 8 }, search_marker: { markerId: 1, action: 'peak' },
+  select_trace: { traceId: 1 }, configure_trace: { id: 1, mode: 'clear-write', averageCount: 8 }, reset_trace: { traceId: 1 },
+  configure_spectrum_display: { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }, auto_scale_spectrum_display: {},
+  set_measurement_view: { view: 'spectrum' }, configure_waterfall: { historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' },
+  configure_channel_measurement: { centerHz: 94_000_000, mainBandwidthHz: 200_000, adjacentBandwidthHz: 200_000, channelSpacingHz: 250_000, adjacentChannelCount: 2, occupiedPowerPercent: 99, obwNoiseCorrection: 'robust-floor' },
+  get_channel_measurement_results: {}, configure_envelope_stft: { windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 },
+  get_envelope_stft_results: {}, acquire_envelope_stft: {},
+  configure_signal_detector: { threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 },
+  select_classification_candidate: { detectionId: 'signal-12' },
+  configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 100, attenuationDb: 'auto', sweepTimeSeconds: 0.1, trigger: { mode: 'auto' } },
+  acquire_zero_span: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
+  set_rf_output: { enabled: false }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
+} as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
-  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1-mini'));
+  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1'));
+  it('admits WebRTC with only the immutable exact model before enforcing the complete session',()=>expect(createAtomRealtimeCallBootstrapConfig()).toEqual({type:'realtime',model:'gpt-realtime-2.1'}));
   it('locks Atom reasoning effort',()=>expect(ATOM_AGENT_REASONING_EFFORT).toBe('high'));
   it('locks Ballad and the explicit server VAD threshold',()=>{
     const session=createAtomRealtimeVoiceSessionConfig();
@@ -30,16 +55,38 @@ describe('Atom agent contracts',()=>{
   it('gives every tool one closed concrete object input schema',()=>{
     expect(agentToolDefinitions).toHaveLength(53);
     for(const tool of agentToolDefinitions){
+      expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
+      expect(tool.description.length).toBeGreaterThan(24);
       expect(tool.parameters.type,tool.name).toBe('object');
       expect(tool.parameters.properties,tool.name).toBeTypeOf('object');
       expect(tool.parameters.required,tool.name).toBeInstanceOf(Array);
       expect(tool.parameters.additionalProperties,tool.name).toBe(false);
+      for(const forbidden of ['oneOf','anyOf','allOf','enum','const','not'])expect(Object.hasOwn(tool.parameters,forbidden),`${tool.name} top-level ${forbidden}`).toBe(false);
+      assertClosedDescribedObjects(tool.name,tool.parameters);
     }
+  });
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 53 tools',()=>{
+    expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
+    expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
+    for(const tool of agentToolDefinitions){
+      const sample=validToolArguments[tool.name];
+      expect(agentToolInputSchemas[tool.name].safeParse(sample).success,`${tool.name} runtime canonical call`).toBe(true);
+      const advertised=z.fromJSONSchema(tool.parameters as never);
+      expect(advertised.safeParse(sample).success,`${tool.name} advertised canonical call`).toBe(true);
+      const undeclared={...sample as Record<string,unknown>,__undeclared:true};
+      expect(agentToolInputSchemas[tool.name].safeParse(undeclared).success,`${tool.name} runtime closure`).toBe(false);
+      expect(advertised.safeParse(undeclared).success,`${tool.name} advertised closure`).toBe(false);
+    }
+    const analyzer=agentToolDefinitions.find(tool=>tool.name==='configure_analyzer')!;
+    expect(analyzer.parameters.minProperties).toBe(1);
+    expect(agentToolInputSchemas.configure_analyzer.safeParse({}).success).toBe(false);
   });
   it('locks Atom prompt behavior for state, patches, correction, provenance, and concise speech',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Read system topology and application state');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is an application-layer patch');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('correct a rejected schema request once');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty application-layer patch');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('A trigger patch is one complete discriminated object');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Correct it once only when');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('including rbwKhz');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
   });
@@ -79,6 +126,12 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'2',name:'configure_analyzer',arguments:'{"lna":"on"}'}).args).toEqual({lna:'on'});
     expect(()=>validateAgentToolCall({callId:'3',name:'configure_analyzer',arguments:'{}'})).toThrow(/at least one/i);
     expect(()=>validateAgentToolCall({callId:'4',name:'configure_analyzer',arguments:'{"lna":null}'})).toThrow();
+    expect(validateAgentToolCall({callId:'5',name:'configure_analyzer',arguments:'{"trigger":{"mode":"auto"}}'}).args).toEqual({trigger:{mode:'auto'}});
+    expect(validateAgentToolCall({callId:'6',name:'configure_analyzer',arguments:'{"trigger":{"mode":"normal","levelDbm":-60}}'}).args).toEqual({trigger:{mode:'normal',levelDbm:-60}});
+    expect(()=>validateAgentToolCall({callId:'7',name:'configure_analyzer',arguments:'{"trigger":{"mode":"normal"}}'})).toThrow(/levelDbm/);
+    expect(()=>validateAgentToolCall({callId:'8',name:'configure_analyzer',arguments:'{"trigger":{"mode":"auto","levelDbm":-60}}'})).toThrow();
+    const parameters=agentToolDefinitions.find(tool=>tool.name==='configure_analyzer')!.parameters as {properties:Record<string,{oneOf?:readonly {required?:readonly string[]}[]}>};
+    expect(parameters.properties.trigger?.oneOf?.map(branch=>branch.required)).toEqual([['mode'],['mode','levelDbm']]);
   });
   it('marks RF output as high impact',()=>expect(validateAgentToolCall({callId:'1',name:'set_rf_output',arguments:'{"enabled":true}'}).policy.approval).toBe('at-action'));
   it('requires an opaque candidate ID for device connection',()=>{
@@ -90,6 +143,7 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'1',name:'configure_trace',arguments:'{"id":2,"mode":"max-hold","averageCount":8}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'1b',name:'select_trace',arguments:'{"traceId":4}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'2',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak"}'}).policy.risk).toBe('operate');
+    expect(()=>validateAgentToolCall({callId:'3',name:'configure_marker',arguments:'{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":98000000,"tracking":"peak","referenceMarkerId":2}'})).toThrow();
     expect(()=>validateAgentToolCall({callId:'4',name:'reset_trace',arguments:'{"traceId":5}'})).toThrow();
     expect(validateAgentToolCall({callId:'5',name:'configure_marker_search',arguments:'{"minimumLevelDbm":-95,"minimumExcursionDb":8}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'6',name:'auto_scale_spectrum_display',arguments:'{}'}).policy.risk).toBe('operate');
@@ -104,3 +158,19 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'7',name:'select_classification_candidate',arguments:'{"detectionId":"signal-12"}'}).policy.risk).toBe('operate');
   });
 });
+
+function assertClosedDescribedObjects(toolName:string,schema:Record<string,unknown>,path:string=toolName):void{
+  if(schema.type==='object'){
+    expect(schema.additionalProperties,path).toBe(false);
+    const properties=schema.properties as Record<string,unknown>|undefined;
+    expect(properties,path).toBeTypeOf('object');
+    for(const [name,value] of Object.entries(properties??{})){
+      expect((value as {description?:unknown}).description,`${path}.${name} description`).toBeTypeOf('string');
+      assertClosedDescribedObjects(toolName,value as Record<string,unknown>,`${path}.${name}`);
+    }
+  }
+  for(const keyword of ['oneOf','anyOf','allOf'] as const){
+    const branches=schema[keyword];
+    if(Array.isArray(branches))branches.forEach((branch,index)=>assertClosedDescribedObjects(toolName,branch as Record<string,unknown>,`${path}.${keyword}[${index}]`));
+  }
+}

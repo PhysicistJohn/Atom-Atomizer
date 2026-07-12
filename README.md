@@ -55,7 +55,7 @@ It owns 79 closed visual stimulus profiles and deterministic AWGN/Rayleigh chann
 
 Place `OPENAI_KEY` in `.env`. The key is read only by the trusted Electron main process and never crosses preload into the renderer.
 
-Both AI paths use exactly `gpt-realtime-2.1-mini`:
+Both AI paths use exactly `gpt-realtime-2.1`:
 
 | Path | Transport | Modalities |
 |---|---|---|
@@ -68,10 +68,14 @@ Realtime tool calls are executed only from completed `response.done` items. Atom
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
-Atom’s application surface is contract version 4:
+WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the full voice, reasoning, transcription, instruction, and tool configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. This avoids putting the full 53-tool catalog in the call-creation gateway request without changing model or transport.
+
+Atom’s application surface is contract version 5:
 
 - Every declared UI hook resolves to exactly one preferred typed tool, risk class, evidence projection, executor, and guarantee.
 - The same validator, policy table, action-time approval, and executor serve voice and text.
+- Every tool’s delivered parameters are generated from its execution-time Zod validator; Realtime-forbidden top-level schema combinators are absent, while cross-field invariants remain runtime-enforced and explicitly described.
+- Coordinate computer actions consume a short-lived one-use screenshot ID; typing and keys require the exact focused-target identity returned by the latest screenshot or successful computer action.
 - App screenshots are treated as untrusted image data.
 - Coordinate actions are confined to the Atomizer window and fail closed on high-impact DOM targets.
 - RF-output enable and general firmware-screen touch require immediate human approval.
@@ -89,8 +93,9 @@ Atom’s application surface is contract version 4:
 - Four host traces (`H1..H4`): Clear/Write, Max Hold, Min Hold, linear-power Average, View, Blank, and reset; enabled firmware traces are separately read and rendered as provenance-bearing `D1..D4` overlays.
 - Eight markers, all off by default: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz.
 - Explicit reference level, dB/div, and evidence-backed auto scale.
-- Persistent local-CFAR signal detection with global threshold, local prominence, cross-sweep promotion, and explicit candidate/released states.
+- Persistent robust-threshold signal detection with local prominence, cross-sweep promotion, and explicit candidate/released states. Detect alone overlays active bandwidth regions and dashed channel-center lines; Spectrum remains annotation-free.
 - Measurement-only SignalLab EMSO hypotheses over 79 profiles, with exact/family/unknown decisions, pinned producer provenance, open-set rejection, and no selected-state side channel.
+- Classify presents live observation names such as `CW carrier`, `AM signal`, and `FM signal`; it keeps SignalLab replay provenance out of the waveform label, qualifies results as measured hypotheses, and marks positive classifications green.
 - Generator frequency, level, path, AM/FM configuration, forced-off apply, RF state, and governed enable.
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.

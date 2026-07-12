@@ -184,7 +184,8 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
   #spurRejection: AnalyzerConfig['spurRejection'] = 'auto';
   #lna: AnalyzerConfig['lna'] = 'off';
   #avoidSpurs: AnalyzerConfig['avoidSpurs'] = 'auto';
-  #trigger: AnalyzerConfig['trigger'] = { mode: 'auto' };
+  #triggerMode: AnalyzerConfig['trigger']['mode'] = 'auto';
+  #triggerLevelDbm?: number;
   #mode: 'input' | 'output' = 'input';
   #generator: GeneratorConfig = { frequencyHz: 100_000_000, levelDbm: -30, path: 'mixer', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 80, fmDeviationHz: 3_000 };
   #generatorConfigured = false;
@@ -362,9 +363,15 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
 
   #triggerCommand(args: string[]): string {
     const value = args[0]; if (!value) return 'trigger {value}|auto|normal|single';
-    if (value === 'auto' || value === 'normal' || value === 'single') this.#trigger = { ...this.#trigger, mode: value };
-    else { const levelDbm = numeric(value, 'trigger level'); this.#trigger = { mode: this.#trigger.mode === 'auto' ? 'normal' : this.#trigger.mode, levelDbm }; }
+    if (value === 'auto' || value === 'normal' || value === 'single') this.#triggerMode = value;
+    else { this.#triggerLevelDbm = numeric(value, 'trigger level'); if (this.#triggerMode === 'auto') this.#triggerMode = 'normal'; }
     return '';
+  }
+
+  #currentTrigger(): AnalyzerConfig['trigger'] {
+    if (this.#triggerMode === 'auto') return { mode: 'auto' };
+    if (this.#triggerLevelDbm === undefined) throw new Error(`Digital twin ${this.#triggerMode} trigger has no configured level`);
+    return { mode: this.#triggerMode, levelDbm: this.#triggerLevelDbm };
   }
 
   async #scan(args: string[], raw: boolean): Promise<string | Uint8Array> {
@@ -374,7 +381,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
     if (points < ZS407_FIRMWARE_LIMITS.minimumSweepPoints || points > ZS407_FIRMWARE_LIMITS.maximumSweepPoints) return `sweep points exceeds range ${ZS407_FIRMWARE_LIMITS.maximumSweepPoints}`;
     const result = sweepResult(await this.#request('acquire_sweep', {
       startHz, stopHz, points, rbwKhz: this.#rbwKhz, attenuationDb: this.#attenuationDb, sweepTimeSeconds: this.#sweepTimeSeconds,
-      detector: this.#detector, spurRejection: this.#spurRejection, lna: this.#lna, avoidSpurs: this.#avoidSpurs, trigger: this.#trigger,
+      detector: this.#detector, spurRejection: this.#spurRejection, lna: this.#lna, avoidSpurs: this.#avoidSpurs, trigger: this.#currentTrigger(),
     }), points);
     this.#lastAcquisition = { source: 'renode-executable-state', startHz, stopHz, points, actualRbwHz: result.actualRbwHz, actualAttenuationDb: result.actualAttenuationDb, evidence: result.bridgeEvidence };
     if (raw) return encodeRawSweep(result.powerDbm.map((power) => power + 174));
