@@ -27,8 +27,8 @@ const validToolArguments = {
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
-  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1'));
-  it('admits WebRTC with only the immutable exact model before enforcing the complete session',()=>expect(createAtomRealtimeCallBootstrapConfig()).toEqual({type:'realtime',model:'gpt-realtime-2.1'}));
+  it('locks the requested model exactly',()=>expect(ATOM_AGENT_MODEL).toBe('gpt-realtime-2.1-mini'));
+  it('admits WebRTC with only the immutable exact model before enforcing the complete session',()=>expect(createAtomRealtimeCallBootstrapConfig()).toEqual({type:'realtime',model:'gpt-realtime-2.1-mini'}));
   it('locks Atom reasoning effort',()=>expect(ATOM_AGENT_REASONING_EFFORT).toBe('high'));
   it('locks Ballad and the explicit server VAD threshold',()=>{
     const session=createAtomRealtimeVoiceSessionConfig();

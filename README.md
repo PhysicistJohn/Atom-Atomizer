@@ -55,7 +55,7 @@ It owns 79 closed visual stimulus profiles and deterministic AWGN/Rayleigh chann
 
 Place `OPENAI_KEY` in `.env`. The key is read only by the trusted Electron main process and never crosses preload into the renderer.
 
-Both AI paths use exactly `gpt-realtime-2.1`:
+Both AI paths use exactly `gpt-realtime-2.1-mini`:
 
 | Path | Transport | Modalities |
 |---|---|---|

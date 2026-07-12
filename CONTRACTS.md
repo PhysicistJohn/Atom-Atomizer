@@ -40,7 +40,7 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v6, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
+The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v7, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
 
 Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. One exact physical ZS407 suppresses the twin and is automatically admitted; multiple exact devices require selection; no exact device admits the twin. Discovery/identity/source/boot/evidence failure is visible and never activates another backend.
 
@@ -544,7 +544,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 ## WP-19 — Native Realtime voice
 
-**Outcome:** low-latency speech-to-speech operation with `gpt-realtime-2.1`.
+**Outcome:** low-latency speech-to-speech operation with `gpt-realtime-2.1-mini`.
 **Estimate:** 6–10 ED plus microphone/platform qualification.  
 **Dependencies:** WP-07, WP-18.
 
@@ -568,7 +568,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 **Deliverables**
 
-- One trusted text-only Realtime WebSocket path using exactly `gpt-realtime-2.1`; no alternate model, API, endpoint, transport, alias, reroute, or automatic retry.
+- One trusted text-only Realtime WebSocket path using exactly `gpt-realtime-2.1-mini`; no alternate model, API, endpoint, transport, alias, reroute, or automatic retry.
 - Opaque conversation IDs, bounded function-output loop, trusted-main socket ownership, four-session capacity and five-minute idle expiry.
 - Semantic interface map plus app-window-only screenshot/click/type/key/scroll actions that cannot reach the OS desktop or bypass domain policy.
 - Shared transcript/tool activity/approval UX and actionable API error taxonomy.

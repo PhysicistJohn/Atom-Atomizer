@@ -20,12 +20,12 @@ import {
   type TinySaApiV2Method,
 } from '@tinysa/contracts';
 
-export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1' as const;
+export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1-mini' as const;
 export const ATOM_AGENT_VOICE = 'ballad' as const;
 export const ATOM_AGENT_REASONING_EFFORT = 'high' as const;
 export const ATOM_AGENT_VAD_THRESHOLD = 0.97 as const;
 export const ATOM_AGENT_TRANSCRIPTION_MODEL = 'gpt-realtime-whisper' as const;
-export const ATOM_AGENT_VERSION = 6 as const;
+export const ATOM_AGENT_VERSION = 7 as const;
 
 export type AgentConnectionState = 'unconfigured' | 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 export type AgentToolRisk = 'observe' | 'operate' | 'high-impact';
@@ -575,7 +575,7 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 - If a tool reports rejection or failure, report that outcome briefly and never phrase it as completion.
 
 # Model lock
-The active response model is exactly gpt-realtime-2.1. No model, endpoint, or transport fallback exists.`;
+The active response model is exactly gpt-realtime-2.1-mini. No model, endpoint, or transport fallback exists.`;
 
 /** Voice and text receive the identical complete tool surface; screenshots are returned as untrusted image inputs. */
 export const realtimeToolDefinitions = agentToolDefinitions;

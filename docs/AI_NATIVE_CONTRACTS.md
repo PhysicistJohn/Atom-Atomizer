@@ -1,8 +1,8 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 6.0.0
-Model lock: `gpt-realtime-2.1`
+Version: 7.0.0
+Model lock: `gpt-realtime-2.1-mini`
 Reasoning lock: `high`  
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.97`
@@ -13,7 +13,7 @@ This document is normative. “Atom” is the application-layer AI inside TinySA
 
 ## 1. Exact model contract
 
-Every response-agent path uses exactly `gpt-realtime-2.1`:
+Every response-agent path uses exactly `gpt-realtime-2.1-mini`:
 
 | Path | API | Purpose |
 |---|---|---|
@@ -125,7 +125,7 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 2. Renderer requests microphone permission and creates one `RTCPeerConnection`; the local audio track is disabled before it can send audio.
 3. Renderer adds one microphone track and one `oai-events` data channel.
 4. Renderer sends SDP through allow-listed IPC.
-5. Main validates size/shape and calls `/v1/realtime/calls` with only `{ "type": "realtime", "model": "gpt-realtime-2.1" }`. Model identity is immutable; no alias or default chooses it.
+5. Main validates size/shape and calls `/v1/realtime/calls` with only `{ "type": "realtime", "model": "gpt-realtime-2.1-mini" }`. Model identity is immutable; no alias or default chooses it.
 6. Main returns SDP only; renderer sets the remote answer.
 7. The microphone track remains disabled while the first `session.created` event is compared with the complete intended contract. API-supplied defaults and initial differences are logged separately; they are not treated as final configuration.
 8. Renderer sends `high` reasoning, Ballad, `gpt-realtime-whisper`, server VAD threshold `0.97`, Atom instructions, and the identical complete text/voice tool catalog through `session.update`, then starts a bounded ten-second acknowledgement timer.
@@ -378,7 +378,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 15. Acceptance inventory
 
-- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1`.
+- **AI-01:** Every AI transport sends exactly `gpt-realtime-2.1-mini`.
 - **AI-02:** Standard key is absent from renderer/preload/build artifacts/logs.
 - **AI-03:** Missing key produces unconfigured state and no network call.
 - **AI-04:** Realtime call uses trusted unified SDP flow.
@@ -441,7 +441,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 
 ## 17. Official OpenAI references
 
-- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1
+- Model: https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
 - Realtime WebRTC: https://developers.openai.com/api/docs/guides/realtime-webrtc
 - Realtime WebSocket: https://developers.openai.com/api/docs/guides/realtime-websocket
 - Realtime conversations and function calls: https://developers.openai.com/api/docs/guides/realtime-conversations
