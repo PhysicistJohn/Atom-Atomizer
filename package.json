@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "build": "npm run build -w @tinysa/contracts && npm run build -w @tinysa/analysis && npm run build -w @tinysa/agent && npm run build -w @tinysa/device && npm run build -w @tinysa/test-device && npm run build -w @tinysa/desktop",
@@ -23,5 +24,5 @@
     "tsup": "8.5.0",
     "vitest": "4.1.10"
   },
-  "engines": { "node": ">=22" }
+  "engines": { "node": ">=22", "npm": "10.9.8" }
 }
