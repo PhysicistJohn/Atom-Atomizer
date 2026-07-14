@@ -44,8 +44,18 @@ const DEFAULT_DETECTION_CONFIG: SignalDetectionConfig = {
   releaseAfterMissedSweeps: 2,
 };
 
+export const BAYESIAN_DETECTOR_MODEL = {
+  id: 'bayesian-positive-mean-shift-v1',
+  priorSignalProbability: 0.01,
+  minimumPosteriorSignalProbability: 0.99,
+  minimumNoiseSigmaDb: 1.5,
+  signalShiftPriorScaleDb: 18,
+  maximumSignalShiftDb: 90,
+  signalShiftGridStepDb: 0.5,
+} as const;
+
 export class SignalDetector {
-  static readonly id = 'robust-local-cfar-v5';
+  static readonly id = 'bayesian-threshold-detector-v1';
   constructor(private config: SignalDetectionConfig = DEFAULT_DETECTION_CONFIG) {}
   configure(config: SignalDetectionConfig): void { this.config = structuredClone(config); }
   get configuration(): SignalDetectionConfig { return structuredClone(this.config); }
@@ -76,6 +86,7 @@ export class SignalDetector {
       const prominenceThresholdDb = Math.max(this.config.minimumProminenceDb, shoulders.robustSigmaDb * 4);
       const startHz = sweep.frequencyHz[first]!;
       const stopHz = sweep.frequencyHz[last]!;
+      const bayesianEvidence = bayesianPresenceEvidence(sweep, first, last, shoulders);
       const qualityFlags: DetectedSignal['qualityFlags'][number][] = [];
       if (first === 0) qualityFlags.push('touches-lower-boundary');
       if (last === sweep.frequencyHz.length - 1) qualityFlags.push('touches-upper-boundary');
@@ -99,9 +110,12 @@ export class SignalDetector {
         state: this.config.minimumConsecutiveSweeps <= 1 ? 'active' : 'candidate',
         detectorId: SignalDetector.id,
         detectorConfig: structuredClone(this.config),
+        bayesianEvidence,
         qualityFlags,
       } satisfies DetectedSignal;
-    }).filter((signal) => signal.bandwidthHz >= this.config.minimumBandwidthHz && signal.prominenceDb >= signal.prominenceThresholdDb);
+    }).filter((signal) => signal.bandwidthHz >= this.config.minimumBandwidthHz
+      && signal.prominenceDb >= signal.prominenceThresholdDb
+      && signal.bayesianEvidence.posteriorSignalProbability >= BAYESIAN_DETECTOR_MODEL.minimumPosteriorSignalProbability);
   }
 }
 
@@ -131,6 +145,45 @@ function localShoulderStatistics(powerDbm: readonly number[], first: number, las
   const deviationMiddle = Math.floor(deviations.length / 2);
   const medianAbsoluteDeviation = deviations.length % 2 ? deviations[deviationMiddle]! : (deviations[deviationMiddle - 1]! + deviations[deviationMiddle]!) / 2;
   return { levelDbm: Math.max(noiseFloorDbm, median), robustSigmaDb: medianAbsoluteDeviation * 1.4826 };
+}
+
+function bayesianPresenceEvidence(
+  sweep: Sweep,
+  first: number,
+  last: number,
+  shoulders: { levelDbm: number; robustSigmaDb: number },
+): DetectedSignal['bayesianEvidence'] {
+  const binWidthHz = sweep.frequencyHz.length > 1
+    ? median(sweep.frequencyHz.slice(1).map((frequency, index) => frequency - sweep.frequencyHz[index]!))
+    : sweep.actualRbwHz;
+  const measuredWidthHz = Math.max(binWidthHz, sweep.frequencyHz[last]! - sweep.frequencyHz[first]! + binWidthHz);
+  const effectiveIndependentBins = Math.max(1, Math.min(last - first + 1, measuredWidthHz / Math.max(binWidthHz, sweep.actualRbwHz)));
+  const noiseSigmaDb = Math.max(BAYESIAN_DETECTOR_MODEL.minimumNoiseSigmaDb, shoulders.robustSigmaDb);
+  const standardErrorDb = noiseSigmaDb / Math.sqrt(effectiveIndependentBins);
+  const groupPower = sweep.powerDbm.slice(first, last + 1);
+  const observedMeanShiftDb = groupPower.reduce((total, value) => total + value, 0) / groupPower.length - shoulders.levelDbm;
+  const noiseLogLikelihood = normalLogDensity(observedMeanShiftDb, 0, standardErrorDb);
+  const signalComponents: number[] = [];
+  const signalPriorComponents: number[] = [];
+  for (let shiftDb = BAYESIAN_DETECTOR_MODEL.signalShiftGridStepDb / 2;
+    shiftDb <= BAYESIAN_DETECTOR_MODEL.maximumSignalShiftDb;
+    shiftDb += BAYESIAN_DETECTOR_MODEL.signalShiftGridStepDb) {
+    const prior = -0.5 * (shiftDb / BAYESIAN_DETECTOR_MODEL.signalShiftPriorScaleDb) ** 2;
+    signalPriorComponents.push(prior);
+    signalComponents.push(prior + normalLogDensity(observedMeanShiftDb, shiftDb, standardErrorDb));
+  }
+  const signalLogLikelihood = logSumExp(signalComponents) - logSumExp(signalPriorComponents);
+  const logBayesFactor = clampFinite(signalLogLikelihood - noiseLogLikelihood, -700, 700);
+  return {
+    modelId: BAYESIAN_DETECTOR_MODEL.id,
+    priorSignalProbability: BAYESIAN_DETECTOR_MODEL.priorSignalProbability,
+    posteriorSignalProbability: posteriorFromLogBayesFactor(logBayesFactor),
+    logBayesFactor,
+    effectiveIndependentBins,
+    noiseSigmaDb,
+    observedMeanShiftDb,
+    looks: 1,
+  };
 }
 
 interface Track { signal: DetectedSignal; released: boolean; }
@@ -696,6 +749,7 @@ export function robustNoiseFloor(values: readonly number[]): number {
 
 function mergeSignal(previous: DetectedSignal, candidate: DetectedSignal, sweep: Sweep, config: SignalDetectionConfig): DetectedSignal {
   const persistenceSweeps = previous.persistenceSweeps + 1;
+  const logBayesFactor = clampFinite(previous.bayesianEvidence.logBayesFactor + candidate.bayesianEvidence.logBayesFactor, -700, 700);
   return {
     ...candidate,
     id: previous.id,
@@ -706,6 +760,15 @@ function mergeSignal(previous: DetectedSignal, candidate: DetectedSignal, sweep:
     missedSweeps: 0,
     state: persistenceSweeps >= config.minimumConsecutiveSweeps ? 'active' : 'candidate',
     detectorConfig: structuredClone(config),
+    bayesianEvidence: {
+      ...candidate.bayesianEvidence,
+      posteriorSignalProbability: posteriorFromLogBayesFactor(logBayesFactor),
+      logBayesFactor,
+      effectiveIndependentBins: previous.bayesianEvidence.effectiveIndependentBins + candidate.bayesianEvidence.effectiveIndependentBins,
+      noiseSigmaDb: (previous.bayesianEvidence.noiseSigmaDb * previous.bayesianEvidence.looks + candidate.bayesianEvidence.noiseSigmaDb) / (previous.bayesianEvidence.looks + 1),
+      observedMeanShiftDb: (previous.bayesianEvidence.observedMeanShiftDb * previous.bayesianEvidence.looks + candidate.bayesianEvidence.observedMeanShiftDb) / (previous.bayesianEvidence.looks + 1),
+      looks: previous.bayesianEvidence.looks + 1,
+    },
   };
 }
 
@@ -725,6 +788,29 @@ function validateSweep(sweep: Sweep): void {
   if (sweep.powerDbm.length === 0) throw new Error('Sweep contains no measurement points');
   if (sweep.frequencyHz.some((value) => !Number.isFinite(value)) || sweep.powerDbm.some((value) => !Number.isFinite(value))) throw new Error('Sweep contains non-finite measurement values');
   for (let index = 1; index < sweep.frequencyHz.length; index++) if (sweep.frequencyHz[index]! < sweep.frequencyHz[index - 1]!) throw new Error('Sweep frequencies are not monotonic');
+}
+
+function normalLogDensity(value: number, expected: number, sigma: number): number {
+  const variance = sigma ** 2;
+  return -0.5 * ((value - expected) ** 2 / variance + Math.log(2 * Math.PI * variance));
+}
+
+function logSumExp(values: readonly number[]): number {
+  const maximum = Math.max(...values);
+  return maximum + Math.log(values.reduce((total, value) => total + Math.exp(value - maximum), 0));
+}
+
+function posteriorFromLogBayesFactor(logBayesFactor: number): number {
+  const prior = BAYESIAN_DETECTOR_MODEL.priorSignalProbability;
+  const logPosteriorOdds = logBayesFactor + Math.log(prior / (1 - prior));
+  if (logPosteriorOdds >= 0) return 1 / (1 + Math.exp(-logPosteriorOdds));
+  const odds = Math.exp(logPosteriorOdds);
+  return odds / (1 + odds);
+}
+
+function clampFinite(value: number, minimum: number, maximum: number): number {
+  if (Number.isNaN(value)) throw new Error('Bayesian evidence calculation produced NaN');
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function validateZeroSpanCapture(capture: ZeroSpanCapture): void {

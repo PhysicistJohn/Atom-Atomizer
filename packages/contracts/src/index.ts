@@ -566,6 +566,16 @@ export const signalDetectionConfigSchema = z.object({
   releaseAfterMissedSweeps: z.number().int().min(0).max(100),
 }).strict();
 export type SignalDetectionConfig = z.infer<typeof signalDetectionConfigSchema>;
+export interface BayesianDetectionEvidence {
+  modelId: string;
+  priorSignalProbability: number;
+  posteriorSignalProbability: number;
+  logBayesFactor: number;
+  effectiveIndependentBins: number;
+  noiseSigmaDb: number;
+  observedMeanShiftDb: number;
+  looks: number;
+}
 export interface DetectedSignal {
   id: string;
   startHz: number;
@@ -585,6 +595,7 @@ export interface DetectedSignal {
   state: 'candidate' | 'active' | 'released';
   detectorId: string;
   detectorConfig: SignalDetectionConfig;
+  bayesianEvidence: BayesianDetectionEvidence;
   qualityFlags: readonly ('touches-lower-boundary' | 'touches-upper-boundary' | 'single-bin')[];
 }
 export interface ClassificationCandidate { label: string; confidence: number; family?: string; }

@@ -107,10 +107,17 @@ describe('signal analysis', () => {
       bandwidthHz: 200,
       thresholdDbm: -80,
       noiseFloorDbm: -90,
-      detectorId: 'robust-local-cfar-v5',
+      detectorId: 'bayesian-threshold-detector-v1',
       prominenceDb: 42,
       state: 'active',
     });
+    expect(results[0]!.bayesianEvidence).toMatchObject({
+      modelId: 'bayesian-positive-mean-shift-v1',
+      priorSignalProbability: 0.01,
+      looks: 1,
+    });
+    expect(results[0]!.bayesianEvidence.posteriorSignalProbability).toBeGreaterThan(0.999);
+    expect(results[0]!.bayesianEvidence.logBayesFactor).toBeGreaterThan(0);
   });
 
   it('retains a noise estimate when a wideband emission occupies most of the displayed span', () => {
@@ -119,7 +126,7 @@ describe('signal analysis', () => {
     const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 10_000_000 });
     const result = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(sweep);
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ startHz: 900_000, stopHz: 9_100_000, detectorId: 'robust-local-cfar-v5' });
+    expect(result[0]).toMatchObject({ startHz: 900_000, stopHz: 9_100_000, detectorId: 'bayesian-threshold-detector-v1' });
     expect(result[0]!.noiseFloorDbm).toBeLessThan(-105);
   });
 
@@ -131,6 +138,26 @@ describe('signal analysis', () => {
     const result = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(sweep);
 
     expect(result).toHaveLength(0);
+  });
+
+  it('rejects a weak threshold crossing when Bayesian evidence does not overcome the sparse-signal prior', () => {
+    const frequencyHz = Array.from({ length: 101 }, (_, index) => index * 10_000);
+    const powerDbm = frequencyHz.map(() => -100);
+    powerDbm[50] = -94;
+    const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 1_000_000, actualRbwHz: 10_000 });
+    const detector = new SignalDetector({
+      ...detectionConfig,
+      threshold: { strategy: 'noise-relative', marginDb: 5 },
+      minimumProminenceDb: 3,
+      minimumConsecutiveSweeps: 1,
+    });
+
+    expect(detector.analyze(sweep)).toHaveLength(0);
+
+    powerDbm[50] = -90;
+    const strong = detector.analyze(makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 1_000_000, actualRbwHz: 10_000 }));
+    expect(strong).toHaveLength(1);
+    expect(strong[0]!.bayesianEvidence.posteriorSignalProbability).toBeGreaterThanOrEqual(0.99);
   });
 
   it('bridges two-bin ripple gaps into one prominent emission', () => {
@@ -373,6 +400,8 @@ function emsoDetection(id: string, peakHz: number, bandwidthHz: number, sweeps: 
     peakDbm: latest.powerDbm[peakIndex]!, prominenceDb: 30, prominenceThresholdDb: 6, bandwidthHz, thresholdDbm: -98, noiseFloorDbm: -110,
     firstSeenAt: sweeps[0]!.capturedAt, lastSeenAt: latest.capturedAt, sweepIds: sweeps.map((sweep) => sweep.id),
     persistenceSweeps: sweeps.length, missedSweeps: 0, state: 'active', detectorId: 'fixture-observation',
-    detectorConfig: { ...detectionConfig, minimumConsecutiveSweeps: 1 }, qualityFlags: [],
+    detectorConfig: { ...detectionConfig, minimumConsecutiveSweeps: 1 },
+    bayesianEvidence: { modelId: 'fixture', priorSignalProbability: 0.01, posteriorSignalProbability: 1, logBayesFactor: 100, effectiveIndependentBins: 1, noiseSigmaDb: 1.5, observedMeanShiftDb: 30, looks: sweeps.length },
+    qualityFlags: [],
   };
 }

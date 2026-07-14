@@ -52,6 +52,10 @@ const detection = {
     minimumConsecutiveSweeps: 2,
     releaseAfterMissedSweeps: 2,
   },
+  bayesianEvidence: {
+    modelId: 'fixture', priorSignalProbability: 0.01, posteriorSignalProbability: 0.999,
+    logBayesFactor: 40, effectiveIndependentBins: 3, noiseSigmaDb: 1.5, observedMeanShiftDb: 50, looks: 3,
+  },
   qualityFlags: [],
 } satisfies DetectedSignal;
 
