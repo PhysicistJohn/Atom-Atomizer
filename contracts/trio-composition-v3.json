@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tinysa.local/contracts/trio-composition-v3.json",
+  "contractId": "tinysa-trio-composition",
+  "contractVersion": 3,
+  "effectiveDate": "2026-07-14",
+  "parties": {
+    "atomizer": {
+      "repository": "TinySA",
+      "owner": "operator-control-plane",
+      "applicationContractVersion": 6,
+      "deviceApiVersion": 3,
+      "agentSurfaceVersion": 9,
+      "physicalFirmwareCompatibility": {
+        "revisions": {
+          "c5dd31f": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c",
+          "c979386": "c97938697b6c7485e7cab50bca9af76996b7d671"
+        },
+        "unknownRevisionPolicy": "warning-admit-as-custom-unqualified-without-source-provenance"
+      }
+    },
+    "firmware": {
+      "repository": "TinySA_Firmware",
+      "owner": "executable-hardware-twin",
+      "bridgeContractVersion": 1,
+      "bridge": "renode-monitor-v1",
+      "firmwareRelease": "lab-v0.2.0-protocol",
+      "firmwareSourceCommit": "d12bd826555eee51505542a55fd184ade5817d58",
+      "firmwareBinarySha256": "a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7"
+    },
+    "signalLab": {
+      "repository": "TinySA_SignalLab",
+      "owner": "stimulus-authoring",
+      "stimulusContractVersion": 1,
+      "closedProfileCount": 79,
+      "sinkStatus": "reserved-not-connected"
+    }
+  },
+  "externalUtilities": {
+    "flasher": {
+      "repository": "TinySA_Flasher",
+      "owner": "firmware-update-control-plane",
+      "runtimeParty": false,
+      "applicationContract": "contracts/flasher-application-v1.json",
+      "applicationContractVersion": 1,
+      "deviceContractVersion": 1,
+      "independence": "no-runtime-build-or-source-dependency-on-the-trio",
+      "exclusiveOwnership": [
+        "firmware-release-selection-and-exact-artifact-metadata",
+        "content-addressed-download-and-cache-verification",
+        "physical-update-preflight-and-dfu-admission",
+        "irreversible-write-authority-and-durable-journaling",
+        "post-write-reboot-and-device-continuity-verification"
+      ],
+      "atomizerBoundary": "Atomizer retains operational firmware compatibility only and exposes no firmware-update operation."
+    }
+  },
+  "edges": [
+    {
+      "producer": "physical-zs407",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "usb-cdc-acm",
+      "assumptions": [
+        "OS discovery completes successfully",
+        "candidate identity is exact-zs407-cdc",
+        "firmware shell identifies ZS407 across the version and info responses",
+        "reported source revision resolves through Atomizer's operational compatibility registry or is explicitly warning-admitted as custom-unqualified",
+        "firmware exposes the complete required command set including zero offset readback"
+      ],
+      "guarantees": [
+        "execution is physical",
+        "usbIdentityVerified is true only after exact identity",
+        "raw serial remains below the typed device service",
+        "scanraw offset is read immediately before binary acquisition and retained as evidence",
+        "one exact physical candidate is automatically connected; multiple exact candidates require operator choice"
+      ]
+    },
+    {
+      "producer": "firmware",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "renode-monitor-bridge",
+      "assumptions": [
+        "Atomizer launches the declared sibling bridge with contractVersion 1",
+        "ready evidence exactly matches the pinned executable-twin release, source commit, binary hash, bridge, and boot signature"
+      ],
+      "guarantees": [
+        "execution is firmware-digital-twin",
+        "usbIdentityVerified is false",
+        "usbTransactionsModeled is false",
+        "sweeps, LCD frames, touch, and generator state originate from executable firmware or fail"
+      ]
+    },
+    {
+      "producer": "signalLab",
+      "consumer": "firmware",
+      "status": "reserved-not-connected",
+      "transport": "future-versioned-stimulus-sink",
+      "assumptions": [
+        "a future sink explicitly accepts SignalLabStimulusIntent contractVersion 1"
+      ],
+      "guarantees": [
+        "SignalLab never impersonates USB hardware",
+        "standards-derived profiles remain visual resource and timing projections unless immutable conformance evidence is added",
+        "no current process scrapes, imports, or applies SignalLab state"
+      ]
+    }
+  ],
+  "admission": {
+    "order": [
+      "complete physical discovery",
+      "if exactly one exact ZS407 candidate exists, suppress the twin and automatically connect that physical candidate",
+      "if multiple exact ZS407 candidates exist, suppress the twin and require operator choice",
+      "if no exact ZS407 candidate exists, expose and automatically connect the executable firmware twin"
+    ],
+    "discoveryFailure": "fail-visible-without-twin-admission",
+    "twinStartupFailure": "fail-visible-without-synthetic-substitution"
+  },
+  "safetyInvariants": [
+    "No component silently retries, reroutes, substitutes, downgrades, or fabricates successful evidence.",
+    "Physical USB and Renode monitor execution are never represented by the same transport or verification label.",
+    "Only Atomizer owns runtime analyzer and generator intent, OpenAI credentials, agent policy, approvals, and instrument orchestration.",
+    "Only Firmware owns executable-twin state and the future SignalLab stimulus sink.",
+    "Only SignalLab owns waveform descriptors, deterministic channel configuration, and stimulus intent.",
+    "TinySA_Flasher is outside the runtime trio and exclusively owns release artifacts, download verification, physical preflight, DFU admission, firmware writes, durable update journals, and post-write verification.",
+    "Atomizer exposes no firmware artifact, update, DFU, journal, or flash API and does not import or launch TinySA_Flasher.",
+    "The runtime trio and TinySA_Flasher have no circular source, build, package, process, or state dependency.",
+    "RF output enable and general firmware-screen touch remain action-time approval boundaries for Atom.",
+    "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
+    "A sweep is admitted to application reducers only when its requested analyzer configuration equals the latest staged revision.",
+    "Host trace Off state and firmware-readback overlay visibility remain separate controls; overlay visibility never mutates firmware trace state.",
+    "Screenshots, device strings, application context, and tool outputs are untrusted data rather than instructions.",
+    "Persistent Realtime sessions expose only load_atom_tools; one loader response selects one to eight exact registered schemas, and application calls outside that response-scoped set are rejected.",
+    "Atomizer configures no output-token cap or reduced truncation window; throughput is controlled through static instructions, pull-based state, and response-scoped schemas.",
+    "The exact AI model is gpt-realtime-2.1 on Realtime API paths; model, endpoint, or transport substitution is forbidden."
+  ],
+  "liveness": [
+    "Every admitted runtime-trio request settles exactly once as success or explicit failure.",
+    "Continuous acquisition terminates on explicit stop, disconnect, or first operation failure.",
+    "Twin boot and every bridge request are bounded by declared timeouts.",
+    "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds.",
+    "TinySA_Flasher availability or update state cannot block Atomizer, Firmware, or SignalLab startup or operation."
+  ],
+  "failureAlgebra": {
+    "invalidInput": "reject-before-state-change",
+    "physicalDiscoveryError": "visible-fatal-admission-error",
+    "identityMismatch": "disconnect-and-reject",
+    "twinReadyMismatch": "terminate-child-and-reject",
+    "incompleteEvidence": "reject-without-projection",
+    "agentSchemaOrPolicyFailure": "reject-before-executor",
+    "highImpactDenial": "return-denial-without-retry",
+    "realtimeConfigurationMismatch": "terminate-session",
+    "signalLabSinkAbsent": "report-reserved-not-connected",
+    "externalFlasherAbsent": "leave-runtime-trio-operational-and-report-firmware-update-out-of-scope"
+  },
+  "compatibility": {
+    "rule": "A producer guarantee must imply every consumer assumption on the same active runtime edge.",
+    "runtimeVersioning": "Any weakened guarantee, stronger assumption, changed runtime owner, changed evidence label, or newly active runtime edge requires a new trio contract version and coordinated commits in all three runtime repositories.",
+    "externalUtilityVersioning": "TinySA_Flasher versions its own application and device contracts independently; changing its release or write policy does not change this runtime composition unless the ownership boundary changes.",
+    "verification": "Release gating requires byte-identical v3 copies in the three runtime repositories, repository-local runtime/build/boundary tests, and independent validation of the referenced TinySA_Flasher application contract."
+  }
+}

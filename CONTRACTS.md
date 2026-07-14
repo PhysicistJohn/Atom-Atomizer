@@ -1,13 +1,13 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: active execution baseline, API v2, trio composition v2, 2026-07-11
+Status: active execution baseline, API v3, trio composition v3, 2026-07-14
 Companion: [PLAN.md](./PLAN.md)
 
-Trio authority: [contracts/trio-composition-v2.json](./contracts/trio-composition-v2.json)
+Trio authority: [contracts/trio-composition-v3.json](./contracts/trio-composition-v3.json)
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 Physical evidence: [docs/PHYSICAL_ZS407_CHARACTERIZATION.md](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
-Firmware update authority: [docs/FIRMWARE_UPDATE_CONTRACT.md](./docs/FIRMWARE_UPDATE_CONTRACT.md)
+Historical embedded-update evidence: [docs/FIRMWARE_UPDATE_CONTRACT.md](./docs/FIRMWARE_UPDATE_CONTRACT.md); active firmware installation is owned exclusively by sibling `../TinySA_Flasher`
 Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 Advanced-measurement authority: [docs/ADVANCED_MEASUREMENTS_CONTRACT.md](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 Stimulus authority: sibling `../TinySA_SignalLab/CONTRACTS.md` (current sink is reserved, not connected)
@@ -33,14 +33,14 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 - One genuine ZS407 is supplied for development and preferably a second for regression/recovery testing.
 - Target platforms are current supported macOS, Windows 11, and one named Linux LTS distribution; final versions are frozen in WP-01.
 - v1 is local-first, single-device, English-language, and has no account, cloud backend, telemetry, browser build, mobile build, or network control.
-- Normal transport is USB CDC serial. Firmware update/DFU is permitted only through the separately governed content-addressed, human-confirmed update contract; raw/generic DFU remains excluded.
+- Normal transport is USB CDC serial. Firmware update and DFU are absent from Atomizer and owned exclusively by the standalone sibling `../TinySA_Flasher`; raw/generic DFU remains excluded here.
 - TypeScript is used throughout application code. Electron hosts a sandboxed React renderer; serial access stays in the main process.
 - Public protocol behavior may be implemented cleanly. GPL code is not copied or linked unless the owner explicitly chooses a compatible distribution license after legal review.
 - Every application capability has an agent-hook disposition in the same package. The exact Atom model, transport, approval, and no-substitution rules are normative rather than optional integration work.
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for API v2, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v2, export serialization, Atom surface v8, the staged firmware updater, and five live workspaces. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
+The current repository has accepted automated evidence for API v3, exact prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, device service, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, Electron v3, export serialization, Atom surface v9, and five live workspaces. Firmware installation is intentionally absent. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
 
 Default no-hardware execution is the sibling `TinySA_Firmware` Renode twin. It boots a pinned firmware binary, proves its release/source/hash/boot declaration, and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`. USB transactions are not modeled and USB identity is never claimed. One exact physical ZS407 suppresses the twin and is automatically admitted; multiple exact devices require selection; no exact device admits the twin. Discovery/identity/source/boot/evidence failure is visible and never activates another backend.
 
@@ -67,11 +67,11 @@ Work-package status is therefore interpreted as follows:
 | WP-17 | Hardware/data gated; no validated modulation or protocol classifier claim |
 | WP-14, WP-21 | Release qualification pending |
 
-### Firmware-update change-control addendum
+### Historical firmware-update handoff
 
-The updater is an explicit expansion of WP-01 identity/provenance, WP-06 device lifecycle, WP-10 Electron integration, WP-13 hardware qualification, WP-14 release safety, and WP-20 Atom governance. Its only accepted target is the pinned OEM Ultra/Ultra+ binary declared in `packages/contracts` and `docs/FIRMWARE_UPDATE_CONTRACT.md`.
+The former embedded updater expanded WP-01 identity/provenance, WP-06 device lifecycle, WP-10 Electron integration, WP-13 hardware qualification, WP-14 release safety, and WP-20 Atom governance. Its accepted physical transaction and safety reasoning remain recorded in `docs/FIRMWARE_UPDATE_CONTRACT.md` and `docs/PHYSICAL_ZS407_CHARACTERIZATION.md` as characterization evidence.
 
-Artifact download and verification may occur automatically after an older supported physical revision is admitted. Self-test/configuration/RF-disconnection attestations, CDC teardown for DFU, and the final firmware write remain local human boundaries. The ZS407 self-test contract is exactly short 50 Ω coax from the SMA connector labeled `CAL` to the SMA connector labeled `RF`, then `CONFIG > SELF TEST`; generic LOW/HIGH wording is rejected. `dfu-util` version, STM32 DFU VID/PID, alternate, target name, candidate cardinality, artifact re-hash, durable pre-subprocess write-attempt evidence, and post-reboot identity are mandatory gates. Atom can observe, explain, download, and detect; every computer-input path rejects attest and flash boundaries. Started, completed, or indeterminate journal evidence forbids another write across process restarts.
+Atomizer no longer exposes firmware-download, preflight, DFU, write, acknowledgement, updater UI, updater IPC, or updater-agent operations. The standalone sibling `../TinySA_Flasher` exclusively owns active firmware installation and must carry forward the content-addressed artifact, local-human boundary, DFU admission, durable journal, and post-reboot identity requirements before it is treated as qualified. Atomizer retains only supported-firmware provenance, custom-firmware warnings, diagnostics, device transport, traces, and twin behavior.
 
 ### Global definition of done
 
@@ -216,7 +216,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 - Branded types for hertz, dBm, dB, microseconds, sweep point count, operation/device/session IDs.
 - Contracts for port candidates, identity, capabilities, snapshots, analyzer/generator configurations, sweeps, traces, markers, screen frames, device events, progress, and typed errors.
-- `TinySaApiV2` request/response/event contract and runtime validators for every IPC input.
+- `TinySaApiV3` request/response/event contract and runtime validators for every IPC input.
 - Compatibility rules: additive evolution, schema versioning, exhaustive discriminated unions, serialization tests.
 
 **Acceptance**
@@ -306,7 +306,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 ## WP-07 — Electron main/preload security bridge
 
-**Outcome:** a minimal secure desktop boundary exposing `TinySaApiV2`.
+**Outcome:** a minimal secure desktop boundary exposing `TinySaApiV3`.
 **Estimate:** 4–7 ED.  
 **Dependencies:** WP-02, WP-04, WP-06.
 
@@ -532,7 +532,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 **Deliverables**
 
 - Exact model constants, Atom system contract, pull-based state access, and typed tool/result/approval contracts.
-- Closed 54-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
+- Closed 50-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
 - Agent-hook completion rule for all future features and source-to-contract traceability.
 - Hobbyist/engineer behavior profiles without changing safety authority.
 
@@ -681,11 +681,11 @@ Nominal total is **181–297 ED**, including signal detection, classification, t
 
 ## 8. Explicit exclusions and optional change packages
 
-Excluded unless added by change order: DFU/firmware flashing; custom tinySA firmware; calibration writes; factory reset; unrestricted raw console; multiple simultaneous devices; remote/network access; cloud sync; accounts; mobile/web apps; automated regulatory/compliance measurements; control of other tinySA/NanoVNA models; third-party executable plug-ins; localization; app-store submission. An internal typed analysis-mode extension interface is included.
+Excluded from Atomizer unless added by change order: DFU/firmware flashing (owned exclusively by sibling `../TinySA_Flasher`); custom tinySA firmware installation; calibration writes; factory reset; unrestricted raw console; multiple simultaneous devices; remote/network access; cloud sync; accounts; mobile/web apps; automated regulatory/compliance measurements; control of other tinySA/NanoVNA models; third-party executable plug-ins; localization; app-store submission. An internal typed analysis-mode extension interface is included.
 
 Potential follow-on packages:
 
-- **CP-01 DFU:** signed firmware catalog, DFU transport, power-loss/recovery qualification.
+- **CP-01 firmware installation:** transferred to the standalone `../TinySA_Flasher` backlog; it is not an Atomizer change package.
 - **CP-02 Multi-device:** identity, parallel operation, UI and resource isolation.
 - **CP-03 Automation API:** authenticated local API, scripting and headless runner with RF safety policy.
 - **CP-04 Additional models:** per-model hardware characterization and capability profiles.

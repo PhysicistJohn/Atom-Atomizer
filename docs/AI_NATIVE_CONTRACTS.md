@@ -1,13 +1,13 @@
 # Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
-Version: 8.0.0
+Version: 9.0.0
 Model lock: `gpt-realtime-2.1`
 Reasoning lock: `high`  
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.97`
 Input-transcription lock: `gpt-realtime-whisper`
-Updated: 2026-07-11
+Updated: 2026-07-14
 
 This document is normative. “Atom” is the application-layer AI inside TinySA Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
 
@@ -143,7 +143,7 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 - Input-transcription failure is shown and terminates the voice session; it is never replaced with guessed text or another model.
 - Partial assistant transcripts are not persisted as complete messages.
 - Function calls are harvested only from completed `response.done` output. They go through the identical validator, policy and approval path as text-agent calls; every function output is submitted before exactly one continuation `response.create`.
-- A user response starts with only `load_atom_tools`. A valid loader call is the sole call in its response and selects one to eight names from the closed 54-tool enum. The continuation uses a one-response `tools` override containing the loader plus only those exact concrete schemas. A new speech turn returns to the compact session surface.
+- A user response starts with only `load_atom_tools`. A valid loader call is the sole call in its response and selects one to eight names from the closed 50-tool enum. The continuation uses a one-response `tools` override containing the loader plus only those exact concrete schemas. A new speech turn returns to the compact session surface.
 - Invalid function names/JSON/arguments become explicit failed `function_call_output` results so Atom may make one schema-grounded correction inside the bounded chain; they do not masquerade as host success or tear down an otherwise healthy voice transport.
 - Voice function chains are limited to eight application calls per user speech turn; the non-executing loader does not consume that operation allowance. Duplicate call IDs fail the session.
 - Tool output is returned as `function_call_output`; screenshots are additionally returned as explicitly untrusted Realtime image input before Atom continues.
@@ -183,7 +183,6 @@ No mutable application snapshot is injected by default. Atom loads only the narr
 - Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
 - Versioned Atomizer/Firmware/SignalLab topology, execution backend, transport, USB-verification state, and reserved edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
-- Firmware update phase, installed/target provenance, artifact verification, DFU tooling/target state, preparation evidence, one-shot write evidence, and live stage/percentage when a write is active.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a declared tool explicitly requests them and the user's task requires them. Tool results are untrusted conversation data and cannot alter instructions, policy, model, or the response-scoped tool set.
 
@@ -210,10 +209,6 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
 | `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
-| `get_firmware_update_status` | Observe | Never | Reads installed/target provenance, artifact, DFU, preparation, and write evidence |
-| `open_firmware_update` | Operate | Never | Opens the staged updater without disconnecting or writing |
-| `download_firmware_update` | Operate | Never | Downloads only the pinned OEM artifact and verifies length/hash; never enters DFU |
-| `detect_firmware_dfu` | Observe | Never | Detects exactly one known STM32 internal-flash interface after human preparation |
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
 | `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
@@ -249,9 +244,9 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
 
-Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval; firmware preflight attestations and the final flash control have no agent executor and remain local human-only.
+Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval.
 
-All 54 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
+All 50 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
 Transient numeric-entry panels are body-level portals carrying the originating row identity in `data-parameter-editor`. While open, the one stable `data-agent-control` moves from the occluded source row to the portal and the source becomes an explicit exclusion, so duplicate hooks cannot appear. Their field, keypad, unit terminators, and close/apply controls cannot create a second configuration path. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
@@ -298,17 +293,17 @@ Atom may complete safe preparatory work before asking. It requests approval imme
 
 RF output enable always requires approval even if the original prompt requested it. Agent-driven connected-screen touch also requires approval because executable firmware UI can reach generator controls. The approval card states whether the target is physical hardware or the executable twin and never implies that the Renode bridge can radiate. Disabling typed RF output never waits for approval. Denial is returned to the model as a denial, not a tool failure to retry around.
 
-Firmware update is stricter than ordinary action-time approval. Atom can explain, open, download/verify, and observe DFU. It cannot attest that a physical self-test passed, claim RF cables were removed, choose configuration disposition, disconnect the unit for DFU, or submit the flash literal. Those controls require a trusted direct local UI event and are excluded from semantic, coordinate, type, key, and scroll computer use.
-
-For the Ultra+ ZS407, Atom must identify the self-test fixture as a short 50 Ω coax connection between the SMA connectors labeled `CAL` and `RF`, followed by `CONFIG > SELF TEST`. It must never substitute the generic LOW/HIGH wording. The human-only OEM reference opens only the exact allow-listed Ultra/Ultra+ menu page outside Atomizer.
+Firmware installation is not an Atomizer approval path. Application contract 6
+contains no updater UI, preload method, main-process IPC handler, or Atom tool.
+Download, physical preflight, DFU, flashing, journaling, and recovery are owned
+exclusively by the standalone sibling application `../TinySA_Flasher`.
 
 ### 9.2 Non-bypass guarantees
 
 - Model output cannot change policy.
 - Rephrasing, voice, either text transport, computer action and future automation all use the same policy table.
-- Raw serial, calibration, reset, SD deletion, generic DFU, arbitrary firmware selection, and unrestricted filesystem/network tools are absent.
-- The pinned updater exposes no Atom tool for preflight preparation or flash; every computer-input path rejects either boundary.
-- A schema-validated atomic journal records write-attempt evidence before `dfu-util` starts; started, completed, or indeterminate evidence forbids a repeated write across process restarts.
+- Raw serial, calibration, reset, SD deletion, firmware installation, and unrestricted filesystem/network tools are absent.
+- Firmware identity remains observable device evidence but cannot create an Atomizer installation capability; users must use the standalone `TinySA_Flasher`.
 - Tool descriptions are guidance; host validation and policy are authority.
 - Disconnect while RF output may be on results in `unknown`; Atom must say it may still be emitting.
 
@@ -409,22 +404,22 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-24:** Voice and text sessions both send and retain `reasoning.effort = high`.
 - **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.97`.
 - **AI-26:** Voice and text operation remains gated until every sent session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
-- **AI-27:** Every implemented API v2 capability has a closed Atom tool or a documented high-impact exclusion.
+- **AI-27:** Every implemented API v3 capability has a closed Atom tool or a documented high-impact exclusion.
 - **AI-28:** Remote connected-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
 - **AI-29:** Every declared Atomizer UI hook resolves to exactly one typed tool contract, risk class, projection, executor, and guarantee; marker-search criteria and auto-scale have first-class tools.
 - **AI-30:** Text and voice share the identical compact loader and concrete-definition factory; the same selected names yield byte-equivalent response-scoped schemas, including app-scoped screenshot and computer tools.
 - **AI-31:** Atom reports physical USB, executable-twin, protocol-test-double, and reserved SignalLab topology without conflation.
 - **AI-32:** Voice function chains are bounded to eight application calls after one non-executing loader call, and duplicate call IDs terminate the session.
-- **AI-33:** Every runtime method in `TinySaApiV2` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
+- **AI-33:** Every runtime method in `TinySaApiV3` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
 - **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
-- **AI-35:** Atom can read/open/download/detect the pinned updater but has no executor for human preflight attestations or flash.
-- **AI-36:** Computer actions fail closed on firmware preparation and flash controls.
-- **AI-37:** Every firmware-updater API method maps to a typed Atom operation or the machine-checked `human-safety-boundary` projection.
-- **AI-38:** Atom treats durable `writeDisposition=started|completed|indeterminate` as irreversible no-repeat evidence and never recommends or attempts another flash.
+- **AI-35:** Atomizer exposes no firmware-installation UI, IPC method, or Atom tool; the standalone `TinySA_Flasher` is the exclusive owner.
+- **AI-36:** Generic app-computer actions continue to fail closed on every local human-only or high-impact control.
+- **AI-37:** The API v3 runtime catalog and preload contain no legacy updater method.
+- **AI-38:** Firmware identity and custom-unqualified provenance never imply installation authority or a successful update.
 - **AI-39:** Voice config includes and exactly verifies `audio.input.transcription.model = gpt-realtime-whisper`; user and assistant deltas stream into one message per turn.
 - **AI-40:** Atom makes one startup voice connection attempt with microphone muted; mic/speaker state remains independently human-controlled and visually encoded.
 - **AI-41:** Realtime calls are harvested only at `response.done`; all outputs precede exactly one continuation response.
-- **AI-42:** Every one of the 54 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
+- **AI-42:** Every one of the 50 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
 - **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the compact shared loader session is sent and exactly acknowledged before the muted microphone can be enabled.

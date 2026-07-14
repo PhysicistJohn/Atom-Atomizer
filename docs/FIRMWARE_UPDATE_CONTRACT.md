@@ -1,8 +1,15 @@
 # ZS407 firmware update contract
 
-Status: implementation baseline; one physical write and reboot identity accepted
-Version: 1.1.0
-Updated: 2026-07-11
+Status: historical Atomizer record; active implementation owned by `../TinySA_Flasher`
+Version: 1.2.0
+Updated: 2026-07-14
+
+Beginning with Atomizer application contract 6 and device API v3, TinySA contains
+no firmware download, preflight, DFU detection, or flash implementation and no
+Atom tool or renderer control for those operations. The standalone sibling
+application `../TinySA_Flasher` is their exclusive owner. References to Atomizer
+below describe the accepted pre-extraction implementation and preserved physical
+transaction evidence; they are not a current Atomizer capability or API contract.
 
 This contract governs Atomizer’s updater for one verified physical tinySA Ultra+ ZS407. It does not create a generic firmware browser or accept “latest” by filename, directory order, redirect, or server metadata.
 

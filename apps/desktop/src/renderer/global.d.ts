@@ -1,7 +1,7 @@
-import type { TinySaApiV2 } from '@tinysa/contracts';
+import type { TinySaApiV3 } from '@tinysa/contracts';
 import type { AgentStatus, AgentTurnRequest, AgentTurnResult } from '@tinysa/agent';
 declare global { interface Window {
-  tinySA: TinySaApiV2;
+  tinySA: TinySaApiV3;
   atomAgent: { status():Promise<AgentStatus>; createRealtimeCall(sdp:string):Promise<string>; agentTurn(request:AgentTurnRequest):Promise<AgentTurnResult>;
     computerScreenshot():Promise<{kind:'tinysa-atomizer-screenshot';screenshotId:string;imageDataUrl:string;width:number;height:number;capturedAt:string;focusedTarget:string}>;
     computerClick(value:{screenshotId:string;x:number;y:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;

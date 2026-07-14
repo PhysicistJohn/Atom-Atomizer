@@ -8,4 +8,4 @@ TinySA Atomizer no longer contains, launches, or controls a SignalLab companion.
 
 The only current runtime substitute for absent physical hardware is the executable twin owned by `../TinySA_Firmware`. That twin executes pinned firmware over `renode-monitor-bridge` and explicitly does not model USB transactions.
 
-The cross-repository source of truth is [trio-composition-v2.json](../contracts/trio-composition-v2.json). Any activation of a SignalLab stimulus sink requires a new coordinated trio contract version.
+The cross-repository source of truth is [trio-composition-v3.json](../contracts/trio-composition-v3.json). Any activation of a SignalLab stimulus sink requires a new coordinated trio contract version.

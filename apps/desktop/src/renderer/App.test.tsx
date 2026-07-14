@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_VERSION,
   FIRMWARE_SOURCE_COMMIT,
-  OEM_ZS407_FIRMWARE_RELEASE,
   TINYSA_SHELL_PROMPT,
   TINYSA_USB_PRODUCT_ID,
   TINYSA_USB_VENDOR_ID,
@@ -83,8 +82,6 @@ beforeEach(() => {
     configureGenerator: vi.fn().mockResolvedValue({ ...ready, mode: 'generator' }),
     setGeneratorOutput: vi.fn().mockResolvedValue({ ...ready, mode: 'generator', generatorOutput: 'on' }),
     readDiagnostics: vi.fn(), captureScreen: vi.fn(), touch: vi.fn(), releaseTouch: vi.fn(), exportSweep: vi.fn(),
-    getFirmwareUpdateState: vi.fn().mockResolvedValue({ phase: 'idle', target: OEM_ZS407_FIRMWARE_RELEASE, updateAvailable: false, dfuUtility: { available: false }, dfuDevice: { detected: false, count: 0 }, writeDisposition: 'not-started' }),
-    downloadFirmwareUpdate: vi.fn(), prepareFirmwareUpdate: vi.fn(), detectDfuDevice: vi.fn(), flashFirmwareUpdate: vi.fn(),
     subscribe: vi.fn().mockImplementation((listener: (event: DeviceEvent) => void) => { deviceEventListener = listener; return vi.fn(); }),
   };
   window.atomAgent = {
@@ -393,7 +390,7 @@ describe('operator vertical slice', () => {
 
   it('returns a blocked app-computer action to Atom as a failed tool result', async () => {
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
-    vi.mocked(window.atomAgent.computerClick).mockResolvedValue({ ok: false, action: 'click', target: 'firmware.flash', reason: 'This control is a local human-only boundary' });
+    vi.mocked(window.atomAgent.computerClick).mockResolvedValue({ ok: false, action: 'click', target: 'atom.microphone-mute', reason: 'This control is a local human-only boundary' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'c0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'load-click', name: 'load_atom_tools', arguments: '{"toolNames":["computer_click"]}' }] })
       .mockResolvedValueOnce({ conversationId: 'c1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'blocked-click', name: 'computer_click', arguments: '{"screenshotId":"123e4567-e89b-42d3-a456-426614174000","x":100,"y":100}' }] })
@@ -401,7 +398,7 @@ describe('operator vertical slice', () => {
 
     render(<App/>);
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
-    fireEvent.change(composer, { target: { value: 'Click the final flash control.' } });
+    fireEvent.change(composer, { target: { value: 'Click the microphone mute control.' } });
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
     await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));

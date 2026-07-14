@@ -6,6 +6,11 @@ Host: macOS, USB CDC ACM
 
 This record separates facts observed on the delivered unit from source-derived limits and unperformed RF qualification. It is evidence for Gate B; it is not a calibration certificate.
 
+Firmware-update references below describe the accepted 2026-07-11 physical
+transaction performed by the former embedded updater. Beginning with Atomizer
+application contract 6 and device API v3, active firmware installation is
+absent from this repository and owned exclusively by `../TinySA_Flasher`.
+
 ## Admitted unit
 
 | Evidence | Observed value |

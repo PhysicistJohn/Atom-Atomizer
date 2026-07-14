@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, session } from 'electron';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +8,6 @@ import { config as loadEnv } from 'dotenv';
 import {
   API_VERSION,
   analyzerConfigSchema,
-  firmwareFlashRequestSchema,
-  firmwareUpdatePreflightSchema,
   generatorConfigSchema,
   portCandidateSchema,
   screenPointSchema,
@@ -23,8 +21,6 @@ import { parseAtomLoadedToolNames, type AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
 import { selectStartupInstrument } from './startup-admission.js';
-import { FirmwareUpdater } from './firmware-updater.js';
-import { isAllowedOfficialReference } from './official-references.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
@@ -38,7 +34,6 @@ const computer = new AppComputerHarness();
 let mainWindow: BrowserWindow | undefined;
 let shutdownStarted = false;
 app.setName('TinySA Atomizer');
-const firmwareUpdater = new FirmwareUpdater(join(app.getPath('userData'), 'firmware'), device);
 
 function registerIpc(): void {
   ipcMain.handle('tinysa:list', () => device.listDevices());
@@ -72,11 +67,6 @@ function registerIpc(): void {
     await writeFile(selection.filePath, content, { encoding: 'utf8', flag: 'w' });
     return { status: 'saved' as const, path: selection.filePath, format: request.format, bytesWritten: Buffer.byteLength(content) };
   });
-  ipcMain.handle('tinysa:firmware:state', () => firmwareUpdater.state());
-  ipcMain.handle('tinysa:firmware:download', () => firmwareUpdater.download());
-  ipcMain.handle('tinysa:firmware:prepare', (_event, value: unknown) => firmwareUpdater.prepare(firmwareUpdatePreflightSchema.parse(value)));
-  ipcMain.handle('tinysa:firmware:detect-dfu', () => firmwareUpdater.detectDfu());
-  ipcMain.handle('tinysa:firmware:flash', (_event, value: unknown) => firmwareUpdater.flash(firmwareFlashRequestSchema.parse(value)));
   ipcMain.handle('ai:status', () => ai.status());
   ipcMain.handle('ai:realtime:call', (_event, sdp: unknown) => { if(typeof sdp!=='string')throw new TypeError('sdp must be a string');return ai.createRealtimeCall(sdp); });
   ipcMain.handle('ai:agent:turn', (_event, request: unknown) => ai.agentTurn(validateAgentTurnRequest(request)));
@@ -129,16 +119,7 @@ async function createWindow(): Promise<void> {
     else if (level === 2) console.warn(rendered);
     else console.info(rendered);
   });
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedOfficialReference(url)) {
-      void shell.openExternal(url).catch((error) => {
-        const message = `Opening the allow-listed OEM reference failed: ${error instanceof Error ? error.message : String(error)}`;
-        console.error(message, error);
-        win.webContents.send(`tinysa:event:v${API_VERSION}`, { type: 'error', error: { code: 'unsupported', message, recoverable: true } } satisfies DeviceEvent);
-      });
-    }
-    return { action: 'deny' };
-  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('render-process-gone', (_event, details) => {
     if (!device.streaming) return;

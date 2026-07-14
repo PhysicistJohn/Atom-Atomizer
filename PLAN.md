@@ -1,8 +1,8 @@
 # TinySA Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: device API 2, Atom surface 4, trio composition 2
-Updated: 2026-07-11
+Contract/API version: device API 3, Atom surface 9, application contract 6, trio composition 3
+Updated: 2026-07-14
 Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
 
 ## Outcome
@@ -18,7 +18,7 @@ operator / Atom voice / Atom text / app-only computer actions
                             |
                     React application host
                             |
-                  TinySaApiV2 preload contract
+                  TinySaApiV3 preload contract
                             |
              Electron main validation + lifecycle
                             |
@@ -35,7 +35,7 @@ TinySA SignalLab -- reserved future stimulus intent --> Firmware sink
 
 No layer may substitute a lower layer after failure. In particular, typed command failure never falls through to physical-screen clicking, another command spelling, another transport, another model, or simulation.
 
-## Firmware-derived facts now frozen in host v2
+## Firmware-derived facts now frozen in the host contract
 
 - USB CDC ACM identity is `0483:5740`, product `tinySA4`.
 - Commands are printable ASCII terminated by CR, echoed exactly, and complete at `ch> ` after the echo.
@@ -57,22 +57,22 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v2, Atom surface v8, byte-identical trio composition v2, physical/OEM firmware provenance, updater, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict API v3, Atom surface v9, application contract v6, byte-identical trio composition v3, physical/OEM firmware provenance, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
 | Executable Firmware twin | physical-first admission; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
-| Separate SignalLab | independent repository/app; 79 closed profiles; seeded AWGN/Rayleigh; versioned stimulus intent | Firmware-owned sink remains reserved-not-connected until coordinated trio contract v2 |
+| Separate SignalLab | independent repository/app; 79 closed profiles; seeded AWGN/Rayleigh; versioned stimulus intent | Firmware-owned sink remains reserved-not-connected until a coordinated future trio contract activates it |
 | Device service | closed shipped/OEM revision registry, cross-response ZS407 identity, capability catalog, analyzer readback, physically consistent text/raw sweeps, diagnostics, screen/touch, safe generator | complete physical timing, fault, touch, RF and recovery matrices |
-| Electron bridge | API v2 handlers, runtime validation, event subscription, export dialog, sandbox | CSP hardening audit and IPC abuse suite |
+| Electron bridge | API v3 handlers, runtime validation, event subscription, export dialog, sandbox; no firmware-installation IPC | CSP hardening audit and IPC abuse suite |
 | Spectrum | one no-scroll four-view stage; analyzer/trigger controls; four traces; eight markers/search/delta/noise; amplitude scaling; Spectrum; coherent Waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; detected-envelope Time/STFT; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
 | Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
 | Classification | morphology evidence, ranked candidates, unknown rejection, zero-span envelope mode | labeled physical corpus and validated modulation/protocol model |
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
-| Firmware update | pinned OEM download, exact byte/hash verification, private cache, audited human preflight, dfu-util 0.11/0483:df11 admission, one-shot write state, post-reboot identity verification | install prerequisite, physical pre/post self-test and first write/recovery evidence |
-| Atom | exact full model, high reasoning, Ballad, VAD 0.97, one compact loader plus response-scoped concrete tools, live API usage/TPM telemetry, live DOM control topology, screenshots, policies, contextual approvals, updater observation/preparation boundary, full setting-echo verification | live eval corpus, safety identifier policy, production credential storage |
+| Firmware installation boundary | absent from Atomizer; standalone sibling `../TinySA_Flasher` exclusively owns download, verification, preflight, DFU, writing, journaling, recovery, and post-reboot identity | qualify the standalone Flasher independently; preserve historical evidence here without restoring an embedded path |
+| Atom | exact full model, high reasoning, Ballad, VAD 0.97, one compact loader plus response-scoped concrete tools, live API usage/TPM telemetry, live DOM control topology, screenshots, policies, contextual approvals, full setting-echo verification; no firmware-installation tools | live eval corpus, safety identifier policy, production credential storage |
 | UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 
 ## Execution gates
@@ -134,7 +134,7 @@ Complete only after clean install/connect/sweep on frozen macOS, Windows, and Li
 
 The exact model is `gpt-realtime-2.1`, which the official model catalog describes as a reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
 
-Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 54-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
+Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 50-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
 
 Every application capability ships with a domain contract, closed agent schema, risk class, executor through the same application host, context projection, UI activity, tests, and docs. RF enable and remote physical-screen touch require action-time approval. Computer clicks are application-only and DOM-hit-tested; every coordinate action consumes a short-lived screenshot ID, focus-sensitive input verifies the expected target, and high-impact targets are blocked.
 
@@ -148,4 +148,4 @@ Every application capability ships with a domain contract, closed agent schema, 
 6. Build the RF capture corpus only after hardware/session provenance is stable.
 7. Freeze platform support, packaging, credential storage, and release policy after hardware Gate B.
 
-Calibration writes, unrestricted raw console, SD deletion, cloud accounts, telemetry, remote network control, and multi-device orchestration remain excluded until separately contracted. DFU is limited to `docs/FIRMWARE_UPDATE_CONTRACT.md`: content-addressed OEM download may be automatic, but preflight and flash are explicit local human boundaries. Silent firmware installation remains forbidden.
+Calibration writes, unrestricted raw console, SD deletion, cloud accounts, telemetry, remote network control, and multi-device orchestration remain excluded until separately contracted. Firmware download, DFU, flashing, acknowledgement, and recovery are absent from Atomizer and owned exclusively by the standalone sibling `../TinySA_Flasher`. `docs/FIRMWARE_UPDATE_CONTRACT.md` is retained here as historical characterization and handoff evidence; silent firmware installation remains forbidden.

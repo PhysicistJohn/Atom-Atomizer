@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { TINYSA_API_V2_METHODS } from '@tinysa/contracts';
+import { TINYSA_API_V3_METHODS } from '@tinysa/contracts';
 import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, ATOM_MAX_LOADED_TOOLS, ATOM_TOOL_LOADER_NAME, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeResponseTools, createAtomRealtimeToolResponseConfig, createAtomRealtimeVoiceSessionConfig, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, realtimeToolDefinitions, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
 
 const validToolArguments = {
   get_application_state: {}, get_system_topology: {}, get_agent_surface: {}, get_instrument_state: {}, get_latest_sweep_summary: {},
-  get_detection_results: {}, get_classification_results: {}, read_device_diagnostics: {}, get_firmware_update_status: {}, open_firmware_update: {},
-  download_firmware_update: {}, detect_firmware_dfu: {}, list_connection_candidates: {}, connect_device: { candidateId: 'candidate-1' }, disconnect_device: {},
+  get_detection_results: {}, get_classification_results: {}, read_device_diagnostics: {},
+  list_connection_candidates: {}, connect_device: { candidateId: 'candidate-1' }, disconnect_device: {},
   inspect_interface: {}, computer_action: { controlId: 'measurement.setup', action: 'activate' }, computer_screenshot: {}, computer_click: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20 },
   computer_type: { expectedTarget: 'analyzer.start', text: '98000000' }, computer_key: { expectedTarget: 'analyzer.start', key: 'ENTER' }, computer_scroll: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20, deltaX: 0, deltaY: 120 },
   navigate_workspace: { workspace: 'spectrum' }, configure_analyzer: { startHz: 93_000_000, stopHz: 95_000_000 }, acquire_sweep: {},
@@ -56,7 +56,7 @@ describe('Atom agent contracts',()=>{
   });
   it('has unique, closed tool names',()=>expect(new Set(agentToolDefinitions.map(t=>t.name)).size).toBe(agentToolDefinitions.length));
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(54);
+    expect(agentToolDefinitions).toHaveLength(50);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -68,7 +68,7 @@ describe('Atom agent contracts',()=>{
       assertClosedDescribedObjects(tool.name,tool.parameters);
     }
   });
-  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 54 tools',()=>{
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 50 tools',()=>{
     expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     for(const tool of agentToolDefinitions){
@@ -136,8 +136,8 @@ describe('Atom agent contracts',()=>{
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
   });
-  it('has an evidence and failure disposition for every TinySaApiV2 method',()=>{
-    expect(Object.keys(agentApiCoverage)).toEqual(TINYSA_API_V2_METHODS);
+  it('has an evidence and failure disposition for every TinySaApiV3 method',()=>{
+    expect(Object.keys(agentApiCoverage)).toEqual(TINYSA_API_V3_METHODS);
     const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
     for(const coverage of Object.values(agentApiCoverage)){
       expect(coverage.tools.length).toBeGreaterThan(0);

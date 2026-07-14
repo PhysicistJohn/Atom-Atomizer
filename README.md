@@ -2,15 +2,16 @@
 
 TinySA Atomizer is an AI-native Electron control plane for the tinySA Ultra+ ZS407. It owns operator intent, physical USB orchestration, measurement projections, and Atom—the application-layer voice and tool-using RF agent.
 
-The live system is deliberately split into three independently versioned repositories:
+The live system is deliberately split into four independently versioned repositories:
 
 | Repository | Sole owner | Current edge |
 |---|---|---|
 | `TinySA` | Operator app, physical USB, measurement analysis, Atom policy and approvals | Physical ZS407 or Firmware twin |
 | `TinySA_Firmware` | Pinned executable Renode twin and bridge | Active Atomizer producer |
 | `TinySA_SignalLab` | Canonical scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Corpus is a pinned build-time source; no live stimulus sink is connected |
+| `TinySA_Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Exclusive firmware-installation owner; no Atomizer runtime edge |
 
-The normative composition is byte-identical in all three repositories at [trio-composition-v2.json](./contracts/trio-composition-v2.json). Physical USB and the Renode monitor bridge are never represented as the same transport or evidence class.
+The normative Atomizer/Firmware/SignalLab runtime composition remains byte-identical in those three repositories at [trio-composition-v3.json](./contracts/trio-composition-v3.json). Physical USB and the Renode monitor bridge are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../TinySA_Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
 ## Run
 
@@ -21,7 +22,7 @@ Requirements:
 - Renode and the pinned Firmware twin dependencies declared by that repository.
 - `../TinySA_SignalLab` when running SignalLab or regenerating/validating the
   Bayesian observable-class model; the Atomizer runtime does not connect to it.
-- `dfu-util` 0.11 only when performing a physical firmware update (`brew install dfu-util` on this development Mac).
+- `../TinySA_Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
 
 ```bash
 npm install
@@ -72,7 +73,7 @@ Both AI paths use exactly `gpt-realtime-2.1`:
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both response paths use the identical closed registry of 54 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical closed registry of 50 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
 Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
 
@@ -80,7 +81,7 @@ Every sent Realtime session setting is recursively compared with the API’s `se
 
 WebRTC admission sends only the immutable exact-model bootstrap with SDP. Atom then sends the voice, reasoning, transcription, concise instruction, and compact loader configuration over the data channel and keeps the microphone disabled until the API echoes it exactly. Text configures the same static loader contract once rather than rewriting instructions or injecting mutable application state every turn. Atomizer sets no output-token cap or reduced context/truncation window; throughput comes from response-scoped schema loading, not artificial token limits.
 
-Atom’s application surface is contract version 5:
+Atom’s application surface is contract version 6:
 
 - Every declared UI hook resolves to exactly one preferred typed tool, risk class, evidence projection, executor, and guarantee.
 - The same validator, policy table, action-time approval, and executor serve voice and text.
@@ -89,7 +90,7 @@ Atom’s application surface is contract version 5:
 - App screenshots are treated as untrusted image data.
 - Coordinate actions are confined to the Atomizer window and fail closed on high-impact DOM targets.
 - RF-output enable and general firmware-screen touch require immediate human approval.
-- Firmware status, pinned download, and DFU detection are first-class tools; preflight attestations and the one-shot flash control are explicit local human-only exclusions.
+- Firmware installation has no Atomizer tool or UI executor; the standalone `TinySA_Flasher` owns that physical workflow.
 - Tool loops are bounded to eight operations.
 - Unknown tools and malformed arguments return explicit failed tool evidence for one bounded schema-grounded correction. Missing evidence, duplicate Realtime calls, unavailable conversations, and session-protocol failure stop visibly without retry or reroute.
 
@@ -132,7 +133,7 @@ Atom’s application surface is contract version 5:
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.
 - Sandboxed Electron renderer, allow-listed preload IPC, app-scoped computer harness, and exact-model Atom gateway.
-- Content-addressed OEM updater with automatic download, private cache, audited preflight, exact STM32 DFU admission, one-shot write semantics, post-reboot identity verification, and human-only flash authority.
+- Firmware identity and custom-firmware provenance remain visible, but installation is deliberately absent and delegated exclusively to the standalone `TinySA_Flasher`.
 
 ## Safety and evidence boundary
 
@@ -249,7 +250,7 @@ verifies generator output returns off.
 ## Workspace map
 
 - `apps/desktop`: Electron main/preload, React operator UI, Atom host, and app computer harness.
-- `packages/contracts`: runtime-validated device, transport, measurement, safety, and API v2 types.
+- `packages/contracts`: runtime-validated device, transport, measurement, safety, and API v3 types.
 - `packages/tinysa`: physical serial transport, executable-twin adapter, parser, scheduler, and device service.
 - `packages/test-device`: deterministic protocol test double used only by tests.
 - `packages/analysis`: traces, markers, detection, metrics, channel analysis, morphology, and envelope STFT.
@@ -266,11 +267,11 @@ This installs `~/Applications/TinySA Atomizer Dev.app`, binds it to this checkou
 
 ## Normative contracts
 
-- [Trio composition](./contracts/trio-composition-v2.json)
+- [Trio composition](./contracts/trio-composition-v3.json)
 - [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 - [Physical ZS407 characterization](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
-- [Firmware update](./docs/FIRMWARE_UPDATE_CONTRACT.md)
+- [Historical firmware-update contract and standalone ownership handoff](./docs/FIRMWARE_UPDATE_CONTRACT.md)
 - [Markers, traces, display, and trigger](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 - [Waterfall, channel measurements, OBW/ACP, and envelope STFT](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 - [Bayesian detection and classification research basis](./docs/BAYESIAN_DETECTION_CLASSIFICATION_RESEARCH.md)
