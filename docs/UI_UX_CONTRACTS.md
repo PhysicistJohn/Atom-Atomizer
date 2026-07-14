@@ -2,7 +2,7 @@
 
 Status: execution baseline  
 Version: 2.3.0
-Updated: 2026-07-11
+Updated: 2026-07-14
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
 
@@ -68,7 +68,7 @@ speaking, and error states; a redundant microphone connection button is absent.
 |---|---|---|---|
 | Spectrum | WS-SPC | Configure and acquire a trace | Core |
 | Detection | WS-DET | Find and inspect emissions | Core |
-| Classification | WS-CLS | Characterize spectral morphology and zero-span envelope evidence | Experimental core; validated modulation/protocol model gated |
+| Classification | WS-CLS | Infer open-set-oriented scalar-observable evidence classes | Experimental fixed empirical Bayesian core; physical calibration and protocol identity gated |
 | Generator | WS-GEN | Configure and deliberately enable RF output | Software core; physical qualification pending |
 | Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical diagnostics/capture accepted, touch qualification pending |
 
@@ -78,7 +78,14 @@ Durable saved sessions, comparison, settings, and support-bundle workflows remai
 
 Startup completes physical discovery before choosing an execution backend. Exactly one `0483:5740` ZS407 suppresses the twin and is automatically connected through identity, firmware-source, and command-catalog admission. Multiple exact devices suppress the twin and open operator selection. When no exact ZS407 exists, main exposes and automatically connects the sibling Firmware repository's pinned executable Renode twin. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. Discovery, identity/source, or twin boot/evidence failure is visible; no synthesized or test backend is substituted.
 
-SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither launches it nor imports its state. The future `SignalLabStimulusIntent -> Firmware stimulus sink` edge is displayed to Atom as `reserved-not-connected`. Activating it requires a new coordinated trio contract; current UI must not expose dead SignalLab controls or claim that its 79-profile catalog is feeding the instrument.
+SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither
+launches it nor imports its runtime state. Its immutable canonical scalar corpus
+is a pinned build-time source for the generated Bayesian observable model; the
+79-profile visual catalog is not the posterior taxonomy and is not feeding the
+instrument. The future `SignalLabStimulusIntent -> Firmware stimulus sink` edge
+is displayed to Atom as `reserved-not-connected`. Activating it requires a new
+coordinated trio contract; the UI must not expose dead SignalLab controls or
+imply a live generator-to-classifier side channel.
 
 ### 2.3.1 Firmware update flow
 
@@ -326,7 +333,12 @@ interface SignalDetectionConfig {
 }
 ```
 
-Required result fields: stable event ID, start/stop/peak frequencies, peak power, measured local prominence, effective local prominence threshold, estimated bandwidth, first/last timestamps, source sweep IDs, detector version/configuration, and quality flags.
+Required result fields: stable event ID, start/stop/peak frequencies, peak
+power, measured local prominence, effective local prominence threshold,
+estimated bandwidth, first/last timestamps, source sweep IDs, detector and
+tracker versions/configuration, Bayesian prior/posterior and log Bayes factor,
+effective target/reference cells, assumed noise shape, observed and target
+posterior-predictive null tail, accumulated looks, and quality flags.
 
 ### UX-DET-01 — Configure detector
 
@@ -346,11 +358,57 @@ Required result fields: stable event ID, start/stop/peak frequencies, peak power
 
 ### UX-DET-03 — Track across sweeps
 
-`SignalDetector` Bayesian threshold detector v1 first applies the declared absolute/adaptive global threshold, bridges only bounded gaps of at most two returned sweep bins, and estimates each candidate's local shoulder level and robust sigma from neighboring returned bins. This is not named or claimed as CFAR because no target false-alarm probability is enforced. A candidate must clear both `minimumProminenceDb` and four local robust sigmas. It then computes a Bayes factor between a local-noise mean and a positive mean-shift mixture, using a declared 1% per-candidate signal prior and RBW-limited effective independent-bin count. Only posterior signal probability at or above 0.99 is admitted. Every detection retains the prior, posterior, log Bayes factor, noise sigma, observed mean shift, effective bins, and accumulated looks. The model is a host-side engineering detector over returned scalar bins; firmware FFT capacity is not represented as instantaneous RF FFT evidence, and the posterior is conditional on this declared model rather than a calibrated probability of physical truth.
+`SignalDetector` with `bayesian-exponential-multiscale-cfar-v3` first applies
+the declared absolute/adaptive segmentation threshold and bridges only bounded
+gaps of at most two returned sweep bins. At each segment peak it evaluates the
+members of a predefined narrow-to-wide region family. The multiplicity count
+includes every possible raw-bin center and every acquisition-derived scale, so
+data-dependent segmentation cannot reduce the correction. In linear power,
+each test integrates the unknown local-noise rate from untrimmed outside
+references and compares the null with a declared positive-power-gain mixture.
+Until physical calibration exists, the model fixes the noise shape to the
+heavier-tailed single-look exponential baseline and limits effective target and
+reference counts by RBW. A candidate must clear the prominence rules,
+posterior signal probability 0.99 under prior 0.01, and predictive tail
+`0.001 / (raw points × tested scales)`.
 
-Tracking is a separate stateful stage from sweep-local segmentation. `SignalTracker` v2 greedily associates highest-score candidates by occupied-range overlap and peak-frequency distance bounded by three returned bins or observed bandwidth. It promotes a stable ID after `minimumConsecutiveSweeps`, records missed sweeps, emits one explicit `released` result after the configured miss window, and then removes the track. Only active tracks enter classification. Configuration changes reset the tracker rather than rewriting prior provenance. Merge/split policy remains one-to-one best match and must change version if revised.
+The 0.001 value is an ideal-model familywise per-sweep target by a Bonferroni
+union bound; it is not an achieved tinySA false-alarm rate. Detector/log
+response, marginal noise law, RBW correlation, nonstationarity, overload, and
+reference contamination require configuration-matched physical calibration.
+Ideal-Gamma Monte Carlo remains an implementation stress test. It already
+falsified the prior candidate-local shape estimator, which was removed rather
+than presented as calibrated evidence.
 
-Before claiming production detection quality, publish event-level precision/recall, false alarms per sweep/hour, detection probability versus SNR, frequency/bandwidth error, performance by capture configuration, and boundary/overlap behavior.
+The final analytic/synthetic detector regression observed zero detections in
+64,000 stationary-null sweeps; the Bonferroni simultaneous-family 95% upper
+Wilson bound was 0.000933724 against the 0.001 target. Across 56,000 signal
+trials, the worst pointwise 95% lower bounds at 15/20/25/30 dB were
+0.387301/0.693591/0.848580/0.939026, above their declared gates. Paired
+monotonicity violations and topology mismatches in 2,000 common-scale checks
+were both zero. The UI may describe this only as ideal-model development
+validation: the separate gain-step, impulse, and heavy-tail susceptibility
+diagnostics explicitly show why it is not physical tinySA calibration.
+
+Tracking is a separate stateful stage from sweep-local segmentation. The
+`bayesian-two-state-track-filter-v1` model predicts each prior from explicit
+appearance/persistence probabilities and updates it with the current candidate
+Bayes factor, rather than blindly multiplying correlated sweep evidence.
+On a missed sweep it exposes only the transition-predicted
+`track-predictive-state`; it does not present a posterior conditioned on an
+invented miss likelihood.
+Association remains a one-to-one best match by occupied-range overlap and
+bounded peak-frequency distance. It promotes a stable ID after
+`minimumConsecutiveSweeps`, records missed sweeps, emits one explicit `released`
+result after the miss window, and then removes the track. Only active tracks
+enter classification. Configuration changes reset the tracker rather than
+rewriting prior provenance.
+
+Before claiming production detection quality, publish posterior-predictive
+goodness of fit, event-level precision/recall, achieved false alarms per
+cell/sweep/hour, detection probability versus SNR, frequency/bandwidth error,
+performance by physical acquisition configuration, and boundary/overlap and
+reference-contamination behavior.
 
 ## 7. Waveform Classification mode contract
 
@@ -358,42 +416,205 @@ Classification comprises four explicitly separated evidence levels:
 
 1. **Spectral morphology:** deterministic labels for narrow carrier, multi-carrier, wideband noise-like, and band-limited trace shape. Implemented as experimental evidence; it is not a modulation or protocol claim.
 2. **Zero-span envelope:** deterministic steady, amplitude-varying, or pulsed detected-power behavior. Implemented; zero span is not I/Q.
-3. **SignalLab synthetic hypothesis:** a pinned expert Bayesian model compares repeated scalar spectra and an optional matching detected-power envelope with 79 closed SignalLab profiles. Implemented as experimental EMSO evidence. Digital families require the envelope; active SignalLab selection is never an input. Exact profile, family, and unknown are separate decisions, and scores are model posteriors rather than real-world calibrated probabilities.
-4. **Validated modulation/protocol classifier:** physical taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated and not claimed by the SignalLab hypothesis model.
+3. **Bayesian observable equivalence:** the content-addressed
+   `bayesian-observable-equivalence-v5` model compares 28 available
+   scalar-spectrum, history, and optional qualified detected-envelope features
+   with 11 known evidence leaves plus a fitted unknown leaf. Its regularized
+   empirical Student-t components are fixed plug-in likelihoods, not
+   posterior-predictive parameter integration. Missing dimensions use the exact
+   fixed-component marginal. Detector-conditioned, generator-separated
+   `spectrum-only`, `envelope-untimed`, and `envelope-timed` calibration sets
+   supply class-conditional inductive synthetic support p-values. Calibration
+   v6 uses one conservative minimum-support score per independent fit-eligible
+   acquisition attempt, not one score per correlated local fragment; the final
+   asset stores 1,990 such scores per evidence view. Inference
+   uses the matching view; the 0.025 rejection rule has coverage meaning only
+   under exchangeability with that pinned generator and view and is physically
+   uncalibrated. A support rejection presents primary label `unknown`, zero
+   confidence, and its support p-value and cutoff; ranked model-posterior
+   candidates remain diagnostic. The decision is the finest
+   defensible leaf or ancestor, including deliberate LTE/NR cellular-OFDM
+   ambiguity; active SignalLab selection is never an input. Implemented as
+   experimental synthetic-domain evidence, not protocol identity or physical
+   calibration. Its preprocessing, calibration, and decision provenance are
+   `scalar-observable-features-v5`,
+   `synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6`,
+   `runtime-domain-qualified-known-representatives-v3`, and
+   `observable-open-set-decision-v9`, with prior
+   `engineering-design-class-weights-v1`. The 35-scenario, 18-unknown
+   `observable-scalar-corpus-v7` corpus is pinned at commit
+   `03197cb5b4a03b85ef5efe6525f4f28ceedcaef3` and source SHA-256
+   `d813b3268eee7240a86b2de725ec78080dc0f3ce829fe0c493bf582b62f8529e`.
+   The 28-dimensional, 12-leaf, 18-component final asset was fitted from 8,140
+   detector-conditioned representatives and has SHA-256
+   `bb4393e1e0e0e86977def9238a4e1e3dc03511f06b421384ff41316e37e96c9d`.
+   Its two Wi-Fi leaf posteriors remain diagnostic; the primary Wi-Fi label is
+   only `802.11-compatible channel morphology · PHY unresolved`, never an
+   802.11 protocol or PHY identity.
+4. **Validated modulation/protocol classifier:** physical taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated and not claimed by the Bayesian observable model.
 
 ### UX-CLS-01 — Pipeline visibility
 
-Capture, promote, compare-spectrum, capture-envelope, and decide stages are independently `waiting | ready | running | complete | failed | unavailable`. A future physically validated model being absent does not invalidate deterministic morphology/envelope or synthetic-hypothesis evidence and never permits a stronger label.
+Capture, promote, extract-observables, capture-envelope, and Bayesian-decision
+stages are independently `waiting | ready | running | complete | failed |
+unavailable`. A future physically calibrated model being absent does not
+invalidate deterministic morphology/envelope or synthetic observable-class
+evidence and never permits a stronger label.
 
 ### UX-CLS-02 — Candidate selection
 
 Each candidate shows its source detection, frequency, bandwidth, power, time window and capture sufficiency. Selecting a candidate never mutates analyzer or generator state.
+
+The detector freezes the classification region and records its originating
+sweep ID at first admission. Classification does not recenter that region as a
+tracked peak moves; the tracker appends only independently re-detected sweep IDs
+to the event. Feature extraction accepts only coherent sweeps bound to that
+event and matching acquisition, device, firmware, and execution provenance.
+The provisional 2.4 GHz frequency-agile association stores its bounded band and
+source sweeps separately, together with
+`frequency-agile-2g4-activity-v3` association provenance and
+`bayesian-frequency-agile-transition-v2` dynamics provenance. It never
+overwrites the frozen emission region, and the UI must distinguish
+association-band activity from emission localization.
+Matching zero span is additionally bound to the target detection. All admitted
+source sweeps in the fixed most-recent eight-admission window contribute inside
+the applicable provenance region; classification does not apply a second 3 dB
+active-bin admission gate or pool arbitrary longer track history.
+
+The tracker is frequency-local by default and also exposes a provisional
+`frequency-agile-2g4-activity` association for separated narrow candidates in a
+complete 2402--2480 MHz sweep. It retains every strictly ordered opportunity as
+none, exactly one independently CFAR-admitted eligible narrow candidate, or
+ambiguous. The dynamics model conditions change/no-change evidence only on
+positive unambiguous looks, requires at least eight positives over at least
+three resolution cells, and bounds the history to 96 opportunities. Transition
+model v2 compares an equal Classic/LE Beta-Binomial mixture with the fixed
+stationary Bernoulli likelihood `p_change=0.05`. Its exact sequential
+false-promotion upper bound is `1.3657385209e-5` through 96 positive looks under
+that independent stationary null, before the additional three-cell guard. The
+UI must not present this model-bound calculation as a physical or merged-emitter
+false-association rate. This is broad band-activity evidence, not
+transmitter/link identity, a recovered hop
+sequence, or an advertising triplet; it can merge unrelated emitters or leave
+real activity fragmented.
+Fixed-frequency zero span also cannot observe a link-wide Classic slot sequence
+or a three-channel LE advertising event, so any link-wide synthetic cadence is
+not a valid Classic/LE discriminator. SignalLab's frequency-conditioned
+channel-local envelope remains non-identifying supporting evidence. The UI must
+present the association as provisional spectrum/history evidence, retain the
+Bluetooth-like and synthetic/uncalibrated qualifications, and keep weak or
+ambiguous evidence
+at Bluetooth-like band activity or `unknown`.
+
+Standard synthetic scenarios offer 24 sequential 50 ms opportunities; full-
+band 2.4 GHz scenarios offer 96. The modeled 20 ms BLE advertising interval and
+explicit `packetSpacingSeconds=0.0015` packet schedule are evaluated over that
+declared finite horizon. The UI and reports show admission separately from
+conditional classification and do not render a non-admission as a failed class
+prediction or negative observation about BLE. The final held-out synthetic run
+acquired BLE at one or more tested RBWs for 5/8 event-phase seeds at 24 dB and
+8/8 at 32 dB; all 32 admitted BLE representatives returned only Bluetooth-like
+band activity. These are synthetic acquisition results, not physical BLE
+sensitivity or identity validation.
+
+The `regular-spectral-component-activity` association is classification-only.
+It requires at least three regular same-sweep components. Every member remains
+an independently detected, independently expiring local
+track; the association separately records its ID, member-track IDs, bounded
+region, source sweeps, miss state, and
+`simultaneous-regular-components-v1` provenance. Competing overlapping regular
+hypotheses or an irregular interior component produce no group. Group expiry
+removes only association evidence. Classification requires exactly the latest
+eight admitted co-occurrence looks and runs once per association. The result is
+mapped to every member row with a visible `Group` qualifier, while the selected
+row continues to show local frequency/power/bandwidth provenance plus the
+separate association evidence. Neither layout nor copy may imply that the
+components share an emitter.
 
 ### UX-CLS-03 — Result
 
 Required presentation:
 
 - Primary label or `unknown`.
-- Operator-facing live-observation labels never carry `SignalLab:`/`SignalLab family:` prefixes and never call the observed emission a replay. Canonical analog results read `AM signal` or `FM signal`; synthetic-reference provenance remains in the model/evidence fields.
-- A non-unknown profile/family pill is success green. Pending remains caution-colored and `unknown` remains neutral, so color never upgrades uncertain evidence.
-- A relative score for heuristic morphology/envelope, a declared generative-model posterior for SignalLab synthetic hypotheses, or calibrated confidence only for a physically validated model.
+- Operator-facing labels describe evidence, for example `CW-like carrier`,
+  `DSB full-carrier AM-like`, or `Cellular OFDM · LTE/NR ambiguous`. They never
+  call the observed emission a replay or imply decoded protocol identity.
+- The qualification reads `BAYESIAN EVIDENCE CLASS · NOT PROTOCOL`. Positive,
+  pending, and unknown treatments remain text/icon redundant, so color never
+  upgrades the claim.
+- A relative score for heuristic morphology/envelope, a fixed synthetic
+  empirical-model posterior labeled uncalibrated for Bayesian observable
+  equivalence, or calibrated confidence only for a physically validated model.
 - Ranked candidates with scores.
-- Unknown reason: low confidence, out-of-domain, insufficient evidence, model unavailable, or inference failure.
-- Model ID, producer source/catalog/generator hashes, preprocessing version, qualification, score kind, and decision level.
+- Unknown is retained as a ranked candidate even for a positive result. Unknown
+  reasons include low confidence, out of domain, insufficient evidence, model
+  unavailable, or inference failure.
+- Model ID, corpus source and SHA-256, model-asset SHA-256, preprocessing,
+  prior, calibration ID, qualification, score kind, and decision level.
 - Evidence link to source sweeps.
-- Domain warning when capture parameters fall outside validation.
+- Domain and limitation warnings, including boundary censoring, sweep
+  time/frequency skew, missing/mismatched zero span, unqualified cadence,
+  frequency-agile band activity, and regular-component association.
+- Any timed cadence feature is labeled periodic detected-envelope energy, not
+  cyclostationarity or spectral-correlation evidence; wall-clock-derived
+  physical timing keeps it unavailable.
+- Wireless model-domain eligibility is a hard mask over the measured occupied
+  interval, not only its center. UI copy describes an out-of-mask result as
+  unsupported by the fitted model, never forbidden by the standard.
 
 ### Model package contract
 
-A model package is inert data plus declared inference metadata; it cannot execute arbitrary scripts. It contains a signed manifest, asset hash, taxonomy, preprocessing graph ID, input shape/ranges, supported device/firmware/capture domain, validation metrics and license. Installation validates size, schema, signature policy and hashes in the trusted process. The built-in SignalLab model is governed separately by `SIGNALLAB_EMSO_CLASSIFIER_CONTRACT.md` and its pinned producer hashes.
+A model package is inert data plus declared inference metadata; it cannot
+execute arbitrary scripts. It contains a signed manifest, asset hash, taxonomy,
+preprocessing graph ID, prior ID, calibration ID, input shape/ranges, supported
+device/firmware/capture domain, validation metrics and license. Installation
+validates size, schema, signature policy and hashes in the trusted process. The
+built-in observable model is governed separately by
+`SIGNALLAB_EMSO_CLASSIFIER_CONTRACT.md` and its pinned corpus/model hashes.
 
 ### Classification quality contract
 
 - Dataset splits are grouped by physical capture session and source device to prevent leakage.
-- Evaluation includes an explicit open-set corpus absent from training classes.
+- Evaluation includes whole unknown signal families, source devices, and capture
+  groups absent from fitting. The current v5 baseline does not satisfy this
+  physical requirement. Only `unknown-narrow-fsk` and `unknown-802154` fit the
+  unknown likelihood; strict unknown holdouts, ambiguity-only stress cases,
+  exact observable-equivalence nulls, and one known acquisition-only GSM case
+  remain separate component-fit exclusions. These partitions are reported
+  separately and cannot be pooled into a physical open-set claim.
 - Report per-class precision, recall, F1, support, confusion matrix, macro metrics, expected calibration error and coverage-risk curve.
 - “State of the art” is comparative: record baselines, dataset version, compute budget and evaluation protocol.
-- Learned modulation/protocol thresholds are frozen after corpus characterization; before then the only conforming learned-model outcome is `unknown`. Heuristic morphology/envelope results remain visibly experimental and use relative scores, never calibrated-confidence copy.
+- Synthetic nuisance-shift and scenario-excluded scores are reported separately
+  from physical validation. The current feature and decision-threshold design
+  was developed against that matrix, so it is development regression evidence,
+  not untouched validation; it never authorizes calibrated-confidence or
+  protocol-identity copy.
+- The final development regression uses held-out seeds 13001, 13019, 13037,
+  13063, 13081, 13099, 13127, and 13151 and interstitial RBW divisors
+  15.5/44/98. It covers 4,200 attempts and 9,944 first-ready representatives.
+  Hierarchical accuracy is 0.985318, known coverage 0.993796, covered-known
+  hierarchical accuracy 1.0, fitted-unknown and strict-holdout rejection 1.0,
+  and disallowed false-accept attempts zero. All 840 exact-equivalence cells,
+  2,278 representative pairs, and 4,556 evidence-view pairs match within
+  `1e-11` with zero discrepancies. UI copy must retain the synthetic
+  development-regression qualification alongside these figures.
+- Corpus-v7 provenance means burst schedules gate each swept bin at its actual
+  visit time. UI evidence for AM/FM zero span describes a receiver-filtered
+  detected-power capture at the recorded tune/RBW, not an ideal baseband
+  envelope. Loaded GSM and one-timeslot GSM are distinct scenario names and
+  acquisition claims.
+- Classifier fitting, support calibration, and regression use the production
+  multiscale Bayesian detector and two-state tracker, including the
+  frequency-agile and regular-component classification associations. Each
+  example offers 24 observations, or 96 for full-band 2.4 GHz scenarios, and
+  uses exactly the latest eight admissions.
+  Reports separate admission from classification conditional on admission.
+  This is end-to-end synthetic-path regression, but it is not described as
+  physical detector/classifier performance or emitter identification.
+- Learned physical modulation/protocol thresholds remain disabled until corpus
+  characterization and session/device-grouped validation are frozen. Heuristic
+  morphology/envelope results remain visibly experimental and use relative
+  scores.
 
 ## 8. Generator workspace contract
 
@@ -542,10 +763,14 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **DET-05:** Zero result differs from missing/failed analysis.
 - **DET-06:** Bands, table and detail synchronize.
 - **DET-07:** Results contain detector config/version and provenance.
-- **DET-08:** Tracking UI remains unavailable until tracker exists.
+- **DET-08:** Track updates use the declared two-state filter; missed sweeps
+  expose transition-predicted state without an invented miss likelihood, and
+  correlated looks are not blindly multiplied.
 - **DET-09:** Cancellation is bounded.
 - **DET-10:** Quality report covers agreed captured corpus.
 - **DET-11:** Only Detection renders active bandwidth/midpoint annotations; Spectrum renders neither even when it receives the same detection count data.
+- **DET-12:** A predictive-tail target is never presented as an achieved
+  per-sweep or per-hour false-alarm probability without physical calibration.
 
 ### Classification
 
@@ -554,12 +779,46 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **CLS-03:** Invalid model package cannot execute/install.
 - **CLS-04:** Out-of-domain capture warns/rejects.
 - **CLS-05:** Results identify model/preprocessing versions.
-- **CLS-06:** Confidence is calibrated under published protocol.
-- **CLS-07:** Open-set samples participate in acceptance.
+- **CLS-06:** Synthetic posteriors are labeled uncalibrated; calibrated
+  confidence requires a published physical protocol.
+- **CLS-07:** Fitted-unknown and scenario-excluded unknown samples are reported
+  separately, with strict holdout, ambiguity, exact-equivalence, and known
+  acquisition-only partitions preserved; none is described as a physical open
+  set.
 - **CLS-08:** UI shows ranked candidates and unknown reason.
 - **CLS-09:** Inference cancellation/resource bounds pass.
 - **CLS-10:** Repeated inference is deterministic within tolerance.
-- **CLS-11:** Live waveform labels omit SignalLab/replay source wording, retain measured-hypothesis qualification, and use green only for a non-unknown decision.
+- **CLS-11:** Live waveform labels state evidence equivalence, omit replay
+  wording, and retain `NOT PROTOCOL` qualification.
+- **CLS-12:** Unknown is normalized with known leaves and remains visible in the
+  ranked result.
+- **CLS-13:** Classification uses the detector-frozen, provenance-bound region
+  without a second 3 dB feature-admission gate; any frequency-agile association
+  region is separate provenance and never replaces the frozen emission region.
+- **CLS-14:** Bluetooth labels disclose the provisional 2.4 GHz band-activity
+  association and fixed-frequency zero-span limitations; no transmitter/link,
+  cross-channel hop-sequence, advertising-triplet, or link-wide slot-cadence
+  claim is made, and absent separately provenance-bound distinguishing evidence
+  the result remains Bluetooth-like or `unknown`.
+- **CLS-15:** A regular-component association is classification-only, abstains
+  on ambiguous membership, expires independently, retains both local and group
+  provenance, requires exactly eight association looks, produces one UI result
+  per group, and never asserts common-emitter identity.
+- **CLS-16:** Wireless hard eligibility masks test the measured occupied
+  interval rather than center alone and describe fitted-model support, not a
+  universal standards prohibition.
+- **CLS-17:** Full-band 2.4 GHz evidence displays the 96-opportunity horizon;
+  BLE non-admission remains separate from conditional classification and is not
+  presented as a negative protocol observation.
+- **CLS-18:** LTE/NR at nominal bandwidths of 20 MHz or less may not be upgraded
+  beyond the documented cellular-OFDM ambiguity without a qualified
+  distinguishing observation.
+- **CLS-19:** An exact-equivalence or ambiguity scenario may display only a
+  declared compatible evidence class or `unknown`; the UI never forces a unique
+  source story from indistinguishable scalar evidence.
+- **CLS-20:** Wi-Fi diagnostic leaf posteriors never become a primary PHY label;
+  the primary result is `802.11-compatible channel morphology · PHY unresolved`
+  or `unknown`, with `NOT PROTOCOL` qualification.
 
 ### Generator
 
