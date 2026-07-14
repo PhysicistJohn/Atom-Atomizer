@@ -15,8 +15,10 @@
     "check:launcher": "node --check tools/dev-launcher/main.cjs && node --check tools/dev-launcher/install.mjs",
     "check:trio-contract": "node tools/verify-trio-contract.mjs",
     "check:firmware-twin": "node tools/smoke-firmware-twin.mjs",
+    "train:signal-classifier": "tsup tools/train-observable-classifier.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/train-observable-classifier.js",
     "check:signal-classifier": "tsup tools/validate-signal-lab-classifier.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/validate-signal-lab-classifier.js",
-    "release:trio": "npm run check:trio-contract && npm run check && npm --prefix ../TinySA_SignalLab run check && npm run check:signal-classifier && npm run check:firmware-twin",
+    "check:bayesian-detector": "tsup tools/validate-bayesian-detector.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/validate-bayesian-detector.js",
+    "release:trio": "npm run check:trio-contract && npm run check && npm --prefix ../TinySA_SignalLab run check && npm run check:bayesian-detector && npm run check:signal-classifier && npm run check:firmware-twin",
     "check": "npm run check:launcher && npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {

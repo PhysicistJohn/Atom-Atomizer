@@ -554,7 +554,7 @@ describe('signal analysis', () => {
     expect(activity.associationObservations).toHaveLength(8);
     expect(activity.associationOpportunities).toEqual(sweeps.map((sweep) => ({ sweepId: sweep.id, outcome: 'exactly-one' })));
     expect(activity.associationBayesianEvidence).toMatchObject({
-      modelId: 'bayesian-frequency-agile-transition-v1',
+      modelId: 'bayesian-frequency-agile-transition-v2',
       positiveObservationCount: 8,
       transitionCount: 7,
       changedTransitionCount: 7,
@@ -837,7 +837,7 @@ describe('signal analysis', () => {
     expect(unknown).toMatchObject({ label: 'unknown', confidence: 0, unknownReason: 'model-unavailable' });
   });
 
-  it('keeps model provenance and reports a hand-built narrow line only as a CW-like equivalence class', async () => {
+  it('keeps model provenance while rejecting a hand-built narrow line outside calibrated synthetic support', async () => {
     expect(signalLabWaveformHypotheses).toHaveLength(79);
     expect(new Set(signalLabWaveformHypotheses.map((item) => item.id)).size).toBe(79);
     expect(SIGNAL_LAB_EMSO_MODEL).toMatchObject({
@@ -851,10 +851,12 @@ describe('signal analysis', () => {
     const detection = emsoDetection('cw-observed', 98_000_000, 20_000, sweeps);
     const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
     expect(result).toMatchObject({
-      label: 'observable:cw-like', decisionLevel: 'equivalence-class', qualification: 'bayesian-observable-equivalence', scoreKind: 'model-posterior',
+      label: 'unknown', decisionLevel: 'unknown', qualification: 'bayesian-observable-equivalence', scoreKind: 'model-posterior',
       modelId: 'bayesian-observable-equivalence-v5',
-      decisionSupport: { kind: 'model-posterior' },
+      unknownReason: 'out-of-domain', decisionSupport: { kind: 'synthetic-support-p-value' },
     });
+    expect(result.decisionSupport!.threshold).toBeDefined();
+    expect(result.decisionSupport!.value).toBeLessThan(result.decisionSupport!.threshold!);
     expect(result.candidates[0]).toMatchObject({ label: 'observable:cw-like' });
     expect(result.modelProvenance).toMatchObject({ producer: 'tinysa-signal-lab', sourceCommit: SIGNAL_LAB_EMSO_MODEL.sourceCommit });
     expect(result.candidates.some((candidate) => candidate.label === 'unknown')).toBe(true);
@@ -864,7 +866,7 @@ describe('signal analysis', () => {
     expect(result.evidence.limitations).toContain('zero-span-missing');
   });
 
-  it('reports a generic wide OFDM trace only as an LTE/NR-compatible observable equivalence class', async () => {
+  it('retains LTE/NR candidates while rejecting a hand-built OFDM trace outside calibrated synthetic support', async () => {
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(1_840_000_000, 30_000_000, index + 1, (frequency) => {
       const offset = Math.abs(frequency - 1_840_000_000);
       return offset <= 9_000_000 ? -64 + 0.8 * Math.sin(frequency / 390_000 + index * 0.4) : -110 + 0.25 * Math.cos(frequency / 510_000);
@@ -872,9 +874,11 @@ describe('signal analysis', () => {
     const detection = emsoDetection('cellular-observed', 1_840_000_000, 18_000_000, sweeps);
     const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
     expect(result).toMatchObject({
-      label: 'observable:cellular-ofdm-ambiguous', decisionLevel: 'equivalence-class',
-      decisionSupport: { kind: 'model-posterior' },
+      label: 'unknown', decisionLevel: 'unknown', unknownReason: 'out-of-domain',
+      decisionSupport: { kind: 'synthetic-support-p-value' },
     });
+    expect(result.decisionSupport!.threshold).toBeDefined();
+    expect(result.decisionSupport!.value).toBeLessThan(result.decisionSupport!.threshold!);
     expect(result.candidates.length).toBeGreaterThan(1);
     expect(result.candidates.some((candidate) => candidate.label === 'observable:lte-fdd-like')).toBe(true);
     expect(result.candidates.some((candidate) => candidate.label === 'observable:nr-fdd-like')).toBe(true);

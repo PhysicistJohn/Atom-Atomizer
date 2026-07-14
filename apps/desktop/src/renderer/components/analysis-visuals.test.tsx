@@ -216,7 +216,7 @@ describe('analysis visual contracts', () => {
       }],
       associationOpportunities: [{ sweepId: 'sweep-1', outcome: 'exactly-one' }],
       associationBayesianEvidence: {
-        modelId: 'bayesian-frequency-agile-transition-v1',
+        modelId: 'bayesian-frequency-agile-transition-v2',
         priorAgileDynamicsProbability: 0.01,
         posteriorAgileDynamicsProbability: 0.9942,
         logBayesFactor: 11.9,
@@ -270,7 +270,7 @@ describe('analysis visual contracts', () => {
     expect(provenance).toContain('8 / 12 positive/opportunity looks');
     expect(provenance).toContain('50 ms modeled sweep');
     expect(provenance).toContain('frequency-agile-2g4-activity-v3');
-    expect(provenance).toContain('bayesian-frequency-agile-transition-v1');
+    expect(provenance).toContain('bayesian-frequency-agile-transition-v2');
     expect(provenance).toContain('bayesian-exponential-multiscale-cfar-v3');
     expect(provenance).not.toContain('Local detection');
     expect(view.container.querySelector('.candidate-row')?.textContent).toContain('Activity · 2.4 GHz agile activity · Bluetooth-compatible');

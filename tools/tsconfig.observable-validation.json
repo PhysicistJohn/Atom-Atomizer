@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../.artifacts/observable-validation",
+    "rootDir": "../..",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "train-observable-classifier.ts",
+    "validate-signal-lab-classifier.ts",
+    "../packages/analysis/src/**/*.ts",
+    "../packages/contracts/src/index.ts",
+    "../../TinySA_SignalLab/src/classification-corpus.ts"
+  ]
+}

@@ -2,7 +2,7 @@ import type { ActivityAssociationObservation, BayesianActivityAssociationEvidenc
 import { logGamma } from './bayesian-predictive.js';
 
 export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
-  id: 'bayesian-frequency-agile-transition-v1',
+  id: 'bayesian-frequency-agile-transition-v2',
   priorAgileDynamicsProbability: 0.01,
   maximumOpportunityWindow: 96,
   modeledSweepTimeSeconds: 0.05,
@@ -12,7 +12,13 @@ export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
   retentionPosteriorProbability: 0.90,
   classicChangePrior: [78, 1] as const,
   leChangePrior: [2, 1] as const,
-  stationaryChangePrior: [1, 19] as const,
+  // Predeclared design stationary-null rate. Hardware calibration must verify
+  // that a stationary source's transition probability is no greater than this
+  // value. This must remain a fixed
+  // Bernoulli likelihood: integrating it under the formerly used Beta(1, 19)
+  // prior puts substantial mass on highly agile null sequences and conflicts
+  // with the exact fixed-5% sequential false-promotion calculation.
+  stationaryChangeProbability: 0.05,
   advertisingCentersHz: [2_402_000_000, 2_426_000_000, 2_480_000_000] as const,
   minimumAdvertisingToleranceHz: 1_500_000,
 } as const;
@@ -52,10 +58,10 @@ export function bayesianFrequencyAgileActivityEvidence(
     transitionCount,
     ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.leChangePrior,
   );
-  const stationaryLogMarginalLikelihood = transitionLogMarginal(
+  const stationaryLogMarginalLikelihood = fixedTransitionLogLikelihood(
     changedTransitionCount,
     transitionCount,
-    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.stationaryChangePrior,
+    BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.stationaryChangeProbability,
   );
   const activityLogMarginalLikelihood = logSumExp([
     Math.log(0.5) + classicLogMarginalLikelihood,
@@ -152,6 +158,10 @@ function advertisingChannelHit(observation: ActivityAssociationObservation): boo
 
 function transitionLogMarginal(changed: number, total: number, alpha: number, beta: number): number {
   return logBeta(changed + alpha, total - changed + beta) - logBeta(alpha, beta);
+}
+
+function fixedTransitionLogLikelihood(changed: number, total: number, changeProbability: number): number {
+  return changed * Math.log(changeProbability) + (total - changed) * Math.log1p(-changeProbability);
 }
 
 function logBeta(alpha: number, beta: number): number {

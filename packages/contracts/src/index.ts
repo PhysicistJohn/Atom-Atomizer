@@ -613,7 +613,7 @@ export interface ActivityAssociationOpportunity {
   outcome: 'none' | 'exactly-one' | 'ambiguous';
 }
 export interface BayesianActivityAssociationEvidence {
-  modelId: 'bayesian-frequency-agile-transition-v1';
+  modelId: 'bayesian-frequency-agile-transition-v2';
   priorAgileDynamicsProbability: number;
   posteriorAgileDynamicsProbability: number;
   logBayesFactor: number;

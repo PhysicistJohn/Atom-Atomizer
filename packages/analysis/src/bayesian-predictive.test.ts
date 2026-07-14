@@ -126,6 +126,16 @@ describe('Bayesian classifier Student-t likelihood math', () => {
     }).label).toBe('unknown');
   });
 
+  it('keeps Wi-Fi PHY leaves diagnostic and emits only the scalar-compatible family decision', () => {
+    const observation = { centerHz: 2_437_000_000, bandwidthHz: 20_000_000, values: {} };
+    expect(selectObservableDecision([
+      candidate('wifi-hr-dsss-like', 0.96), candidate('wifi-ofdm-like', 0.03), candidate('unknown-signal', 0.01),
+    ], observation, 1)).toEqual({ label: 'wifi-like', probability: 0.99 });
+    expect(selectObservableDecision([
+      candidate('wifi-ofdm-like', 0.96), candidate('wifi-hr-dsss-like', 0.03), candidate('unknown-signal', 0.01),
+    ], observation, 1)).toEqual({ label: 'wifi-like', probability: 0.99 });
+  });
+
   it('requires the measured wireless interval, not just its center, to fit a model band', () => {
     expect(selectObservableDecision([
       candidate('wifi-ofdm-like', 0.9), candidate('unknown-signal', 0.1),

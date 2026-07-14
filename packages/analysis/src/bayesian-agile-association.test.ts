@@ -33,13 +33,12 @@ describe('Bayesian frequency-agile activity evidence', () => {
     expect(evidence.posteriorAgileDynamicsProbability).toBeGreaterThanOrEqual(0.99);
   });
 
-  it('matches an independent closed-form beta-binomial likelihood fixture', () => {
+  it('matches independent closed-form agile marginals and the fixed stationary likelihood', () => {
     const observations = Array.from({ length: 8 }, (_, index) => observation(index, 2_402_000_000 + index * 8_000_000));
     const evidence = bayesianFrequencyAgileActivityEvidence(observations, observations.length);
     const classicAllChangedProbability = 78 / 85;
     const leAllChangedProbability = 2 / 9;
-    const stationaryAllChangedProbability = factorial(7)
-      / Array.from({ length: 7 }, (_, index) => 20 + index).reduce((product, value) => product * value, 1);
+    const stationaryAllChangedProbability = 0.05 ** 7;
     const expectedLogBayesFactor = Math.log(
       0.5 * classicAllChangedProbability + 0.5 * leAllChangedProbability,
     ) - Math.log(stationaryAllChangedProbability);
@@ -50,27 +49,32 @@ describe('Bayesian frequency-agile activity evidence', () => {
     expect(evidence.logBayesFactor).toBeCloseTo(expectedLogBayesFactor, 12);
   });
 
-  it('keeps the exact eight-look promotion probability below 0.001 under a fixed 5% stationary-change null', () => {
+  it('keeps exact sequential promotion through 96 positive looks below 0.001 under its stationary null', () => {
     const stationaryChangeProbability = 0.05;
+    // Dynamic programming over the sufficient statistic (transition count,
+    // changed-transition count). This deliberately omits the independent
+    // three-resolution-cell guard, so it is a conservative exact upper bound.
+    let unpromoted = new Map<number, number>([[0, 1]]);
     let falsePromotionProbability = 0;
-    for (let mask = 0; mask < 2 ** 7; mask++) {
-      let centerHz = 2_402_000_000;
-      let changes = 0;
-      const observations = [observation(0, centerHz)];
-      for (let transition = 0; transition < 7; transition++) {
-        if ((mask & (1 << transition)) !== 0) {
-          changes++;
-          centerHz += 8_000_000;
+    for (let transitions = 1; transitions < 96; transitions++) {
+      const next = new Map<number, number>();
+      for (const [changed, pathProbability] of unpromoted) {
+        for (const didChange of [0, 1] as const) {
+          const nextChanged = changed + didChange;
+          const probability = pathProbability * (didChange
+            ? stationaryChangeProbability
+            : 1 - stationaryChangeProbability);
+          if (transitions + 1 >= 8 && posteriorAgileProbability(nextChanged, transitions) >= 0.99) {
+            falsePromotionProbability += probability;
+          } else {
+            next.set(nextChanged, (next.get(nextChanged) ?? 0) + probability);
+          }
         }
-        observations.push(observation(transition + 1, centerHz));
       }
-      const evidence = bayesianFrequencyAgileActivityEvidence(observations, observations.length);
-      if (bayesianFrequencyAgileActivityQualifies(evidence, false)) {
-        falsePromotionProbability += stationaryChangeProbability ** changes
-          * (1 - stationaryChangeProbability) ** (7 - changes);
-      }
+      unpromoted = next;
     }
 
+    expect(falsePromotionProbability).toBeCloseTo(1.3657385209e-5, 12);
     expect(falsePromotionProbability).toBeLessThan(0.001);
   });
 
@@ -130,8 +134,23 @@ function observation(index: number, centerHz: number): ActivityAssociationObserv
   };
 }
 
-function factorial(value: number): number {
-  let result = 1;
-  for (let item = 2; item <= value; item++) result *= item;
+function posteriorAgileProbability(changed: number, total: number): number {
+  const logBeta = (alpha: number, beta: number): number =>
+    logGammaFixture(alpha) + logGammaFixture(beta) - logGammaFixture(alpha + beta);
+  const marginal = (alpha: number, beta: number): number =>
+    logBeta(changed + alpha, total - changed + beta) - logBeta(alpha, beta);
+  const classic = marginal(78, 1);
+  const le = marginal(2, 1);
+  const maximum = Math.max(classic, le);
+  const agile = maximum + Math.log(0.5 * Math.exp(classic - maximum) + 0.5 * Math.exp(le - maximum));
+  const stationary = changed * Math.log(0.05) + (total - changed) * Math.log(0.95);
+  const logOdds = Math.log(0.01 / 0.99) + agile - stationary;
+  return logOdds >= 0 ? 1 / (1 + Math.exp(-logOdds)) : Math.exp(logOdds) / (1 + Math.exp(logOdds));
+}
+
+// Integer arguments only in this independent fixture: log Gamma(n) = log((n-1)!).
+function logGammaFixture(value: number): number {
+  let result = 0;
+  for (let item = 2; item < value; item++) result += Math.log(item);
   return result;
 }

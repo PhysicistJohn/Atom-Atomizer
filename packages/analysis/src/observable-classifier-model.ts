@@ -47,6 +47,12 @@ export interface ObservableClassifierModelAsset {
     sweepsPerExample?: number;
     tailCalibrationSeeds?: readonly number[];
     tailCalibrationRbwDivisors?: readonly number[];
+    /** Each calibrated support score represents one independent acquisition attempt. */
+    tailCalibrationScoreUnit?: 'one-score-per-fit-eligible-acquisition-attempt-v1';
+    /** Multiple correlated representatives within an attempt collapse to its least-supported representative. */
+    tailCalibrationRepresentativeAggregationPolicy?: 'minimum-support-across-fit-eligible-first-ready-representatives-v1';
+    /** Fit-eligible acquisition attempts contributing one score each, by canonical scenario. */
+    tailCalibrationAttemptCountsByScenario?: Readonly<Record<string, number>>;
     detectorConditionedFitMisses?: readonly string[];
     detectorConditionedCalibrationMisses?: readonly string[];
     fitEligibilityExcludedFitAttempts?: readonly string[];
@@ -58,10 +64,14 @@ export interface ObservableClassifierModelAsset {
      * as unknown components would duplicate a likelihood under another label.
      */
     exactObservableEquivalenceNullScenarioIds?: readonly string[];
+    /** Known-class scenarios retained only to test/report acquisition non-admission. */
+    knownAcquisitionValidationOnlyScenarioIds?: readonly string[];
     /** Older policies remain readable only so the trainer can replace a checked-in asset; runtime asserts v3. */
     selectionPolicy?: 'endpoint-active-representative-v1' | 'endpoint-active-all-representatives-v2' | 'online-first-ready-all-representatives-v3';
     representativeWeightingPolicy?: 'equal-weight-per-endpoint-production-representative-v1' | 'equal-weight-per-first-ready-production-representative-v2';
-    representativeEligibilityPolicy?: 'bluetooth-components-require-qualified-agile-association-v1';
+    representativeEligibilityPolicy?: 'bluetooth-components-require-qualified-agile-association-v1'
+      | 'observation-qualified-known-representatives-v2'
+      | 'runtime-domain-qualified-known-representatives-v3';
   };
   classModels: readonly (ClassLikelihoodModel & { id: ObservableLeafClass })[];
 }
@@ -80,6 +90,6 @@ export const observableClassDefinitions: Readonly<Record<ObservableDecisionClass
   'nr-like': { label: '5G NR-compatible OFDM · duplex ambiguous', family: 'ofdm', claim: 'NR-shaped evidence without protocol or FDD/TDD identity' },
   'wifi-hr-dsss-like': { label: 'Wi-Fi HR-DSSS-like', family: 'wifi', claim: 'DSSS/CCK-like 802.11 channel evidence' },
   'wifi-ofdm-like': { label: 'Wi-Fi OFDM-like', family: 'wifi', claim: '802.11 OFDM width/traffic evidence; generation unresolved' },
-  'wifi-like': { label: 'Wi-Fi-like · PHY ambiguous', family: 'wifi', claim: 'Wi-Fi family evidence without DSSS/OFDM resolution' },
+  'wifi-like': { label: '802.11-compatible channel morphology · PHY unresolved', family: 'wifi', claim: 'Scalar channel morphology compatible with 802.11; proprietary DSSS/OFDM and protocol identity remain unresolved' },
   'bluetooth-like': { label: '2.4 GHz agile activity · Bluetooth-compatible', family: 'bluetooth', claim: 'Bluetooth-compatible activity transitions without Classic/LE, protocol, or emitter identity resolution' },
 };

@@ -8,17 +8,7 @@ import {
 } from './observable-classifier-model.js';
 import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable-v5.generated.js';
 import { BAYESIAN_OBSERVABLE_MODEL_SHA256 } from './models/bayesian-observable-v5.manifest.generated.js';
-import { BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL } from './bayesian-agile-association.js';
-
-const MODEL_BANDS_MHZ = {
-  gsm: [[380, 500], [698, 1_000], [1_710, 1_990]],
-  wifiHrDsss: [[2_400, 2_500]],
-  wifiOfdm: [[2_400, 2_500], [4_900, 5_925], [5_925, 7_125]],
-  lteFdd: [[698, 960], [1_427, 1_518], [1_710, 2_200]],
-  lteTdd: [[1_850, 1_920], [2_010, 2_025], [2_300, 2_400], [2_496, 2_690], [3_400, 3_800]],
-  nrFdd: [[410, 960], [1_427, 1_518], [1_710, 2_200]],
-  nrTdd: [[1_850, 1_920], [2_010, 2_025], [2_300, 2_690], [3_300, 5_000]],
-} as const;
+import { observableHypothesisHasRequiredEvidence } from './observable-hypothesis-domain.js';
 
 export const BAYESIAN_WAVEFORM_MODEL = {
   id: BAYESIAN_OBSERVABLE_MODEL.id,
@@ -29,7 +19,7 @@ export const BAYESIAN_WAVEFORM_MODEL = {
   preprocessing: BAYESIAN_OBSERVABLE_MODEL.preprocessing,
   priorId: BAYESIAN_OBSERVABLE_MODEL.priorId,
   calibrationId: BAYESIAN_OBSERVABLE_MODEL.calibrationId,
-  decisionPolicyId: 'observable-open-set-decision-v8',
+  decisionPolicyId: 'observable-open-set-decision-v9',
   classCount: OBSERVABLE_LEAF_CLASSES.length,
   minimumSpectrumSweeps: 8,
   minimumKnownPosterior: 0.55,
@@ -131,7 +121,7 @@ export function inferPosterior(observation: ObservableFeatureObservation): reado
   assertGeneratedModel();
   const values = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => {
     const logLikelihood = mixtureLogLikelihood(observation.values, model.components);
-    const context = hypothesisHasRequiredEvidence(model.id, observation)
+    const context = observableHypothesisHasRequiredEvidence(model.id, observation)
       ? frequencyContextLogEvidence(model.id, observation)
       : Number.NEGATIVE_INFINITY;
     return { id: model.id, logLikelihood, logJoint: model.logPrior + context + logLikelihood };
@@ -173,7 +163,7 @@ export function knownModelSupportPValue(
     // this maximum defeats open-set rejection even though its posterior is
     // structurally zero (notably a stationary 2.4 GHz hard negative versus
     // the frequency-agile Bluetooth activity hypothesis).
-    .filter((model) => model.id !== 'unknown-signal' && hypothesisHasRequiredEvidence(model.id, observation))
+    .filter((model) => model.id !== 'unknown-signal' && observableHypothesisHasRequiredEvidence(model.id, observation))
     .map((model) => {
       const rawTailScore = Math.max(...model.components.map((component) => studentTModelTailProbability(observation.values, component)));
       const calibration = model.tailCalibrationScoresByView?.[view];
@@ -195,16 +185,18 @@ function selectDecision(
 
   const topKnown = candidates.find((candidate) => candidate.id !== 'unknown-signal');
   if (!topKnown) return unknownDecision(unknownPosterior, 'low-confidence');
-  if (!hypothesisHasRequiredEvidence(topKnown.id as ObservableLeafClass, observation ?? {})) {
+  if (!observableHypothesisHasRequiredEvidence(topKnown.id as ObservableLeafClass, observation ?? {})) {
     return unknownDecision(unknownPosterior, 'insufficient-evidence');
   }
   const lte = aggregate(candidates, ['lte-fdd-like', 'lte-tdd-like']);
   const nr = aggregate(candidates, ['nr-fdd-like', 'nr-tdd-like']);
   const cellularOfdm = lte + nr;
+  const wifi = aggregate(candidates, ['wifi-hr-dsss-like', 'wifi-ofdm-like']);
   const topKnownIsCellularOfdm = topKnown.id === 'lte-fdd-like'
     || topKnown.id === 'lte-tdd-like'
     || topKnown.id === 'nr-fdd-like'
     || topKnown.id === 'nr-tdd-like';
+  const topKnownIsWifi = topKnown.id === 'wifi-hr-dsss-like' || topKnown.id === 'wifi-ofdm-like';
   // The pinned corpus starts with nominal 5 MHz LTE. Its detector-conditioned
   // occupied widths do not support claims below this conservative boundary.
   // This is a model-domain boundary, not a claim that narrower LTE cannot
@@ -225,6 +217,17 @@ function selectDecision(
     && cellularOfdm >= BAYESIAN_WAVEFORM_MODEL.minimumKnownPosterior) {
     return { label: 'cellular-ofdm-ambiguous', probability: cellularOfdm, level: 'equivalence-class' };
   }
+  // Scalar swept power and a fixed-tune detected envelope contain no decoded
+  // preamble, DSSS/CCK correlation, cyclic-prefix, or cyclostationary evidence.
+  // Keep both Wi-Fi template posteriors as diagnostics, but never promote
+  // their within-family ranking to a primary PHY decision. Exact proprietary
+  // DSSS/OFDM nulls demonstrate that the observable claim stops at compatible
+  // 802.11 channel morphology.
+  if (topKnownIsWifi) {
+    return wifi >= BAYESIAN_WAVEFORM_MODEL.minimumAggregatePosterior
+      ? { label: 'wifi-like', probability: wifi, level: 'equivalence-class' }
+      : unknownDecision(unknownPosterior, 'low-confidence');
+  }
   const siblings = siblingLeaves(topKnown.id as ObservableLeafClass);
   const secondSibling = Math.max(0, ...siblings.filter((id) => id !== topKnown.id).map((id) => probability(candidates, id)));
   const duplexLeafSupported = !topKnownIsCellularOfdm
@@ -240,8 +243,6 @@ function selectDecision(
     if (nr >= BAYESIAN_WAVEFORM_MODEL.minimumAggregatePosterior) return { label: 'nr-like', probability: nr, level: 'equivalence-class' };
     return { label: 'cellular-ofdm-ambiguous', probability: cellularOfdm, level: 'equivalence-class' };
   }
-  const wifi = aggregate(candidates, ['wifi-hr-dsss-like', 'wifi-ofdm-like']);
-  if (wifi >= BAYESIAN_WAVEFORM_MODEL.minimumAggregatePosterior) return { label: 'wifi-like', probability: wifi, level: 'equivalence-class' };
   return unknownDecision(unknownPosterior, 'low-confidence');
 }
 
@@ -260,112 +261,6 @@ function frequencyContextLogEvidence(id: ObservableLeafClass, observation: Obser
   void id;
   void observation;
   return 0;
-}
-
-function hypothesisHasRequiredEvidence(
-  id: ObservableLeafClass,
-  observation: Partial<Pick<ObservableFeatureObservation, 'occupiedStartHz' | 'occupiedStopHz' | 'centerHz' | 'bandwidthHz' | 'limitations' | 'values' | 'associationEvidenceQualification'>>,
-): boolean {
-  // Eligibility masks encode the pinned model's support, so an overwhelming
-  // relative texture likelihood cannot defeat a physical/model-domain
-  // impossibility. They are deliberately more conservative than the standards:
-  // standards-compliant modes outside this fitted corpus remain unknown.
-  if (id === 'wifi-hr-dsss-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.wifiHrDsss);
-    // The fitted 11 Mcps HR-DSSS projection is about 22 MHz wide. Ten MHz is
-    // a conservative lower observation boundary, not a universal 802.11 rule.
-    const inFittedWidth = observation.bandwidthHz === undefined
-      || (observation.bandwidthHz >= 10_000_000 && observation.bandwidthHz <= 30_000_000);
-    return inFittedBand && inFittedWidth;
-  }
-  if (id === 'wifi-ofdm-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.wifiOfdm);
-    const inFittedWidth = observation.bandwidthHz === undefined
-      || (observation.bandwidthHz >= 8_000_000 && observation.bandwidthHz <= 110_000_000);
-    return inFittedBand && inFittedWidth;
-  }
-  if (id === 'gsm-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.gsm);
-    const inFittedWidth = observation.bandwidthHz === undefined
-      || (observation.bandwidthHz >= 80_000 && observation.bandwidthHz <= 500_000);
-    return inFittedBand && inFittedWidth;
-  }
-  if (id === 'lte-fdd-like' || id === 'lte-tdd-like') {
-    // The narrowest detector-conditioned fitted cellular example is nominal
-    // 5 MHz LTE. LTE itself also defines 1.4/3 MHz channels; those are simply
-    // outside this asset and must not rescue an open-set support score.
-    const inFittedBand = fittedObservedIntervalInAnyBand(
-      observation,
-      id === 'lte-fdd-like' ? MODEL_BANDS_MHZ.lteFdd : MODEL_BANDS_MHZ.lteTdd,
-    );
-    const inFittedWidth = observation.bandwidthHz === undefined
-      || (observation.bandwidthHz >= 3_500_000 && observation.bandwidthHz <= 25_000_000);
-    return inFittedBand && inFittedWidth;
-  }
-  if (id === 'nr-fdd-like' || id === 'nr-tdd-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(
-      observation,
-      id === 'nr-fdd-like' ? MODEL_BANDS_MHZ.nrFdd : MODEL_BANDS_MHZ.nrTdd,
-    );
-    const inFittedWidth = observation.bandwidthHz === undefined
-      || (observation.bandwidthHz >= 10_000_000 && observation.bandwidthHz <= 110_000_000);
-    return inFittedBand && inFittedWidth;
-  }
-  if (id === 'am-dsb-full-carrier-like') {
-    const carrierFraction = observation.values?.['spectrum.centerFraction'];
-    if (carrierFraction === undefined || carrierFraction < 0.5) return false;
-    const resolvedSidebands = (observation.values?.['spectrum.sidebandScore'] ?? 0) >= 0.2;
-    const envelopeRangeDb = observation.values?.['envelope.rangeDb'];
-    const envelopeStandardDeviationDb = observation.values?.['envelope.standardDeviationDb'];
-    const amplitudeEnvelopeObserved = envelopeRangeDb !== undefined
-      && envelopeStandardDeviationDb !== undefined
-      && envelopeRangeDb >= 2
-      && envelopeStandardDeviationDb >= 0.5;
-    return resolvedSidebands || amplitudeEnvelopeObserved;
-  }
-  if (id !== 'bluetooth-like') return true;
-  // With only scalar swept spectra and a fixed-tune power envelope, a local
-  // stationary 2.4 GHz signal is not Bluetooth evidence. The supported leaf
-  // is deliberately a band-activity equivalence class and therefore requires
-  // the separately provenance-bound multi-frequency association observation.
-  if (!observation.limitations?.includes('frequency-agile-band-activity-association')) return false;
-  if (observation.associationEvidenceQualification !== 'provenance-bound-current-promotion') return false;
-  const associationLogBayesFactor = observation.values?.['association.logBayesFactor'];
-  const priorOdds = BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.priorAgileDynamicsProbability
-    / (1 - BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.priorAgileDynamicsProbability);
-  const promotionOdds = BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.promotionPosteriorProbability
-    / (1 - BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.promotionPosteriorProbability);
-  return associationLogBayesFactor !== undefined
-    && associationLogBayesFactor >= Math.log(promotionOdds / priorOdds)
-    && fittedObservedIntervalInAnyBand(observation, [[2_402, 2_480]]);
-}
-
-function fittedObservedIntervalInAnyBand(
-  observation: Partial<Pick<ObservableFeatureObservation, 'occupiedStartHz' | 'occupiedStopHz' | 'centerHz' | 'bandwidthHz' | 'values'>>,
-  rangesMhz: readonly (readonly [number, number])[],
-): boolean {
-  if (observation.centerHz === undefined) return true;
-  if (observation.bandwidthHz === undefined) return inAnyRange(observation.centerHz / 1_000_000, rangesMhz);
-  const halfBandwidthHz = observation.bandwidthHz / 2;
-  const logBandwidthRbwRatio = observation.values?.['spectrum.logBandwidthRbwRatio'];
-  const estimatedRbwHz = logBandwidthRbwRatio === undefined
-    ? 0
-    : observation.bandwidthHz / 10 ** logBandwidthRbwRatio;
-  // The weighted occupied interval can move by roughly an RBW at either edge.
-  // Cap that allowance at 5% of measured width so a coarse/invalid resolution
-  // estimate cannot turn a center-only context check back into a soft mask.
-  const edgeToleranceHz = Math.min(
-    observation.bandwidthHz * 0.05,
-    Number.isFinite(estimatedRbwHz) ? estimatedRbwHz * 2 : 0,
-  );
-  const observedStartHz = observation.occupiedStartHz ?? observation.centerHz - halfBandwidthHz;
-  const observedStopHz = observation.occupiedStopHz ?? observation.centerHz + halfBandwidthHz;
-  return rangesMhz.some(([startMhz, stopMhz]) => observedStartHz >= startMhz * 1_000_000 - edgeToleranceHz
-    && observedStopHz <= stopMhz * 1_000_000 + edgeToleranceHz);
-}
-
-function inAnyRange(value: number, ranges: readonly (readonly [number, number])[]): boolean {
-  return ranges.some(([start, stop]) => value >= start && value <= stop);
 }
 
 function leafFamily(id: string): string {
@@ -421,12 +316,15 @@ export { observableClassDefinitions } from './observable-classifier-model.js';
 function assertGeneratedModel(): void {
   if (BAYESIAN_OBSERVABLE_MODEL.id !== 'bayesian-observable-equivalence-v5'
     || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v5'
+    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.classificationSweeps !== 8
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons?.standard !== 24
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons.fullBand2g4 !== 96
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.selectionPolicy !== 'online-first-ready-all-representatives-v3'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy !== 'equal-weight-per-first-ready-production-representative-v2'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'bluetooth-components-require-qualified-agile-association-v1') {
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'runtime-domain-qualified-known-representatives-v3'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit !== 'one-score-per-fit-eligible-acquisition-attempt-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-fit-eligible-first-ready-representatives-v1') {
     throw new Error('Observable model asset does not match the v5 production admission contract');
   }
   const ids = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => model.id);

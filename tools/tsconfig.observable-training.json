@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../.artifacts/observable-training",
+    "rootDir": "../..",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "train-observable-classifier.ts",
+    "../packages/analysis/src/bayesian-predictive.ts",
+    "../packages/analysis/src/observable-classifier-model.ts",
+    "../packages/analysis/src/observable-features.ts",
+    "../packages/contracts/src/index.ts",
+    "../../TinySA_SignalLab/src/classification-corpus.ts"
+  ]
+}
