@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ const repoRoot = resolve(here, '..', '..');
 const sourceApp = join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app');
 const destination = join(homedir(), 'Applications', `${APP_NAME}.app`);
 const plistBuddy = '/usr/libexec/PlistBuddy';
+const launchServices = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
 
 function run(command, args, options = {}) {
   try {
@@ -61,6 +62,33 @@ function generateIcon(resources) {
   }
 }
 
+function signApplication(application) {
+  const codeBundles = [];
+
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (entry.name.endsWith('.app') || entry.name.endsWith('.framework')) codeBundles.push(path);
+        visit(path);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const executable = (statSync(path).mode & 0o111) !== 0;
+      if (!executable && !entry.name.endsWith('.dylib') && !entry.name.endsWith('.node')) continue;
+      if (run('/usr/bin/file', ['-b', path]).startsWith('Mach-O')) {
+        run('/usr/bin/codesign', ['--force', '--sign', '-', path]);
+      }
+    }
+  }
+
+  visit(join(application, 'Contents'));
+  codeBundles.sort((left, right) => right.split('/').length - left.split('/').length);
+  for (const bundle of codeBundles) run('/usr/bin/codesign', ['--force', '--sign', '-', bundle]);
+  run('/usr/bin/codesign', ['--force', '--sign', '-', application]);
+}
+
 function installApplication() {
   assertFile(sourceApp, 'Electron development runtime');
   assertFile(join(repoRoot, '.env'), 'TinySA Atomizer environment file');
@@ -82,7 +110,7 @@ function installApplication() {
 
   run('/usr/bin/ditto', [sourceApp, destination]);
   const resources = join(destination, 'Contents', 'Resources');
-  rmSync(join(resources, 'default_app.asar'), { force: true });
+  rmSync(join(resources, 'default_app.asar'), { recursive: true, force: true });
   const runtime = join(resources, 'app');
   mkdirSync(runtime);
   cpSync(join(here, 'main.cjs'), join(runtime, 'main.cjs'));
@@ -102,8 +130,11 @@ function installApplication() {
     throw new Error('The ElectronAsarIntegrity key was missing from the source runtime; its packaging contract changed');
   }
 
-  run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', destination]);
+  run('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', destination]);
+  run('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', join(repoRoot, 'node_modules')]);
+  signApplication(destination);
   run('/usr/bin/touch', [destination]);
+  run(launchServices, ['-f', destination]);
 }
 
 function addToDock() {
@@ -118,7 +149,7 @@ function addToDock() {
 
 installApplication();
 const dockChanged = addToDock();
-run('/usr/bin/open', [destination]);
+run('/usr/bin/open', ['-n', destination]);
 process.stdout.write([
   `Installed ${APP_NAME} at ${destination}`,
   dockChanged ? 'Added it to the Dock.' : 'It was already present in the Dock.',
