@@ -322,6 +322,7 @@ export class TinySaDeviceService {
         elapsedMilliseconds,
         frequencyHz: config.frequencyHz,
         samplePeriodSeconds: elapsedMilliseconds / 1_000 / config.points,
+        timingQualification: 'wall-clock-derived',
         powerDbm: rows.powerDbm,
         requested: config,
         actualRbwHz: transportEvidence?.actualRbwHz ?? readback.actualRbwHz,

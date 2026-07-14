@@ -528,6 +528,10 @@ export interface ZeroSpanCapture {
   elapsedMilliseconds: number;
   frequencyHz: number;
   samplePeriodSeconds: number;
+  /** Whether the sample cadence is merely inferred from wall time or calibrated against the returned samples. */
+  timingQualification?: 'wall-clock-derived' | 'measured-calibrated' | 'simulation-exact';
+  /** Detection selected when this envelope capture was requested, when bound by the host workflow. */
+  targetDetectionId?: string;
   powerDbm: readonly number[];
   requested: ZeroSpanConfig;
   actualRbwHz: number;
@@ -568,13 +572,65 @@ export const signalDetectionConfigSchema = z.object({
 export type SignalDetectionConfig = z.infer<typeof signalDetectionConfigSchema>;
 export interface BayesianDetectionEvidence {
   modelId: string;
+  /** Scope of the displayed model score; neither value is a sweep-family posterior. */
+  posteriorScope: 'selected-local-region' | 'track-state' | 'track-predictive-state';
   priorSignalProbability: number;
   posteriorSignalProbability: number;
   logBayesFactor: number;
   effectiveIndependentBins: number;
+  effectiveReferenceCells: number;
+  noiseShape: number;
+  posteriorPredictiveNullProbability: number;
+  targetPosteriorPredictiveNullProbability: number;
+  targetSweepFalseAlarmProbability: number;
+  multiplicityAdjustedTests: number;
+  testedRegionStartHz: number;
+  testedRegionStopHz: number;
+  qualification: 'ideal-exponential-not-physically-calibrated' | 'receiver-calibrated' | 'synthetic-known-presence';
   noiseSigmaDb: number;
   observedMeanShiftDb: number;
   looks: number;
+}
+export interface ActivityAssociationObservation {
+  /** Complete sweep containing an independently admitted CFAR-local look. */
+  sweepId: string;
+  /** Frequency-local tracker identity; this is provenance, not emitter identity. */
+  trackId: string;
+  /** Observed center of the threshold-connected local component in this look. */
+  centerHz: number;
+  startHz: number;
+  stopHz: number;
+  rbwHz: number;
+  binWidthHz: number;
+  /** Immutable local detector model and score that admitted this look. */
+  detectorId: string;
+  localBayesianEvidence: BayesianDetectionEvidence;
+}
+export interface ActivityAssociationOpportunity {
+  /** Complete, stable-geometry wide sweep considered by the association model. */
+  sweepId: string;
+  /** Multiple eligible local detections are censored rather than assigned to one emitter. */
+  outcome: 'none' | 'exactly-one' | 'ambiguous';
+}
+export interface BayesianActivityAssociationEvidence {
+  modelId: 'bayesian-frequency-agile-transition-v1';
+  priorAgileDynamicsProbability: number;
+  posteriorAgileDynamicsProbability: number;
+  logBayesFactor: number;
+  classicLogMarginalLikelihood: number;
+  leLogMarginalLikelihood: number;
+  stationaryLogMarginalLikelihood: number;
+  positiveObservationCount: number;
+  transitionCount: number;
+  changedTransitionCount: number;
+  uniqueResolutionCellCount: number;
+  advertisingChannelHitCount: number;
+  opportunityCount: number;
+  maximumOpportunityWindow: number;
+  modeledSweepTimeSeconds: number;
+  promotionPosteriorProbability: number;
+  retentionPosteriorProbability: number;
+  qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity';
 }
 export interface DetectedSignal {
   id: string;
@@ -596,6 +652,29 @@ export interface DetectedSignal {
   detectorId: string;
   detectorConfig: SignalDetectionConfig;
   bayesianEvidence: BayesianDetectionEvidence;
+  /** Frequency region frozen at the first locally admitted detector candidate for non-recentered classification. */
+  classificationRegionStartHz?: number;
+  classificationRegionStopHz?: number;
+  classificationRegionSweepIds?: readonly string[];
+  /** Whether the track is local or carries a separately disclosed, non-emitter-identity association. */
+  associationMode?: 'frequency-local' | 'frequency-agile-2g4-activity' | 'regular-spectral-component-activity';
+  /** Separately declared region used only for the disclosed activity association. */
+  associationRegionStartHz?: number;
+  associationRegionStopHz?: number;
+  associationRegionSweepIds?: readonly string[];
+  associationId?: string;
+  associationModelId?: string;
+  associationMemberTrackIds?: readonly string[];
+  /** Ordered local-look provenance for a disclosed, non-identity activity association. */
+  associationObservations?: readonly ActivityAssociationObservation[];
+  /** Every stable-geometry opportunity in the rolling association window. */
+  associationOpportunities?: readonly ActivityAssociationOpportunity[];
+  /** Bayesian activity evidence, separate from every local detector posterior. */
+  associationBayesianEvidence?: BayesianActivityAssociationEvidence;
+  /** Stable acquisition-geometry identity for the rolling association window. */
+  associationGeometryId?: string;
+  /** Consecutive eligible opportunities since the latest exactly-one local look. */
+  associationMissedSweeps?: number;
   qualityFlags: readonly ('touches-lower-boundary' | 'touches-upper-boundary' | 'single-bin')[];
 }
 export interface ClassificationCandidate { label: string; confidence: number; family?: string; }
@@ -606,15 +685,26 @@ export interface WaveformClassification {
   confidence: number;
   candidates: readonly ClassificationCandidate[];
   modelId: string;
-  qualification: 'spectral-morphology' | 'signal-lab-synthetic-hypothesis' | 'unavailable';
+  qualification: 'spectral-morphology' | 'signal-lab-synthetic-hypothesis' | 'bayesian-observable-equivalence' | 'unavailable';
   scoreKind: 'relative-score' | 'model-posterior' | 'none';
-  decisionLevel: 'morphology' | 'profile' | 'family' | 'unknown';
+  decisionLevel: 'morphology' | 'profile' | 'family' | 'equivalence-class' | 'unknown';
+  /** Evidence supporting the primary decision; ranked candidates retain their own score semantics. */
+  decisionSupport?: {
+    kind: 'model-posterior' | 'synthetic-support-p-value';
+    value: number;
+    threshold?: number;
+  };
   modelProvenance?: {
     producer: 'tinysa-signal-lab';
     sourceCommit: string;
     catalogSha256: string;
     generatorSha256: string;
     preprocessing: string;
+    modelAssetSha256?: string;
+    datasetSha256?: string;
+    priorId?: string;
+    calibrationId?: string;
+    decisionPolicyId?: string;
   };
   classifiedAt: string;
   unknownReason?: ClassificationUnknownReason;
@@ -626,6 +716,7 @@ export interface WaveformClassification {
     zeroSpanCaptureId?: string;
     views?: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
     features?: Readonly<Record<string, number>>;
+    limitations?: readonly string[];
   };
 }
 export interface AnalysisModeDefinition {
@@ -803,11 +894,18 @@ export type DeviceEvent =
   | { type: 'diagnostics'; diagnostics: DeviceDiagnostics }
   | { type: 'error'; error: DeviceError };
 
+export interface WaveformClassificationEvidence {
+  /** Provenance-bound repeated scalar spectra; the production model requires eight admissions. */
+  sweeps: readonly Sweep[];
+  /** Optional fixed-tune detected-power capture bound to the selected detection. */
+  zeroSpan?: ZeroSpanCapture;
+}
+
 export interface AnalysisApiV2 {
   listModes(): Promise<readonly AnalysisModeDefinition[]>;
   configureDetection(config: SignalDetectionConfig): Promise<void>;
   analyzeSweep(sweep: Sweep): Promise<readonly DetectedSignal[]>;
-  classify(detection: DetectedSignal, sweep: Sweep): Promise<WaveformClassification>;
+  classify(detection: DetectedSignal, evidence: WaveformClassificationEvidence): Promise<WaveformClassification>;
 }
 
 export const TINYSA_API_V2_METHODS = [

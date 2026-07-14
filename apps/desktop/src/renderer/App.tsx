@@ -59,6 +59,7 @@ import {
   TraceAccumulator,
   autoScaleSpectrum,
   calculateSweepMetrics,
+  classificationRepresentatives,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
   measureChannel,
@@ -90,6 +91,7 @@ import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, DISCONNECTED_SNAPSHOT, type AcquisitionState, type WorkspaceId } from './ui-contracts.js';
+import { agentDetectionResults } from './agent-detection-results.js';
 import { useAtomAgent } from './useAtomAgent.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
@@ -101,13 +103,16 @@ const DEFAULT_DETECTION: SignalDetectionConfig = {
 };
 const DEFAULT_ZERO_SPAN: ZeroSpanConfig = {
   frequencyHz: 433_920_000,
-  points: 290,
+  points: 450,
   rbwKhz: 100,
   attenuationDb: 'auto',
-  sweepTimeSeconds: 0.1,
+  sweepTimeSeconds: 0.05,
   trigger: { mode: 'auto' },
 };
-const HISTORY_LIMIT = 50;
+// The Bayesian 2.4 GHz activity association retains up to 96 stable-geometry
+// opportunities; keep enough complete sweeps to bind its latest eight positive
+// looks and audit the full rolling opportunity provenance.
+const HISTORY_LIMIT = 128;
 const DEFAULT_TRACES: TraceBankConfiguration = traceBankConfigurationSchema.parse([
   { id: 1, mode: 'clear-write', averageCount: 8 },
   { id: 2, mode: 'blank', averageCount: 8 },
@@ -254,6 +259,7 @@ export function App() {
     detectionsRef.current = [];
     setDetections([]);
     setClassifications([]);
+    clearClassificationCapture();
   }, [detectionConfig]);
   useEffect(() => {
     const identity = snapshot.identity;
@@ -426,6 +432,7 @@ export function App() {
   async function connectPort(port: PortCandidate): Promise<DeviceSnapshot> {
     setConnectionBusy(true);
     setError(undefined);
+    invalidateAcquiredEvidence();
     try {
       const next = await window.tinySA.connect(port);
       acceptSnapshot(next);
@@ -454,6 +461,7 @@ export function App() {
       await window.tinySA.disconnect();
       const next = await window.tinySA.getSnapshot();
       acceptSnapshot(next);
+      invalidateAcquiredEvidence();
       setAcquisition('idle');
       setDiagnostics(undefined);
       setScreenFrame(undefined);
@@ -511,6 +519,13 @@ export function App() {
     setDetections([]);
     setClassifications([]);
     setSelectedClassificationId(undefined);
+    clearClassificationCapture();
+  }
+
+  function clearClassificationCapture(): void {
+    zeroCaptureRef.current = undefined;
+    setZeroCapture(undefined);
+    setEnvelope(undefined);
   }
 
   function synchronizeContinuousAnalyzer(): Promise<void> {
@@ -588,7 +603,10 @@ export function App() {
     const tracked = tracker.current.update(next, candidates);
     detectionsRef.current = tracked;
     setDetections(tracked);
-    const currentSignals = tracked.filter((item) => item.state === 'active');
+    const currentSignals = classificationRepresentatives(
+      tracked.filter((item) => item.state === 'active'),
+      zeroCaptureRef.current?.targetDetectionId,
+    );
     const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, { sweeps: nextHistory, zeroSpan: zeroCaptureRef.current })));
     if (sequence === analysisSequence.current) setClassifications(results);
     return true;
@@ -645,7 +663,10 @@ export function App() {
     setError(undefined);
     setAcquisition('acquiring');
     try {
-      const capture = await window.tinySA.acquireZeroSpan(validated);
+      const acquired = await window.tinySA.acquireZeroSpan(validated);
+      const capture: ZeroSpanCapture = selectedClassificationId
+        ? { ...acquired, targetDetectionId: selectedClassificationId }
+        : acquired;
       zeroCaptureRef.current = capture;
       setZeroCapture(capture);
       setEnvelope(classifyZeroSpanEnvelope(capture));
@@ -656,7 +677,10 @@ export function App() {
         throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
       }
       const sequence = ++analysisSequence.current;
-      const active = detectionsRef.current.filter((item) => item.state === 'active');
+      const active = classificationRepresentatives(
+        detectionsRef.current.filter((item) => item.state === 'active'),
+        capture.targetDetectionId,
+      );
       const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
       if (sequence === analysisSequence.current) setClassifications(results);
       setAcquisition('complete');
@@ -998,7 +1022,7 @@ export function App() {
       zeroSpanConfig: zeroConfig,
       historyCount: history.length,
       latestSweep: sweep && metrics ? { id: sweep.id, sequence: sweep.sequence, capturedAt: sweep.capturedAt, rangeHz: [sweep.actualStartHz, sweep.actualStopHz], points: sweep.frequencyHz.length, source: sweep.source, elapsedMilliseconds: sweep.elapsedMilliseconds, metrics } : null,
-      detections: detections.map(({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps }) => ({ id, peakHz, peakDbm, bandwidthHz, state, persistenceSweeps, missedSweeps })),
+      detections: agentDetectionResults(detections),
       classifications: classifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
       selectedClassificationId: selectedClassificationId ?? null,
       zeroSpan: zeroCapture && envelope ? { frequencyHz: zeroCapture.frequencyHz, samples: zeroCapture.powerDbm.length, samplePeriodSeconds: zeroCapture.samplePeriodSeconds, envelope } : null,
@@ -1052,7 +1076,7 @@ export function App() {
       };
       case 'get_instrument_state': return snapshot;
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
-      case 'get_detection_results': return detections;
+      case 'get_detection_results': return agentDetectionResults(detections);
       case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
       case 'read_device_diagnostics': return refreshDiagnostics();
       case 'get_firmware_update_status': { const state = await window.tinySA.getFirmwareUpdateState(); setFirmwareUpdate(state); return state; }
@@ -1362,6 +1386,7 @@ export function coherentSweepCount(history: readonly Sweep[], depth: number): nu
   return history.filter((candidate) => candidate.frequencyHz.length === reference.frequencyHz.length
     && candidate.frequencyHz.every((frequency, index) => frequency === reference.frequencyHz[index])).slice(0, depth).length;
 }
+
 function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {
   if (!result.ok) throw new Error(`App-scoped computer ${result.action} was rejected${result.target ? ` at ${result.target}` : ''}: ${result.reason ?? 'no rejection reason was returned'}`);
   return result;

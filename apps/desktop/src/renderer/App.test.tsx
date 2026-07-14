@@ -12,10 +12,12 @@ import {
   type DeviceCapabilities,
   type DeviceEvent,
   type DeviceSnapshot,
+  type DetectedSignal,
   type PortCandidate,
   type Sweep,
   type ZeroSpanCapture,
 } from '@tinysa/contracts';
+import { classificationRepresentatives } from '@tinysa/analysis';
 import { App, coherentSweepCount, fitChannelConfigurationToSpan, parseStoredDetection } from './App.js';
 import { agentControlBinding } from '@tinysa/agent';
 
@@ -53,9 +55,9 @@ function acquiredSweep(config: AnalyzerConfig, id = 'runtime-sweep'): Sweep {
   };
 }
 const zeroSpanCapture: ZeroSpanCapture = {
-  kind: 'zero-span', id: 'z1', sequence: 2, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 100,
-  frequencyHz: 433_920_000, samplePeriodSeconds: 0.1 / 290, powerDbm: Array(290).fill(-90),
-  requested: { frequencyHz: 433_920_000, points: 290, rbwKhz: 100, attenuationDb: 'auto', sweepTimeSeconds: 0.1, trigger: { mode: 'auto' } },
+  kind: 'zero-span', id: 'z1', sequence: 2, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50,
+  frequencyHz: 433_920_000, samplePeriodSeconds: 0.05 / 450, timingQualification: 'wall-clock-derived', powerDbm: Array(450).fill(-90),
+  requested: { frequencyHz: 433_920_000, points: 450, rbwKhz: 100, attenuationDb: 'auto', sweepTimeSeconds: 0.05, trigger: { mode: 'auto' } },
   actualRbwHz: 100_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity,
 };
 
@@ -122,6 +124,23 @@ describe('operator vertical slice', () => {
       releaseAfterMissedSweeps: 2,
     })).toMatchObject({ minimumProminenceDb: 6 });
     expect(() => parseStoredDetection({ threshold: 'corrupt' })).toThrow();
+  });
+
+  it('classifies one representative per regular component association and honors a zero-span target', () => {
+    const associated = (id: string, startHz: number): DetectedSignal => ({
+      id,
+      startHz,
+      stopHz: startHz,
+      associationMode: 'regular-spectral-component-activity',
+      associationId: 'regular-1',
+      associationRegionStartHz: 100,
+      associationRegionStopHz: 300,
+    } as DetectedSignal);
+    const local = { id: 'local', associationMode: 'frequency-local' } as DetectedSignal;
+    const signals = [associated('left', 100), associated('center', 200), associated('right', 300), local];
+
+    expect(classificationRepresentatives(signals).map((signal) => signal.id)).toEqual(['center', 'local']);
+    expect(classificationRepresentatives(signals, 'right').map((signal) => signal.id)).toEqual(['right', 'local']);
   });
 
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {

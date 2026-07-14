@@ -816,6 +816,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .ranked-candidates em { color: var(--quiet); font: 7px var(--mono); font-style: normal; text-align: right; }
 .ranked-candidates > small { color: var(--quiet); font: 7px var(--mono); }
 .result-provenance { display: flex; justify-content: space-between; gap: 12px; margin-top: clamp(11px, 2vh, 18px); padding-top: 10px; border-top: 1px solid var(--line); color: var(--quiet); font: 7px var(--mono); }
+.result-provenance-association { flex-direction: column; gap: 5px; }
 .candidate-row { border: 0; border-bottom: 1px solid var(--line); color: inherit; text-align: left; }
 .candidate-row:hover, .candidate-row.selected { background: rgba(10,132,255,.035); }
 .candidate-row.selected { box-shadow: inset 2px 0 var(--energy); }

@@ -242,8 +242,8 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
   { type: 'function', name: 'get_instrument_state', description: 'Read the current connection, tinySA identity and firmware qualification, mode, analyzer/generator state, readback verification, capabilities, fault, and RF output state. This is cached application state; use read_device_diagnostics for fresh telemetry.' },
   { type: 'function', name: 'get_latest_sweep_summary', description: 'Read the latest spectrum sweep range, peak, robust noise floor, metrics, point count, capture timestamp, and source.' },
-  { type: 'function', name: 'get_detection_results', description: 'Read robust-threshold signal candidates and promoted active emissions with measured/required local prominence, persistence, missed sweeps, bandwidth, and provenance.' },
-  { type: 'function', name: 'get_classification_results', description: 'Read measurement-only SignalLab synthetic hypotheses from repeated scalar spectra and matching detected-power envelope evidence. Results are profile/family hypotheses or unknown, never selected-state proof, protocol decoding, conformance, or I/Q classification.' },
+  { type: 'function', name: 'get_detection_results', description: 'Read separately projected frequency-local detections and 2.4 GHz frequency-agile activity associations. Activity associations include conditional dynamics and local-look provenance, and are explicitly neither physical emissions nor emitter or protocol identity.' },
+  { type: 'function', name: 'get_classification_results', description: 'Read open-set Bayesian observable evidence classes from repeated scalar spectra and optional qualified detected-power envelope evidence. Results include a proper unknown probability and are equivalence classes, never SignalLab selected-state proof, protocol decoding, conformance, or I/Q classification.' },
   { type: 'function', name: 'read_device_diagnostics', description: 'Refresh and return firmware identity, command catalog, analyzer readback, battery voltage, device ID, and sweep status.' },
   { type: 'function', name: 'get_firmware_update_status', description: 'Read installed firmware qualification, pinned OEM provenance when available, verified artifact state, DFU detection, and irreversible-write evidence. Custom unqualified sessions warn and disable the OEM updater.' },
   { type: 'function', name: 'open_firmware_update', description: 'Open the staged firmware update workflow. Human-only preflight attestations and the final flash boundary remain inaccessible to Atom.' },
@@ -633,7 +633,7 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 # Evidence boundaries
 - Distinguish staged, commanded, verified, firmware-readback, host-derived, physical, twin, stale, custom-unqualified, and unknown evidence. Missing evidence is not a measurement.
 - Spectrum-derived views use complete scalar sweeps. Zero span and envelope STFT are detected power, never I/Q, phase, symbols, EVM, decoding, conformance, or protocol identity.
-- Detection candidates are not active emissions until promoted. SignalLab matches are measurement hypotheses, never knowledge of its selected mode.
+- Detection candidates are not active emissions until promoted. A frequency-agile 2.4 GHz result is a rolling activity association conditional on admitted local looks; it is never one physical emission, emitter identity, or protocol identity. Observable-class results are measurement hypotheses, never knowledge of SignalLab selected state.
 - Physical USB and the Renode firmware twin are distinct. SignalLab's runtime edge is reserved, not connected.
 
 # Safety and human boundaries

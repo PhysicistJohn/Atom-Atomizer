@@ -53,31 +53,36 @@ const detection = {
     releaseAfterMissedSweeps: 2,
   },
   bayesianEvidence: {
-    modelId: 'fixture', priorSignalProbability: 0.01, posteriorSignalProbability: 0.999,
-    logBayesFactor: 40, effectiveIndependentBins: 3, noiseSigmaDb: 1.5, observedMeanShiftDb: 50, looks: 3,
+    modelId: 'fixture', posteriorScope: 'track-state', priorSignalProbability: 0.01, posteriorSignalProbability: 0.999,
+    logBayesFactor: 40, effectiveIndependentBins: 3, effectiveReferenceCells: 12, noiseShape: 1,
+    posteriorPredictiveNullProbability: 1e-9, targetPosteriorPredictiveNullProbability: 0.001,
+    targetSweepFalseAlarmProbability: 0.001, multiplicityAdjustedTests: 1,
+    testedRegionStartHz: 99_000_000, testedRegionStopHz: 101_000_000,
+    qualification: 'ideal-exponential-not-physically-calibrated',
+    noiseSigmaDb: 1.5, observedMeanShiftDb: 50, looks: 3,
   },
   qualityFlags: [],
 } satisfies DetectedSignal;
 
 const classification = {
   detectionId: detection.id,
-  label: 'signal-lab:cw',
+  label: 'observable:cw-like',
   confidence: 0.91,
-  candidates: [{ label: 'cw', confidence: 0.91, family: 'tone' }],
-  modelId: 'signal-lab-emso-bayes-v1',
-  qualification: 'signal-lab-synthetic-hypothesis',
+  candidates: [{ label: 'observable:cw-like', confidence: 0.91, family: 'analog' }],
+  modelId: 'bayesian-observable-equivalence-v5',
+  qualification: 'bayesian-observable-equivalence',
   scoreKind: 'model-posterior',
-  decisionLevel: 'profile',
+  decisionLevel: 'equivalence-class',
   classifiedAt: '2026-07-11T00:00:01.000Z',
   evidence: { centerHz: 30, bandwidthHz: 20, peakDbm: -40, sweepIds: ['sweep-1'] },
 } satisfies WaveformClassification;
 
 const zeroConfig: ZeroSpanConfig = {
   frequencyHz: 30,
-  points: 290,
+  points: 450,
   rbwKhz: 'auto',
   attenuationDb: 'auto',
-  sweepTimeSeconds: 0.1,
+  sweepTimeSeconds: 0.05,
   trigger: { mode: 'auto' },
 };
 
@@ -112,12 +117,162 @@ describe('analysis visual contracts', () => {
     />);
     const candidate = view.container.querySelector('.candidate-row');
     expect(candidate).not.toBeNull();
-    const pill = within(candidate as HTMLElement).getByText('CW carrier');
+    const pill = within(candidate as HTMLElement).getByText('CW-like carrier');
     expect(pill.classList.contains('classified')).toBe(true);
     expect(candidate?.textContent).not.toMatch(/signal\s*lab/i);
+    expect(waveformLabel('observable:cw-like')).toBe('CW-like carrier');
+    expect(waveformLabel('observable:cellular-ofdm-ambiguous')).toBe('OFDM-shaped · LTE/NR-compatible');
+    expect(waveformLabel('observable:bluetooth-like')).toBe('2.4 GHz agile activity · Bluetooth-compatible');
     expect(waveformLabel('signal-lab-family:e-utra')).toBe('LTE');
     expect(waveformLabel('signal-lab:am')).toBe('AM signal');
     expect(waveformLabel('signal-lab:fm')).toBe('FM signal');
     expect(waveformLabel('signal-lab:fm')).not.toMatch(/replay/i);
+  });
+
+  it('maps every regular-association member to one group result while preserving local-line provenance', () => {
+    const members = ['line-left', 'line-center', 'line-right', 'line-edge'];
+    const associated = members.map((id, index): DetectedSignal => ({
+      ...detection,
+      id,
+      startHz: 98_000_000 + index * 25_000,
+      stopHz: 98_002_000 + index * 25_000,
+      peakHz: 98_001_000 + index * 25_000,
+      bandwidthHz: 2_000,
+      associationMode: 'regular-spectral-component-activity',
+      associationRegionStartHz: 98_000_000,
+      associationRegionStopHz: 98_077_000,
+      associationRegionSweepIds: ['sweep-1'],
+      associationId: 'regular-lines:test',
+      associationModelId: 'simultaneous-regular-components-v1',
+      associationMemberTrackIds: members,
+      associationMissedSweeps: 0,
+    }));
+    const groupClassification: WaveformClassification = {
+      ...classification,
+      detectionId: 'line-center',
+      label: 'observable:fm-angle-modulated-like',
+      evidence: {
+        ...classification.evidence,
+        centerHz: 98_038_500,
+        bandwidthHz: 77_000,
+        limitations: ['regular-spectral-component-activity-association'],
+      },
+    };
+
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={associated}
+      classifications={[groupClassification]}
+      selectedId="line-edge"
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onZeroConfig={vi.fn()}
+      onAcquireZero={vi.fn()}
+    />);
+
+    expect(within(view.container.querySelector('.classification-result') as HTMLElement).getByText('FM / angle-modulated-like')).toBeTruthy();
+    expect(view.container.querySelector('.result-provenance')?.textContent).toContain('Local detection');
+    expect(view.container.querySelector('.result-provenance')?.textContent).toContain('Association evidence 77 kHz');
+    expect(view.container.querySelector('.result-provenance')?.textContent).toContain('not emitter identity');
+    expect(view.container.querySelectorAll('.candidate-row .classified')).toHaveLength(4);
+    expect(view.container.textContent).toContain('Group · FM / angle-modulated-like');
+  });
+
+  it('discloses frequency-agile evidence as a conditional activity association, never a local emission', () => {
+    const localBayesianEvidence = {
+      ...detection.bayesianEvidence,
+      modelId: 'bayesian-exponential-multiscale-cfar-v3',
+      posteriorScope: 'selected-local-region' as const,
+      posteriorSignalProbability: 0.9975,
+      looks: 1,
+    };
+    const activity = {
+      ...detection,
+      id: 'agile-2g4-activity-0001',
+      startHz: 2_402_000_000,
+      stopHz: 2_480_000_000,
+      peakHz: 2_442_000_000,
+      bandwidthHz: 78_000_000,
+      associationMode: 'frequency-agile-2g4-activity',
+      associationRegionStartHz: 2_402_000_000,
+      associationRegionStopHz: 2_480_000_000,
+      associationRegionSweepIds: ['sweep-1'],
+      associationId: 'agile-2g4-activity-0001',
+      associationModelId: 'frequency-agile-2g4-activity-v3',
+      associationMemberTrackIds: ['signal-local-7'],
+      associationGeometryId: '2g4-wide:test',
+      associationMissedSweeps: 2,
+      associationObservations: [{
+        sweepId: 'sweep-1',
+        trackId: 'signal-local-7',
+        centerHz: 2_442_000_000,
+        startHz: 2_441_500_000,
+        stopHz: 2_442_500_000,
+        rbwHz: 200_000,
+        binWidthHz: 200_000,
+        detectorId: 'bayesian-exponential-multiscale-cfar-v3',
+        localBayesianEvidence,
+      }],
+      associationOpportunities: [{ sweepId: 'sweep-1', outcome: 'exactly-one' }],
+      associationBayesianEvidence: {
+        modelId: 'bayesian-frequency-agile-transition-v1',
+        priorAgileDynamicsProbability: 0.01,
+        posteriorAgileDynamicsProbability: 0.9942,
+        logBayesFactor: 11.9,
+        classicLogMarginalLikelihood: -2,
+        leLogMarginalLikelihood: -4,
+        stationaryLogMarginalLikelihood: -14,
+        positiveObservationCount: 8,
+        transitionCount: 7,
+        changedTransitionCount: 7,
+        uniqueResolutionCellCount: 8,
+        advertisingChannelHitCount: 1,
+        opportunityCount: 12,
+        maximumOpportunityWindow: 96,
+        modeledSweepTimeSeconds: 0.05,
+        promotionPosteriorProbability: 0.99,
+        retentionPosteriorProbability: 0.9,
+        qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity',
+      },
+      bayesianEvidence: localBayesianEvidence,
+    } as DetectedSignal;
+    const activityClassification = {
+      ...classification,
+      detectionId: activity.id,
+      label: 'observable:bluetooth-like',
+      evidence: {
+        ...classification.evidence,
+        centerHz: 2_441_000_000,
+        bandwidthHz: 78_000_000,
+        limitations: ['frequency-agile-band-activity-association'],
+      },
+    } satisfies WaveformClassification;
+
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[activity]}
+      classifications={[activityClassification]}
+      selectedId={activity.id}
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onZeroConfig={vi.fn()}
+      onAcquireZero={vi.fn()}
+    />);
+
+    const provenance = view.container.querySelector('.result-provenance')?.textContent ?? '';
+    expect(provenance).toContain('2.4 GHz activity association');
+    expect(provenance).toContain('not a physical emission');
+    expect(provenance).toContain('not emitter identity');
+    expect(provenance).toContain('P_agile | positive looks 99.42%');
+    expect(provenance).toContain('latest P_local 99.75%');
+    expect(provenance).toContain('8 / 12 positive/opportunity looks');
+    expect(provenance).toContain('50 ms modeled sweep');
+    expect(provenance).toContain('frequency-agile-2g4-activity-v3');
+    expect(provenance).toContain('bayesian-frequency-agile-transition-v1');
+    expect(provenance).toContain('bayesian-exponential-multiscale-cfar-v3');
+    expect(provenance).not.toContain('Local detection');
+    expect(view.container.querySelector('.candidate-row')?.textContent).toContain('Activity · 2.4 GHz agile activity · Bluetooth-compatible');
   });
 });

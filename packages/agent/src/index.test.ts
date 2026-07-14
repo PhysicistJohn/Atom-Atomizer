@@ -90,7 +90,15 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty patch');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Omitted fields—including rbwKhz—remain staged');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('rolling activity association conditional on admitted local looks');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never one physical emission, emitter identity, or protocol identity');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
+  });
+  it('describes detection results as separated local evidence and non-identity activity associations',()=>{
+    const description=agentToolDefinitions.find(tool=>tool.name==='get_detection_results')?.description??'';
+    expect(description).toContain('frequency-local detections');
+    expect(description).toContain('frequency-agile activity associations');
+    expect(description).toContain('neither physical emissions nor emitter or protocol identity');
   });
   it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);

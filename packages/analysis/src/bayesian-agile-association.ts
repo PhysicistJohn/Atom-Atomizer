@@ -1,0 +1,171 @@
+import type { ActivityAssociationObservation, BayesianActivityAssociationEvidence } from '@tinysa/contracts';
+import { logGamma } from './bayesian-predictive.js';
+
+export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
+  id: 'bayesian-frequency-agile-transition-v1',
+  priorAgileDynamicsProbability: 0.01,
+  maximumOpportunityWindow: 96,
+  modeledSweepTimeSeconds: 0.05,
+  minimumPositiveObservations: 8,
+  minimumResolutionCells: 3,
+  promotionPosteriorProbability: 0.99,
+  retentionPosteriorProbability: 0.90,
+  classicChangePrior: [78, 1] as const,
+  leChangePrior: [2, 1] as const,
+  stationaryChangePrior: [1, 19] as const,
+  advertisingCentersHz: [2_402_000_000, 2_426_000_000, 2_480_000_000] as const,
+  minimumAdvertisingToleranceHz: 1_500_000,
+} as const;
+
+/**
+ * Conditional activity evidence over independently CFAR-admitted, exactly-one
+ * local looks. Occurrence/miss probability is common to both hypotheses and
+ * deliberately cancels: this score does not invent an SNR- or duty-cycle model.
+ */
+export function bayesianFrequencyAgileActivityEvidence(
+  observations: readonly ActivityAssociationObservation[],
+  opportunityCount: number,
+): BayesianActivityAssociationEvidence {
+  if (!Number.isInteger(opportunityCount)
+    || opportunityCount < observations.length
+    || opportunityCount > BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.maximumOpportunityWindow) {
+    throw new Error('Frequency-agile evidence has an invalid opportunity count');
+  }
+  if (!observations.length) throw new Error('Frequency-agile evidence requires at least one positive observation');
+  for (const observation of observations) validateObservation(observation);
+
+  const transitionCount = Math.max(0, observations.length - 1);
+  let changedTransitionCount = 0;
+  for (let index = 1; index < observations.length; index++) {
+    if (resolvedCenterChanged(observations[index - 1]!, observations[index]!)) changedTransitionCount++;
+  }
+  const advertisingHits = observations.map(advertisingChannelHit);
+  const advertisingChannelHitCount = advertisingHits.filter(Boolean).length;
+
+  const classicLogMarginalLikelihood = transitionLogMarginal(
+    changedTransitionCount,
+    transitionCount,
+    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.classicChangePrior,
+  );
+  const leLogMarginalLikelihood = transitionLogMarginal(
+    changedTransitionCount,
+    transitionCount,
+    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.leChangePrior,
+  );
+  const stationaryLogMarginalLikelihood = transitionLogMarginal(
+    changedTransitionCount,
+    transitionCount,
+    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.stationaryChangePrior,
+  );
+  const activityLogMarginalLikelihood = logSumExp([
+    Math.log(0.5) + classicLogMarginalLikelihood,
+    Math.log(0.5) + leLogMarginalLikelihood,
+  ]);
+  const logBayesFactor = activityLogMarginalLikelihood - stationaryLogMarginalLikelihood;
+  const posteriorAgileDynamicsProbability = posteriorFromPriorAndLogBayesFactor(
+    BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.priorAgileDynamicsProbability,
+    logBayesFactor,
+  );
+
+  return {
+    modelId: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.id,
+    priorAgileDynamicsProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.priorAgileDynamicsProbability,
+    posteriorAgileDynamicsProbability,
+    logBayesFactor,
+    classicLogMarginalLikelihood,
+    leLogMarginalLikelihood,
+    stationaryLogMarginalLikelihood,
+    positiveObservationCount: observations.length,
+    transitionCount,
+    changedTransitionCount,
+    uniqueResolutionCellCount: resolutionCellCount(observations),
+    advertisingChannelHitCount,
+    opportunityCount,
+    maximumOpportunityWindow: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.maximumOpportunityWindow,
+    modeledSweepTimeSeconds: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.modeledSweepTimeSeconds,
+    promotionPosteriorProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.promotionPosteriorProbability,
+    retentionPosteriorProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.retentionPosteriorProbability,
+    qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity',
+  };
+}
+
+export function bayesianFrequencyAgileActivityQualifies(
+  evidence: BayesianActivityAssociationEvidence,
+  previouslyPromoted: boolean,
+): boolean {
+  return evidence.positiveObservationCount >= BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.minimumPositiveObservations
+    && evidence.uniqueResolutionCellCount >= BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.minimumResolutionCells
+    && evidence.posteriorAgileDynamicsProbability >= (previouslyPromoted
+      ? BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.retentionPosteriorProbability
+      : BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.promotionPosteriorProbability);
+}
+
+function validateObservation(observation: ActivityAssociationObservation): void {
+  const local = observation.localBayesianEvidence;
+  if (!observation.sweepId || !observation.trackId
+    || ![observation.centerHz, observation.startHz, observation.stopHz, observation.rbwHz, observation.binWidthHz].every(Number.isFinite)
+    || observation.stopHz <= observation.startHz
+    || observation.centerHz < observation.startHz
+    || observation.centerHz > observation.stopHz
+    || observation.rbwHz <= 0
+    || observation.binWidthHz <= 0
+    || !observation.detectorId
+    || !local
+    || local.modelId !== observation.detectorId
+    || local.posteriorScope !== 'selected-local-region'
+    || local.looks !== 1
+    || ![local.posteriorSignalProbability, local.logBayesFactor, local.posteriorPredictiveNullProbability,
+      local.testedRegionStartHz, local.testedRegionStopHz].every(Number.isFinite)
+    // A one-bin Bayesian test has identical center coordinates at its start
+    // and stop; the observation support above still carries positive bin width.
+    || local.testedRegionStopHz < local.testedRegionStartHz) {
+    throw new Error('Frequency-agile association contains invalid local-look provenance');
+  }
+}
+
+function resolvedCenterChanged(left: ActivityAssociationObservation, right: ActivityAssociationObservation): boolean {
+  const resolutionHz = Math.max(
+    500_000,
+    left.rbwHz,
+    right.rbwHz,
+    0.5 * ((left.stopHz - left.startHz) + (right.stopHz - right.startHz)),
+  );
+  return Math.abs(left.centerHz - right.centerHz) > resolutionHz;
+}
+
+function resolutionCellCount(observations: readonly ActivityAssociationObservation[]): number {
+  const cells: ActivityAssociationObservation[] = [];
+  for (const observation of [...observations].sort((left, right) => left.centerHz - right.centerHz)) {
+    if (cells.every((cell) => resolvedCenterChanged(cell, observation))) cells.push(observation);
+  }
+  return cells.length;
+}
+
+function advertisingChannelHit(observation: ActivityAssociationObservation): boolean {
+  const toleranceHz = Math.max(
+    BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.minimumAdvertisingToleranceHz,
+    observation.rbwHz,
+  );
+  return BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.advertisingCentersHz
+    .some((centerHz) => Math.abs(observation.centerHz - centerHz) <= toleranceHz);
+}
+
+function transitionLogMarginal(changed: number, total: number, alpha: number, beta: number): number {
+  return logBeta(changed + alpha, total - changed + beta) - logBeta(alpha, beta);
+}
+
+function logBeta(alpha: number, beta: number): number {
+  return logGamma(alpha) + logGamma(beta) - logGamma(alpha + beta);
+}
+
+function logSumExp(values: readonly number[]): number {
+  const maximum = Math.max(...values);
+  return maximum + Math.log(values.reduce((sum, value) => sum + Math.exp(value - maximum), 0));
+}
+
+function posteriorFromPriorAndLogBayesFactor(prior: number, logBayesFactor: number): number {
+  const logPosteriorOdds = logBayesFactor + Math.log(prior / (1 - prior));
+  if (logPosteriorOdds >= 0) return 1 / (1 + Math.exp(-logPosteriorOdds));
+  const odds = Math.exp(logPosteriorOdds);
+  return odds / (1 + odds);
+}
