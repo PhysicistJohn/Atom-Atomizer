@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../.artifacts/detector-validation",
+    "rootDir": "..",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "validate-bayesian-detector.ts",
+    "../packages/analysis/src/**/*.ts",
+    "../packages/contracts/src/index.ts"
+  ]
+}
