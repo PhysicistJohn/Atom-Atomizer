@@ -111,6 +111,7 @@ describe('device fail-loud lifecycle', () => {
     await service.connect(transport.port);
 
     await expect(service.configureAnalyzer(analyzer)).rejects.toThrow(/rejected command output off/i);
+    expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'unknown', verification: 'unknown' });
     await service.disconnect();
 
     expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(4);

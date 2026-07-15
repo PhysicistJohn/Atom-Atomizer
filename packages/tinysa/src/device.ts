@@ -654,8 +654,23 @@ export class TinySaDeviceService {
     // the write executes but its reply is rejected or lost, teardown must send
     // output-off again instead of treating the earlier state as current.
     if (command === 'output off') this.#rfOffAcknowledged = false;
-    const response = await this.#ready().execute(command, timeoutMs);
-    assertFirmwareSuccess(response, command);
+    let response: string;
+    try {
+      response = await this.#ready().execute(command, timeoutMs);
+      assertFirmwareSuccess(response, command);
+    } catch (value) {
+      if (command === 'output off' && this.#snapshot.connection !== 'disconnected') {
+        const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged', true);
+        this.#set({
+          ...this.#snapshot,
+          connection: 'faulted',
+          generatorOutput: 'unknown',
+          verification: 'unknown',
+          fault: faultFrom(error),
+        });
+      }
+      throw value;
+    }
     if (command === 'output off') this.#rfOffAcknowledged = true;
     else if (command === 'output on') {
       this.#rfOffAcknowledged = false;
