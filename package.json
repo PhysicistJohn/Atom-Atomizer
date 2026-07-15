@@ -13,7 +13,7 @@
     "prepare:signal-lab-bridge": "npm --prefix ../TinySA_SignalLab run build:bridge",
     "dev": "npm run prepare:signal-lab-bridge && npm run dev -w @tinysa/desktop",
     "dev:install-app": "node tools/dev-launcher/install.mjs",
-    "check:launcher": "node --check tools/dev-launcher/main.cjs && node --check tools/dev-launcher/install.mjs && node --test tools/dev-launcher/bounded-log.test.cjs",
+    "check:launcher": "node --check tools/dev-launcher/main.cjs && node --check tools/dev-launcher/install.mjs && node --test tools/dev-launcher/bounded-log.test.cjs tools/dev-launcher/install-layout.test.mjs",
     "check:trio-contract": "node tools/verify-trio-contract.mjs",
     "check:firmware-twin": "node tools/smoke-firmware-twin.mjs",
     "train:signal-classifier": "tsup tools/train-observable-classifier.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/train-observable-classifier.js",

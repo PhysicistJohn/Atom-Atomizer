@@ -93,6 +93,7 @@ function installApplication() {
   assertFile(sourceApp, 'Electron development runtime');
   assertFile(join(repoRoot, '.env'), 'TinySA Atomizer environment file');
   assertFile(join(here, 'main.cjs'), 'Development launcher runtime');
+  assertFile(join(here, 'bounded-log.cjs'), 'Development launcher bounded-log runtime');
   assertFile(join(here, 'package.json'), 'Development launcher package');
   assertFile(join(here, 'config.json'), 'Development runtime contract');
 
@@ -114,6 +115,7 @@ function installApplication() {
   const runtime = join(resources, 'app');
   mkdirSync(runtime);
   cpSync(join(here, 'main.cjs'), join(runtime, 'main.cjs'));
+  cpSync(join(here, 'bounded-log.cjs'), join(runtime, 'bounded-log.cjs'));
   cpSync(join(here, 'package.json'), join(runtime, 'package.json'));
   writeFileSync(join(runtime, 'launcher-config.json'), `${JSON.stringify({ contractVersion: CONTRACT_VERSION, repoRoot }, null, 2)}\n`, 'utf8');
 
