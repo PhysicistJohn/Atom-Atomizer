@@ -1287,16 +1287,25 @@ function assertTransportEvidence(
 }
 
 function parseHelpCommands(response: string): readonly string[] {
-  const commands = new Set<string>();
-  for (const line of nonEmptyLines(response)) {
-    const colon = line.indexOf(':');
-    if (colon < 0) continue;
-    for (const token of line.slice(colon + 1).trim().split(/\s+/)) {
-      if (/^[a-z][a-z0-9_]*$/.test(token)) commands.add(token);
-    }
+  const lines = exactResponseLines(response);
+  if (lines.length !== 2) {
+    throw new TinySaDeviceError('protocol', 'Malformed help catalog: expected exactly commands and Other commands lines', false);
   }
-  if (!commands.size) throw new TinySaDeviceError('protocol', 'help response contained no command catalog', false);
-  return [...commands].sort();
+  const primary = parseHelpCatalogLine(lines[0]!, 'commands');
+  const secondary = parseHelpCatalogLine(lines[1]!, 'Other commands');
+  const commands = [...primary, ...secondary];
+  if (!commands.length) throw new TinySaDeviceError('protocol', 'help response contained no command catalog', false);
+  if (new Set(commands).size !== commands.length) {
+    throw new TinySaDeviceError('protocol', 'Malformed help catalog: a command was declared more than once', false);
+  }
+  return commands.sort();
+}
+
+function parseHelpCatalogLine(line: string, header: 'commands' | 'Other commands'): readonly string[] {
+  const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = line.match(new RegExp(`^${escapedHeader}:((?: [a-z][a-z0-9_]*)*)$`));
+  if (!match) throw new TinySaDeviceError('protocol', `Malformed help catalog ${header} line`, false);
+  return match[1] ? match[1].slice(1).split(' ') : [];
 }
 
 function requireCommands(commands: readonly string[]): void {
@@ -1449,25 +1458,17 @@ function assertZeroSpanReadback(config: ZeroSpanConfig, readback: AnalyzerReadba
 function assertFirmwareSuccess(response: string, command: string): void {
   const failure = response.match(/(?:Command timeout|frequency range is invalid|sweep points exceeds[^\r\n]*|Key unmatched\.|^usage:[^\r\n]*)/im)?.[0];
   if (failure) throw new TinySaDeviceError('protocol', `${command} failed: ${failure}`, false);
-  const genericFailure = nonEmptyLines(response).find((line) => (
-    /\b(?:error|unknown|invalid|unsupported|failed|failure)\b/i.test(line)
-    || /\bnot\s+(?:recognized|supported)\b/i.test(line)
-  ));
-  if (genericFailure) throw new TinySaDeviceError('protocol', `${command} failed: ${genericFailure}`, false);
-  const operation = command.trim().split(/\s+/, 1)[0];
-  if (response.trim() === `${command}?` || response.trim() === `${operation}?`) {
-    throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
-  }
 }
 
 function assertFirmwareMutationAcknowledged(response: string, command: string): void {
-  const reply = response.trim();
-  if (!reply) return;
-  const operation = command.trim().split(/\s+/, 1)[0];
-  if (reply === `${command}?` || reply === `${operation}?`) {
-    throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
-  }
-  throw new TinySaDeviceError('protocol', `${command} failed: unexpected non-empty reply ${nonEmptyLines(response)[0] ?? reply}`, false);
+  const reply = nonEmptyLines(response);
+  if (!reply.length) return;
+  const firstLine = reply[0]!.slice(0, 160);
+  throw new TinySaDeviceError(
+    'protocol',
+    `Firmware rejected command ${command}: mutating commands require an empty reply, received ${JSON.stringify(firstLine)}`,
+    false,
+  );
 }
 
 function formatDecimal(value: number): string {

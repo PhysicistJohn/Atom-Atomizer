@@ -103,17 +103,43 @@ describe('device fail-loud lifecycle', () => {
   });
 
   it.each(['error', 'unknown command', 'invalid request', 'no such command', 'ok', 'command accepted'])(
-    'does not treat the generic firmware failure %j as a mutating-command acknowledgement',
-    async (failure) => {
-      const bytes = new FakeTinySaTransport({ commandResponses: { 'output off': failure } });
+    'requires the closed empty-reply acknowledgement for mutating command response %j',
+    async (reply) => {
+      const bytes = new FakeTinySaTransport({ commandResponses: { 'output off': reply } });
       const transport = new PhysicalFixtureTransport(bytes);
       const service = new TinySaDeviceService(transport);
 
-      await expect(service.connect(transport.port)).rejects.toThrow(/output off failed/i);
+      await expect(service.connect(transport.port)).rejects.toThrow(/rejected command output off.*require an empty reply/i);
 
       expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
     },
   );
+
+  it.each([
+    [
+      'arbitrary colon prose',
+      'note: version info help output mode sweep rbw attenuate status vbat deviceid\r\nOther commands:',
+      /Malformed help catalog commands line/i,
+    ],
+    [
+      'a duplicate declaration',
+      'commands: version info help output mode sweep rbw attenuate status vbat deviceid\r\nOther commands: output',
+      /declared more than once/i,
+    ],
+    [
+      'an extra catalog line',
+      'commands: version info help output mode sweep rbw attenuate status vbat deviceid\r\nOther commands:\r\nnote: scan trace',
+      /expected exactly commands and Other commands lines/i,
+    ],
+  ])('rejects help output containing %s', async (_case, helpResponse, expected) => {
+    const bytes = new FakeTinySaTransport({ commandResponses: { help: helpResponse } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(expected);
+
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+  });
 
   it('invalidates an older RF-off acknowledgement when a later output-off attempt is rejected', async () => {
     const bytes = new FakeTinySaTransport({
