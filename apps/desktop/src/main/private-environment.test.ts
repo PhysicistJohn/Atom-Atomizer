@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   loadPrivateEnvironmentFile,
   loadPrivateEnvironmentFromCandidates,
+  selectPrivateEnvironmentCandidates,
 } from './private-environment.js';
 
 const roots: string[] = [];
@@ -66,6 +67,27 @@ describe('private environment loading', () => {
     })).rejects.toThrow(process.platform === 'win32' ? /inherited process environment/i : /is missing/i);
     await expect(loadPrivateEnvironmentFromCandidates([missing], { environment: {} }))
       .resolves.toBeUndefined();
+  });
+
+  it('rejects an absent or blank explicit path before candidate filtering', async () => {
+    await expect(loadPrivateEnvironmentFromCandidates([], {
+      explicitFirstCandidate: true,
+      environment: {},
+    })).rejects.toThrow(/explicit environment file path must not be blank/i);
+    await expect(loadPrivateEnvironmentFromCandidates(['   '], {
+      explicitFirstCandidate: true,
+      environment: {},
+    })).rejects.toThrow(/explicit environment file path must not be blank/i);
+  });
+
+  it('never turns a whitespace TINYSA_ENV_FILE override into implicit fallback candidates', () => {
+    expect(selectPrivateEnvironmentCandidates('   ', ['/implicit/project.env', '/implicit/repo.env']))
+      .toEqual({ candidates: [''], explicitFirstCandidate: true });
+    expect(selectPrivateEnvironmentCandidates(undefined, ['/implicit/project.env', '/implicit/repo.env']))
+      .toEqual({
+        candidates: ['/implicit/project.env', '/implicit/repo.env'],
+        explicitFirstCandidate: false,
+      });
   });
 
   posixIt('does not bypass an unsafe earlier candidate by falling back to a later file', async () => {

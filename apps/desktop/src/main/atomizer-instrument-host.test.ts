@@ -247,6 +247,31 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(manager.acquireCalls).toBe(1);
   });
 
+  it('turns a start requested while an in-flight stop drains into a genuinely new stream run', async () => {
+    const manager = new FakeManager();
+    manager.session = sessionFixture(configurationFixture());
+    manager.acquireGate = deferred<void>();
+    const cadence = deferred<void>();
+    const host = new AtomizerInstrumentHost(manager, new FakePreferences(), {
+      now: () => new Date(NOW),
+      yieldToEventLoop: () => cadence.promise,
+    });
+
+    await host.startStreaming();
+    await until(() => manager.acquireCalls === 1);
+    const stopping = host.stopStreaming();
+    const restarting = host.startStreaming();
+
+    manager.acquireGate.resolve();
+    await stopping;
+    await expect(restarting).resolves.toMatchObject({ status: 'running' });
+    await until(() => manager.acquireCalls === 2);
+    await host.stopStreaming();
+
+    expect(manager.acquireCalls).toBe(2);
+    expect(host.state().streaming).toEqual({ status: 'stopped' });
+  });
+
   it('keeps a prolonged zero-latency producer serialized and bounds remembered measurement identities', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());

@@ -21,7 +21,7 @@ import { registerAtomizerAuxiliaryIpc } from './atomizer-auxiliary-ipc.js';
 import { InstrumentPreferenceStore } from './instrument-preference.js';
 import { SafeShutdownGate } from './safe-shutdown-gate.js';
 import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
-import { loadPrivateEnvironmentFromCandidates } from './private-environment.js';
+import { loadPrivateEnvironmentFromCandidates, selectPrivateEnvironmentCandidates } from './private-environment.js';
 import {
   assertTrustedRendererEvent,
   developmentRendererTrust,
@@ -33,11 +33,13 @@ import {
 } from './renderer-trust.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const explicitEnvironmentFile = process.env.TINYSA_ENV_FILE?.trim();
-await loadPrivateEnvironmentFromCandidates(explicitEnvironmentFile
-  ? [explicitEnvironmentFile]
-  : [resolve(process.cwd(), '.env'), resolve(process.cwd(), '../../.env'), resolve(here, '../../../../.env')], {
-  explicitFirstCandidate: explicitEnvironmentFile !== undefined,
+const privateEnvironment = selectPrivateEnvironmentCandidates(process.env.TINYSA_ENV_FILE, [
+  resolve(process.cwd(), '.env'),
+  resolve(process.cwd(), '../../.env'),
+  resolve(here, '../../../../.env'),
+]);
+await loadPrivateEnvironmentFromCandidates(privateEnvironment.candidates, {
+  explicitFirstCandidate: privateEnvironment.explicitFirstCandidate,
 });
 const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../TinySA_Firmware'));
 const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() || resolve(here, '../../../..'));

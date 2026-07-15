@@ -247,7 +247,15 @@ export class AtomizerInstrumentHost {
 
   startStreaming(): Promise<AtomizerInstrumentStreamingState> {
     this.#requireSessionWorkAvailable('Continuous acquisition');
-    if (this.#streamRun) return Promise.resolve(atomizerInstrumentStreamingStateSchema.parse(this.#streaming));
+    if (this.#streamRun) {
+      const run = this.#streamRun;
+      // A run remains installed while its in-flight acquisition drains.  Do
+      // not acknowledge that stopping run as the caller's requested start:
+      // wait for its terminal state, then perform a fresh admission check and
+      // create a genuinely live run.
+      if (run.stopRequested) return run.done.then(() => this.startStreaming());
+      return Promise.resolve(atomizerInstrumentStreamingStateSchema.parse(this.#streaming));
+    }
     const session = this.manager.snapshot();
     if (!session) return Promise.reject(new Error('Continuous acquisition requires an active instrument session'));
     if (!session.configuration) return Promise.reject(new Error('Continuous acquisition requires an admitted configuration'));

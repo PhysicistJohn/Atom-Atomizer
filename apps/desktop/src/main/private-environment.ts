@@ -16,6 +16,26 @@ interface PrivateEnvironmentOptions {
   secureNoFollowOpen?: boolean;
 }
 
+export interface PrivateEnvironmentCandidateSelection {
+  readonly candidates: readonly string[];
+  readonly explicitFirstCandidate: boolean;
+}
+
+/**
+ * Preserves the distinction between an unset override and a configured but
+ * blank override. The latter must reach the loader as an explicit candidate
+ * and fail closed instead of silently enabling implicit development files.
+ */
+export function selectPrivateEnvironmentCandidates(
+  explicitCandidate: string | undefined,
+  implicitCandidates: readonly string[],
+): PrivateEnvironmentCandidateSelection {
+  if (explicitCandidate !== undefined) {
+    return { candidates: [explicitCandidate.trim()], explicitFirstCandidate: true };
+  }
+  return { candidates: [...implicitCandidates], explicitFirstCandidate: false };
+}
+
 /**
  * Loads the first existing candidate through the descriptor that was opened
  * with O_NOFOLLOW.  Metadata validation and content consumption therefore
@@ -28,6 +48,9 @@ export async function loadPrivateEnvironmentFromCandidates(
   candidates: readonly string[],
   options: PrivateEnvironmentOptions & { explicitFirstCandidate?: boolean } = {},
 ): Promise<PrivateEnvironmentLoadResult | undefined> {
+  if (options.explicitFirstCandidate && (candidates.length === 0 || !candidates[0]?.trim())) {
+    throw new Error('TinySA Atomizer explicit environment file path must not be blank');
+  }
   const uniqueCandidates = [...new Set(candidates.filter((candidate) => candidate.trim().length > 0))];
   if (!hasSecureNoFollowOpen(options)) {
     if (options.explicitFirstCandidate && uniqueCandidates.length > 0) {
