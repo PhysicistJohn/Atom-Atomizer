@@ -147,6 +147,86 @@ done
     expect(payloads).toEqual([expect.stringContaining('tinySA4_v0.2.0_protocol-v2')]);
   });
 
+  it('resets every emulated shell control only after a confirmed close before the next bridge boot', async () => {
+    const sweepResult = JSON.stringify({
+      frequencyHz: Array.from({ length: 20 }, (_, index) => 88_000_000 + index),
+      powerDbm: Array.from({ length: 20 }, () => -90),
+      actualRbwHz: 10_000,
+      actualAttenuationDb: 0,
+      bridgeEvidence: 'ZS407_TWIN_SWEEP state-reset-test',
+    });
+    const repository = await bridgeRepository(`
+printf '%s\n' '${READY}'
+while IFS= read -r request; do
+  printf '%s\n' "$request" >> "$(dirname "$0")/requests.ndjson"
+  id=$(printf '%s' "$request" | /usr/bin/sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
+  case "$request" in
+    *'"method":"acquire_sweep"'*)
+      printf '{"id":"%s","ok":true,"contractVersion":1,"result":%s}\n' "$id" '${sweepResult}'
+      ;;
+    *'"method":"shutdown"'*)
+      printf '{"id":"%s","ok":true,"contractVersion":1,"result":{}}\n' "$id"
+      exit 0
+      ;;
+    *)
+      printf '{"id":"%s","ok":true,"contractVersion":1,"result":{}}\n' "$id"
+      ;;
+  esac
+done
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const payloads: string[] = [];
+    const write = (command: string) => transport.write(new TextEncoder().encode(`${command}\r`));
+    transport.onBytes((bytes) => payloads.push(new TextDecoder().decode(bytes)));
+
+    await transport.open(structuredClone(transport.port));
+    for (const command of [
+      'sweep 100000000 101000000 20', 'rbw 30', 'attenuate 7', 'sweeptime 0.25',
+      'calc quasi', 'spur on', 'avoid off', 'lna on', 'trigger normal', 'trigger -63',
+      'mode output', 'output normal', 'freq 123000000', 'level -10',
+      'modulation freq 2000', 'modulation depth 40', 'modulation deviation 5000',
+      'modulation fm', 'output on', 'scan 100000000 101000000 20 3',
+    ]) await write(command);
+    expect(transport.consumeAcquisitionMetadata()).toBeDefined();
+    await write('scan 100000000 101000000 20 3');
+    await transport.close();
+
+    await transport.open(structuredClone(transport.port));
+    expect(transport.consumeAcquisitionMetadata()).toBeUndefined();
+    const readbackOffset = payloads.length;
+    for (const command of ['sweep', 'rbw', 'attenuate', 'sweeptime']) await write(command);
+    await write('modulation off');
+    await write('output on');
+    await write('scan 88000000 108000000 20 3');
+    await transport.close();
+
+    expect(payloads.slice(readbackOffset, readbackOffset + 4)).toEqual([
+      expect.stringContaining('88000000 108000000 450'),
+      expect.stringContaining('10kHz'),
+      expect.stringContaining('0.00'),
+      expect.stringContaining('0.08s'),
+    ]);
+    const requests = (await readFile(join(repository, 'tools/requests.ndjson'), 'utf8'))
+      .trim().split(/\n+/).map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> });
+    const generatorRequests = requests.filter(({ method }) => method === 'configure_generator');
+    expect(generatorRequests.map(({ params }) => params)).toEqual([
+      {
+        frequencyHz: 123_000_000, levelDbm: -10, path: 'normal', modulation: 'fm',
+        modulationFrequencyHz: 2_000, amDepthPercent: 40, fmDeviationHz: 5_000,
+      },
+      {
+        frequencyHz: 100_000_000, levelDbm: -30, path: 'mixer', modulation: 'off',
+        modulationFrequencyHz: 1_000, amDepthPercent: 80, fmDeviationHz: 3_000,
+      },
+    ]);
+    const sweepRequests = requests.filter(({ method }) => method === 'acquire_sweep');
+    expect(sweepRequests.at(-1)?.params).toMatchObject({
+      rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample',
+      spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' },
+    });
+    expect(requests.filter(({ method }) => method === 'set_generator_output')).toHaveLength(1);
+  });
+
   it('reserves startup before admission so concurrent opens launch exactly one bridge', async () => {
     const repository = await bridgeRepository(`
 printf '%s\n' "$$" >> "$(dirname "$0")/launches"

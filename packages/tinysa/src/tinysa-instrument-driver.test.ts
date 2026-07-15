@@ -341,6 +341,33 @@ describe('TinySaZs407InstrumentDriver', () => {
     await expect(session.acquire()).rejects.toThrow('incomplete detected-power acquisition');
   });
 
+  it('revokes the prior acquisition revision before a partial mode transition can fail', async () => {
+    const device = new FakeTinySaDevice();
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:transition-failure' }));
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:spectrum-before-failure',
+      configuration: {
+        kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off',
+          avoidSpurs: 'auto', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    vi.spyOn(device, 'configureGenerator').mockRejectedValueOnce(new Error('generator transition failed after mode output'));
+
+    await expect(session.executeFeature({
+      sessionId: session.sessionId, kind: 'rf-generator', action: 'configure',
+      frequencyHz: 100_000_000, levelDbm: -40, path: 'normal',
+      modulation: { mode: 'off' },
+    })).rejects.toThrow(/transition failed/);
+    await expect(session.acquire()).rejects.toThrow(/session is not configured/);
+  });
+
   it('rejects measurements carrying an identity other than the connected device', async () => {
     const device = new FakeTinySaDevice();
     const driver = new TinySaZs407InstrumentDriver(device);

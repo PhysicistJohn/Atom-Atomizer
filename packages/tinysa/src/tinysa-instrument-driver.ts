@@ -162,6 +162,10 @@ class TinySaInstrumentSession implements InstrumentSession {
     this.#requireOpen();
     const command = instrumentConfigurationCommandSchema.parse(commandValue);
     this.#requireSession(command.sessionId);
+    // A multi-command device transition is not atomic at the shell. Revoke the
+    // prior binding before dispatch so a partial failure can never be followed
+    // by acquisition under the old generic configuration revision.
+    this.#configuration = undefined;
     if (command.configuration.kind === 'swept-spectrum') {
       await this.device.configureAnalyzer(tinySaAnalyzerConfiguration(command.configuration));
     } else if (command.configuration.kind === 'detected-power-timeseries') {
@@ -247,6 +251,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     this.#requireSession(command.sessionId);
     if (command.kind === 'rf-generator') {
       if (command.action === 'configure') {
+        this.#configuration = undefined;
         await this.device.configureGenerator(defaultGeneratorConfiguration(command));
         return { ...command };
       }
@@ -269,6 +274,7 @@ class TinySaInstrumentSession implements InstrumentSession {
       };
     }
     if (command.kind === 'touch') {
+      this.#configuration = undefined;
       const point = { x: command.x, y: command.y };
       let touchFailure: unknown;
       try {

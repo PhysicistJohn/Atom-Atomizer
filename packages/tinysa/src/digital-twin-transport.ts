@@ -33,6 +33,18 @@ const HELP_COMMANDS = [
   'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
   'freq', 'level', 'modulation', 'output', 'vbat', 'deviceid', 'capture', 'touch', 'release',
 ] as const;
+const DEFAULT_TWIN_START_HZ = 88_000_000;
+const DEFAULT_TWIN_STOP_HZ = 108_000_000;
+const DEFAULT_TWIN_POINTS = 450;
+const DEFAULT_TWIN_GENERATOR = Object.freeze({
+  frequencyHz: 100_000_000,
+  levelDbm: -30,
+  path: 'mixer',
+  modulation: 'off',
+  modulationFrequencyHz: 1_000,
+  amDepthPercent: 80,
+  fmDeviationHz: 3_000,
+} satisfies GeneratorConfig);
 
 interface BridgeReady {
   type: 'ready';
@@ -375,9 +387,9 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
   #closeAttempt?: Promise<void>;
   #open = false;
   #closing = false;
-  #startHz = 88_000_000;
-  #stopHz = 108_000_000;
-  #points = 450;
+  #startHz = DEFAULT_TWIN_START_HZ;
+  #stopHz = DEFAULT_TWIN_STOP_HZ;
+  #points = DEFAULT_TWIN_POINTS;
   #rbwKhz: number | 'auto' = 'auto';
   #attenuationDb: number | 'auto' = 'auto';
   #sweepTimeSeconds: number | 'auto' = 'auto';
@@ -388,7 +400,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
   #triggerMode: AnalyzerConfig['trigger']['mode'] = 'auto';
   #triggerLevelDbm?: number;
   #mode: 'input' | 'output' = 'input';
-  #generator: GeneratorConfig = { frequencyHz: 100_000_000, levelDbm: -30, path: 'mixer', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 80, fmDeviationHz: 3_000 };
+  #generator: GeneratorConfig = { ...DEFAULT_TWIN_GENERATOR };
   #generatorConfigured = false;
   #generatorEnabled = false;
   #lastAcquisition?: TransportAcquisitionMetadata;
@@ -510,9 +522,7 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
     if (this.#client !== client) return;
     this.#client = undefined;
     this.#open = false;
-    this.#generatorConfigured = false;
-    this.#generatorEnabled = false;
-    this.#lastAcquisition = undefined;
+    this.#resetEmulatedSession();
     this.#emitEvent({ type: 'closed', reason: 'Digital twin bridge stopped' });
   }
 
@@ -686,6 +696,25 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
 
   async #touch(args: string[]): Promise<string> { const x = unsigned(args[0], 'touch x'); const y = unsigned(args[1], 'touch y'); await this.#request('touch', { x, y }); return ''; }
   #request(method: string, params: Record<string, unknown> = {}): Promise<unknown> { const client = this.#client; if (!client) throw new Error('Digital twin bridge is unavailable'); return client.request(method, params); }
+  #resetEmulatedSession(): void {
+    this.#startHz = DEFAULT_TWIN_START_HZ;
+    this.#stopHz = DEFAULT_TWIN_STOP_HZ;
+    this.#points = DEFAULT_TWIN_POINTS;
+    this.#rbwKhz = 'auto';
+    this.#attenuationDb = 'auto';
+    this.#sweepTimeSeconds = 'auto';
+    this.#detector = 'sample';
+    this.#spurRejection = 'auto';
+    this.#lna = 'off';
+    this.#avoidSpurs = 'auto';
+    this.#triggerMode = 'auto';
+    this.#triggerLevelDbm = undefined;
+    this.#mode = 'input';
+    this.#generator = { ...DEFAULT_TWIN_GENERATOR };
+    this.#generatorConfigured = false;
+    this.#generatorEnabled = false;
+    this.#lastAcquisition = undefined;
+  }
   #emitBytes(bytes: Uint8Array): void {
     for (const listener of [...this.#bytes]) {
       try { listener(bytes.slice()); } catch { /* Transport observers are observational only. */ }
