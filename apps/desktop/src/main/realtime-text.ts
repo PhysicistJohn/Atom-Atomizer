@@ -16,6 +16,7 @@ import {
 const REALTIME_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(ATOM_AGENT_MODEL)}`;
 const TURN_TIMEOUT_MS = 45_000;
 const CONFIGURATION_TIMEOUT_MS = 10_000;
+export const REALTIME_TEXT_CONNECTION_TIMEOUT_MS = 10_000;
 
 export type RealtimeSocketFactory = (url: string, options: ClientOptions) => WebSocket;
 
@@ -45,6 +46,7 @@ export class RealtimeTextSession {
   #configuration: PendingConfiguration | undefined;
   #configured = false;
   #rateLimits: readonly AtomRealtimeRateLimit[] | undefined;
+  #connectionTimer: ReturnType<typeof setTimeout> | undefined;
   #opened = false;
   #closed = false;
 
@@ -57,17 +59,32 @@ export class RealtimeTextSession {
       headers: { Authorization: `Bearer ${apiKey}` }
     });
     this.#socket.on('open', () => {
+      this.#clearConnectionTimer();
+      if (this.#closed) {
+        this.#socket.close(1000, 'Atom conversation already closed');
+        return;
+      }
       this.#opened = true;
       this.#resolveReady?.();
       this.#resolveReady = undefined;
       this.#rejectReady = undefined;
     });
     this.#socket.on('message', data => this.#handleMessage(data));
-    this.#socket.on('error', error => this.#fail(new Error(`Realtime text connection failed: ${safeMessage(error.message)}`)));
+    this.#socket.on('error', error => {
+      this.#clearConnectionTimer();
+      this.#fail(new Error(`Realtime text connection failed: ${safeMessage(error.message)}`));
+    });
     this.#socket.on('close', () => {
+      this.#clearConnectionTimer();
       this.#closed = true;
       this.#fail(new Error('Realtime text conversation closed'));
     });
+    this.#connectionTimer = setTimeout(() => {
+      if (this.#opened || this.#closed) return;
+      this.#fail(new Error(`Realtime text connection did not open within ${REALTIME_TEXT_CONNECTION_TIMEOUT_MS / 1_000} seconds`));
+      this.close();
+    }, REALTIME_TEXT_CONNECTION_TIMEOUT_MS);
+    this.#connectionTimer.unref?.();
   }
 
   get closed(): boolean { return this.#closed; }
@@ -126,10 +143,17 @@ export class RealtimeTextSession {
   }
 
   close(): void {
+    this.#clearConnectionTimer();
     if (this.#closed) return;
     this.#closed = true;
     this.#socket.close(1000, 'Atom conversation complete');
     this.#fail(new Error('Realtime text conversation closed'));
+  }
+
+  #clearConnectionTimer(): void {
+    if (!this.#connectionTimer) return;
+    clearTimeout(this.#connectionTimer);
+    this.#connectionTimer = undefined;
   }
 
   #send(event: Record<string, unknown>): void {

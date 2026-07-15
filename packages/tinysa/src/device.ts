@@ -32,7 +32,7 @@ import {
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
 import { CommandScheduler } from './scheduler.js';
-import type { ByteTransport, TransportEvent } from './transport.js';
+import type { ByteTransport, TransportDiscoveryResult, TransportEvent } from './transport.js';
 
 const REQUIRED_COMMANDS = [
   'version', 'info', 'help', 'status', 'pause', 'resume', 'abort',
@@ -70,13 +70,15 @@ export class TinySaDeviceService {
   #streaming = false;
   #streamTask?: Promise<void>;
   #closing = false;
+  #rfOffAcknowledged = false;
+  #teardownRfOffAcknowledged = false;
   #unsubscribeTransport: () => void;
 
   constructor(private readonly transport: ByteTransport) {
     this.#unsubscribeTransport = transport.onEvent((event) => this.#handleTransportEvent(event));
   }
 
-  listDevices(): Promise<PortCandidate[]> { return this.transport.list(); }
+  listDevices(): Promise<TransportDiscoveryResult> { return this.transport.list(); }
   snapshot(): DeviceSnapshot { return structuredClone(this.#snapshot); }
   get streaming(): boolean { return this.#streaming || this.#streamTask !== undefined; }
   subscribe(listener: (event: DeviceEvent) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
@@ -84,6 +86,8 @@ export class TinySaDeviceService {
   async connect(input: PortCandidate): Promise<DeviceSnapshot> {
     const port = portCandidateSchema.parse(input);
     if (this.#snapshot.connection !== 'disconnected') throw new TinySaDeviceError('invalid-state', 'Device is already active', false);
+    this.#rfOffAcknowledged = false;
+    this.#teardownRfOffAcknowledged = false;
     this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown', pendingPort: port });
     try {
       await this.transport.open(port);
@@ -119,16 +123,21 @@ export class TinySaDeviceService {
     } catch (error) {
       const primary = asDeviceError(error, 'protocol', 'Device identification failed', false);
       const cleanupFailures: unknown[] = [];
-      this.#scheduler?.dispose();
-      this.#scheduler = undefined;
       this.#closing = true;
       try { await this.transport.close(); } catch (cleanupError) { cleanupFailures.push(cleanupError); }
       finally { this.#closing = false; }
+      if (!cleanupFailures.length) {
+        this.#scheduler?.dispose();
+        this.#scheduler = undefined;
+        this.#rfOffAcknowledged = false;
+        this.#teardownRfOffAcknowledged = false;
+      }
       this.#analyzer = undefined;
       this.#set({
-        ...disconnectedSnapshot(),
+        ...(cleanupFailures.length ? this.#snapshot : disconnectedSnapshot()),
         connection: cleanupFailures.length ? 'faulted' : 'disconnected',
-        generatorOutput: 'unknown',
+        generatorOutput: cleanupFailures.length && this.#rfOffAcknowledged ? 'off' : 'unknown',
+        verification: cleanupFailures.length && this.#rfOffAcknowledged ? 'commanded' : 'stale',
         fault: faultFrom(primary),
       });
       if (cleanupFailures.length) throw new AggregateError([primary, ...cleanupFailures], 'Device connection failed and transport cleanup also failed');
@@ -140,26 +149,59 @@ export class TinySaDeviceService {
     if (this.#snapshot.connection === 'disconnected') throw new TinySaDeviceError('not-connected', 'Device is not connected', false);
     if (this.#snapshot.connection === 'disconnecting') throw new TinySaDeviceError('invalid-state', 'Device disconnect is already in progress', false);
     this.#set({ ...this.#snapshot, connection: 'disconnecting' });
-    const failures: unknown[] = [];
     this.#streaming = false;
     if (this.#streamTask) await this.#streamTask;
-    if (this.#scheduler && !this.#scheduler.fault) {
-      try { await this.#command('output off'); } catch (error) { failures.push(error); }
+    if (!this.#teardownRfOffAcknowledged) {
+      if (!this.#rfOffAcknowledged) {
+        try { await this.#command('output off'); }
+        catch (value) {
+          const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged during disconnect', true);
+          this.#rfOffAcknowledged = false;
+          this.#teardownRfOffAcknowledged = false;
+          this.#analyzer = undefined;
+          this.#set({
+            ...this.#snapshot,
+            connection: 'faulted',
+            generatorOutput: 'unknown',
+            verification: 'unknown',
+            fault: faultFrom(error),
+          });
+          throw error;
+        }
+      }
+      this.#teardownRfOffAcknowledged = true;
     }
+    this.#closing = true;
+    try { await this.transport.close(); }
+    catch (value) {
+      const error = asDeviceError(value, 'transport', 'Transport close could not be confirmed during disconnect', true);
+      this.#analyzer = undefined;
+      this.#set({
+        ...this.#snapshot,
+        connection: 'faulted',
+        generatorOutput: 'off',
+        verification: 'commanded',
+        fault: faultFrom(error),
+      });
+      throw error;
+    }
+    finally { this.#closing = false; }
     this.#scheduler?.dispose();
     this.#scheduler = undefined;
-    this.#closing = true;
-    try { await this.transport.close(); } catch (error) { failures.push(error); }
-    finally { this.#closing = false; }
     this.#analyzer = undefined;
-    this.#set({
-      ...disconnectedSnapshot(),
-      connection: failures.length ? 'faulted' : 'disconnected',
-      generatorOutput: 'unknown',
-      ...(failures.length ? { fault: faultFrom(asDeviceError(failures[0], 'transport', 'Device disconnect failed', true)) } : {}),
-    });
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, 'RF-off command and transport close both failed during disconnect');
+    this.#rfOffAcknowledged = false;
+    this.#teardownRfOffAcknowledged = false;
+    this.#set(disconnectedSnapshot());
+  }
+
+  /**
+   * Retries cleanup of a transport retained when connect() failed before an
+   * InstrumentSession could be admitted. The application calls this only
+   * after InstrumentManager has completed teardown of any admitted session.
+   */
+  async cleanupPendingInstrumentConnection(): Promise<void> {
+    if (this.#snapshot.connection === 'disconnected') return;
+    await this.disconnect();
   }
 
   async configureAnalyzer(input: AnalyzerConfig): Promise<DeviceSnapshot> {
@@ -377,8 +419,11 @@ export class TinySaDeviceService {
   }
 
   async setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot> {
+    if (!enabled && this.#snapshot.connection === 'faulted' && this.#teardownRfOffAcknowledged) {
+      return this.snapshot();
+    }
     this.#ready();
-    if (this.#snapshot.mode !== 'generator' || !this.#snapshot.generator) {
+    if (enabled && (this.#snapshot.mode !== 'generator' || !this.#snapshot.generator)) {
       throw new TinySaDeviceError('invalid-state', 'Generator mode must be configured before changing RF output', false);
     }
     try {
@@ -391,6 +436,8 @@ export class TinySaDeviceService {
       });
       return this.snapshot();
     } catch (error) {
+      this.#rfOffAcknowledged = false;
+      this.#teardownRfOffAcknowledged = false;
       this.#set({ ...this.#snapshot, generatorOutput: 'unknown', verification: 'unknown', fault: faultFrom(asDeviceError(error, 'protocol', 'RF output command failed', true)) });
       throw error;
     }
@@ -463,6 +510,8 @@ export class TinySaDeviceService {
     this.#assertNotStreaming('Remote touch');
     const point = screenPointSchema.parse(input);
     this.#requireCapability('touch');
+    this.#rfOffAcknowledged = false;
+    this.#teardownRfOffAcknowledged = false;
     try { await this.#command(`touch ${point.x} ${point.y}`); }
     catch (error) { throw this.#operationFailure(error, 'Remote touch failed'); }
   }
@@ -553,6 +602,11 @@ export class TinySaDeviceService {
   async #command(command: string, timeoutMs = 10_000): Promise<string> {
     const response = await this.#ready().execute(command, timeoutMs);
     assertFirmwareSuccess(response, command);
+    if (command === 'output off') this.#rfOffAcknowledged = true;
+    else if (command === 'output on') {
+      this.#rfOffAcknowledged = false;
+      this.#teardownRfOffAcknowledged = false;
+    }
     return response;
   }
 
@@ -588,11 +642,13 @@ export class TinySaDeviceService {
 
   #handleSchedulerFault(error: Error): void {
     if (this.#snapshot.connection === 'disconnected') return;
+    this.#rfOffAcknowledged = false;
+    this.#teardownRfOffAcknowledged = false;
     const deviceError = asDeviceError(error, 'protocol', 'Protocol session faulted', true);
     this.#set({
       ...this.#snapshot,
       connection: 'faulted',
-      generatorOutput: this.#snapshot.mode === 'generator' ? 'unknown' : this.#snapshot.generatorOutput,
+      generatorOutput: 'unknown',
       verification: 'unknown',
       fault: faultFrom(deviceError),
     });
@@ -604,14 +660,17 @@ export class TinySaDeviceService {
     const reason = event.type === 'error' ? event.error.message : event.reason ?? 'USB transport closed unexpectedly';
     const error = new TinySaDeviceError('transport', reason, true, event.type === 'error' ? { cause: event.error } : undefined);
     this.#scheduler?.cancelAll(error);
+    this.#scheduler?.dispose();
     this.#scheduler = undefined;
     this.#analyzer = undefined;
+    const retainedTeardownOff = this.#teardownRfOffAcknowledged;
+    if (!retainedTeardownOff) this.#rfOffAcknowledged = false;
     this.#set({
       ...this.#snapshot,
       connection: 'faulted',
       mode: 'idle',
-      generatorOutput: 'unknown',
-      verification: 'unknown',
+      generatorOutput: retainedTeardownOff ? 'off' : 'unknown',
+      verification: retainedTeardownOff ? 'commanded' : 'unknown',
       fault: faultFrom(error),
     });
     this.#emit({ type: 'error', error: { code: error.code, message: error.message, recoverable: error.recoverable } });

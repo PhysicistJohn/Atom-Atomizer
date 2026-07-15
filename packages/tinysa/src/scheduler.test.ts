@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FakeTinySaTransport } from '@tinysa/test-device';
-import { CommandScheduler } from './scheduler.js';
+import { CommandScheduler, CommandSchedulerAdmissionError } from './scheduler.js';
 import type { ByteTransport, TransportEvent } from './transport.js';
 
 describe('CommandScheduler', () => {
@@ -31,16 +31,65 @@ describe('CommandScheduler', () => {
     await expect(scheduler.execute('x'.repeat(48))).rejects.toThrow(/1\.\.47/);
     expect(transport.writes).toBe(0);
   });
+
+  it('hard-rejects a command flood once its bounded active-plus-queued admission is full', async () => {
+    const transport = new BlockedWriteTransport();
+    const scheduler = new CommandScheduler(transport, { maximumPendingCommands: 3 });
+    const admitted = [
+      scheduler.execute('version', 60_000),
+      scheduler.execute('info', 60_000),
+      scheduler.execute('status', 60_000),
+    ];
+
+    await expect(scheduler.execute('help', 60_000)).rejects.toBeInstanceOf(CommandSchedulerAdmissionError);
+    expect(transport.writes).toBe(1);
+
+    scheduler.cancelAll(new Error('test cleanup'));
+    expect((await Promise.allSettled(admitted)).every((result) => result.status === 'rejected')).toBe(true);
+    transport.releaseWrite();
+    scheduler.dispose();
+  });
+
+  it('rejects an invalid pending-command ceiling at construction', () => {
+    expect(() => new CommandScheduler(new SilentTransport(), { maximumPendingCommands: 0 })).toThrow(/positive safe integer/);
+  });
+
+  it('settles the command exactly once even when a fault observer throws', async () => {
+    const transport = new RejectingWriteTransport();
+    const observer = vi.fn(() => { throw new Error('observer bug'); });
+    const scheduler = new CommandScheduler(transport, { onFault: observer });
+
+    await expect(scheduler.execute('version')).rejects.toThrow(/transport write failed/i);
+    expect(observer).toHaveBeenCalledOnce();
+    expect(scheduler.fault?.message).toMatch(/transport write failed/i);
+    scheduler.dispose();
+  });
 });
 
 class SilentTransport implements ByteTransport {
   readonly kind = 'protocol-test-double' as const;
   writes = 0;
-  list() { return Promise.resolve([]); }
+  list() { return Promise.resolve({ candidates: [], failures: [] }); }
   open() { return Promise.resolve(); }
   close() { return Promise.resolve(); }
   write() { this.writes++; return Promise.resolve(); }
   onBytes() { return () => {}; }
   onEvent(_listener: (event: TransportEvent) => void) { return () => {}; }
   consumeAcquisitionMetadata(): undefined { return undefined; }
+}
+
+class BlockedWriteTransport extends SilentTransport {
+  #releaseWrite: (() => void) | undefined;
+  override write(): Promise<void> {
+    this.writes++;
+    return new Promise((resolve) => { this.#releaseWrite = resolve; });
+  }
+  releaseWrite(): void { this.#releaseWrite?.(); }
+}
+
+class RejectingWriteTransport extends SilentTransport {
+  override write(): Promise<void> {
+    this.writes++;
+    return Promise.reject(new Error('write fixture failed'));
+  }
 }

@@ -47,10 +47,14 @@ export interface ObservableClassifierModelAsset {
     sweepsPerExample?: number;
     tailCalibrationSeeds?: readonly number[];
     tailCalibrationRbwDivisors?: readonly number[];
-    /** Each calibrated support score represents one independent acquisition attempt. */
+    /** Each score represents one distinct fit-eligible acquisition cell; this does not assert statistical independence. */
     tailCalibrationScoreUnit?: 'one-score-per-fit-eligible-acquisition-attempt-v1';
     /** Multiple correlated representatives within an attempt collapse to its least-supported representative. */
     tailCalibrationRepresentativeAggregationPolicy?: 'minimum-support-across-fit-eligible-first-ready-representatives-v1';
+    /** A member representative's monotone rank cannot be smaller than its attempt-minimum rank. */
+    tailCalibrationRuntimeInterpretationPolicy?: 'single-representative-rank-dominates-attempt-min-rank-v1';
+    /** Fixed synthetic nuisance grids are reference data, not exchangeable operational calibration samples. */
+    tailCalibrationStatisticalInterpretation?: 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1';
     /** Fit-eligible acquisition attempts contributing one score each, by canonical scenario. */
     tailCalibrationAttemptCountsByScenario?: Readonly<Record<string, number>>;
     detectorConditionedFitMisses?: readonly string[];

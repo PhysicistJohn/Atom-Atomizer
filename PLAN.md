@@ -1,13 +1,13 @@
 # TinySA Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: device API 3, Atom surface 9, application contract 6, trio composition 3
+Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 9, application contract 6, trio composition 4
 Updated: 2026-07-14
-Firmware evidence: sibling `TinySA_Firmware` commit `c97938697b6c7485e7cab50bca9af76996b7d671`
+Physical firmware baseline: source revision `c97938697b6c7485e7cab50bca9af76996b7d671`; executable-twin release identity is pinned separately by trio composition v4
 
 ## Outcome
 
-One local Electron application wholly controls every accepted tinySA Ultra+ ZS407 operation exposed by the pinned firmware, without raw serial access in the renderer. The same typed application layer powers the visual UI and Atom. Measurements are reproducible and carry configuration, actual readback, timing, source, identity, and simulation state. Generator operations remain explicitly commanded where firmware has no readback.
+One local Electron application hosts explicitly selected RF instrument drivers behind `AtomizerInstrumentApiV1`, without source protocols or raw serial access in the renderer. The current `signal-lab` driver produces high-level synthetic measurements; the `tinysa-zs407` driver controls an accepted physical tinySA Ultra+ ZS407 or the pinned executable Firmware twin. The same typed application layer powers the visual UI and Atom. Measurements are reproducible and carry configuration, timing, source identity, qualification, and simulation or device evidence. Generator operations remain explicitly commanded where TinySA firmware has no readback.
 
 “Wholly controls” does not mean pretending the host can verify what firmware cannot report. Physical RF output, generator level/frequency/path/modulation, calibration quality, input protection, and harmonic-path accuracy retain clear uncertainty boundaries.
 
@@ -18,24 +18,23 @@ operator / Atom voice / Atom text / app-only computer actions
                             |
                     React application host
                             |
-                  TinySaApiV3 preload contract
+             AtomizerInstrumentApiV1 preload contract
                             |
-             Electron main validation + lifecycle
+       Electron main instrument host + lifecycle manager
                             |
-         ZS407 device state machine + safety policy
-                            |
-        serialized command scheduler + byte parser
-                            |
-     verified USB CDC or Renode monitor bridge
-                    /                 \
-          physical ZS407       executable Firmware twin
+               static driver registry
+                  /                   \
+        signal-lab driver        tinysa-zs407 driver
+                |                    /          \
+      versioned NDJSON       verified USB    Renode bridge
+      measurement bridge     physical ZS407  Firmware twin
 
-TinySA SignalLab -- reserved future stimulus intent --> Firmware sink
+SignalLab -- reserved future stimulus intent --> Firmware sink
 ```
 
-No layer may substitute a lower layer after failure. In particular, typed command failure never falls through to physical-screen clicking, another command spelling, another transport, another model, or simulation.
+SignalLab is the factory default when no owner-only preference exists. Physical ZS407 and Firmware-twin candidates remain explicit selections through `tinysa-zs407`; a missing, ambiguous, or failed preference never activates a different driver or source kind. No layer may substitute a lower layer after failure. In particular, typed command failure never falls through to physical-screen clicking, another command spelling, another transport, another model, or simulation.
 
-## Firmware-derived facts now frozen in the host contract
+## Firmware-derived facts now frozen in the TinySA driver contract
 
 - USB CDC ACM identity is `0483:5740`, product `tinySA4`.
 - Commands are printable ASCII terminated by CR, echoed exactly, and complete at `ch> ` after the echo.
@@ -57,21 +56,22 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command | CI OS matrix; signed release build |
-| Contracts | strict API v3, Atom surface v9, application contract v6, byte-identical trio composition v3, physical/OEM firmware provenance, device/sweep/zero-span/screen/diagnostics/export/analysis/measurement contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict `AtomizerInstrumentApiV1`, TinySA protocol v3, Atom surface v9, application contract v6, byte-identical trio composition v4, source/provenance unions, physical/OEM firmware provenance, instrument/device/sweep/detected-power/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
-| Executable Firmware twin | physical-first admission; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
-| Separate SignalLab | independent repository/app; 79 closed profiles; seeded AWGN/Rayleigh; versioned stimulus intent | Firmware-owned sink remains reserved-not-connected until a coordinated future trio contract activates it |
-| Device service | closed shipped/OEM revision registry, cross-response ZS407 identity, capability catalog, analyzer readback, physically consistent text/raw sweeps, diagnostics, screen/touch, safe generator | complete physical timing, fault, touch, RF and recovery matrices |
-| Electron bridge | API v3 handlers, runtime validation, event subscription, export dialog, sandbox; no firmware-installation IPC | CSP hardening audit and IPC abuse suite |
+| Executable Firmware twin | selectable `tinysa-zs407` source; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
+| SignalLab | active high-level NDJSON measurement driver; factory default with no fallback; 79 closed profiles; seeded AWGN/Rayleigh; selected profile excluded from measurement/classifier evidence; separately versioned stimulus intent | Firmware-owned stimulus sink remains reserved-not-connected until a coordinated future trio contract activates it |
+| Instrument host and TinySA service | static registry, independent discovery, persisted explicit preference, serialized lifecycle, capability/evidence validation; main-owned RF state with command-acknowledged physical and firmware-executed-twin qualification; atomic event/return measurement reconciliation; bounded exact-VID/PID serial lifecycle; TinySA-only shipped/OEM/custom revision registry, analyzer readback, text/raw sweeps, diagnostics, screen/touch and safe generator | complete physical timing, fault, touch, RF and recovery qualification matrices |
+| Electron bridge | `AtomizerInstrumentApiV1` handlers, runtime validation, event subscription, export dialog, sandbox; no firmware-installation IPC | CSP hardening audit and IPC abuse suite |
 | Spectrum | one no-scroll four-view stage; analyzer/trigger controls; four traces; eight markers/search/delta/noise; amplitude scaling; Spectrum; coherent Waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; detected-envelope Time/STFT; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
 | Detection | robust noise floor, threshold segmentation, stable cross-sweep tracker and release | captured-corpus precision/recall and alert policy |
 | Classification | morphology evidence, ranked candidates, unknown rejection, zero-span envelope mode | labeled physical corpus and validated modulation/protocol model |
 | Generator | normal/mixer path, full firmware range, AM/FM settings, output-off sequencing, global RF status | physical level/frequency/path characterization and safety test fixture |
 | Device console | identity/telemetry/capability ledger, screen capture, direct touch | physical pixel endian/coordinates and touch latency |
 | Export | complete provenance CSV/JSON through native save dialog | durable sessions, import/migrations, comparison and PNG |
-| Firmware installation boundary | absent from Atomizer; standalone sibling `../TinySA_Flasher` exclusively owns download, verification, preflight, DFU, writing, journaling, recovery, and post-reboot identity | qualify the standalone Flasher independently; preserve historical evidence here without restoring an embedded path |
+| Firmware installation boundary | absent from Atomizer; standalone sibling `../TinySA_Flasher` exclusively owns OEM/custom artifact admission, download/import verification, preflight, DFU, writing, journaling, recovery, and post-reboot identity. Its active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen | qualify the standalone Flasher independently; preserve historical evidence here without restoring an embedded path |
+| Future NeptuneSDR | no registered driver and no present support claim; complex-I/Q v1 is only a reserved complete single-buffer acquisition capped at 64 MiB, and continuous I/Q is rejected | add a distinct source kind/driver, truthful capabilities and provenance, contract tests, UI/Atom consumers, and a coordinated trio revision; version the contract before adding chunking, backpressure, or streaming |
 | Atom | exact full model, high reasoning, Ballad, VAD 0.97, one compact loader plus response-scoped concrete tools, live API usage/TPM telemetry, live DOM control topology, screenshots, policies, contextual approvals, full setting-echo verification; no firmware-installation tools | live eval corpus, safety identifier policy, production credential storage |
 | UX | neutral graphite pro-app system, shared one-value-per-row active functions, five live workspaces, bounded measurement drawers/tabs, responsive Atom rail | minimum/scaled viewport accessibility and operator usability qualification |
 

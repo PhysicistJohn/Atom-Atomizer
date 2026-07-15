@@ -1,6 +1,6 @@
 {
-  "contractVersion": 2,
-  "instrumentPolicy": "physical-first-executable-twin",
-  "firmwareRepository": "../TinySA_Firmware",
+  "contractVersion": 3,
+  "instrumentPolicy": "signal-lab-default-no-fallback",
+  "signalLabRepository": "../TinySA_SignalLab",
   "port": 5173
 }

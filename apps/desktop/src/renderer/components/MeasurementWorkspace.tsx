@@ -16,6 +16,7 @@ import type {
   MarkerSearchAction,
   MarkerSearchConfiguration,
   MeasurementViewId,
+  InstrumentAcquisitionCapability,
   SpectrumDisplayConfiguration,
   Sweep,
   TraceBankConfiguration,
@@ -43,6 +44,8 @@ export interface MeasurementWorkspaceProps {
   view: MeasurementViewId;
   onView(view: MeasurementViewId): void;
   analyzer: AnalyzerConfig;
+  spectrumCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
+  detectedPowerAvailable: boolean;
   busy: boolean;
   connected: boolean;
   streaming: boolean;
@@ -100,7 +103,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
         <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={selectView}/>
         <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={selectView}/>
         <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={selectView}/>
-        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} onView={selectView}/>
+        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} disabled={!props.detectedPowerAvailable} onView={selectView}/>
       </div>
       <div className="measurement-view-utilities">
         <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
@@ -113,7 +116,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     <div className="measurement-stage">
       {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
         {overlay === 'setup'
-          ? <AnalyzerInspector config={props.analyzer} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
+          ? <AnalyzerInspector config={props.analyzer} capability={props.spectrumCapability} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
           : <MeasurementDock traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }
       </div>}
@@ -127,8 +130,8 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   </section>;
 }
 
-function ViewTab({ id, label, icon, active, onView }: { id: MeasurementViewId; label: string; icon: ReactNode; active: MeasurementViewId; onView(view: MeasurementViewId): void }) {
-  return <button role="tab" aria-selected={active === id} className={active === id ? 'active' : ''} onClick={() => onView(id)} data-agent-control={`measurement.view.${id}`}>{icon}<strong>{label}</strong></button>;
+function ViewTab({ id, label, icon, active, disabled = false, onView }: { id: MeasurementViewId; label: string; icon: ReactNode; active: MeasurementViewId; disabled?: boolean; onView(view: MeasurementViewId): void }) {
+  return <button role="tab" aria-selected={active === id} className={active === id ? 'active' : ''} disabled={disabled} onClick={() => onView(id)} data-agent-control={`measurement.view.${id}`}>{icon}<strong>{label}</strong></button>;
 }
 
 function MetricStrip({ sweep, detections, acquisition, historyCount }: { sweep?: Sweep; detections: number; acquisition: AcquisitionState; historyCount: number }) {

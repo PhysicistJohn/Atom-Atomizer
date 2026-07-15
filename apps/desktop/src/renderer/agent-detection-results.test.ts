@@ -52,7 +52,7 @@ describe('Atom detection-result projection', () => {
         { sweepId: 'sweep-12', outcome: 'exactly-one' },
       ],
       associationBayesianEvidence: {
-        modelId: 'bayesian-frequency-agile-transition-v2',
+        modelId: 'bayesian-frequency-agile-transition-v3',
         posteriorAgileDynamicsProbability: 0.9942,
         positiveObservationCount: 8,
         opportunityCount: 12,
@@ -78,7 +78,7 @@ describe('Atom detection-result projection', () => {
       representsProtocolIdentity: false,
       associationModelId: 'frequency-agile-2g4-activity-v3',
       bayesianAgileDynamicsEvidence: {
-        modelId: 'bayesian-frequency-agile-transition-v2',
+        modelId: 'bayesian-frequency-agile-transition-v3',
         posteriorAgileDynamicsProbability: 0.9942,
         positiveObservationCount: 8,
         opportunityCount: 12,

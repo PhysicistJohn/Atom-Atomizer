@@ -2,88 +2,170 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  API_VERSION,
-  FIRMWARE_SOURCE_COMMIT,
-  TINYSA_SHELL_PROMPT,
-  TINYSA_USB_PRODUCT_ID,
-  TINYSA_USB_VENDOR_ID,
   type AnalyzerConfig,
-  type DeviceCapabilities,
-  type DeviceEvent,
-  type DeviceSnapshot,
+  type AtomizerInstrumentEvent,
+  type AtomizerInstrumentState,
   type DetectedSignal,
-  type PortCandidate,
+  type InstrumentCandidate,
+  type InstrumentConfiguration,
+  type InstrumentMeasurement,
+  type InstrumentSessionSnapshot,
   type Sweep,
-  type ZeroSpanCapture,
 } from '@tinysa/contracts';
 import { classificationRepresentatives } from '@tinysa/analysis';
 import { App, coherentSweepCount, fitChannelConfigurationToSpan, parseStoredDetection } from './App.js';
 import { agentControlBinding } from '@tinysa/agent';
 
-const port: PortCandidate = { id: 'sim', path: 'fake://zs407', manufacturer: 'TinySA test fixture', product: 'Protocol-only ZS407 test double', serialNumber: 'SIM-407', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' };
-const identity = { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'protocol-test', port, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
-const capabilities: DeviceCapabilities = {
-  profile: 'tinySA4-zs407',
-  protocol: { transport: 'protocol-test-double', prompt: TINYSA_SHELL_PROMPT, commandTerminator: '\r', echoesCommands: true, maximumCommandCharacters: 47, usbTransactionsModeled: false },
-  analyzerFrequency: { min: 0, max: 17_922_600_000, unit: 'Hz' }, analyzerNormalMaximumHz: 900_000_000, analyzerUltraTransitionHz: 7_370_100_000,
-  generatorFrequency: { min: 1, max: 17_922_600_000, unit: 'Hz' }, generatorFundamentalMaximumHz: 6_300_000_000,
-  generatorLevel: { min: -115, max: -18.5, step: 0.5, unit: 'dBm' }, rbwKhz: { min: 0.2, max: 850, unit: 'kHz' }, attenuationDb: { min: 0, max: 31, unit: 'dB' },
-  sweepPoints: { min: 20, max: 450, unit: 'points' }, sweepSeconds: { min: 0.003, max: 60, unit: 'seconds' }, maxSweepPoints: 450,
-  screen: { width: 480, height: 320, format: 'rgb565le' }, screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true, rawSweepOffsetReadback: true, markerCount: 8, traceCount: 4, firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
-  modulation: ['off', 'am', 'fm'], commands: ['scan', 'scanraw', 'capture', 'touch', 'release'], evidence: 'protocol-test-double', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT, qualification: 'protocol-test-only',
+const HASH = 'a'.repeat(64);
+const COMMIT = 'b'.repeat(40);
+const candidate: InstrumentCandidate = {
+  schemaVersion: 1,
+  driverId: 'tinysa',
+  candidateId: 'twin:test',
+  displayName: 'TinySA executable firmware twin',
+  sourceKind: 'tinysa-firmware-twin',
+  discoveryRevision: 'discovery-1',
+  firmwareTwin: { bridge: 'renode-monitor-v1', repositoryCommit: COMMIT, firmwareBinarySha256: HASH, usbTransactionsModeled: false },
 };
-const ready: DeviceSnapshot = { connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded', identity, capabilities };
-const disconnected: DeviceSnapshot = { connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale' };
+const ready: InstrumentSessionSnapshot = {
+  sessionId: 'session-1',
+  driverId: 'tinysa',
+  candidate,
+  provenance: {
+    sourceKind: 'tinysa-firmware-twin', execution: 'firmware-executed-twin', transport: 'renode-monitor-bridge', qualification: 'firmware-executed-twin', verifiedAt: '2026-07-10T00:00:00.000Z',
+    bridge: 'renode-monitor-v1', repositoryCommit: COMMIT, firmwareBinarySha256: HASH, usbTransactionsModeled: false,
+    device: { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim-1' },
+  },
+  capabilities: {
+    schemaVersion: 1,
+    acquisitions: [
+      { kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, powerUnit: 'dBm' },
+      { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 1e-6, max: 10 }, powerUnit: 'dBm', timing: 'uniform' },
+    ],
+    features: [
+      { kind: 'rf-generator', paths: [{ path: 'normal', frequencyHz: { min: 1, max: 6_300_000_000 } }, { path: 'mixer', frequencyHz: { min: 1, max: 17_922_600_000 } }], levelDbm: { min: -115, max: -18.5, step: 0.5 }, modulation: { off: true, am: { modulationFrequencyHz: { min: 1, max: 10_000 }, depthPercent: { min: 0, max: 100 } }, fm: { modulationFrequencyHz: { min: 1, max: 3_500 }, deviationHz: { min: 1_000, max: 300_000 } } } },
+      { kind: 'screen', width: 480, height: 320, pixelFormat: 'rgb565le' },
+      { kind: 'touch', width: 480, height: 320 },
+      { kind: 'diagnostics', reports: ['identity', 'health', 'configuration'] },
+    ],
+  },
+  rfOutput: 'off',
+  rfOutputQualification: 'firmware-executed-twin',
+};
+const physicalCandidate: InstrumentCandidate = {
+  schemaVersion: 1,
+  driverId: 'tinysa',
+  candidateId: 'serial:/dev/tty.usbmodem407',
+  displayName: 'TinySA physical ZS407',
+  sourceKind: 'serial-port',
+  serialPort: { path: '/dev/tty.usbmodem407', vendorId: '0483', productId: '5740' },
+  discoveryRevision: 'physical-discovery-1',
+};
+const physicalSession: InstrumentSessionSnapshot = {
+  ...ready,
+  sessionId: 'physical-session-1',
+  candidate: physicalCandidate,
+  provenance: {
+    sourceKind: 'serial-port', execution: 'physical', transport: 'usb-cdc-acm', qualification: 'device-observed',
+    verifiedAt: '2026-07-10T00:00:00.000Z',
+    serialPort: physicalCandidate.serialPort,
+    device: {
+      model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'custom-test',
+      firmwareQualification: 'custom-unqualified', usbIdentityVerified: true,
+    },
+  },
+  rfOutput: 'off',
+  rfOutputQualification: 'command-acknowledged',
+};
+const signalLabCandidate: InstrumentCandidate = { schemaVersion: 1, driverId: 'signal-lab', candidateId: 'signal-lab:local', displayName: 'SignalLab', sourceKind: 'signal-lab', signalLab: { sourceId: 'local' }, discoveryRevision: 'signal-discovery-1' };
+const signalLabSession: InstrumentSessionSnapshot = {
+  sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
+  provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1, contractSha256: HASH, catalogSha256: HASH, generatorSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 1e-6, max: 10 }, powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
+  rfOutput: 'not-supported',
+  rfOutputQualification: 'not-applicable',
+};
 const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 450, acquisitionFormat: 'raw', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
 const powers = Array.from({ length: 450 }, (_, index) => index === 225 ? -50 : -90);
 const frequencies = Array.from({ length: 450 }, (_, index) => 88e6 + index * (20e6 / 449));
-const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity };
+const legacyIdentity = { model: 'test', hardwareVersion: 'test', firmwareVersion: 'test', firmwareQualification: 'protocol-test', port: { id: 'test', path: 'test', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' }, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
+const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity: legacyIdentity };
 let configuredAnalyzer = requested;
-let deviceEventListener: ((event: DeviceEvent) => void) | undefined;
-function acquiredSweep(config: AnalyzerConfig, id = 'runtime-sweep'): Sweep {
+let activeConfiguration: InstrumentConfiguration = { kind: 'swept-spectrum', startHz: requested.startHz, stopHz: requested.stopHz, points: requested.points };
+let configurationRevision = 'configuration-0';
+let revisionSequence = 0;
+let measurementSequence = 0;
+let instrumentEventListener: ((event: AtomizerInstrumentEvent) => void) | undefined;
+function acquiredMeasurement(config: AnalyzerConfig, id = 'runtime-sweep', revision = configurationRevision): Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }> {
   const frequencyHz = Array.from({ length: config.points }, (_, index) => config.startHz + index * ((config.stopHz - config.startHz) / Math.max(1, config.points - 1)));
-  return {
-    ...sweep,
-    id,
-    frequencyHz,
-    powerDbm: Array.from({ length: config.points }, (_, index) => index === Math.floor(config.points / 2) ? -50 : -90),
-    requested: structuredClone(config),
-    actualStartHz: frequencyHz[0]!,
-    actualStopHz: frequencyHz.at(-1)!,
-    source: config.acquisitionFormat === 'raw' ? 'scanraw-binary' : 'scan-text',
-  };
+  return { schemaVersion: 1, kind: 'swept-spectrum', measurementId: id, sessionId: ready.sessionId, configurationRevision: revision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, resolutionBandwidthHz: 10_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, frequencyHz, powerDbm: Array.from({ length: config.points }, (_, index) => index === Math.floor(config.points / 2) ? -50 : -90) };
 }
-const zeroSpanCapture: ZeroSpanCapture = {
-  kind: 'zero-span', id: 'z1', sequence: 2, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50,
-  frequencyHz: 433_920_000, samplePeriodSeconds: 0.05 / 450, timingQualification: 'wall-clock-derived', powerDbm: Array(450).fill(-90),
-  requested: { frequencyHz: 433_920_000, points: 450, rbwKhz: 100, attenuationDb: 'auto', sweepTimeSeconds: 0.05, trigger: { mode: 'auto' } },
-  actualRbwHz: 100_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity,
-};
+
+function detectedPowerMeasurement(config: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>): Extract<InstrumentMeasurement, { kind: 'detected-power-timeseries' }> {
+  return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sampleIntervalSeconds, timingQualification: 'simulation-exact', powerDbm: Array(config.sampleCount).fill(-90) };
+}
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
   configuredAnalyzer = structuredClone(requested);
-  deviceEventListener = undefined;
+  activeConfiguration = { kind: 'swept-spectrum', startHz: requested.startHz, stopHz: requested.stopHz, points: requested.points };
+  configurationRevision = 'configuration-0';
+  revisionSequence = 0;
+  measurementSequence = 0;
+  instrumentEventListener = undefined;
   HTMLCanvasElement.prototype.getContext = vi.fn().mockReturnValue({
     fillRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
     fillStyle: '', strokeStyle: '', lineWidth: 1,
   }) as unknown as typeof HTMLCanvasElement.prototype.getContext;
-  window.tinySA = {
-    version: API_VERSION,
-    listDevices: vi.fn().mockResolvedValue([port]),
+  window.atomizerInstrument = {
+    version: 1,
+    getState: vi.fn().mockResolvedValue({ schemaVersion: 1, startup: { status: 'not-started' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' }, preference: { source: 'persisted', preference: { schemaVersion: 1, driverId: candidate.driverId, candidateKind: candidate.sourceKind, updatedAt: '2026-07-10T00:00:00.000Z' } } }),
+    discover: vi.fn().mockResolvedValue({ discoveryRevision: 'discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [candidate], failures: [] }),
     connect: vi.fn().mockResolvedValue(ready),
     disconnect: vi.fn().mockResolvedValue(undefined),
-    getSnapshot: vi.fn().mockResolvedValue(disconnected),
-    configureAnalyzer: vi.fn().mockImplementation(async (configuration: AnalyzerConfig) => { configuredAnalyzer = structuredClone(configuration); return { ...ready, mode: 'analyzer', verification: 'verified' }; }),
-    acquireSweep: vi.fn().mockImplementation(async () => acquiredSweep(configuredAnalyzer)),
-    startStreaming: vi.fn().mockResolvedValue(undefined), stopStreaming: vi.fn().mockResolvedValue(undefined),
-    acquireZeroSpan: vi.fn().mockResolvedValue(zeroSpanCapture),
-    configureGenerator: vi.fn().mockResolvedValue({ ...ready, mode: 'generator' }),
-    setGeneratorOutput: vi.fn().mockResolvedValue({ ...ready, mode: 'generator', generatorOutput: 'on' }),
-    readDiagnostics: vi.fn(), captureScreen: vi.fn(), touch: vi.fn(), releaseTouch: vi.fn(), exportSweep: vi.fn(),
-    subscribe: vi.fn().mockImplementation((listener: (event: DeviceEvent) => void) => { deviceEventListener = listener; return vi.fn(); }),
+    configure: vi.fn().mockImplementation(async (configuration: InstrumentConfiguration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      if (configuration.kind === 'swept-spectrum') configuredAnalyzer = { ...configuredAnalyzer, startHz: configuration.startHz, stopHz: configuration.stopHz, points: configuration.points };
+      return { sessionId: ready.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    }),
+    acquire: vi.fn().mockImplementation(async () => activeConfiguration.kind === 'swept-spectrum' ? acquiredMeasurement(configuredAnalyzer) : activeConfiguration.kind === 'detected-power-timeseries' ? detectedPowerMeasurement(activeConfiguration) : Promise.reject(new Error('I/Q not mocked'))),
+    startStreaming: vi.fn().mockResolvedValue({ status: 'running', startedAt: '2026-07-10T00:00:00.000Z' }),
+    stopStreaming: vi.fn().mockResolvedValue({ status: 'stopped' }),
+    executeFeature: vi.fn().mockImplementation(async (request) => {
+      if (request.kind === 'rf-generator') {
+        const result = { sessionId: ready.sessionId, ...request };
+        const rfOutput = request.action === 'configure' ? 'off' as const : request.enabled ? 'on' as const : 'off' as const;
+        return { result, session: { ...ready, rfOutput, rfOutputQualification: 'firmware-executed-twin' as const } };
+      }
+      if (request.kind === 'diagnostics') {
+        const result = { sessionId: ready.sessionId, ...request, lines: ['ok'] };
+        return { result, session: ready };
+      }
+      if (request.kind === 'signal-lab-profile-selection') {
+        if (signalLabSession.provenance.sourceKind !== 'signal-lab') throw new Error('invalid SignalLab fixture');
+        const producerConfigurationEpoch = 'producer-epoch:2';
+        const result = { sessionId: signalLabSession.sessionId, ...request, producerConfigurationEpoch };
+        const profileSession: InstrumentSessionSnapshot = {
+          ...signalLabSession,
+          provenance: { ...signalLabSession.provenance, producerConfigurationEpoch },
+          capabilities: {
+            ...signalLabSession.capabilities,
+            features: signalLabSession.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
+              ? { ...feature, selectedProfileId: request.profileId }
+              : feature),
+          },
+        };
+        return { result, session: profileSession };
+      }
+      return Promise.reject(new Error(`Feature ${request.kind} not mocked`));
+    }),
+    readPreference: vi.fn().mockResolvedValue({ source: 'persisted', preference: { schemaVersion: 1, driverId: candidate.driverId, candidateKind: candidate.sourceKind, updatedAt: '2026-07-10T00:00:00.000Z' } }),
+    writePreference: vi.fn().mockImplementation(async (selection) => ({ source: 'persisted', preference: { schemaVersion: 1, ...selection, updatedAt: '2026-07-10T00:00:00.000Z' } })),
+    subscribe: vi.fn().mockImplementation((listener: (event: AtomizerInstrumentEvent) => void) => { instrumentEventListener = listener; return vi.fn(); }),
   };
+  window.atomizerFiles = { version: 1, exportSweep: vi.fn().mockResolvedValue({ status: 'cancelled', format: 'csv' }) };
   window.atomAgent = {
     status: vi.fn().mockResolvedValue({ configured: false, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: false, realtime: false, textTransport: 'realtime-websocket' }),
     createRealtimeCall: vi.fn(), agentTurn: vi.fn(), computerScreenshot: vi.fn(), computerClick: vi.fn(), computerType: vi.fn(), computerKey: vi.fn(), computerScroll: vi.fn(),
@@ -140,9 +222,276 @@ describe('operator vertical slice', () => {
     expect(classificationRepresentatives(signals, 'right').map((signal) => signal.id)).toEqual(['right', 'local']);
   });
 
+  it('renders an already-started SignalLab default without fabricating hardware identity and can select its profile', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({ schemaVersion: 1, startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' }, preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } }, session: signalLabSession });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /SignalLab.*Synthetic measurement bridge/i })).toBeTruthy();
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(within(navigation).getByRole('button', { name: /Device/i }));
+    expect(await screen.findByText(/no device identity is asserted/i)).toBeTruthy();
+    expect(screen.getAllByText('Not claimed').length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByRole('combobox', { name: /SignalLab profile/i }), { target: { value: 'fm' } });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' }));
+    fireEvent.click(within(navigation).getByRole('button', { name: /Spectrum/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({
+      kind: 'swept-spectrum', startHz: 99_750_000, stopHz: 100_250_000, points: 450,
+    }));
+  });
+
+  it('exposes retained failed-connect cleanup and blocks a new connection until the safe retry succeeds', async () => {
+    render(<App/>);
+    const connectionButton = await screen.findByRole('button', { name: /No instrument.*Choose an instrument source/i });
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(connectionButton);
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'connection-cleanup',
+        connectionCleanup: { status: 'required', driverId: 'tinysa', phase: 'driver-pending' },
+      });
+    });
+
+    const dialog = screen.getByRole('dialog', { name: 'Connect' });
+    expect(within(dialog).getByRole('alert').textContent).toMatch(/Connection cleanup required/i);
+    expect(within(dialog).getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry safe cleanup' }));
+    await waitFor(() => expect(window.atomizerInstrument.disconnect).toHaveBeenCalledOnce());
+    await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull());
+  });
+
+  it('does not let an in-flight startup snapshot overwrite a newer subscribed connection event', async () => {
+    let releaseState: ((state: AtomizerInstrumentState) => void) | undefined;
+    vi.mocked(window.atomizerInstrument.getState).mockImplementationOnce(() => new Promise((resolve) => { releaseState = resolve; }));
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.getState).toHaveBeenCalledOnce());
+    await act(async () => { instrumentEventListener?.({ type: 'connected', session: ready }); });
+    await act(async () => {
+      releaseState?.({ schemaVersion: 1, startup: { status: 'not-started' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' } });
+    });
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    expect(screen.queryByText('No instrument')).toBeNull();
+  });
+
+  it('ignores a delayed disconnect from an older session', async () => {
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    const newer: InstrumentSessionSnapshot = {
+      ...ready,
+      sessionId: 'session-newer',
+      provenance: ready.provenance.sourceKind === 'tinysa-firmware-twin'
+        ? { ...ready.provenance, device: { ...ready.provenance.device, model: 'Newer session device' } }
+        : ready.provenance,
+    };
+    await act(async () => { instrumentEventListener?.({ type: 'connected', session: newer }); });
+    expect(await screen.findByText('Newer session device')).toBeTruthy();
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'disconnected', sessionId: ready.sessionId, driverId: ready.driverId });
+    });
+    expect(screen.getByText('Newer session device')).toBeTruthy();
+  });
+
+  it('restores RF on from the authoritative startup snapshot instead of defaulting to off', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      session: { ...ready, rfOutput: 'on', rfOutputQualification: 'firmware-executed-twin' },
+    });
+    render(<App/>);
+    expect(await screen.findByText('RF ON')).toBeTruthy();
+    expect(screen.getByText('FIRMWARE-EXECUTED TWIN')).toBeTruthy();
+  });
+
+  it('shows physical RF-off as a command acknowledgement rather than a power measurement', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      session: physicalSession,
+    });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValueOnce({
+      discoveryRevision: physicalCandidate.discoveryRevision,
+      discoveredAt: '2026-07-10T00:00:00.000Z',
+      candidates: [physicalCandidate],
+      failures: [],
+    });
+
+    render(<App/>);
+
+    expect(await screen.findByText('RF OFF')).toBeTruthy();
+    expect(screen.getByText('COMMAND ACKNOWLEDGED')).toBeTruthy();
+    expect(screen.getByLabelText('RF output off, command acknowledged').title).toMatch(/not independently measured/);
+  });
+
+  it('invalidates displayed evidence and marks RF state unknown when the active session faults', async () => {
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy());
+    await act(async () => {
+      instrumentEventListener?.({ type: 'status', sessionId: ready.sessionId, status: 'faulted', message: 'Transport ownership lost' });
+      instrumentEventListener?.({
+        type: 'session-state',
+        reason: 'session-faulted',
+        session: {
+          ...ready,
+          rfOutput: 'unknown',
+          rfOutputQualification: 'unverified',
+          fault: { code: 'session-fault', message: 'Transport ownership lost', recoverable: false },
+        },
+      });
+    });
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeNull();
+    expect(await screen.findByText('RF UNKNOWN')).toBeTruthy();
+    expect(screen.getByText('UNVERIFIED')).toBeTruthy();
+    expect(await screen.findByText('Transport ownership lost')).toBeTruthy();
+  });
+
+  it('stops the main-owned stream when renderer projection fails synchronously', async () => {
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    vi.mocked(window.atomizerInstrument.stopStreaming).mockClear();
+    const invalid = {
+      ...acquiredMeasurement(requested, 'invalid-projection', configurationRevision),
+      frequencyHz: [100, 200],
+      powerDbm: [-90, -80],
+    };
+
+    await act(async () => { instrumentEventListener?.({ type: 'measurement', measurement: invalid }); });
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/Sweep analysis failed/)).toBeTruthy();
+  });
+
+  it('coalesces an invalid measurement flood into one fail-safe stream stop', async () => {
+    let releaseStop: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.stopStreaming).mockImplementationOnce(() => new Promise((resolve) => {
+      releaseStop = () => resolve({ status: 'stopped' });
+    }));
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      for (let index = 0; index < 64; index++) {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(requested, `unknown-configuration-${index}`, 'configuration-never-admitted'),
+        });
+      }
+    });
+
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/referenced unknown configuration/)).toBeTruthy();
+    await act(async () => { releaseStop?.(); });
+    await screen.findByRole('button', { name: /^Run$/i });
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(requested, 'stale-after-stop', 'configuration-never-admitted'),
+      });
+    });
+    expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates displayed evidence when the active driver invalidates its configuration', async () => {
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy());
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'configuration-invalidated',
+        sessionId: ready.sessionId,
+        reason: 'instrument-mode-changed',
+        session: {
+          ...ready,
+          rfOutput: 'unknown',
+          rfOutputQualification: 'unverified',
+          configuration: undefined,
+        },
+      });
+    });
+
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeNull();
+    expect(await screen.findByText('RF UNKNOWN')).toBeTruthy();
+  });
+
+  it('invalidates an in-flight configuration reservation when its session disconnects', async () => {
+    let releaseConfigure: ((value: {
+      sessionId: string;
+      configurationRevision: string;
+      configuration: InstrumentConfiguration;
+      configuredAt: string;
+    }) => void) | undefined;
+    vi.mocked(window.atomizerInstrument.configure).mockImplementationOnce((configuration) => new Promise((resolve) => {
+      releaseConfigure = resolve;
+      activeConfiguration = structuredClone(configuration);
+    }));
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'disconnected', sessionId: ready.sessionId, driverId: ready.driverId });
+      releaseConfigure?.({
+        sessionId: ready.sessionId,
+        configurationRevision: 'late-old-session-revision',
+        configuration: activeConfiguration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      });
+    });
+
+    await waitFor(() => expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled());
+    expect(await screen.findByText(/configuration response was invalidated with instrument session/i)).toBeTruthy();
+  });
+
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     for (const label of ['Spectrum', 'Detect', 'Classify', 'Generate', 'Device']) expect(navigation.textContent).toContain(label);
     expect(navigation.textContent).not.toContain('Sessions');
@@ -221,41 +570,235 @@ describe('operator vertical slice', () => {
 
   it('connects, configures, and acquires through the complete typed bridge', async () => {
     render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
-    await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
     expect(await screen.findByLabelText('Measured power by frequency')).toBeTruthy();
-    expect(window.tinySA.configureAnalyzer).toHaveBeenCalledBefore(vi.mocked(window.tinySA.acquireSweep));
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledBefore(vi.mocked(window.atomizerInstrument.acquire));
   });
 
   it('pauses, verifies, and resumes continuous acquisition when analyzer settings change', async () => {
     render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
-    await waitFor(() => expect(window.tinySA.stopStreaming).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledTimes(2));
-    expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'swept-spectrum', startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+  });
+
+  it('does not let an old-generation analysis failure stop the replacement retuned stream', async () => {
+    let releaseRetuneStop: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.stopStreaming)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseRetuneStop = () => resolve({ status: 'stopped' });
+      }))
+      .mockResolvedValue({ status: 'stopped' });
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(requested, 'invalid-old-generation', 'configuration-never-admitted'),
+      });
+    });
+    expect(await screen.findByText(/referenced unknown configuration/)).toBeTruthy();
+    expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce();
+
+    await act(async () => { releaseRetuneStop?.(); });
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
+  });
+
+  it('compensates an unacknowledged stream start, releases ownership, and permits a clean retry', async () => {
+    vi.mocked(window.atomizerInstrument.startStreaming).mockRejectedValueOnce(new Error('stream start was not acknowledged'));
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/stream start was not acknowledged/i)).toBeTruthy();
+    const retry = await screen.findByRole('button', { name: /^Run$/i });
+    expect(retry.hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(retry);
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
+  });
+
+  it('retains ambiguous stream ownership and its revision when start and compensating stop both fail', async () => {
+    vi.mocked(window.atomizerInstrument.startStreaming).mockRejectedValueOnce(new Error('stream start acknowledgement lost'));
+    vi.mocked(window.atomizerInstrument.stopStreaming)
+      .mockRejectedValueOnce(new Error('compensating stop acknowledgement lost'))
+      .mockResolvedValue({ status: 'stopped' });
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    expect(await screen.findByText(/compensating stop also failed/i)).toBeTruthy();
+    const stop = await screen.findByRole('button', { name: /^Stop$/i });
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(configuredAnalyzer, 'ambiguous-start-measurement', configurationRevision),
+      });
+    });
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy();
+
+    fireEvent.click(stop);
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: /^Run$/i })).toBeTruthy();
+  });
+
+  it('keeps generator configuration and RF enable in one exclusive ordered transaction', async () => {
+    let releaseConfiguration: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation((request) => {
+      if (request.kind !== 'rf-generator') return Promise.reject(new Error(`Unexpected feature ${request.kind}`));
+      if (request.action === 'configure') {
+        return new Promise((resolve) => {
+          releaseConfiguration = () => resolve({
+            result: { ...request, sessionId: ready.sessionId },
+            session: { ...ready, rfOutput: 'off', rfOutputQualification: 'firmware-executed-twin' },
+          });
+        });
+      }
+      return Promise.resolve({
+        result: { ...request, sessionId: ready.sessionId },
+        session: { ...ready, rfOutput: request.enabled ? 'on' : 'off', rfOutputQualification: 'firmware-executed-twin' },
+      });
+    });
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i })).getByRole('button', { name: /Generate/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Enable RF output/i }));
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'rf-generator', action: 'configure',
+    })));
+    expect(vi.mocked(window.atomizerInstrument.executeFeature).mock.calls.some(([request]) => request.kind === 'rf-generator' && request.action === 'set-output')).toBe(false);
+    expect(screen.getByRole('button', { name: /Apply with output off/i }).hasAttribute('disabled')).toBe(true);
+
+    await act(async () => { releaseConfiguration?.(); });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({
+      kind: 'rf-generator', action: 'set-output', enabled: true,
+    }));
+    const calls = vi.mocked(window.atomizerInstrument.executeFeature).mock.invocationCallOrder;
+    expect(calls[0]).toBeLessThan(calls[1]!);
+    expect(await screen.findByRole('button', { name: /Disable RF output/i })).toBeTruthy();
+  });
+
+  it('rejects tap bursts while startup owns the transaction, then admits one bounded tap', async () => {
+    let releaseInitialStart: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.startStreaming)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseInitialStart = () => resolve({ status: 'running', startedAt: '2026-07-10T00:00:00.000Z' });
+      }))
+      .mockResolvedValue({ status: 'running', startedAt: '2026-07-10T00:00:01.000Z' });
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
+      if (request.kind !== 'touch') throw new Error(`Unexpected feature ${request.kind}`);
+      return { result: { ...request, sessionId: ready.sessionId, accepted: true }, session: ready };
+    });
+
+    const { container } = render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i })).getByRole('button', { name: /Device/i }));
+    const remoteScreen = await screen.findByLabelText('Connected instrument screen mirror');
+    vi.spyOn(remoteScreen, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 480, height: 320 } as DOMRect);
+    expect(remoteScreen.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.pointerUp(remoteScreen, { clientX: 240, clientY: 160 });
+    act(() => {
+      for (let index = 0; index < 32; index++) fireEvent.pointerUp(remoteScreen, { clientX: index, clientY: index });
+    });
+
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
+    await act(async () => { releaseInitialStart?.(); });
+    await waitFor(() => expect(remoteScreen.getAttribute('aria-disabled')).toBe('false'));
+
+    fireEvent.pointerUp(remoteScreen, { clientX: 240, clientY: 160 });
+    // The ref-backed one-slot gate closes synchronously, before React can
+    // render the busy state, so an event burst cannot accumulate stale taps.
+    act(() => {
+      for (let index = 0; index < 32; index++) fireEvent.pointerUp(remoteScreen, { clientX: index, clientY: index });
+    });
+    await waitFor(() => expect(remoteScreen.getAttribute('aria-disabled')).toBe('true'));
+
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({ kind: 'touch', action: 'tap', x: 240, y: 160 }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(1);
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(2);
+    const firstStart = vi.mocked(window.atomizerInstrument.startStreaming).mock.invocationCallOrder[0]!;
+    const stop = vi.mocked(window.atomizerInstrument.stopStreaming).mock.invocationCallOrder[0]!;
+    const touch = vi.mocked(window.atomizerInstrument.executeFeature).mock.invocationCallOrder[0]!;
+    const resumedConfiguration = vi.mocked(window.atomizerInstrument.configure).mock.invocationCallOrder[1]!;
+    const resumedStart = vi.mocked(window.atomizerInstrument.startStreaming).mock.invocationCallOrder[1]!;
+    expect(firstStart).toBeLessThan(stop);
+    expect(stop).toBeLessThan(touch);
+    expect(touch).toBeLessThan(resumedConfiguration);
+    expect(resumedConfiguration).toBeLessThan(resumedStart);
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: acquiredMeasurement(configuredAnalyzer, 'after-remote-tap', configurationRevision) });
+    });
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i })).getByRole('button', { name: /Spectrum/i }));
+    expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy();
   });
 
   it('merges numeric frequency edits into the latest staged state before Run', async () => {
     render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
@@ -271,58 +814,49 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
 
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
-    expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'swept-spectrum', startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
   });
 
   it('quarantines an in-flight sweep after a staged span supersedes it', async () => {
     let releaseStop: (() => void) | undefined;
-    vi.mocked(window.tinySA.stopStreaming).mockImplementationOnce(() => new Promise<void>((resolve) => { releaseStop = resolve; }));
+    vi.mocked(window.atomizerInstrument.stopStreaming).mockImplementationOnce(() => new Promise((resolve) => { releaseStop = () => resolve({ status: 'stopped' }); }));
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { container } = render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.tinySA.startStreaming).toHaveBeenCalledOnce());
-    await act(async () => { deviceEventListener?.({ type: 'sweep', sweep: acquiredSweep(requested, 'current-fm') }); });
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const streamingRevision = configurationRevision;
+    await act(async () => { instrumentEventListener?.({ type: 'measurement', measurement: acquiredMeasurement(requested, 'current-fm', streamingRevision) }); });
     expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
-    await waitFor(() => expect(window.tinySA.stopStreaming).toHaveBeenCalledOnce());
-    await act(async () => { deviceEventListener?.({ type: 'sweep', sweep: acquiredSweep(requested, 'late-fm') }); });
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => { instrumentEventListener?.({ type: 'measurement', measurement: acquiredMeasurement(requested, 'late-fm', streamingRevision) }); });
     expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeNull();
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('rejected stale sweep'), expect.objectContaining({ sweepId: 'late-fm' }));
 
     await act(async () => { releaseStop?.(); });
-    await waitFor(() => expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 2_400_000_000, stopHz: 2_500_000_000 })));
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'swept-spectrum', startHz: 2_400_000_000, stopHz: 2_500_000_000 })));
     warning.mockRestore();
   });
 
-  it('offers explicit host trace Off and opt-in firmware overlays', async () => {
-    vi.mocked(window.tinySA.acquireSweep).mockImplementation(async () => {
-      const current = acquiredSweep(configuredAnalyzer, 'trace-sweep');
-      return {
-        ...current,
-        firmwareTraces: [
-          { traceId: 1, role: 'measured', unit: 'dBm', frozen: false, frequencyHz: current.frequencyHz, powerDbm: current.powerDbm, sourceSweepId: current.id, capturedAt: current.capturedAt, evidence: 'firmware-readback' },
-          { traceId: 2, role: 'stored', unit: 'dBm', frozen: true, frequencyHz: current.frequencyHz, powerDbm: current.powerDbm.map((value) => value - 5), sourceSweepId: current.id, capturedAt: current.capturedAt, evidence: 'firmware-readback' },
-        ],
-      };
-    });
+  it('offers explicit host trace Off without inventing firmware overlays', async () => {
     const { container } = render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
     const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
-    fireEvent.click(screen.getByRole('button', { name: /Protocol-only ZS407 test double/i }));
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
-    await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
     expect(container.querySelector('.firmware-trace')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
@@ -331,15 +865,20 @@ describe('operator vertical slice', () => {
     fireEvent.click(traceToggle);
     await waitFor(() => expect(screen.getByRole('button', { name: /Trace 1.*Off/i })).toBeTruthy());
     await waitFor(() => expect(container.querySelector('.trace-line.t1')).toBeNull());
-
-    const firmwareToggle = screen.getByRole('button', { name: /D2 · Stored · frozen.*Off/i });
-    fireEvent.click(firmwareToggle);
-    await waitFor(() => expect(container.querySelector('.firmware-trace.f2')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /D2 · Stored · frozen.*On/i }));
-    await waitFor(() => expect(container.querySelector('.firmware-trace.f2')).toBeNull());
+    expect(screen.queryByRole('button', { name: /D2 · Stored/i })).toBeNull();
   });
 
   it('lets Atom list, connect, verify, and acquire through typed tools', async () => {
+    let discoveryCount = 0;
+    vi.mocked(window.atomizerInstrument.discover).mockImplementation(async () => {
+      discoveryCount++;
+      return {
+        discoveryRevision: `dynamic-${discoveryCount}`,
+        discoveredAt: '2026-07-10T00:00:00.000Z',
+        candidates: [{ ...candidate, discoveryRevision: `dynamic-${discoveryCount}` }],
+        failures: [],
+      };
+    });
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'r0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'load-1', name: 'load_atom_tools', arguments: '{"toolNames":["list_connection_candidates","connect_device","get_instrument_state","configure_analyzer","acquire_sweep"]}' }] })
@@ -351,24 +890,24 @@ describe('operator vertical slice', () => {
       .mockResolvedValueOnce({ conversationId: 'r6', transport: 'realtime-websocket', text: 'Sweep complete.', toolCalls: [], usage: { totalTokens: 1_200, inputTokens: 1_000, outputTokens: 200, cachedTokens: 640 }, rateLimits: [{ name: 'tokens', limit: 200_000, remaining: 190_000, resetSeconds: 60 }] });
 
     render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
     fireEvent.change(composer, { target: { value: 'Connect the simulator and acquire one sweep.' } });
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
-    await waitFor(() => expect(window.tinySA.connect).toHaveBeenCalledWith(port));
-    expect(window.tinySA.listDevices).toHaveBeenCalledTimes(3);
-    await waitFor(() => expect(window.tinySA.acquireSweep).toHaveBeenCalledOnce());
-    expect(window.tinySA.configureAnalyzer).toHaveBeenLastCalledWith(expect.objectContaining({ startHz: 93_000_000, stopHz: 95_000_000, rbwKhz: 'auto' }));
+    await waitFor(() => expect(window.atomizerInstrument.connect).toHaveBeenCalledWith({ ...candidate, discoveryRevision: 'dynamic-3' }));
+    expect(window.atomizerInstrument.discover).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({ kind: 'swept-spectrum', startHz: 93_000_000, stopHz: 95_000_000, points: 450 });
     expect(await screen.findByText('Sweep complete.')).toBeTruthy();
     expect(await screen.findByText(/TPM 10K\/200K/)).toBeTruthy();
     const candidateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
     expect(candidateOutput).toContain('candidate-1');
-    expect(candidateOutput).not.toContain('fake://');
-    expect(candidateOutput).not.toContain('SIM-407');
+    expect(candidateOutput).not.toContain('repositoryCommit');
+    expect(candidateOutput).not.toContain(COMMIT);
   });
 
-  it('restores swept-analyzer auto RBW after an Atom zero-span capture', async () => {
+  it('restores the swept-spectrum configuration after an Atom detected-power capture', async () => {
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'z0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'z-load', name: 'load_atom_tools', arguments: '{"toolNames":["list_connection_candidates","connect_device","acquire_zero_span"]}' }] })
@@ -378,14 +917,14 @@ describe('operator vertical slice', () => {
       .mockResolvedValueOnce({ conversationId: 'z4', transport: 'realtime-websocket', text: 'Envelope captured and swept analyzer restored.', toolCalls: [] });
 
     render(<App/>);
-    await waitFor(() => expect(window.tinySA.listDevices).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
     fireEvent.change(composer, { target: { value: 'Connect and capture the envelope.' } });
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
-    await waitFor(() => expect(window.tinySA.acquireZeroSpan).toHaveBeenCalledOnce());
-    await waitFor(() => expect(window.tinySA.configureAnalyzer).toHaveBeenCalledWith(expect.objectContaining({ rbwKhz: 'auto' })));
-    expect(vi.mocked(window.tinySA.acquireZeroSpan).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(window.tinySA.configureAnalyzer).mock.invocationCallOrder.at(-1)!);
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({ kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 450 }));
+    expect(vi.mocked(window.atomizerInstrument.acquire).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(window.atomizerInstrument.configure).mock.invocationCallOrder.at(-1)!);
   });
 
   it('returns a blocked app-computer action to Atom as a failed tool result', async () => {

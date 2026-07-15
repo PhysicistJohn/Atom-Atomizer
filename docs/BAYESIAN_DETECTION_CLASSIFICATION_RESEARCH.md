@@ -5,8 +5,10 @@ Updated: 2026-07-14
 
 ## Executive conclusion
 
-Atomizer can implement real Bayesian inference over the observations returned by
-tinySA. It cannot make every requested waveform identity uniquely observable.
+Atomizer can implement Bayes-rule inference over the observations returned by
+tinySA. The detector integrates a declared local-noise parameter; the classifier
+uses fixed plug-in empirical likelihoods and engineering priors. It cannot make
+every requested waveform identity uniquely observable.
 A swept trace is a time-ordered series of scalar powers measured through the
 resolution-bandwidth filter; zero span is detected power versus time. Neither
 view contains RF phase or complex I/Q samples. Consequently, the scientifically
@@ -88,9 +90,12 @@ P(H_h\mid D,c)\propto \pi_h(c)m_h(D\mid c).
 
 The posterior does not define the operating decision by itself. With decision
 costs \(C_{a,h}\), a detection occurs when the posterior odds, equivalently the
-Bayes factor and prior odds, cross the cost-derived threshold. This preserves
-the Neyman-Pearson distinction between evidence, prevalence, false alarm, and
-miss costs [6].
+Bayes factor and prior odds, cross the cost-derived threshold. That is a
+Bayes-risk decision rule [40]. Neyman-Pearson testing is an alternative
+operating formulation: it fixes a false-alarm constraint and maximizes power,
+without prior odds or decision costs [6]. Evidence, prevalence, loss, achieved
+false alarms, and misses must therefore be reported separately rather than
+attributed to one framework.
 
 ### 2.2 Posterior-predictive local-noise baseline
 
@@ -122,8 +127,9 @@ T=(b+S)\left(q^{-1/(a+N)}-1\right).
 
 As \(a,b\rightarrow0\), this becomes the familiar CA-CFAR multiplier
 \(N(P_{FA}^{-1/N}-1)\). Finn and Johnson established the adaptive radar
-threshold lineage, Rohling developed ordered-statistic CFAR for contaminated
-references, and Weinberg gives a Bayesian predictive formulation [7-9].
+threshold lineage in their 1968 RCA Review article (pp. 414--464), Rohling
+developed ordered-statistic CFAR for contaminated references, and Weinberg gives
+a Bayesian predictive formulation [7-9].
 
 The exponential law is not assumed for every tinySA mode. Energy detection
 under averaging is Gamma/chi-square in the ideal model [10]. tinySA detector,
@@ -210,24 +216,34 @@ and Carson's approximate occupied bandwidth is
 nuisance priors; a hand-drawn bell is not a physical validation asset.
 
 Traditional automatic-modulation recognition often uses instantaneous
-amplitude, phase, and frequency [13]. Only the first is partially available
-through detected-power zero span, so exact AMR labels cannot be transplanted.
+amplitude, phase, and frequency [13]. Likelihood classifiers use complex I/Q as
+sufficient statistics under their ideal model; other canonical branches use
+higher-order cumulants or cyclic statistics [23,43-46]. These sources describe
+the historical algorithmic lineage, but they do not validate a scalar swept-
+power classifier. Only amplitude is partially available through detected-power
+zero span, so their exact AMR labels cannot be transplanted.
 
 ### 3.2 GSM/GERAN
 
-GSM has 200 kHz channel spacing and paired FDD operation. A time slot is
-approximately 576.923 microseconds and a TDMA frame 4.61538 milliseconds, with
-26-, 51-, and 52-frame multiframes [14,15]. A qualified detected-power history
-can therefore carry slot/frame periodic envelope energy; the approximately
-1.733 kHz slot cadence is useful when sample timing and analog bandwidth support
-it. Atomizer's implemented feature is Fourier energy in a detected-power
-envelope, not a spectral-correlation or cyclostationarity estimator. BCCH/dummy
-bursts can make a carrier appear continuously occupied, so the absence of gaps
-is not negative GSM evidence [16].
+GSM has 200 kHz channel spacing and paired FDD operation. A TDMA frame contains
+eight approximately 576.923 microsecond timeslots and lasts 4.61538
+milliseconds, with 26-, 51-, and 52-frame multiframes [14,15]. A fixed timeslot
+therefore recurs at approximately 216.667 Hz. The approximately 1.733 kHz rate is
+only the aggregate slot-boundary rate, and is useful only when successive slots
+or their guard intervals create detected-power transitions that the sample
+timing and analog bandwidth resolve. On C0, TS 45.002 requires a dummy burst in
+otherwise unused timeslots, so a loaded BCCH carrier can suppress useful
+envelope contrast [15]. TS 45.008 supplies link-control measurement procedures,
+not that dummy-burst requirement [16]. Neither rate is mandatory GSM evidence.
+Atomizer's implemented feature is Fourier energy in a detected-power envelope,
+not a spectral-correlation or cyclostationarity estimator.
 
 Scalar power cannot recover GMSK versus EDGE modulation order reliably. The
 accepted label is therefore GSM/GERAN-like unless a separately validated
-measurement distinguishes more.
+measurement distinguishes more. Fitted GSM eligibility uses the complete
+observed interval against the FDD rows transcribed from TS 45.005 19.0.0 clause
+2 in `standards-operating-band-context-v1`; this is structural support, not an
+observation of GERAN protocol or paired-link activity [14].
 
 ### 3.3 LTE FDD and TDD
 
@@ -235,25 +251,48 @@ LTE nominal channel bandwidths are 1.4, 3, 5, 10, 15, and 20 MHz; occupied
 resource grids are approximately 1.08, 2.7, 4.5, 9, 13.5, and 18 MHz. The radio
 frame is 10 ms, a subframe 1 ms, and a slot 0.5 ms [17,18].
 
-Evidence blocks are:
+The 0.5 ms slot is a 2 kHz structural boundary in the resource grid, not a
+guaranteed 2 kHz detected-power cadence. Downlink occupancy can remain
+continuous across it. Simulator or measured timing evidence must distinguish
+that boundary from the 1 ms subframe, 10 ms frame, and TDD 5/10 ms switching
+periodicities defined by the configured frame structure [18].
+
+Candidate evidence blocks motivated by the standards are:
 
 - occupied-width compatibility, with RBW/sweep censoring;
-- a 100 kHz EARFCN raster prior;
-- paired-band context for FDD versus an unpaired-band prior for TDD;
+- EARFCN-raster compatibility when the measurement resolves it;
+- paired/shared operating-band compatibility;
 - qualified zero-span frame/subframe energy periodicity; and
 - cross-channel paired activity as supporting, never mandatory, FDD evidence.
 
+The current v5 classifier implements occupied-width morphology, hard
+operating-band eligibility, and optional qualified detected-envelope timing. It
+does not decode EARFCN or observe a paired uplink/downlink, so the remaining
+candidate blocks do not enter its likelihood as protocol evidence.
+
 Frequency tables must come from a versioned complete standards table rather
-than an abbreviated hand list. TDD/FDD is a contextual posterior, not a hard
-frequency rule, because private, translated, test, or mixed signals exist.
+than an abbreviated hand list. The table is a hard model-domain eligibility
+mask, not likelihood evidence or a transmitter-identity rule; private,
+translated, test, or mixed signals can remain unsupported or ambiguous.
+E-UTRA supplementary-downlink bands are neither an FDD-pair observation nor a
+TDD observation. The implementation uses
+`standards-operating-band-context-v1`, a versioned transcription of TS 36.101
+18.5.0 Table 5.5-1. It requires complete occupied-interval containment with a
+bounded RBW edge tolerance and returns every compatible FDD, TDD, or SDL mode
+in an overlap. SDL alone does not support a fitted FDD/TDD leaf; an overlapping
+paired or shared row remains visible as an additional structural possibility.
+This is a model-support mask, not protocol, deployment, survey-prior, or
+regulatory-authorization evidence [17].
 
 ### 3.4 5G NR FDD and TDD
 
-NR FR1 spans 410 to 7125 MHz in the cited release. Subcarrier spacing follows
-\(15\cdot2^\mu\) kHz. Frames remain 10 ms with 1 ms subframes; normal-CP slots
-contain 14 OFDM symbols [19,20]. NR uses NR-ARFCN and a distinct synchronization
-raster/GSCN. An SSB occupies 240 subcarriers over four symbols and may recur at
-5 through 160 ms depending on configuration [21-23].
+FR1 is the 410 to 7125 MHz frequency-range category in the cited release; actual
+NR operation is restricted to the operating bands listed by 3GPP, not every
+frequency in that interval. Subcarrier spacing follows \(15\cdot2^\mu\) kHz.
+Frames remain 10 ms with 1 ms subframes; normal-CP slots contain 14 OFDM symbols
+[19,20]. NR uses NR-ARFCN and a distinct synchronization raster/GSCN. An SSB
+occupies 240 subcarriers over four symbols and may recur at 5 through 160 ms
+depending on configuration [20-22].
 
 Useful evidence is width, supported FR1 band/raster context, possible SSB burst
 periodicity, and TDD duty/transition structure. More than 20 MHz of contiguous
@@ -264,25 +303,40 @@ spectrum sharing, must be allowed to return `cellular-OFDM-ambiguous`.
 FR2 and bandwidths outside the device's measured support are out of domain, not
 negative evidence.
 
+TS 38.104 also defines supplementary-downlink and supplementary-uplink bands.
+The implemented `standards-operating-band-context-v1` table transcribes the
+complete FR1 rows from TS 38.104 18.12.0 Table 5.2-1 and preserves FDD, TDD,
+SDL, and SUL modes independently. A supplemental-only row does not support a
+fitted FDD/TDD leaf. When it overlaps a paired or shared row, all compatible
+modes remain visible and frequency alone cannot determine actual operation.
+This structural compatibility is not protocol, deployment, paired-channel, or
+regulatory evidence [19]. FR2 starts beyond the tinySA measurement ceiling and
+is therefore outside this model's device domain rather than negative NR
+evidence.
+
 ### 3.5 Wi-Fi 802.11
 
-The literature motivates the following *candidate evidence hierarchy* when the
-necessary observables are actually resolved [24-29]:
+The normative standards motivate the following *candidate evidence hierarchy*
+when the necessary observables are actually resolved [24-26,47]. Sources
+[27-29] are retained only as non-normative design history:
 
 | Observation | Finest defensible result |
 |---|---|
-| 2.4 GHz DSSS/CCK-like burst | Wi-Fi HR-DSSS-like |
-| Fixed 20 MHz OFDM burst | Wi-Fi OFDM 20 MHz; generation ambiguous |
-| 40 MHz OFDM | HT-or-later Wi-Fi-like |
-| 80/160 MHz OFDM | VHT-or-later Wi-Fi-like |
-| 320 MHz Wi-Fi-like OFDM | strong EHT-like evidence if hardware supports the span |
-| resolved stable RU/puncture structure | HE/EHT OFDMA-like evidence |
+| 2.4 GHz DSSS/CCK-like burst | HR-DSSS-compatible morphology, not protocol identity |
+| Fixed 20 MHz OFDM burst | 20 MHz Wi-Fi-compatible morphology; generic OFDM remains an explicit confuser |
+| 40 MHz OFDM | HT-or-later-compatible width evidence |
+| 80/160 MHz OFDM | VHT-or-later-compatible width evidence |
+| 320 MHz contiguous Wi-Fi-compatible OFDM in the 6 GHz band | EHT-compatible width evidence when the device supports the complete span, still non-identifying without decoded or time-coherent EHT features |
+| decoded or time-coherent RU/puncturing structure | HE/EHT-compatible evidence; a swept scalar trace is insufficient |
 
 20 MHz legacy, HT, VHT, HE, and EHT emissions are not uniquely distinguishable
-from integrated spectrum shape alone. HE/EHT subcarrier or resource-unit
-evidence is valid only if the actual RBW and sweep timing resolve it. Packet
-duration and gaps depend heavily on rate, aggregation, contention, retries, and
-load, so they are better family evidence than generation evidence.
+from integrated spectrum shape alone. A 320 MHz observation outside the 6 GHz
+band is not an 802.11be 320 MHz channel. RBW resolution alone also cannot undo
+sweep time-frequency skew: repeated notches do not establish HE/EHT resource
+units or puncturing. That attribution requires a time-coherent capture or
+decoded HE/EHT signaling. Packet duration and gaps depend heavily on rate,
+aggregation, contention, retries, and load, so they are better family evidence
+than generation evidence.
 
 The implemented scalar classifier is deliberately stricter than the candidate
 table. Swept integrated power plus a fixed-tune detected-power envelope contains
@@ -292,6 +346,13 @@ diagnostic only; the primary result is at most `802.11-compatible channel
 morphology · PHY unresolved` (or `unknown`). Exact proprietary DSSS and OFDM
 nulls demonstrate why even that result is an evidence-equivalence statement,
 not 802.11 protocol or PHY identity.
+
+Its hard fitted masks are narrower than the standard: HR-DSSS-like support is
+limited to 2.4--2.5 GHz and 10--30 MHz measured width; OFDM-like support is
+limited to 2.4--2.5, 4.9--5.925, or 5.925--7.125 GHz and 8--110 MHz measured
+width. A fully observed 160/320 MHz channel exceeds that fitted width, while
+resource-unit allocation and puncturing are not represented; those cases must
+remain unsupported or unresolved.
 
 ### 3.6 Bluetooth
 
@@ -319,8 +380,11 @@ None of these observations uniquely identifies Bluetooth. They become useful
 only as a coherent, time-qualified multichannel pattern evaluated against
 proprietary FHSS and other 2.4 GHz confusers.
 
-LE 1M and LE Coded are generally power-equivalent; unknown payload length makes
-a single packet duration non-identifying. BR/EDR modulation order is likewise
+LE 1M and LE Coded share 1 Msym/s shaped-binary-FM spectral occupancy closely
+enough that this scalar instrument should not separate them. Their packet
+formats, coding, and durations differ substantially, but unknown payload,
+coding, event context, and uncalibrated detected-power timing make a single
+capture non-identifying [33,34,48]. BR/EDR modulation order is likewise
 unsupported without richer evidence.
 
 A fixed-frequency tinySA zero-span capture cannot observe a link-wide Classic
@@ -335,7 +399,7 @@ unconditioned envelope or one merely retagged to a detector peak is invalid.
 The production tracker is frequency-local by default and also has a disclosed
 `frequency-agile-2g4-activity` association with provenance
 `frequency-agile-2g4-activity-v3` and conditional dynamics model
-`bayesian-frequency-agile-transition-v2`. Across a strictly ordered full-band
+`bayesian-frequency-agile-transition-v3`. Across a strictly ordered full-band
 2.4 GHz sweep sequence, it records none, exactly-one eligible narrow candidate,
 or ambiguous activity for every opportunity. Only positive unambiguous looks
 enter the agile-versus-stationary transition marginal; none and ambiguous looks
@@ -347,17 +411,31 @@ fragmented. Classic/LE separation is not modeled. Without independently
 observed distinguishing evidence the primary decision remains Bluetooth-like
 band activity or `unknown`, never a timing-promoted mode.
 
-Transition model v2 uses an equal mixture of Classic `Beta(78,1)` and LE
-`Beta(2,1)` change-rate marginals against a predeclared *fixed* stationary
-Bernoulli likelihood `p_change=0.05`. It does not integrate the stationary
-likelihood over the formerly used Beta prior. Exact dynamic programming over
-transition counts gives a sequential false-promotion probability of
+Transition model v3 uses an equal mixture of two neutral engineering transition
+components: `fullBand79CellChangePrior = Beta(78,1)` and
+`threePrimaryChannelChangePrior = Beta(2,1)`. They describe respectively a
+79-cell full-band-agile family and a three-primary-channel-agile family.
+Neither is a Bluetooth Classic/LE protocol or emitter likelihood. BR/EDR
+adaptive frequency hopping can reduce the usable set from 79 to N channels and
+remap it, while LE connections
+and secondary-channel activity use channel maps over as many as 37
+general-purpose channels. Channel selection, advertising-event order, packet
+occupancy, and receiver censoring violate an iid transition interpretation
+[32,34]. The mixture is compared with a predeclared *fixed* stationary Bernoulli
+likelihood `p_change=0.05`; it does not integrate the stationary likelihood over
+the formerly used Beta prior. Exact dynamic programming over transition counts
+gives a sequential false-promotion probability of
 `1.3657385209e-5` through 96 positive looks under that independent fixed-5%
 null. The computation omits the separate minimum-three-resolution-cell guard,
 so it is a conservative upper bound inside the declared transition model. It is
 not a physical false-association guarantee and does not cover correlated
 receiver artifacts, nonstationary traffic, or unrelated emitters merged by the
 provisional association.
+
+The returned evidence exposes separate full-band and three-primary-channel log
+marginals plus `primaryChannelCenterHitCount`. Both marginals are functions of
+the same change/no-change transition counts; the primary-center hit count is
+diagnostic provenance, not advertising-event or protocol evidence.
 
 Standard scenarios offer 24 sequential 50 ms opportunities. Full-band 2.4 GHz
 scenarios offer 96, matching the association model's bounded opportunity
@@ -412,14 +490,20 @@ a Bayesian posterior-predictive distribution over uncertain fitted parameters.
 Likelihoods use the exact marginal of each fixed Student-t component on only
 the observed dimensions, so missing or unsupported cadence features are not
 imputed. The normalized outputs are model posteriors conditional on the fixed
-empirical likelihoods, `engineering-design-class-weights-v1` priors,
-hand-coded band context, and the observed features. They are not physically
+empirical likelihoods, `engineering-design-class-weights-v1` priors, observed
+features, and the structural hypothesis mask. Cellular eligibility is provided
+by `standards-operating-band-context-v1`, which pins TS 45.005 19.0.0 clause 2,
+TS 36.101 18.5.0 Table 5.5-1, and TS 38.104 18.12.0 Table 5.2-1, including
+source URLs and document hashes. It checks the full observed interval with a
+bounded RBW edge tolerance and preserves overlapping FDD, TDD, SDL, and SUL
+modes. It is not a likelihood, prior, protocol observation, deployment
+database, or regulatory authorization. These outputs are not physically
 calibrated probabilities. The final model-asset SHA-256 is
-`bb4393e1e0e0e86977def9238a4e1e3dc03511f06b421384ff41316e37e96c9d`.
+`05ec69aacc100f272446b7e00ba36cd112e516b8832585174312bac1f6af7d0c`.
 Preprocessing is `scalar-observable-features-v5`, representative eligibility is
 `runtime-domain-qualified-known-representatives-v3`,
 calibration is
-`synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6`,
+`synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7`,
 and decision policy is `observable-open-set-decision-v9`.
 
 Known wireless hypotheses also have hard fitted-domain eligibility masks. They
@@ -454,23 +538,35 @@ morphology. Collisions, overload, ambient emissions, and other unmodeled
 confusers remain intended open-set scope without a current physical guarantee.
 
 For each known class, generator-separated calibration converts the maximum
-fixed-component radial-tail score into an inductive rank support p-value,
-\((r+1)/(n+1)\). Calibration v6 uses an acquisition attempt as the exchangeable
-unit, rather than flattening correlated fragments. For every fit-eligible
-attempt, class, and evidence view it records the minimum known-class support
-among that attempt's first-ready eligible representatives. The asset contains
-1,990 independent attempt-level scores per evidence view, distributed over the
-known classes, for `spectrum-only`, `envelope-untimed`, and `envelope-timed`.
+fixed-component radial-tail score into a synthetic support rank by
+\((r+1)/(n+1)\). Ranks count reference values less than or equal to the test
+score, so ties increase support. Calibration v7 treats an acquisition attempt,
+rather than correlated fragments from that attempt, as the reference unit. For
+every fit-eligible attempt, class, and evidence view it records the minimum
+known-class support among that attempt's first-ready eligible representatives.
+The asset contains 1,990 such attempt-level scores per evidence view,
+distributed over the known classes, for `spectrum-only`, `envelope-untimed`,
+and `envelope-timed`.
+
+The per-attempt minimum is a pointwise-conservative lower reference for any
+member representative: a single member's rank against attempt minima cannot be
+smaller than the corresponding attempt-minimum rank. Model metadata names this
+property
+`single-representative-rank-dominates-attempt-min-rank-v1`. That deterministic
+ordering is not a sampling theorem. The fixed, stratified nuisance grids and
+pooled scenario templates are not exchangeable operational samples, so
+standard conformal finite-sample coverage does not apply [41]. Metadata records
+`empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1`.
+
 Inference selects the matching view, takes the maximum class-conditional
-support p-value across eligible known classes, and rejects below 0.025. On that
-support rejection the primary result is
-`unknown` with confidence zero and explicit `synthetic-support-p-value` value
-and cutoff; ranked candidate model posteriors are retained only as diagnostics.
-Its nominal 2.5% support coverage has meaning only when the new observation is
-exchangeable with the pinned SignalLab synthetic calibration generator under
-the same evidence view. It is not a posterior-predictive p-value, physical
-receiver calibration, or a guarantee for ambient RF. Chow's reject rule maps
-an abstention cost to an acceptance threshold [35].
+synthetic support rank across eligible known classes, and rejects below the
+engineering cutoff 0.025. On support rejection the primary result is `unknown`
+with confidence zero and explicit `synthetic-support-rank` value and cutoff;
+ranked candidate model posteriors are retained only as diagnostics. The rank is
+not a p-value, posterior-predictive probability, physical receiver calibration,
+or coverage guarantee for ambient RF. Chow's rule maps an abstention cost to an
+acceptance threshold [35], but does not solve unknown-class or open-set
+recognition; Scheirer et al. formalize that separate problem [42].
 
 Any fitted temperature or probability calibration is learned on untouched,
 session-grouped validation data. Temperature scaling can calibrate scores; it
@@ -491,10 +587,12 @@ this emission region. Association model `frequency-agile-2g4-activity-v3`
 records a strictly ordered opportunity stream over the full 2402--2480 MHz
 geometry: no candidate, exactly one eligible independently CFAR-admitted narrow
 candidate, or an ambiguous look. Its separately versioned
-`bayesian-frequency-agile-transition-v2` dynamics model integrates
-an equal Classic/LE Beta-Binomial marginal against the fixed stationary
-`p_change=0.05` Bernoulli likelihood, conditional on positive, unambiguous
-observations. It requires at least eight positives across at least three
+`bayesian-frequency-agile-transition-v3` dynamics model integrates an equal
+mixture of the neutral `fullBand79CellChangePrior = Beta(78,1)` and
+`threePrimaryChannelChangePrior = Beta(2,1)` engineering Beta-Binomial
+marginals against the fixed stationary `p_change=0.05` Bernoulli
+likelihood, conditional on positive, unambiguous observations. It requires at
+least eight positives across at least three
 resolution cells and uses a maximum 96-opportunity window with explicit 0.99
 promotion and 0.90 retention probabilities. Occurrence and duty probability
 deliberately cancel between its agile and stationary hypotheses; it does not
@@ -539,7 +637,10 @@ At minimum, every classification stores:
 - every feature's qualification reason.
 
 The former 290-point/100 ms default had a nominal 2.9 ksample/s request rate and
-could not resolve a 1.733 kHz GSM or 2 kHz LTE energy cadence without aliasing.
+could not resolve load-dependent 1.733 kHz GSM slot-boundary structure without
+aliasing; a fixed GSM timeslot instead recurs at approximately 216.7 Hz. LTE's
+0.5 ms slot creates a 2 kHz resource-grid boundary, not a guaranteed detected-
+power cadence.
 The current 450-point/50 ms request has a nominal 9 ksample/s request rate and is
 a useful provisional acquisition, but physical captures remain
 `wall-clock-derived`. Actual per-sample timing, detector bandwidth, aliasing,
@@ -578,6 +679,9 @@ against the validator's independent pinned lists. The corpus records:
 
 - stable evidence-class ID and scenario ID;
 - formula or standards clause and source URL;
+- a standards-version manifest identifying each specification, release,
+  clause/table, generated-table hash, and artifact digest used for band/raster
+  context;
 - complete truth parameters, nuisance parameters, and random seed;
 - generator/version, sample rate, duration and SHA-256 digest;
 - optional I/Q truth used only to produce scalar observations;
@@ -699,7 +803,7 @@ accuracy was 0.985318, known coverage 0.993796, covered-known hierarchical
 accuracy 1.0, known top-leaf accuracy 0.993996, and minimum high-SNR
 known-class hierarchical accuracy 0.9875. On 5,525 singleton-truth,
 fit-eligible proper-score samples, fitted-template log loss was 0.0142141,
-multiclass Brier score 0.00825527, and expected calibration error 0.00192381.
+multiclass Brier score 0.00825527, and expected calibration error 0.00192378.
 Fitted-unknown AUROC and rejection were 1.0; scenario-excluded strict-
 typicality AUROC was 0.997999 and admitted strict-holdout rejection was 1.0.
 
@@ -745,7 +849,12 @@ physical likelihood is correct; that requires physical capture validation.
    guarantee is that its model, evidence, uncertainty, abstention, limitations,
    and validation domain are exact and reproducible.
 
-## Primary and official sources
+The cited 3GPP documents currently span several releases. Stable facts remain
+traceable to the cited clauses, but this bibliography is not a coherent model
+baseline. Each future corpus/model release must pin the per-claim standards
+manifest described above rather than infer compatibility from this mixed list.
+
+## Primary, official, and historical sources
 
 1. [Tektronix, What is a spectrum analyzer?](https://www.tek.com/en/documents/primer/what-spectrum-analyzer-and-why-do-you-need-one)
 2. [tinySA FAQ](https://tinysa.org/wiki/pmwiki.php?n=Main.FAQ)
@@ -753,16 +862,16 @@ physical likelihood is correct; that requires physical capture validation.
 4. [tinySA scanning speed](https://tinysa.org/wiki/pmwiki.php?n=Main.SCANNINGSPEED)
 5. [tinySA Ultra specification](https://tinysa.org/wiki/pmwiki.php?n=TinySA4.Specification)
 6. [Neyman and Pearson, 1933](https://doi.org/10.1098/rsta.1933.0009)
-7. [Finn and Johnson, adaptive detection, 1968](https://www.rsp-italy.it/Electronics/Magazines/RCA%20Review/_contents/RCA%20Review%201968-09.pdf)
+7. [Finn and Johnson, *Adaptive detection mode with threshold control as a function of spatially sampled clutter-level estimates*, RCA Review 29, pp. 414--464, 1968](https://www.rsp-italy.it/Electronics/Magazines/RCA%20Review/_contents/RCA%20Review%201968-09.pdf)
 8. [Rohling, ordered-statistic CFAR, 1983](https://doi.org/10.1109/TAES.1983.309350)
 9. [Weinberg, Bayesian predictive CFAR, 2019](https://doi.org/10.1049/iet-rsn.2018.5635)
 10. [Urkowitz, energy detection, 1967](https://doi.org/10.1109/PROC.1967.5573)
-11. [Carson, frequency modulation bandwidth, 1922](https://doi.org/10.1109/JRPROC.1922.219793)
+11. [Carson, *Notes on the Theory of Modulation*, 1922](https://doi.org/10.1109/JRPROC.1922.219793)
 12. [Armstrong, frequency modulation, 1936](https://doi.org/10.1109/JRPROC.1936.227383)
 13. [Azzouz and Nandi, automatic modulation recognition, 1995](https://doi.org/10.1016/0165-1684(95)00083-P)
 14. [3GPP TS 45.005](https://www.etsi.org/deliver/etsi_ts/145000_145099/145005/19.00.00_60/ts_145005v190000p.pdf)
 15. [3GPP TS 45.002](https://www.etsi.org/deliver/etsi_ts/145000_145099/145002/16.01.00_60/ts_145002v160100p.pdf)
-16. [3GPP TS 45.008](https://www.etsi.org/deliver/etsi_ts/145000_145099/145008/14.00.00_60/ts_145008v140000p.pdf)
+16. [3GPP TS 45.008 link-control context (not the dummy-burst authority)](https://www.etsi.org/deliver/etsi_ts/145000_145099/145008/14.00.00_60/ts_145008v140000p.pdf)
 17. [3GPP TS 36.101](https://www.etsi.org/deliver/etsi_ts/136100_136199/136101/18.05.00_60/ts_136101v180500p.pdf)
 18. [3GPP TS 36.211](https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/16.06.00_60/ts_136211v160600p.pdf)
 19. [3GPP TS 38.104](https://www.etsi.org/deliver/etsi_ts/138100_138199/138104/18.12.00_60/ts_138104v181200p.pdf)
@@ -773,9 +882,9 @@ physical likelihood is correct; that requires physical capture validation.
 24. [IEEE 802.11-2024](https://standards.ieee.org/ieee/802.11/10548/)
 25. [IEEE 802.11ax-2021](https://standards.ieee.org/ieee/802.11ax/7180/)
 26. [IEEE 802.11be-2024](https://standards.ieee.org/ieee/802.11be/7516/)
-27. [IEEE HE resource-unit discussion](https://www.ieee802.org/11/email/stds-802-11-tgax/msg01279.html)
-28. [IEEE EHT spacing discussion](https://www.ieee802.org/11/email/stds-802-11-tgbe/msg02717.html)
-29. [IEEE EHT RU/MRU discussion](https://www.ieee802.org/11/email/stds-802-11-tgbe/msg03935.html)
+27. [IEEE HE resource-unit design discussion (historical, non-normative)](https://www.ieee802.org/11/email/stds-802-11-tgax/msg01279.html)
+28. [IEEE EHT spacing design discussion (historical, non-normative)](https://www.ieee802.org/11/email/stds-802-11-tgbe/msg02717.html)
+29. [IEEE EHT RU/MRU design discussion (historical, non-normative)](https://www.ieee802.org/11/email/stds-802-11-tgbe/msg03935.html)
 30. [Bluetooth Core Specification 6.3](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/index-en.html)
 31. [Bluetooth BR/EDR radio physical layer](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/br-edr-controller/radio-physical-layer-specification.html)
 32. [Bluetooth BR/EDR baseband](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/br-edr-controller/baseband-specification.html)
@@ -786,3 +895,12 @@ physical likelihood is correct; that requires physical capture validation.
 37. [Talts et al., simulation-based calibration, 2018](https://arxiv.org/abs/1804.06788)
 38. [Gneiting and Raftery, proper scoring rules, 2007](https://doi.org/10.1198/016214506000001437)
 39. [Gelman, Meng and Stern, posterior-predictive assessment, 1996](https://www3.stat.sinica.edu.tw/statistica/j6n4/j6n41/j6n41.htm)
+40. [Wald, *Statistical Decision Functions*, 1950](https://books.google.com/books?id=nq0gAAAAMAAJ)
+41. [Shafer and Vovk, conformal prediction tutorial, 2008](https://www.jmlr.org/papers/v9/shafer08a.html)
+42. [Scheirer et al., *Toward Open Set Recognition*, 2013](https://doi.org/10.1109/TPAMI.2012.256)
+43. [Wei and Mendel, maximum-likelihood modulation classification, 2000](https://doi.org/10.1109/26.823550)
+44. [Swami and Sadler, cumulant-based modulation classification, 2000](https://doi.org/10.1109/26.837045)
+45. [Dandawate and Giannakis, tests for cyclostationarity, 1994](https://doi.org/10.1109/78.317857)
+46. [Dobre et al., automatic modulation classification survey, 2007](https://doi.org/10.1049/iet-com:20050176)
+47. [IEEE P802.11bk PAR, stating 802.11be 320 MHz operation in the 6 GHz band](https://www.ieee802.org/11/PARs/P802.11bk.pdf)
+48. [Bluetooth LE regulatory aspects and PHY-duration overview](https://www.bluetooth.com/wp-content/uploads/2023/03/bluetooth-le-regulatory-aspects-document.pdf)

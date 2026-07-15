@@ -23,12 +23,12 @@ describe('Bayesian frequency-agile activity evidence', () => {
     expect(bayesianFrequencyAgileActivityQualifies(compact, false)).toBe(true);
   });
 
-  it('uses the three primary advertising channels as LE-compatible evidence', () => {
+  it('counts the three primary-channel centers without treating them as an LE protocol likelihood', () => {
     const observations = [2_402, 2_426, 2_480, 2_402, 2_426, 2_480, 2_402, 2_426]
       .map((centerMhz, index) => observation(index, centerMhz * 1_000_000));
     const evidence = bayesianFrequencyAgileActivityEvidence(observations, 48);
 
-    expect(evidence.advertisingChannelHitCount).toBe(8);
+    expect(evidence.primaryChannelCenterHitCount).toBe(8);
     expect(evidence.uniqueResolutionCellCount).toBe(3);
     expect(evidence.posteriorAgileDynamicsProbability).toBeGreaterThanOrEqual(0.99);
   });
@@ -36,15 +36,15 @@ describe('Bayesian frequency-agile activity evidence', () => {
   it('matches independent closed-form agile marginals and the fixed stationary likelihood', () => {
     const observations = Array.from({ length: 8 }, (_, index) => observation(index, 2_402_000_000 + index * 8_000_000));
     const evidence = bayesianFrequencyAgileActivityEvidence(observations, observations.length);
-    const classicAllChangedProbability = 78 / 85;
-    const leAllChangedProbability = 2 / 9;
+    const fullBand79CellAllChangedProbability = 78 / 85;
+    const threePrimaryChannelAllChangedProbability = 2 / 9;
     const stationaryAllChangedProbability = 0.05 ** 7;
     const expectedLogBayesFactor = Math.log(
-      0.5 * classicAllChangedProbability + 0.5 * leAllChangedProbability,
+      0.5 * fullBand79CellAllChangedProbability + 0.5 * threePrimaryChannelAllChangedProbability,
     ) - Math.log(stationaryAllChangedProbability);
 
-    expect(evidence.classicLogMarginalLikelihood).toBeCloseTo(Math.log(classicAllChangedProbability), 12);
-    expect(evidence.leLogMarginalLikelihood).toBeCloseTo(Math.log(leAllChangedProbability), 12);
+    expect(evidence.fullBand79CellAgileLogMarginalLikelihood).toBeCloseTo(Math.log(fullBand79CellAllChangedProbability), 12);
+    expect(evidence.threePrimaryChannelAgileLogMarginalLikelihood).toBeCloseTo(Math.log(threePrimaryChannelAllChangedProbability), 12);
     expect(evidence.stationaryLogMarginalLikelihood).toBeCloseTo(Math.log(stationaryAllChangedProbability), 12);
     expect(evidence.logBayesFactor).toBeCloseTo(expectedLogBayesFactor, 12);
   });
@@ -139,10 +139,10 @@ function posteriorAgileProbability(changed: number, total: number): number {
     logGammaFixture(alpha) + logGammaFixture(beta) - logGammaFixture(alpha + beta);
   const marginal = (alpha: number, beta: number): number =>
     logBeta(changed + alpha, total - changed + beta) - logBeta(alpha, beta);
-  const classic = marginal(78, 1);
-  const le = marginal(2, 1);
-  const maximum = Math.max(classic, le);
-  const agile = maximum + Math.log(0.5 * Math.exp(classic - maximum) + 0.5 * Math.exp(le - maximum));
+  const fullBand79Cell = marginal(78, 1);
+  const threePrimaryChannel = marginal(2, 1);
+  const maximum = Math.max(fullBand79Cell, threePrimaryChannel);
+  const agile = maximum + Math.log(0.5 * Math.exp(fullBand79Cell - maximum) + 0.5 * Math.exp(threePrimaryChannel - maximum));
   const stationary = changed * Math.log(0.05) + (total - changed) * Math.log(0.95);
   const logOdds = Math.log(0.01 / 0.99) + agile - stationary;
   return logOdds >= 0 ? 1 / (1 + Math.exp(-logOdds)) : Math.exp(logOdds) / (1 + Math.exp(logOdds));

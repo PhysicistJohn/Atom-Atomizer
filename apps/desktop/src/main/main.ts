@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,113 +6,145 @@ import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { config as loadEnv } from 'dotenv';
 import {
-  API_VERSION,
-  analyzerConfigSchema,
-  generatorConfigSchema,
-  portCandidateSchema,
-  screenPointSchema,
-  sweepExportRequestSchema,
-  zeroSpanConfigSchema,
-  type DeviceEvent,
-} from '@tinysa/contracts';
-import { TinySaDeviceService, NodeSerialTransport, PhysicalOrTwinTransport, RenodeDigitalTwinTransport } from '@tinysa/device';
+  InstrumentDriverRegistry,
+  InstrumentManager,
+  NodeSerialTransport,
+  PhysicalOrTwinTransport,
+  RenodeDigitalTwinTransport,
+  SignalLabInstrumentDriver,
+  TinySaDeviceService,
+  TinySaZs407InstrumentDriver,
+} from '@tinysa/device';
 import { OpenAiGateway } from './ai-gateway.js';
-import { parseAtomLoadedToolNames, type AgentTurnRequest } from '@tinysa/agent';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
-import { selectStartupInstrument } from './startup-admission.js';
+import { AtomizerInstrumentHost } from './atomizer-instrument-host.js';
+import { registerAtomizerInstrumentIpc } from './atomizer-instrument-ipc.js';
+import { registerAtomizerAuxiliaryIpc } from './atomizer-auxiliary-ipc.js';
+import { InstrumentPreferenceStore } from './instrument-preference.js';
+import { SafeShutdownGate } from './safe-shutdown-gate.js';
+import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
+import {
+  assertTrustedRendererEvent,
+  developmentRendererTrust,
+  isTrustedMediaPermission,
+  isTrustedRendererUrl,
+  productionRendererTrust,
+  selectDevelopmentServerUrl,
+  type RendererTrust,
+} from './renderer-trust.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
   if(candidate&&existsSync(candidate)){loadEnv({path:candidate,quiet:true});break;}
 }
 const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../TinySA_Firmware'));
+const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() || resolve(here, '../../../..'));
 const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));
 const device = new TinySaDeviceService(transport);
 const ai = new OpenAiGateway();
 const computer = new AppComputerHarness();
 let mainWindow: BrowserWindow | undefined;
-let shutdownStarted = false;
+let rendererTrust: RendererTrust | undefined;
+const shutdownGate = new SafeShutdownGate();
+const ipcAdmission = new BoundedPrivilegedIpcAdmission();
 app.setName('TinySA Atomizer');
+const instrumentManager = new InstrumentManager(new InstrumentDriverRegistry([
+  new TinySaZs407InstrumentDriver(device),
+  new SignalLabInstrumentDriver({
+    atomizerRepositoryRoot: atomizerRepository,
+    ...(app.isPackaged ? { packagedResourcesRoot: process.resourcesPath } : {}),
+  }),
+]));
+const instrumentHost = new AtomizerInstrumentHost(
+  instrumentManager,
+  new InstrumentPreferenceStore(join(app.getPath('userData'), 'instrument')),
+);
+let unregisterIpc: (() => void) | undefined;
 
 function registerIpc(): void {
-  ipcMain.handle('tinysa:list', () => device.listDevices());
-  ipcMain.handle('tinysa:connect', async (_event, value: unknown) => {
-    const snapshot = await device.connect(portCandidateSchema.parse(value));
-    return snapshot;
-  });
-  ipcMain.handle('tinysa:disconnect', () => device.disconnect());
-  ipcMain.handle('tinysa:snapshot', () => device.snapshot());
-  ipcMain.handle('tinysa:analyzer:configure', (_event, value: unknown) => device.configureAnalyzer(analyzerConfigSchema.parse(value)));
-  ipcMain.handle('tinysa:analyzer:acquire', () => device.acquireSweep());
-  ipcMain.handle('tinysa:analyzer:stream:start', () => device.startStreaming());
-  ipcMain.handle('tinysa:analyzer:stream:stop', () => device.stopStreaming());
-  ipcMain.handle('tinysa:analyzer:zero-span', (_event, value: unknown) => device.acquireZeroSpan(zeroSpanConfigSchema.parse(value)));
-  ipcMain.handle('tinysa:generator:configure', (_event, value: unknown) => device.configureGenerator(generatorConfigSchema.parse(value)));
-  ipcMain.handle('tinysa:generator:output', (_event, enabled: unknown) => { if (typeof enabled !== 'boolean') throw new TypeError('enabled must be boolean'); return device.setGeneratorOutput(enabled); });
-  ipcMain.handle('tinysa:diagnostics', () => device.readDiagnostics());
-  ipcMain.handle('tinysa:screen:capture', () => device.captureScreen());
-  ipcMain.handle('tinysa:screen:touch', (_event, value: unknown) => device.touch(screenPointSchema.parse(value)));
-  ipcMain.handle('tinysa:screen:release', (_event, value: unknown) => device.releaseTouch(value === undefined ? undefined : screenPointSchema.parse(value)));
-  ipcMain.handle('tinysa:sweep:export', async (_event, value: unknown) => {
-    const request = sweepExportRequestSchema.parse(value);
-    const selection = await dialog.showSaveDialog(requireWindow(), {
-      title: 'Export spectrum sweep',
-      defaultPath: defaultSweepFilename(request.sweep, request.format),
-      filters: [{ name: request.format === 'csv' ? 'CSV data' : 'JSON data', extensions: [request.format] }],
-      properties: ['createDirectory', 'showOverwriteConfirmation'],
-    });
-    if (selection.canceled || !selection.filePath) return { status: 'cancelled' as const, format: request.format };
-    const content = serializeSweep(request.sweep, request.format);
-    await writeFile(selection.filePath, content, { encoding: 'utf8', flag: 'w' });
-    return { status: 'saved' as const, path: selection.filePath, format: request.format, bytesWritten: Buffer.byteLength(content) };
-  });
-  ipcMain.handle('ai:status', () => ai.status());
-  ipcMain.handle('ai:realtime:call', (_event, sdp: unknown) => { if(typeof sdp!=='string')throw new TypeError('sdp must be a string');return ai.createRealtimeCall(sdp); });
-  ipcMain.handle('ai:agent:turn', (_event, request: unknown) => ai.agentTurn(validateAgentTurnRequest(request)));
-  ipcMain.handle('ai:computer:screenshot', () => computer.screenshot(requireWindow()));
-  ipcMain.handle('ai:computer:click', (_event,value:unknown) => {const input=validateComputerInput(value,['screenshotId','x','y']);return computer.click(requireWindow(),input.screenshotId as string,input.x as number,input.y as number);});
-  ipcMain.handle('ai:computer:type', (_event,value:unknown) => {const input=validateComputerInput(value,['expectedTarget','text']);return computer.type(requireWindow(),input.expectedTarget as string,input.text as string);});
-  ipcMain.handle('ai:computer:key', (_event,value:unknown) => {const input=validateComputerInput(value,['expectedTarget','key']);return computer.key(requireWindow(),input.expectedTarget as string,input.key as string);});
-  ipcMain.handle('ai:computer:scroll', (_event,value:unknown) => {const input=validateComputerInput(value,['screenshotId','x','y','deltaX','deltaY']);return computer.scroll(requireWindow(),input.screenshotId as string,input.x as number,input.y as number,input.deltaX as number,input.deltaY as number);});
+  const removeInstrumentIpc = registerAtomizerInstrumentIpc(ipcMain, instrumentHost, (channel, event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || !isTrustedRendererUrl(mainWindow.webContents.mainFrame.url, rendererTrust)) return;
+    mainWindow.webContents.send(channel, event);
+  }, assertTrustedIpcEvent, ipcAdmission);
+  try {
+    const removeAuxiliaryIpc = registerAtomizerAuxiliaryIpc(ipcMain, {
+      exportSweep: async (request) => {
+        const selection = await dialog.showSaveDialog(requireWindow(), {
+          title: 'Export spectrum sweep',
+          defaultPath: defaultSweepFilename(request.sweep, request.format),
+          filters: [{ name: request.format === 'csv' ? 'CSV data' : 'JSON data', extensions: [request.format] }],
+          properties: ['createDirectory', 'showOverwriteConfirmation'],
+        });
+        if (selection.canceled || !selection.filePath) return { status: 'cancelled' as const, format: request.format };
+        const content = serializeSweep(request.sweep, request.format);
+        await writeFile(selection.filePath, content, { encoding: 'utf8', flag: 'w' });
+        return { status: 'saved' as const, path: selection.filePath, format: request.format, bytesWritten: Buffer.byteLength(content) };
+      },
+      aiStatus: () => ai.status(),
+      createRealtimeCall: (sdp) => ai.createRealtimeCall(sdp),
+      agentTurn: (request) => ai.agentTurn(request),
+      computerScreenshot: () => computer.screenshot(requireWindow()),
+      computerClick: (input) => computer.click(requireWindow(), input.screenshotId, input.x, input.y),
+      computerType: (input) => computer.type(requireWindow(), input.expectedTarget, input.text),
+      computerKey: (input) => computer.key(requireWindow(), input.expectedTarget, input.key),
+      computerScroll: (input) => computer.scroll(requireWindow(), input.screenshotId, input.x, input.y, input.deltaX, input.deltaY),
+    }, assertTrustedIpcEvent, ipcAdmission);
+    unregisterIpc = () => {
+      removeAuxiliaryIpc();
+      removeInstrumentIpc();
+    };
+  } catch (error) {
+    removeInstrumentIpc();
+    throw error;
+  }
 }
 function requireWindow():BrowserWindow{if(!mainWindow||mainWindow.isDestroyed())throw new Error('TinySA Atomizer window is unavailable');return mainWindow;}
-function validateComputerInput(value:unknown,fields:readonly string[]):Record<string,unknown>{
-  if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('computer input must be an object');
-  const input=value as Record<string,unknown>;if(Object.keys(input).length!==fields.length||fields.some(field=>!Object.hasOwn(input,field)))throw new TypeError(`computer input must contain exactly ${fields.join(', ')}`);
-  for(const field of fields){if(['x','y','deltaX','deltaY'].includes(field)){if(!Number.isInteger(input[field]))throw new TypeError(`${field} must be an integer`);}else if(typeof input[field]!=='string'||!(input[field] as string).length)throw new TypeError(`${field} must be a non-empty string`);}
-  return input;
-}
 
-function validateAgentTurnRequest(value: unknown): AgentTurnRequest {
-  if(!value||typeof value!=='object'||Array.isArray(value))throw new TypeError('Agent turn must be an object');
-  const request=value as Partial<AgentTurnRequest>;
-  const allowed=new Set(['prompt','conversationId','toolOutputs','loadedToolNames']);
-  if(Object.keys(request).some(key=>!allowed.has(key)))throw new TypeError('Agent turn contains an undeclared field');
-  if(request.prompt!==undefined&&(typeof request.prompt!=='string'||request.prompt.length>20_000))throw new TypeError('prompt must be a bounded string');
-  if(request.conversationId!==undefined&&(typeof request.conversationId!=='string'||request.conversationId.length>256))throw new TypeError('conversationId must be a bounded string');
-  if(request.toolOutputs!==undefined&&(!Array.isArray(request.toolOutputs)||request.toolOutputs.length>16||request.toolOutputs.some(item=>!item||typeof item.callId!=='string'||item.callId.length>256||typeof item.output!=='string'||item.output.length>200_000||(item.imageDataUrl!==undefined&&(typeof item.imageDataUrl!=='string'||!/^data:image\/(png|jpeg);base64,/.test(item.imageDataUrl)||item.imageDataUrl.length>12_000_000)))))throw new TypeError('toolOutputs are invalid');
-  if(request.loadedToolNames!==undefined)parseAtomLoadedToolNames(request.loadedToolNames);
-  const hasPrompt=Boolean(request.prompt?.trim());const hasOutputs=Boolean(request.toolOutputs?.length);
-  if(hasPrompt===hasOutputs)throw new TypeError('Agent turn requires either a prompt or tool outputs');
-  if(hasPrompt&&request.loadedToolNames!==undefined)throw new TypeError('A new Atom prompt cannot inherit response-scoped tools');
-  if(hasOutputs&&!request.loadedToolNames?.length)throw new TypeError('Atom tool results require an exact response-scoped tool selection');
-  return request as AgentTurnRequest;
+function assertTrustedIpcEvent(event: IpcMainInvokeEvent): void {
+  const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
+  assertTrustedRendererEvent(event, webContents, rendererTrust);
 }
 
 async function createWindow(): Promise<void> {
-  const allowedOrigin=(url:string)=>url.startsWith('file://')||url.startsWith('http://localhost:5173');
-  session.defaultSession.setPermissionCheckHandler((_webContents,permission,origin)=>permission==='media'&&allowedOrigin(origin));
-  session.defaultSession.setPermissionRequestHandler((webContents,permission,callback)=>callback(permission==='media'&&allowedOrigin(webContents.getURL())));
+  const rendererPath = join(here, '../renderer/index.html');
+  const developmentUrl = selectDevelopmentServerUrl(process.env.VITE_DEV_SERVER_URL, app.isPackaged);
+  const trust = developmentUrl ? developmentRendererTrust(developmentUrl) : productionRendererTrust(rendererPath);
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   const startupWidth = Math.min(1920, workArea.width);
   const startupHeight = Math.min(1100, workArea.height);
   const win = new BrowserWindow({
     width: startupWidth, height: startupHeight, minWidth: Math.min(1440, startupWidth), minHeight: Math.min(800, startupHeight), backgroundColor: '#070b0b',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 20 } } : {}),
-    webPreferences: { preload: join(here, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true }
+    webPreferences: {
+      preload: join(here, 'preload.cjs'),
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false,
+    }
   });
-  mainWindow=win;win.on('closed',()=>{mainWindow=undefined;});
+  mainWindow = win;
+  rendererTrust = trust;
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = undefined;
+      rendererTrust = undefined;
+    }
+  });
+  win.webContents.session.setPermissionCheckHandler((webContents, permission, origin, details) => (
+    isTrustedMediaPermission(webContents, permission, details, origin, win.webContents, trust)
+  ));
+  win.webContents.session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const securityOrigin = 'securityOrigin' in details && typeof details.securityOrigin === 'string'
+      ? details.securityOrigin
+      : undefined;
+    callback(isTrustedMediaPermission(webContents, permission, details, securityOrigin, win.webContents, trust));
+  });
   win.webContents.on('console-message', (_details, level, message, line, sourceId) => {
     const rendered = `[RENDERER:${level}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`;
     if (level >= 3) console.error(rendered);
@@ -120,60 +152,90 @@ async function createWindow(): Promise<void> {
     else console.info(rendered);
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.webContents.on('will-navigate', (event) => event.preventDefault());
+  const preventUntrustedNavigation = (event: Electron.Event, url: string) => {
+    if (!isTrustedRendererUrl(url, trust)) event.preventDefault();
+  };
+  win.webContents.on('will-navigate', preventUntrustedNavigation);
+  win.webContents.on('will-redirect', preventUntrustedNavigation);
   win.webContents.on('render-process-gone', (_event, details) => {
-    if (!device.streaming) return;
-    void device.stopStreaming()
-      .then(() => undefined)
-      .catch((error) => {
-        console.error(`Continuous acquisition did not stop after renderer process ${details.reason}`, error);
-      });
+    if (details.reason === 'clean-exit') return;
+    void disconnectAfterRendererFailure(details.reason).catch((error) => {
+      console.error('TinySA Atomizer could not present renderer-failure instrument recovery', error);
+    });
   });
-  if (process.env.VITE_DEV_SERVER_URL) await win.loadURL(process.env.VITE_DEV_SERVER_URL);
-  else await win.loadFile(join(here, '../renderer/index.html'));
+  if (developmentUrl) await win.loadURL(developmentUrl.href);
+  else await win.loadFile(rendererPath);
+}
+
+async function disconnectAfterRendererFailure(reason: string): Promise<void> {
+  while (true) {
+    try {
+      await instrumentHost.disconnect();
+      return;
+    } catch (error) {
+      console.error(`Instrument session did not reach RF-safe disconnect after renderer process ${reason}`, error);
+      const result = await dialog.showMessageBox({
+        type: 'error',
+        title: 'Instrument disconnect needs attention',
+        message: 'RF output-off or instrument disconnect could not be confirmed after the app display failed.',
+        detail: `The app remains open. Inspect the instrument, then retry the safe disconnect.\n\n${error instanceof Error ? error.message : String(error)}`.slice(0, 4_096),
+        buttons: ['Retry disconnect', 'Keep app open'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (result.response !== 0) return;
+      // A retry occurs only after this explicit local operator action.
+    }
+  }
 }
 
 async function connectDefaultInstrument(): Promise<void> {
-  try {
-    const candidates = await device.listDevices();
-    const candidate = selectStartupInstrument(candidates);
-    if (!candidate) return;
-    await device.connect(candidate);
-  }
-  catch (error) {
-    const message = `Default instrument admission failed: ${error instanceof Error ? error.message : String(error)}`;
-    console.error(message, error);
-    mainWindow?.webContents.send(`tinysa:event:v${API_VERSION}`, { type: 'error', error: { code: 'transport', message, recoverable: false } } satisfies DeviceEvent);
+  const state = await instrumentHost.startPreferredInstrument();
+  if (state.startup.status === 'failed') {
+    console.error(`Default instrument ${state.startup.stage} failed: ${state.startup.message}`);
   }
 }
 
 registerIpc();
-device.subscribe((event: DeviceEvent) => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send(`tinysa:event:v${API_VERSION}`, event);
-});
 app.whenReady().then(async () => {
   await createWindow();
-  void connectDefaultInstrument();
+  await connectDefaultInstrument();
 }).catch((error) => {
   console.error('TinySA Atomizer startup failed', error);
-  app.exit(1);
+  process.exitCode = 1;
+  // Route startup failure through the same RF-safe shutdown gate. A partially
+  // admitted instrument session must never be abandoned by an immediate exit.
+  app.quit();
 });
 app.on('before-quit', (event) => {
-  ai.close();
-  if (shutdownStarted) return;
-  shutdownStarted = true;
-  if (device.snapshot().connection === 'disconnected') {
-    device.dispose();
-    return;
-  }
-  event.preventDefault();
-  void device.disconnect().then(() => {
-    device.dispose();
+  const decision = shutdownGate.intercept(event);
+  if (decision !== 'start') return;
+  void instrumentHost.shutdown().then(() => {
+    shutdownGate.complete();
+    try { ai.close(); } catch (error) { console.error('TinySA Atomizer AI cleanup failed after safe instrument shutdown', error); }
+    try { device.dispose(); } catch (error) { console.error('TinySA Atomizer device cleanup failed after safe instrument shutdown', error); }
+    try { unregisterIpc?.(); } catch (error) { console.error('TinySA Atomizer IPC cleanup failed after safe instrument shutdown', error); }
+    unregisterIpc = undefined;
     app.quit();
-  }).catch((error) => {
+  }, (error) => {
     console.error('TinySA Atomizer shutdown failed while commanding RF off and disconnecting the instrument', error);
-    app.exit(1);
+    shutdownGate.retry();
+    void (async () => {
+      if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
+      if (mainWindow?.isMinimized()) mainWindow.restore();
+      mainWindow?.show();
+      mainWindow?.focus();
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'TinySA Atomizer remains open',
+        message: 'RF output-off or instrument disconnect could not be confirmed.',
+        detail: 'The app did not quit. Inspect the instrument, then quit again to retry the safe shutdown.',
+        buttons: ['OK'],
+        defaultId: 0,
+        noLink: true,
+      });
+    })().catch((restoreError) => console.error('TinySA Atomizer could not restore its shutdown-failure window', restoreError));
   });
 });
 app.on('window-all-closed', () => app.quit());

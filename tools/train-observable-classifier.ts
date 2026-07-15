@@ -16,6 +16,11 @@ import type { DetectedSignal, DeviceIdentity, SignalDetectionConfig, Sweep, Zero
 
 const OUTPUT = resolve('packages/analysis/src/models/bayesian-observable-v5.generated.ts');
 const MANIFEST_OUTPUT = resolve('packages/analysis/src/models/bayesian-observable-v5.manifest.generated.ts');
+const CLI_ARGUMENTS = process.argv.slice(2);
+if (CLI_ARGUMENTS.some((argument) => argument !== '--check') || CLI_ARGUMENTS.length > 1) {
+  throw new Error('Usage: train-observable-classifier [--check]');
+}
+const CHECK_ONLY = CLI_ARGUMENTS[0] === '--check';
 const SOURCE_COMMIT = '03197cb5b4a03b85ef5efe6525f4f28ceedcaef3';
 const CORPUS_SHA256 = 'd813b3268eee7240a86b2de725ec78080dc0f3ce829fe0c493bf582b62f8529e';
 const STRICT_UNKNOWN_HOLDOUT_SCENARIO_IDS = [
@@ -65,11 +70,12 @@ const RBW_DIVISORS = [12, 20, 35, 55, 80, 120] as const;
 const SEEDS = [407, 1_407, 2_407, 3_407, 4_407, 5_407] as const;
 const TAIL_CALIBRATION_RBW_DIVISORS = RBW_DIVISORS;
 const TAIL_CALIBRATION_SEEDS = [6_407, 6_419, 6_421, 6_449, 6_451, 6_469, 6_473, 6_481] as const;
-const SYNTHETIC_SUPPORT_REJECTION_ALPHA = 0.025;
-// The conformal support p-value is (rank + 1) / (n + 1). At alpha=0.025,
-// forty distinct calibration attempts are the minimum for the empirical p
-// value to be capable of falling strictly below the rejection threshold.
-const MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS = Math.floor(1 / SYNTHETIC_SUPPORT_REJECTION_ALPHA);
+const SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD = 0.025;
+// The empirical support rank is (lower-or-equal count + 1) / (n + 1).
+// Forty distinct reference attempts are the minimum for that discrete rank to
+// be capable of falling strictly below 0.025. This is resolution arithmetic,
+// not a conformal alpha or a false-rejection/coverage guarantee.
+const MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS = Math.floor(1 / SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD);
 const MINIMUM_DISTINCT_FITTING_ATTEMPTS = SEEDS.length;
 const MINIMUM_FITTING_SNR_LEVELS = 2;
 const MINIMUM_FITTING_RBW_DIVISORS = 2;
@@ -96,14 +102,19 @@ const PRODUCTION_DETECTION_CONFIG: SignalDetectionConfig = {
 const SELECTION_POLICY = 'online-first-ready-all-representatives-v3' as const;
 const REPRESENTATIVE_WEIGHTING_POLICY = 'equal-weight-per-first-ready-production-representative-v2' as const;
 const REPRESENTATIVE_ELIGIBILITY_POLICY = 'runtime-domain-qualified-known-representatives-v3' as const;
-// A detector/tracker acquisition attempt is the exchangeable calibration
-// unit. Multiple first-ready representatives from one attempt share the same
+// A detector/tracker acquisition attempt is the reference-score unit.
+// Multiple first-ready representatives from one attempt share the same
 // synthesized noise/event phase, so flattening them would overstate the
-// conformal sample size. For each class and evidence view, retain exactly one
+// reference sample size. For each class and evidence view, retain exactly one
 // conservative score: the minimum known-class support among the attempt's
-// fit-eligible representatives.
+// fit-eligible representatives. A member's support rank is pointwise no lower
+// than the rank of its attempt minimum. The fixed stratified nuisance grid is
+// not an exchangeable operational sample, so this dominance fact does not
+// imply conformal coverage.
 const TAIL_CALIBRATION_SCORE_UNIT = 'one-score-per-fit-eligible-acquisition-attempt-v1' as const;
 const TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY = 'minimum-support-across-fit-eligible-first-ready-representatives-v1' as const;
+const TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY = 'single-representative-rank-dominates-attempt-min-rank-v1' as const;
+const TAIL_CALIBRATION_STATISTICAL_INTERPRETATION = 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1' as const;
 
 assertUniqueNumbers('fitting seeds', SEEDS);
 assertUniqueNumbers('tail-calibration seeds', TAIL_CALIBRATION_SEEDS);
@@ -360,6 +371,8 @@ const trainingMatrix = {
   tailCalibrationRbwDivisors: TAIL_CALIBRATION_RBW_DIVISORS,
   tailCalibrationScoreUnit: TAIL_CALIBRATION_SCORE_UNIT,
   tailCalibrationRepresentativeAggregationPolicy: TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY,
+  tailCalibrationRuntimeInterpretationPolicy: TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY,
+  tailCalibrationStatisticalInterpretation: TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
   tailCalibrationAttemptCountsByScenario: Object.fromEntries(calibrationAttemptsByScenario),
   detectorConditionedFitMisses,
   detectorConditionedCalibrationMisses,
@@ -380,7 +393,7 @@ const asset: ObservableClassifierModelAsset = {
   corpusSha256: CORPUS_SHA256,
   preprocessing: 'scalar-observable-features-v5',
   priorId: 'engineering-design-class-weights-v1',
-  calibrationId: 'synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6',
+  calibrationId: 'synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7',
   generatedAt: '2026-07-14T00:00:00.000Z',
   dimensions,
   trainingMatrix,
@@ -390,11 +403,18 @@ const asset: ObservableClassifierModelAsset = {
 const source = `/* Generated by tools/train-observable-classifier.ts; do not hand edit. */\n`
   + `import type { ObservableClassifierModelAsset } from '../observable-classifier-model.js';\n\n`
   + `export const BAYESIAN_OBSERVABLE_MODEL: ObservableClassifierModelAsset = ${JSON.stringify(asset, null, 2)};\n`;
-mkdirSync(dirname(OUTPUT), { recursive: true });
-writeFileSync(OUTPUT, source);
 const modelAssetSha256 = createHash('sha256').update(source).digest('hex');
-writeFileSync(MANIFEST_OUTPUT, `/* Generated by tools/train-observable-classifier.ts; do not hand edit. */\nexport const BAYESIAN_OBSERVABLE_MODEL_SHA256 = '${modelAssetSha256}' as const;\n`);
+const manifestSource = `/* Generated by tools/train-observable-classifier.ts; do not hand edit. */\nexport const BAYESIAN_OBSERVABLE_MODEL_SHA256 = '${modelAssetSha256}' as const;\n`;
+if (CHECK_ONLY) {
+  assertGeneratedAssetIsCurrent(OUTPUT, source, 'classifier model');
+  assertGeneratedAssetIsCurrent(MANIFEST_OUTPUT, manifestSource, 'classifier model manifest');
+} else {
+  mkdirSync(dirname(OUTPUT), { recursive: true });
+  writeFileSync(OUTPUT, source);
+  writeFileSync(MANIFEST_OUTPUT, manifestSource);
+}
 console.log(JSON.stringify({
+  mode: CHECK_ONLY ? 'verified-byte-identical' : 'generated',
   output: OUTPUT,
   manifest: MANIFEST_OUTPUT,
   modelAssetSha256,
@@ -409,6 +429,8 @@ console.log(JSON.stringify({
   tailCalibrationAttemptScoresPerView: classModels.reduce((sum, model) => sum + (model.tailCalibrationScoresByView?.['envelope-timed'].length ?? 0), 0),
   tailCalibrationScoreUnit: TAIL_CALIBRATION_SCORE_UNIT,
   tailCalibrationRepresentativeAggregationPolicy: TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY,
+  tailCalibrationRuntimeInterpretationPolicy: TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY,
+  tailCalibrationStatisticalInterpretation: TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
   representativeWeightingPolicy: REPRESENTATIVE_WEIGHTING_POLICY,
   coverageGates: {
     highSnrMinimumDb: HIGH_SNR_MINIMUM_DB,
@@ -417,12 +439,22 @@ console.log(JSON.stringify({
     minimumDistinctFittingAttempts: MINIMUM_DISTINCT_FITTING_ATTEMPTS,
     minimumFittingSnrLevels: MINIMUM_FITTING_SNR_LEVELS,
     minimumFittingRbwDivisors: MINIMUM_FITTING_RBW_DIVISORS,
-    syntheticSupportRejectionAlpha: SYNTHETIC_SUPPORT_REJECTION_ALPHA,
+    syntheticSupportRankRejectionThreshold: SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD,
     minimumDistinctCalibrationAttempts: MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS,
   },
   fittingSampling,
   calibrationSampling,
 }, null, 2));
+
+function assertGeneratedAssetIsCurrent(file: string, regenerated: string, label: string): void {
+  const checkedIn = readFileSync(file, 'utf8');
+  if (checkedIn === regenerated) return;
+  const checkedInSha256 = createHash('sha256').update(checkedIn).digest('hex');
+  const regeneratedSha256 = createHash('sha256').update(regenerated).digest('hex');
+  throw new Error(
+    `Checked-in ${label} is stale: ${checkedInSha256} != deterministic regeneration ${regeneratedSha256}. Run npm run train:signal-classifier and commit both generated assets.`,
+  );
+}
 
 function spectrumOnly(sample: Readonly<Record<string, number>>): Readonly<Record<string, number>> {
   return Object.fromEntries(Object.entries(sample).filter(([name]) => !name.startsWith('envelope.')));
@@ -601,7 +633,7 @@ function assertCalibrationCoverage(
 ): void {
   const eligibleAttempts = attempts.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0);
   if (eligibleAttempts.length < MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS) {
-    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct fit-eligible calibration attempts; ${MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS} are required to resolve a p-value below ${SYNTHETIC_SUPPORT_REJECTION_ALPHA}`);
+    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct fit-eligible calibration attempts; ${MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS} are required to resolve an empirical rank below ${SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD}`);
   }
 }
 

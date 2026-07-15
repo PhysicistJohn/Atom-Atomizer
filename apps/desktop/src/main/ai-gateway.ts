@@ -24,6 +24,8 @@ interface RealtimeConversationEntry {
 export class OpenAiGateway {
   readonly #socketFactory: RealtimeSocketFactory | undefined;
   readonly #realtimeConversations = new Map<string, RealtimeConversationEntry>();
+  readonly #realtimeTextSessions = new Set<RealtimeTextSession>();
+  #reservedTextSessionSlots = 0;
 
   constructor(options: { socketFactory?: RealtimeSocketFactory } = {}) {
     this.#socketFactory = options.socketFactory;
@@ -80,33 +82,38 @@ export class OpenAiGateway {
   }
 
   close(): void {
-    for (const entry of this.#realtimeConversations.values()) {
-      clearTimeout(entry.expiry);
-      entry.session.close();
-    }
+    for (const entry of this.#realtimeConversations.values()) clearTimeout(entry.expiry);
     this.#realtimeConversations.clear();
+    const sessions = [...this.#realtimeTextSessions];
+    this.#realtimeTextSessions.clear();
+    this.#reservedTextSessionSlots = 0;
+    for (const session of sessions) session.close();
   }
 
   async #realtimeTurn(request: AgentTurnRequest, existing?: RealtimeTextSession): Promise<AgentTurnResult> {
     if (request.conversationId) this.#releaseConversationId(request.conversationId, false);
-    const session = existing ?? new RealtimeTextSession(this.#requireKey(), this.#socketFactory);
-    if (!existing) this.#makeConversationCapacity();
+    const session = existing ?? this.#createTextSession();
     try {
       const result = await session.turn(request);
       this.#storeConversation(result.conversationId, session);
       return result;
     } catch (error) {
-      session.close();
+      this.#releaseTextSession(session);
       throw error;
     }
   }
 
   #storeConversation(conversationId: string, session: RealtimeTextSession): void {
+    const existing = this.#realtimeConversations.get(conversationId);
+    if (existing && existing.session !== session) {
+      throw new Error('Realtime text response reused an active conversation ID');
+    }
+    if (existing) clearTimeout(existing.expiry);
     const expiry = setTimeout(() => {
       const entry = this.#realtimeConversations.get(conversationId);
       if (entry?.session !== session) return;
       this.#realtimeConversations.delete(conversationId);
-      session.close();
+      this.#releaseTextSession(session);
     }, TEXT_CONVERSATION_IDLE_MS);
     expiry.unref?.();
     this.#realtimeConversations.set(conversationId, { session, expiry });
@@ -117,15 +124,43 @@ export class OpenAiGateway {
     if (!entry) return;
     clearTimeout(entry.expiry);
     this.#realtimeConversations.delete(conversationId);
-    if (close) entry.session.close();
+    if (close) this.#releaseTextSession(entry.session);
   }
 
-  #makeConversationCapacity(): void {
-    while (this.#realtimeConversations.size >= MAX_TEXT_CONVERSATIONS) {
+  #createTextSession(): RealtimeTextSession {
+    this.#reserveTextSessionSlot();
+    try {
+      const session = new RealtimeTextSession(this.#requireKey(), this.#socketFactory);
+      this.#realtimeTextSessions.add(session);
+      return session;
+    } catch (error) {
+      this.#releaseTextSessionSlot();
+      throw error;
+    }
+  }
+
+  #reserveTextSessionSlot(): void {
+    while (this.#reservedTextSessionSlots >= MAX_TEXT_CONVERSATIONS) {
       const oldest = this.#realtimeConversations.keys().next().value as string | undefined;
-      if (!oldest) return;
+      if (!oldest) {
+        throw new Error(`Atom text conversation capacity of ${MAX_TEXT_CONVERSATIONS} is occupied by in-flight sessions`);
+      }
       this.#releaseConversationId(oldest, true);
     }
+    // Reserve synchronously before constructing the socket. This remains safe
+    // even if a test socket factory or future adapter re-enters the gateway.
+    this.#reservedTextSessionSlots += 1;
+  }
+
+  #releaseTextSession(session: RealtimeTextSession): void {
+    if (!this.#realtimeTextSessions.delete(session)) return;
+    this.#releaseTextSessionSlot();
+    session.close();
+  }
+
+  #releaseTextSessionSlot(): void {
+    if (this.#reservedTextSessionSlots < 1) throw new Error('Atom text conversation capacity accounting underflow');
+    this.#reservedTextSessionSlots -= 1;
   }
 
   #requireKey(): string {

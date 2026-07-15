@@ -1,15 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CircleAlert, Download, LoaderCircle, Play, Repeat2, StopCircle } from 'lucide-react';
 import {
+  atomizerInstrumentEventSchema,
+  atomizerInstrumentFeatureExecutionSchema,
+  atomizerInstrumentPreferenceStateSchema,
+  atomizerInstrumentStateSchema,
+  atomizerInstrumentStreamingStateSchema,
   analyzerConfigPatchSchema,
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
   generatorConfigSchema,
+  instrumentConfigurationStateSchema,
+  instrumentDiscoveryResultSchema,
+  instrumentMeasurementSchema,
+  instrumentSessionSnapshotSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
-  portCandidateSchema,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   traceBankConfigurationSchema,
@@ -18,24 +26,30 @@ import {
   zeroSpanConfigSchema,
   type AnalyzerConfig,
   type AnalyzerConfigPatch,
+  type AtomizerInstrumentEvent,
+  type AtomizerInstrumentPreferenceSelection,
+  type AtomizerInstrumentState,
   type ChannelMeasurementConfiguration,
-  type DeviceDiagnostics,
-  type DeviceEvent,
-  type DeviceSnapshot,
   type DetectedSignal,
   type FirmwareTraceFrame,
   type FirmwareTraceId,
   type FirmwareTraceVisibility,
   type GeneratorConfig,
+  type InstrumentCandidate,
+  type InstrumentConfiguration,
+  type InstrumentConfigurationState,
+  type InstrumentDiscoveryFailure,
+  type InstrumentFeatureRequest,
+  type InstrumentFeatureResult,
+  type InstrumentMeasurement,
+  type InstrumentScreenFrame,
+  type InstrumentSessionSnapshot,
   type EnvelopeStftConfiguration,
   type MarkerConfiguration,
   type MarkerId,
   type MarkerSearchAction,
   type MarkerSearchConfiguration,
   type MeasurementViewId,
-  type PortCandidate,
-  type ScreenFrame,
-  type ScreenPoint,
   type SignalDetectionConfig,
   type SpectrumDisplayConfiguration,
   type Sweep,
@@ -86,9 +100,22 @@ import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
 import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
-import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, DISCONNECTED_SNAPSHOT, type AcquisitionState, type WorkspaceId } from './ui-contracts.js';
+import type { InstrumentScreenPoint } from './components/DeviceWorkspace.js';
+import {
+  assertWorkspaceTransition,
+  DEFAULT_ANALYZER,
+  DEFAULT_GENERATOR,
+  INITIAL_INSTRUMENT_STATE,
+  instrumentCandidateUiKey,
+  sameInstrumentCandidateDescriptor,
+  type AcquisitionState,
+  type GeneratorOutputState,
+  type WorkspaceId,
+} from './ui-contracts.js';
+import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
 import { agentDetectionResults } from './agent-detection-results.js';
 import { useAtomAgent } from './useAtomAgent.js';
+import { BoundedRevisionCache, type RevisionCacheLease } from './bounded-revision-cache.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
@@ -109,6 +136,26 @@ const DEFAULT_ZERO_SPAN: ZeroSpanConfig = {
 // opportunities; keep enough complete sweeps to bind its latest eight positive
 // looks and audit the full rolling opportunity provenance.
 const HISTORY_LIMIT = 128;
+// One immutable configuration per retained sweep, plus bounded room for the
+// active mode, zero-span evidence, retune overlap, and admitted async work.
+const CONFIGURATION_REVISION_LIMIT = HISTORY_LIMIT + 32;
+type RendererConfigurationRevision =
+  | { readonly kind: 'swept-spectrum'; readonly requested: AnalyzerConfig }
+  | { readonly kind: 'detected-power-timeseries'; readonly requested: ZeroSpanConfig };
+interface ContinuousStreamOwnership {
+  readonly generation: number;
+  readonly sessionId: string;
+  readonly configurationRevision: string;
+}
+interface ContinuousMeasurementWork {
+  readonly ownership: ContinuousStreamOwnership;
+  readonly session: InstrumentSessionSnapshot;
+  readonly measurement: InstrumentMeasurement;
+}
+interface ContinuousMeasurementStopRequest {
+  readonly ownership: ContinuousStreamOwnership;
+  readonly message: string;
+}
 const DEFAULT_TRACES: TraceBankConfiguration = traceBankConfigurationSchema.parse([
   { id: 1, mode: 'clear-write', averageCount: 8 },
   { id: 2, mode: 'blank', averageCount: 8 },
@@ -141,9 +188,10 @@ export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceId>('spectrum');
   const [measurementView, setMeasurementView] = useState<MeasurementViewId>(() => loadStored('measurement-view', measurementViewIdSchema.parse, 'spectrum'));
   const [agentOpen, setAgentOpen] = useState(true);
-  const [snapshot, setSnapshot] = useState<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
-  const [ports, setPorts] = useState<PortCandidate[]>([]);
-  const [selectedPortId, setSelectedPortId] = useState<string>();
+  const [instrument, setInstrument] = useState<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE);
+  const [candidates, setCandidates] = useState<InstrumentCandidate[]>([]);
+  const [discoveryFailures, setDiscoveryFailures] = useState<InstrumentDiscoveryFailure[]>([]);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string>();
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [analyzer, setAnalyzer] = useState<AnalyzerConfig>(() => loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER));
@@ -169,10 +217,13 @@ export function App() {
   const [selectedClassificationId, setSelectedClassificationId] = useState<string>();
   const [zeroCapture, setZeroCapture] = useState<ZeroSpanCapture>();
   const [envelope, setEnvelope] = useState<EnvelopeClassification>();
-  const [diagnostics, setDiagnostics] = useState<DeviceDiagnostics>();
-  const [screenFrame, setScreenFrame] = useState<ScreenFrame>();
+  const [diagnostics, setDiagnostics] = useState<readonly string[]>([]);
+  const [screenFrame, setScreenFrame] = useState<InstrumentScreenFrame>();
+  const [selectedProfile, setSelectedProfile] = useState<string>();
   const [acquisition, setAcquisition] = useState<AcquisitionState>('idle');
   const [continuous, setContinuous] = useState(false);
+  const [instrumentTransactionActive, setInstrumentTransactionActive] = useState(false);
+  const [remoteGestureActive, setRemoteGestureActive] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
 
@@ -183,31 +234,52 @@ export function App() {
   const historyRef = useRef<readonly Sweep[]>([]);
   const detectionsRef = useRef<readonly DetectedSignal[]>([]);
   const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
-  const snapshotRef = useRef<DeviceSnapshot>(DISCONNECTED_SNAPSHOT);
+  const instrumentRef = useRef<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const analyzerRevision = useRef(0);
   const visibleFirmwareTraceIdsRef = useRef<FirmwareTraceVisibility>(visibleFirmwareTraceIds);
-  const agentConnectionCandidates = useRef(new Map<string, PortCandidate>());
+  const agentConnectionCandidates = useRef(new Map<string, InstrumentCandidate>());
+  const configurationRevisions = useRef(new BoundedRevisionCache<RendererConfigurationRevision>(CONFIGURATION_REVISION_LIMIT));
+  const historyConfigurationRevisions = useRef<readonly string[]>([]);
+  const zeroCaptureConfigurationRevision = useRef<string | undefined>(undefined);
+  const streamingConfigurationLease = useRef<RevisionCacheLease<RendererConfigurationRevision> | undefined>(undefined);
   const continuousRequested = useRef(false);
+  const continuousStreamGeneration = useRef(0);
+  const continuousStreamOwnership = useRef<ContinuousStreamOwnership | undefined>(undefined);
+  const continuousMeasurementTask = useRef<Promise<void> | undefined>(undefined);
+  const pendingContinuousMeasurement = useRef<ContinuousMeasurementWork | undefined>(undefined);
+  const continuousMeasurementStopRequest = useRef<ContinuousMeasurementStopRequest | undefined>(undefined);
+  const continuousMeasurementStopTask = useRef<Promise<void> | undefined>(undefined);
+  const failedContinuousMeasurementStopGeneration = useRef<number | undefined>(undefined);
   const analyzerRetuneTask = useRef<Promise<void> | undefined>(undefined);
-  const remoteGestureQueue = useRef<Promise<void>>(Promise.resolve());
-  const remoteGesturePausedContinuous = useRef(false);
+  const instrumentTransactionOwner = useRef<string | undefined>(undefined);
+  const remoteGestureTask = useRef<Promise<void> | undefined>(undefined);
   const analysisSequence = useRef(0);
+  const instrumentStateEventSequence = useRef(0);
 
-  const connected = snapshot.connection === 'ready';
-  const transportBusy = snapshot.connection === 'connecting' || snapshot.connection === 'identifying' || snapshot.connection === 'disconnecting';
+  const session = instrument.session;
+  const generatorOutput = generatorOutputState(session);
+  const connected = session !== undefined;
+  const transportBusy = false;
   const operationBusy = acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring' || acquisition === 'streaming';
-  const busy = connectionBusy || transportBusy || operationBusy;
-  const simulated = snapshot.identity?.execution === 'firmware-digital-twin' || snapshot.identity?.execution === 'protocol-test-double' || snapshot.pendingPort?.execution === 'firmware-digital-twin';
+  const busy = connectionBusy || transportBusy || operationBusy || instrumentTransactionActive;
+  // A running stream may be paused for one admitted remote tap. Every other
+  // compound operation, and the tap itself, closes touch admission.
+  const touchBusy = connectionBusy || transportBusy || instrumentTransactionActive || remoteGestureActive
+    || acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring';
+  const simulated = session !== undefined && session.provenance.sourceKind !== 'serial-port';
+  const spectrumCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
+  const detectedPowerCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
+  const generatorCapability = session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
   const markerReadings = useMemo(() => readMarkers(markers, traceFrames, sweep?.actualRbwHz ?? 10_000), [markers, traceFrames, sweep?.actualRbwHz]);
 
   useEffect(() => {
-    const unsubscribe = window.tinySA.subscribe(handleDeviceEvent);
+    const unsubscribe = window.atomizerInstrument.subscribe(handleInstrumentEvent);
     void initialize();
     return () => {
       if (continuousRequested.current) {
-        void window.tinySA.stopStreaming().catch((value) => {
+        void stopInstrumentStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
         });
       }
@@ -239,6 +311,12 @@ export function App() {
   }, [detections, selectedClassificationId]);
   useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
   useEffect(() => {
+    if (session && !detectedPowerCapability && measurementView === 'envelope-stft') setMeasurementView('spectrum');
+  }, [session, detectedPowerCapability, measurementView]);
+  useEffect(() => {
+    if (session && !generatorCapability && workspace === 'generator') setWorkspace('spectrum');
+  }, [session, generatorCapability, workspace]);
+  useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(undefined), 4_000);
     return () => window.clearTimeout(timeout);
@@ -254,53 +332,236 @@ export function App() {
 
   async function initialize(): Promise<void> {
     try {
-      const [nextPorts, currentSnapshot] = await Promise.all([window.tinySA.listDevices(), window.tinySA.getSnapshot()]);
-      setPorts(nextPorts);
-      setSelectedPortId((current) => current && nextPorts.some((port) => port.id === current) ? current : nextPorts[0]?.id);
-      acceptSnapshot(currentSnapshot);
+      const stateEventSequence = instrumentStateEventSequence.current;
+      const state = await getInstrumentState();
+      // A subscribed lifecycle event is newer than a state snapshot whose IPC
+      // request was still in flight. Never let that older snapshot disconnect or
+      // deconfigure the renderer after the event has already been accepted.
+      if (instrumentStateEventSequence.current === stateEventSequence) acceptInstrumentState(state);
+      const discovery = await discoverInstruments();
+      acceptDiscovery(discovery.candidates, discovery.failures);
     } catch (value) {
       setError(errorMessage(value));
     }
   }
 
-  function handleDeviceEvent(event: DeviceEvent): void {
-    if (event.type === 'snapshot') acceptSnapshot(event.snapshot);
-    else if (event.type === 'screen') setScreenFrame(event.frame);
-    else if (event.type === 'diagnostics') setDiagnostics(event.diagnostics);
-    else if (event.type === 'sweep' && continuousRequested.current) {
-      void recordSweep(event.sweep).catch((value) => {
-        continuousRequested.current = false;
-        setContinuous(false);
+  function handleInstrumentEvent(value: AtomizerInstrumentEvent): void {
+    const event = atomizerInstrumentEventSchema.parse(value);
+    if (event.type !== 'discovery' && event.type !== 'measurement') {
+      instrumentStateEventSequence.current++;
+    }
+    if (event.type === 'discovery') acceptDiscovery(event.result.candidates, event.result.failures);
+    else if (event.type === 'connected') acceptSession(event.session);
+    else if (event.type === 'configured') acceptConfiguration(event.configuration);
+    else if (event.type === 'configuration-invalidated') {
+      if (instrumentRef.current.session?.sessionId === event.sessionId) {
+        invalidateAcquiredEvidence(true);
+        acceptInstrumentState({ ...instrumentRef.current, session: event.session }, true);
+      }
+    }
+    else if (event.type === 'session-state') {
+      if (instrumentRef.current.session?.sessionId === event.session.sessionId) {
+        if (event.reason === 'session-faulted') invalidateAcquiredEvidence(true);
+        acceptInstrumentState({ ...instrumentRef.current, session: event.session });
+      }
+    }
+    else if (event.type === 'disconnected') {
+      if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
+      clearContinuousStreamOwnership();
+      acceptInstrumentState({ ...instrumentRef.current, session: undefined, streaming: { status: 'stopped' } });
+      invalidateAcquiredEvidence();
+    }
+    else if (event.type === 'preference') acceptInstrumentState({ ...instrumentRef.current, preference: event.preference });
+    else if (event.type === 'startup') acceptInstrumentState({ ...instrumentRef.current, startup: event.startup });
+    else if (event.type === 'streaming') {
+      acceptInstrumentState({ ...instrumentRef.current, streaming: event.streaming });
+      if (event.streaming.status === 'stopped') {
+        clearContinuousStreamOwnership();
+        setAcquisition((current) => current === 'failed' ? current : 'complete');
+      } else if (event.streaming.status === 'faulted') {
+        clearContinuousStreamOwnership();
         setAcquisition('failed');
-        setError(`Sweep analysis failed: ${errorMessage(value)}`);
-      });
+        invalidateAcquiredEvidence();
+        setError(event.streaming.message);
+      }
+    }
+    else if (event.type === 'connection-cleanup') {
+      acceptInstrumentState({ ...instrumentRef.current, connectionCleanup: event.connectionCleanup });
+    }
+    else if (event.type === 'feature-result') {
+      if (instrumentRef.current.session?.sessionId !== event.session.sessionId) return;
+      acceptInstrumentState({ ...instrumentRef.current, session: event.session }, event.result.kind === 'signal-lab-profile-selection');
+      acceptFeatureResult(event.result);
+    }
+    else if (event.type === 'measurement' && continuousRequested.current) {
+      const currentSession = instrumentRef.current.session;
+      const ownership = continuousStreamOwnership.current;
+      if (!currentSession || !ownership || event.measurement.sessionId !== currentSession.sessionId) return;
+      admitContinuousMeasurement({ ownership, session: currentSession, measurement: event.measurement });
+    }
+    else if (event.type === 'status') {
+      if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
+      if (event.status === 'faulted') {
+        setAcquisition('failed');
+        invalidateAcquiredEvidence(true);
+        setError(event.message ?? 'The active instrument session faulted');
+      }
     }
     else if (event.type === 'error') {
-      continuousRequested.current = false;
-      setContinuous(false);
-      setAcquisition('failed');
+      if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
+      if (!event.error.recoverable) {
+        setAcquisition('failed');
+        invalidateAcquiredEvidence(true);
+      }
       setError(`${event.error.code}: ${event.error.message}`);
     }
   }
 
-  async function refreshPorts(): Promise<void> {
+  function admitContinuousMeasurement(work: ContinuousMeasurementWork): void {
+    // One active analysis plus one replaceable latest sample is the complete
+    // renderer-side streaming budget. The main host acquires serially, but
+    // classification can be slower than acquisition and must never turn an
+    // event burst into an unbounded set of retained Promise continuations.
+    if (continuousMeasurementTask.current) {
+      pendingContinuousMeasurement.current = work;
+      return;
+    }
+    const task = processContinuousMeasurements(work);
+    continuousMeasurementTask.current = task;
+    void task.then(
+      () => finishContinuousMeasurementTask(task),
+      (value) => {
+        if (isCurrentContinuousWork(work)) {
+          setAcquisition('failed');
+          setError(`Continuous measurement processing failed: ${errorMessage(value)}`);
+        }
+        finishContinuousMeasurementTask(task);
+      },
+    );
+  }
+
+  async function processContinuousMeasurements(initial: ContinuousMeasurementWork): Promise<void> {
+    let work: ContinuousMeasurementWork | undefined = initial;
+    while (work) {
+      await processContinuousMeasurement(work);
+      work = pendingContinuousMeasurement.current;
+      pendingContinuousMeasurement.current = undefined;
+    }
+  }
+
+  async function processContinuousMeasurement(work: ContinuousMeasurementWork): Promise<void> {
+    if (!isCurrentContinuousWork(work)) return;
+    try {
+      const { measurement, ownership } = work;
+      if (measurement.kind !== 'swept-spectrum') {
+        throw new Error(`Expected swept-spectrum streaming measurement, received ${measurement.kind}`);
+      }
+      const requested = requireConfiguration(measurement.configurationRevision, 'swept-spectrum', `Continuous measurement ${measurement.measurementId}`);
+      if (measurement.configurationRevision !== ownership.configurationRevision) {
+        throw new Error(`Continuous measurement ${measurement.measurementId} referenced ${measurement.configurationRevision}; active stream owns ${ownership.configurationRevision}`);
+      }
+      const projected = projectSpectrumMeasurement(measurement, work.session, requested);
+      await recordSweep(
+        projected,
+        measurement.configurationRevision,
+        () => isCurrentContinuousWork(work),
+      );
+    } catch (value) {
+      if (!isCurrentContinuousWork(work)) return;
+      const message = `Sweep analysis failed: ${errorMessage(value)}`;
+      setAcquisition('failed');
+      setError(message);
+      requestContinuousMeasurementStop(work.ownership, message);
+    }
+  }
+
+  function finishContinuousMeasurementTask(task: Promise<void>): void {
+    if (continuousMeasurementTask.current !== task) return;
+    continuousMeasurementTask.current = undefined;
+    const pending = pendingContinuousMeasurement.current;
+    pendingContinuousMeasurement.current = undefined;
+    if (pending) admitContinuousMeasurement(pending);
+  }
+
+  function isCurrentContinuousWork(work: ContinuousMeasurementWork): boolean {
+    const ownership = continuousStreamOwnership.current;
+    return ownership === work.ownership
+      && ownership.generation === work.ownership.generation
+      && instrumentRef.current.session?.sessionId === work.ownership.sessionId
+      && continuousRequested.current;
+  }
+
+  function requestContinuousMeasurementStop(ownership: ContinuousStreamOwnership, message: string): void {
+    if (continuousStreamOwnership.current !== ownership
+      || failedContinuousMeasurementStopGeneration.current === ownership.generation) return;
+    continuousMeasurementStopRequest.current = { ownership, message };
+    drainContinuousMeasurementStop();
+  }
+
+  function drainContinuousMeasurementStop(): void {
+    if (continuousMeasurementStopTask.current || instrumentTransactionOwner.current) return;
+    const request = continuousMeasurementStopRequest.current;
+    if (!request) return;
+    continuousMeasurementStopRequest.current = undefined;
+    const task = runInstrumentTransaction('stop-invalid-continuous-measurement', async () => {
+      if (continuousStreamOwnership.current !== request.ownership) return;
+      try { await stopStreamingAndReleaseConfiguration(request.ownership); }
+      catch (value) {
+        failedContinuousMeasurementStopGeneration.current = request.ownership.generation;
+        setError(`${request.message}. Stream stop also failed: ${errorMessage(value)}`);
+        throw value;
+      }
+    });
+    continuousMeasurementStopTask.current = task;
+    void task.then(
+      () => finishContinuousMeasurementStopTask(task),
+      () => finishContinuousMeasurementStopTask(task),
+    );
+  }
+
+  function finishContinuousMeasurementStopTask(task: Promise<void>): void {
+    if (continuousMeasurementStopTask.current !== task) return;
+    continuousMeasurementStopTask.current = undefined;
+    drainContinuousMeasurementStop();
+  }
+
+  function acceptDiscovery(nextCandidates: readonly InstrumentCandidate[], failures: readonly InstrumentDiscoveryFailure[]): void {
+    setCandidates([...nextCandidates]);
+    setDiscoveryFailures([...failures]);
+    setSelectedCandidateId((current) => {
+      if (current && nextCandidates.some((candidate) => instrumentCandidateUiKey(candidate) === current)) return current;
+      const preferred = preferredCandidate(nextCandidates, instrumentRef.current);
+      const selected = preferred ?? nextCandidates[0];
+      return selected ? instrumentCandidateUiKey(selected) : undefined;
+    });
+  }
+
+  async function refreshCandidates(): Promise<void> {
+    try { await runInstrumentTransaction('discover-instruments', () => refreshCandidatesOwned()); }
+    catch (value) { setError(errorMessage(value)); }
+  }
+
+  async function refreshCandidatesOwned(): Promise<void> {
     setError(undefined);
     try {
-      const next = await window.tinySA.listDevices();
-      setPorts(next);
-      setSelectedPortId((current) => current && next.some((port) => port.id === current) ? current : next[0]?.id);
+      const next = await discoverInstruments();
+      acceptDiscovery(next.candidates, next.failures);
     } catch (value) { setError(errorMessage(value)); }
   }
 
-  async function connectPort(port: PortCandidate): Promise<DeviceSnapshot> {
+  function connectCandidate(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
+    return runInstrumentTransaction('connect-instrument', () => connectCandidateOwned(candidate));
+  }
+
+  async function connectCandidateOwned(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
     setConnectionBusy(true);
     setError(undefined);
     invalidateAcquiredEvidence();
     try {
-      const next = await window.tinySA.connect(port);
-      acceptSnapshot(next);
+      const next = await connectInstrument(candidate);
+      acceptSession(next);
       setConnectionOpen(false);
-      setNotice(next.identity?.firmwareWarning ?? `${next.identity?.model ?? 'Instrument'} connected and identified`);
+      setNotice(connectionNotice(next));
       return next;
     } catch (value) {
       setError(errorMessage(value));
@@ -309,26 +570,30 @@ export function App() {
   }
 
   async function connect(): Promise<void> {
-    const port = ports.find((candidate) => candidate.id === selectedPortId);
-    if (!port) { setError('Select an available device before connecting'); return; }
-    try { await connectPort(port); } catch { /* Presented in the connection dialog. */ }
+    const candidate = candidates.find((value) => instrumentCandidateUiKey(value) === selectedCandidateId);
+    if (!candidate) { setError('Select an available instrument source before connecting'); return; }
+    try { await connectCandidate(candidate); } catch { /* Presented in the connection dialog. */ }
   }
 
   async function disconnectDevice(): Promise<void> {
-    const execution = snapshot.identity?.execution;
-    continuousRequested.current = false;
-    setContinuous(false);
+    const sourceKind = instrumentRef.current.session?.provenance.sourceKind;
     setConnectionBusy(true);
     setError(undefined);
     try {
-      await window.tinySA.disconnect();
-      const next = await window.tinySA.getSnapshot();
-      acceptSnapshot(next);
+      await window.atomizerInstrument.disconnect();
+      continuousRequested.current = false;
+      setContinuous(false);
+      acceptInstrumentState({
+        ...instrumentRef.current,
+        session: undefined,
+        streaming: { status: 'stopped' },
+        connectionCleanup: { status: 'not-required' },
+      });
       invalidateAcquiredEvidence();
       setAcquisition('idle');
-      setDiagnostics(undefined);
+      setDiagnostics([]);
       setScreenFrame(undefined);
-      setNotice(execution === 'physical' ? 'Physical instrument disconnected; RF state is no longer inferred' : execution === 'firmware-digital-twin' ? 'Executable twin disconnected and its Renode process terminated' : 'Instrument backend disconnected');
+      setNotice(sourceKind === 'serial-port' ? 'Physical instrument disconnected; RF state is no longer inferred' : sourceKind === 'tinysa-firmware-twin' ? 'Executable twin disconnected and its Renode process terminated' : 'Instrument source disconnected');
     } catch (value) {
       setError(errorMessage(value));
       throw value;
@@ -337,23 +602,250 @@ export function App() {
 
   async function disconnect(): Promise<void> { try { await disconnectDevice(); } catch { /* Presented in the connection dialog. */ } }
 
-  function requireConnected(): void {
-    if (snapshotRef.current.connection !== 'ready') throw new Error('Connect and identify the TinySA Ultra+ before running this operation');
+  function requireConnected(): InstrumentSessionSnapshot {
+    const active = instrumentRef.current.session;
+    if (!active) throw new Error('Connect an instrument source before running this operation');
+    return active;
   }
 
-  function acceptSnapshot(next: DeviceSnapshot): void {
-    snapshotRef.current = next;
-    setSnapshot(next);
+  function currentGeneratorOutput(): GeneratorOutputState {
+    return generatorOutputState(instrumentRef.current.session);
   }
 
-  async function configureAnalyzer(config: AnalyzerConfig, operation: 'configuring' | 'retuning' = 'configuring'): Promise<DeviceSnapshot> {
-    requireConnected();
+  function acceptInstrumentState(next: AtomizerInstrumentState, initializeSelection = false): void {
+    const previousSessionId = instrumentRef.current.session?.sessionId;
+    if (next.session?.sessionId !== previousSessionId) invalidateAcquiredEvidence(true);
+    instrumentRef.current = next;
+    setInstrument(next);
+    if (next.session && (initializeSelection || next.session.sessionId !== previousSessionId)) initializeSessionSelection(next.session);
+  }
+
+  function acceptSession(next: InstrumentSessionSnapshot): void {
+    acceptInstrumentState({ ...instrumentRef.current, session: next }, true);
+    setDiagnostics([]);
+    setScreenFrame(undefined);
+  }
+
+  function acceptConfiguration(configuration: InstrumentConfigurationState): void {
+    const active = instrumentRef.current.session;
+    if (!active || active.sessionId !== configuration.sessionId) return;
+    acceptInstrumentState({ ...instrumentRef.current, session: { ...active, configuration } });
+  }
+
+  function acceptFeatureResult(result: InstrumentFeatureResult): void {
+    if (instrumentRef.current.session?.sessionId !== result.sessionId) return;
+    if (result.kind === 'screen') setScreenFrame(result.frame);
+    else if (result.kind === 'diagnostics') setDiagnostics(result.lines);
+    else if (result.kind === 'signal-lab-profile-selection') {
+      invalidateAcquiredEvidence(true);
+      const active = instrumentRef.current.session;
+      if (active) initializeSessionSelection(active, result.profileId);
+    }
+  }
+
+  async function executeInstrumentFeature(request: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
+    const execution = await executeInstrumentFeatureBoundary(request);
+    const currentSessionId = instrumentRef.current.session?.sessionId;
+    if (!currentSessionId || execution.session.sessionId !== currentSessionId) {
+      throw new Error('Instrument feature acknowledgement is stale for the active session');
+    }
+    acceptInstrumentState(
+      { ...instrumentRef.current, session: execution.session },
+      execution.result.kind === 'signal-lab-profile-selection',
+    );
+    if (request.kind === 'signal-lab-profile-selection'
+      || request.kind === 'touch'
+      || (request.kind === 'rf-generator' && request.action === 'configure')) {
+      invalidateAcquiredEvidence(true);
+    }
+    acceptFeatureResult(execution.result);
+    return execution.result;
+  }
+
+  function initializeSessionSelection(next: InstrumentSessionSnapshot, selectedProfileId?: string): void {
+    const profileCapability = next.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+    const profileId = selectedProfileId ?? profileCapability?.selectedProfileId;
+    setSelectedProfile(profileId);
+    const selectedProfileEntry = profileCapability?.profiles.find((profile) => profile.profileId === profileId);
+    if (selectedProfileEntry) setZeroConfig((current) => zeroSpanConfigSchema.parse({ ...current, frequencyHz: selectedProfileEntry.centerFrequencyHz }));
+    const spectrum = next.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
+    if (!spectrum) {
+      invalidateAcquiredEvidence();
+    } else {
+      const current = analyzerRef.current;
+      const maximumSpanHz = spectrum.frequencyHz.max - spectrum.frequencyHz.min;
+      const profileSpanHz = selectedProfileEntry ? Math.min(selectedProfileEntry.recommendedSpanHz, maximumSpanHz) : undefined;
+      const profileStartHz = selectedProfileEntry && profileSpanHz !== undefined
+        ? Math.max(
+          spectrum.frequencyHz.min,
+          Math.min(Math.round(selectedProfileEntry.centerFrequencyHz - profileSpanHz / 2), spectrum.frequencyHz.max - profileSpanHz),
+        )
+        : undefined;
+      const startHz = profileStartHz ?? Math.max(spectrum.frequencyHz.min, Math.min(current.startHz, spectrum.frequencyHz.max - 1));
+      const stopHz = profileStartHz !== undefined && profileSpanHz !== undefined
+        ? profileStartHz + profileSpanHz
+        : Math.max(startHz + 1, Math.min(current.stopHz, spectrum.frequencyHz.max));
+      const points = Math.max(spectrum.points.min, Math.min(current.points, spectrum.points.max));
+      const reconciled = analyzerConfigSchema.parse({ ...current, startHz, stopHz, points });
+      if (!sameAnalyzerConfiguration(current, reconciled)) {
+        analyzerRef.current = reconciled;
+        analyzerRevision.current++;
+        setAnalyzer(reconciled);
+      }
+    }
+  }
+
+  async function selectSignalLabProfile(profileId: string): Promise<void> {
+    try {
+      const result = await runInstrumentTransaction('select-signal-lab-profile', () => executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }));
+      acceptFeatureResult(result);
+      setNotice(`SignalLab profile selected: ${profileId}`);
+    } catch (value) { setError(`SignalLab profile selection failed: ${errorMessage(value)}`); }
+  }
+
+  async function makeSelectedDefault(): Promise<void> {
+    const candidate = candidates.find((value) => instrumentCandidateUiKey(value) === selectedCandidateId);
+    if (!candidate) { setError('Select an instrument source before setting the startup default'); return; }
+    try {
+      const preference = await writeInstrumentPreference({ driverId: candidate.driverId, candidateKind: candidate.sourceKind });
+      acceptInstrumentState({ ...instrumentRef.current, preference });
+      setNotice(`${candidate.displayName} will be used at the next startup`);
+    } catch (value) { setError(`Startup preference failed: ${errorMessage(value)}`); }
+  }
+
+  async function configureAnalyzer(config: AnalyzerConfig, operation: 'configuring' | 'retuning' = 'configuring'): Promise<InstrumentConfigurationState> {
+    const sessionId = requireConnected().sessionId;
     const validated = analyzerConfigSchema.parse(config);
+    const reservation = configurationRevisions.current.reserve();
     setError(undefined);
     setAcquisition(operation);
-    const next = await window.tinySA.configureAnalyzer(validated);
-    acceptSnapshot(next);
-    return next;
+    try {
+      const next = await configureInstrument({ kind: 'swept-spectrum', startHz: validated.startHz, stopHz: validated.stopHz, points: validated.points });
+      if (next.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+        throw new Error(`Swept-spectrum configuration response was invalidated with instrument session ${sessionId}`);
+      }
+      reservation.commit(next.configurationRevision, { kind: 'swept-spectrum', requested: validated });
+      configurationRevisions.current.setActive(next.configurationRevision);
+      acceptConfiguration(next);
+      return next;
+    } catch (error) {
+      reservation.release();
+      throw error;
+    }
+  }
+
+  function requireConfiguration(revision: string, kind: 'swept-spectrum', context: string): AnalyzerConfig;
+  function requireConfiguration(revision: string, kind: 'detected-power-timeseries', context: string): ZeroSpanConfig;
+  function requireConfiguration(
+    revision: string,
+    kind: RendererConfigurationRevision['kind'],
+    context: string,
+  ): AnalyzerConfig | ZeroSpanConfig {
+    const retained = configurationRevisions.current.read(revision);
+    if (!retained) throw new Error(`${context} referenced unknown configuration ${revision}`);
+    if (retained.kind !== kind) throw new Error(`${context} referenced ${retained.kind} configuration ${revision}, expected ${kind}`);
+    return retained.requested;
+  }
+
+  function leaseConfiguration(revision: string, kind: RendererConfigurationRevision['kind']): RevisionCacheLease<RendererConfigurationRevision> {
+    const lease = configurationRevisions.current.lease(revision);
+    if (lease.value.kind !== kind) {
+      lease.release();
+      throw new Error(`Configuration revision ${revision} is ${lease.value.kind}, expected ${kind}`);
+    }
+    return lease;
+  }
+
+  function retainEvidenceConfigurationRevisions(): void {
+    const revisions = new Set(historyConfigurationRevisions.current);
+    if (zeroCaptureConfigurationRevision.current) revisions.add(zeroCaptureConfigurationRevision.current);
+    configurationRevisions.current.setRetainedKeys(revisions);
+  }
+
+  function holdStreamingConfiguration(revision: string): void {
+    const next = leaseConfiguration(revision, 'swept-spectrum');
+    const previous = streamingConfigurationLease.current;
+    streamingConfigurationLease.current = next;
+    previous?.release();
+  }
+
+  function releaseStreamingConfiguration(): void {
+    const lease = streamingConfigurationLease.current;
+    streamingConfigurationLease.current = undefined;
+    lease?.release();
+  }
+
+  function clearContinuousStreamOwnership(expected?: ContinuousStreamOwnership): void {
+    if (expected && continuousStreamOwnership.current !== expected) return;
+    continuousStreamOwnership.current = undefined;
+    pendingContinuousMeasurement.current = undefined;
+    if (!expected || continuousMeasurementStopRequest.current?.ownership === expected) {
+      continuousMeasurementStopRequest.current = undefined;
+    }
+    failedContinuousMeasurementStopGeneration.current = undefined;
+    releaseStreamingConfiguration();
+    continuousRequested.current = false;
+    setContinuous(false);
+  }
+
+  async function stopStreamingAndReleaseConfiguration(expected?: ContinuousStreamOwnership): Promise<void> {
+    // A rejected stop leaves both the ownership flag and configuration lease
+    // intact. The main process may still own a live acquisition run, so the
+    // renderer must keep consuming its measurements and allow a later retry.
+    const ownership = expected ?? continuousStreamOwnership.current;
+    if (expected && continuousStreamOwnership.current !== expected) return;
+    await stopInstrumentStreaming();
+    // Every operational caller uses the renderer transaction gate. This
+    // identity check additionally prevents delayed event-failure cleanup from
+    // releasing the lease of a replacement stream generation.
+    if (continuousStreamOwnership.current !== ownership) return;
+    clearContinuousStreamOwnership(ownership);
+  }
+
+  async function startStreamingWithConfiguration(revision: string): Promise<void> {
+    const sessionId = requireConnected().sessionId;
+    if (continuousStreamOwnership.current) throw new Error('A continuous stream generation is already owned');
+    holdStreamingConfiguration(revision);
+    const ownership: ContinuousStreamOwnership = {
+      generation: ++continuousStreamGeneration.current,
+      sessionId,
+      configurationRevision: revision,
+    };
+    continuousStreamOwnership.current = ownership;
+    failedContinuousMeasurementStopGeneration.current = undefined;
+    continuousRequested.current = true;
+    setContinuous(true);
+    try {
+      await startInstrumentStreaming();
+      if (instrumentRef.current.session?.sessionId !== sessionId || continuousStreamOwnership.current !== ownership) {
+        throw new Error(`Continuous acquisition start was invalidated with instrument session ${sessionId}`);
+      }
+    } catch (startFailure) {
+      try {
+        await stopStreamingAndReleaseConfiguration(ownership);
+      } catch (stopFailure) {
+        throw new AggregateError(
+          [startFailure, stopFailure],
+          `Continuous acquisition start was not acknowledged and compensating stop also failed: ${errorMessage(startFailure)}; ${errorMessage(stopFailure)}`,
+        );
+      }
+      throw startFailure;
+    }
+  }
+
+  async function runInstrumentTransaction<T>(name: string, operation: () => Promise<T>): Promise<T> {
+    const active = instrumentTransactionOwner.current;
+    if (active) throw new Error(`Instrument operation ${active} is already active; ${name} was not admitted`);
+    instrumentTransactionOwner.current = name;
+    setInstrumentTransactionActive(true);
+    try { return await operation(); }
+    finally {
+      if (instrumentTransactionOwner.current === name) {
+        instrumentTransactionOwner.current = undefined;
+        setInstrumentTransactionActive(false);
+        drainContinuousMeasurementStop();
+      }
+    }
   }
 
   function stageAnalyzerPatch(input: AnalyzerConfigPatch): { configuration: AnalyzerConfig; changed: boolean } {
@@ -369,8 +861,14 @@ export function App() {
     return { configuration: next, changed: true };
   }
 
-  function invalidateAcquiredEvidence(): void {
+  function invalidateAcquiredEvidence(clearInstrumentConfigurations = false): void {
     analysisSequence.current++;
+    historyConfigurationRevisions.current = [];
+    if (clearInstrumentConfigurations) {
+      releaseStreamingConfiguration();
+      zeroCaptureConfigurationRevision.current = undefined;
+      configurationRevisions.current.clear();
+    }
     historyRef.current = [];
     detectionsRef.current = [];
     traceAccumulator.current.reset();
@@ -386,6 +884,8 @@ export function App() {
   }
 
   function clearClassificationCapture(): void {
+    zeroCaptureConfigurationRevision.current = undefined;
+    retainEvidenceConfigurationRevisions();
     zeroCaptureRef.current = undefined;
     setZeroCapture(undefined);
     setEnvelope(undefined);
@@ -395,7 +895,7 @@ export function App() {
     const active = analyzerRetuneTask.current;
     if (active) return active;
     if (!continuousRequested.current) return Promise.resolve();
-    const task = retuneContinuousToLatest();
+    const task = runInstrumentTransaction('retune-continuous-analyzer', () => retuneContinuousToLatest());
     analyzerRetuneTask.current = task;
     void task.then(
       () => { if (analyzerRetuneTask.current === task) analyzerRetuneTask.current = undefined; },
@@ -408,26 +908,18 @@ export function App() {
     try {
       setAcquisition('retuning');
       setNotice('Retuning continuous acquisition…');
-      await window.tinySA.stopStreaming();
-      continuousRequested.current = false;
-      setContinuous(false);
+      await stopStreamingAndReleaseConfiguration();
       while (true) {
         const targetRevision = analyzerRevision.current;
-        await configureAnalyzer(analyzerRef.current, 'retuning');
+        const configured = await configureAnalyzer(analyzerRef.current, 'retuning');
         if (targetRevision !== analyzerRevision.current) continue;
-        continuousRequested.current = true;
-        setContinuous(true);
-        await window.tinySA.startStreaming();
+        await startStreamingWithConfiguration(configured.configurationRevision);
         if (targetRevision === analyzerRevision.current) break;
-        await window.tinySA.stopStreaming();
-        continuousRequested.current = false;
-        setContinuous(false);
+        await stopStreamingAndReleaseConfiguration();
       }
       setAcquisition('streaming');
       setNotice('Continuous acquisition retuned');
     } catch (value) {
-      continuousRequested.current = false;
-      setContinuous(false);
       setAcquisition('failed');
       setError(`Analyzer retune failed: ${errorMessage(value)}`);
       throw value;
@@ -450,14 +942,21 @@ export function App() {
     }
   }
 
-  async function recordSweep(next: Sweep): Promise<boolean> {
+  async function recordSweep(
+    next: Sweep,
+    configurationRevision: string,
+    stillCurrent: () => boolean = () => true,
+  ): Promise<boolean> {
     if (!sameAnalyzerConfiguration(next.requested, analyzerRef.current)) {
       console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: analyzerRef.current });
       return false;
     }
     const sequence = ++analysisSequence.current;
     const nextHistory = [next, ...historyRef.current].slice(0, HISTORY_LIMIT);
+    const nextHistoryRevisions = [configurationRevision, ...historyConfigurationRevisions.current].slice(0, HISTORY_LIMIT);
     historyRef.current = nextHistory;
+    historyConfigurationRevisions.current = nextHistoryRevisions;
+    retainEvidenceConfigurationRevisions();
     setSweep(next);
     setHistory(nextHistory);
     setTraceFrames(traceAccumulator.current.update(next));
@@ -471,18 +970,36 @@ export function App() {
       zeroCaptureRef.current?.targetDetectionId,
     );
     const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, { sweeps: nextHistory, zeroSpan: zeroCaptureRef.current })));
-    if (sequence === analysisSequence.current) setClassifications(results);
+    if (sequence === analysisSequence.current && stillCurrent()) setClassifications(results);
     return true;
   }
 
-  async function acquire(): Promise<Sweep> {
+  function acquire(): Promise<Sweep> { return runInstrumentTransaction('acquire-spectrum', () => acquireOwned()); }
+
+  async function acquireOwned(): Promise<Sweep> {
     try {
-      await configureAnalyzer(analyzerRef.current);
+      const sessionId = requireConnected().sessionId;
+      const configured = await configureAnalyzer(analyzerRef.current);
+      const configurationLease = leaseConfiguration(configured.configurationRevision, 'swept-spectrum');
       setAcquisition('acquiring');
-      const next = await window.tinySA.acquireSweep();
-      if (!await recordSweep(next)) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
-      setAcquisition('complete');
-      return next;
+      try {
+        const measurement = await acquireInstrument();
+        if (measurement.kind !== 'swept-spectrum') throw new Error(`Expected swept-spectrum measurement, received ${measurement.kind}`);
+        if (measurement.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+          throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+        }
+        if (measurement.configurationRevision !== configured.configurationRevision) {
+          throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configured.configurationRevision}`);
+        }
+        const active = requireConnected();
+        const requested = requireConfiguration(measurement.configurationRevision, 'swept-spectrum', `Measurement ${measurement.measurementId}`);
+        const next = projectSpectrumMeasurement(measurement, active, requested);
+        if (!await recordSweep(next, measurement.configurationRevision)) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
+        setAcquisition('complete');
+        return next;
+      } finally {
+        configurationLease.release();
+      }
     } catch (value) {
       setAcquisition('failed');
       setError(errorMessage(value));
@@ -492,62 +1009,100 @@ export function App() {
 
   async function acquireFromUi(): Promise<void> { try { await acquire(); } catch { /* Visible in the workspace alert. */ } }
 
-  async function startContinuous(): Promise<void> {
+  function startContinuous(): Promise<void> { return runInstrumentTransaction('start-continuous-acquisition', () => startContinuousOwned()); }
+
+  async function startContinuousOwned(): Promise<void> {
     if (continuousRequested.current) throw new Error('Continuous acquisition is already running');
     try {
-      await configureAnalyzer(analyzerRef.current);
-      continuousRequested.current = true;
-      setContinuous(true);
-      setAcquisition('streaming');
-      await window.tinySA.startStreaming();
+      while (true) {
+        const targetRevision = analyzerRevision.current;
+        const configured = await configureAnalyzer(analyzerRef.current);
+        if (targetRevision !== analyzerRevision.current) continue;
+        setAcquisition('streaming');
+        await startStreamingWithConfiguration(configured.configurationRevision);
+        if (targetRevision === analyzerRevision.current) break;
+        await stopStreamingAndReleaseConfiguration();
+      }
     } catch (value) {
-      continuousRequested.current = false;
-      setContinuous(false);
       setAcquisition('failed');
       setError(errorMessage(value));
       throw value;
     }
   }
 
-  async function stopContinuous(): Promise<void> {
+  function stopContinuous(): Promise<void> { return runInstrumentTransaction('stop-continuous-acquisition', () => stopContinuousOwned()); }
+
+  async function stopContinuousOwned(): Promise<void> {
     if (!continuousRequested.current) throw new Error('Continuous acquisition is not running');
-    await window.tinySA.stopStreaming();
-    continuousRequested.current = false;
-    setContinuous(false);
+    await stopStreamingAndReleaseConfiguration();
     setAcquisition('complete');
   }
 
   async function startContinuousFromUi(): Promise<void> { try { await startContinuous(); } catch { /* Visible in the workspace alert. */ } }
   async function stopContinuousFromUi(): Promise<void> { try { await stopContinuous(); } catch (value) { setError(errorMessage(value)); } }
 
-  async function acquireZeroSpan(): Promise<ZeroSpanCapture> {
-    requireConnected();
+  function acquireZeroSpan(): Promise<ZeroSpanCapture> { return runInstrumentTransaction('acquire-detected-power', () => acquireZeroSpanOwned()); }
+
+  async function acquireZeroSpanOwned(): Promise<ZeroSpanCapture> {
+    const activeSession = requireConnected();
+    const sessionId = activeSession.sessionId;
     const validated = zeroSpanConfigSchema.parse(zeroConfig);
     setError(undefined);
     setAcquisition('acquiring');
     try {
-      const acquired = await window.tinySA.acquireZeroSpan(validated);
-      const capture: ZeroSpanCapture = selectedClassificationId
-        ? { ...acquired, targetDetectionId: selectedClassificationId }
-        : acquired;
-      zeroCaptureRef.current = capture;
-      setZeroCapture(capture);
-      setEnvelope(classifyZeroSpanEnvelope(capture));
+      const reservation = configurationRevisions.current.reserve();
+      let configuration: InstrumentConfigurationState;
       try {
-        const restored = await window.tinySA.configureAnalyzer(analyzerRef.current);
-        acceptSnapshot(restored);
-      } catch (value) {
-        throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
+        configuration = await configureInstrument({
+          kind: 'detected-power-timeseries',
+          centerHz: validated.frequencyHz,
+          sampleCount: validated.points,
+          sampleIntervalSeconds: validated.sweepTimeSeconds / validated.points,
+        });
+        if (configuration.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+          throw new Error(`Detected-power configuration response was invalidated with instrument session ${sessionId}`);
+        }
+        reservation.commit(configuration.configurationRevision, { kind: 'detected-power-timeseries', requested: validated });
+        configurationRevisions.current.setActive(configuration.configurationRevision);
+      } catch (error) {
+        reservation.release();
+        throw error;
       }
-      const sequence = ++analysisSequence.current;
-      const active = classificationRepresentatives(
-        detectionsRef.current.filter((item) => item.state === 'active'),
-        capture.targetDetectionId,
-      );
-      const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
-      if (sequence === analysisSequence.current) setClassifications(results);
-      setAcquisition('complete');
-      return capture;
+      acceptConfiguration(configuration);
+      const configurationLease = leaseConfiguration(configuration.configurationRevision, 'detected-power-timeseries');
+      try {
+        const measurement = await acquireInstrument();
+        if (measurement.kind !== 'detected-power-timeseries') throw new Error(`Expected detected-power-timeseries measurement, received ${measurement.kind}`);
+        if (measurement.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+          throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+        }
+        if (measurement.configurationRevision !== configuration.configurationRevision) {
+          throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configuration.configurationRevision}`);
+        }
+        const requested = requireConfiguration(measurement.configurationRevision, 'detected-power-timeseries', `Measurement ${measurement.measurementId}`);
+        const capture = projectDetectedPowerMeasurement(measurement, activeSession, requested, selectedClassificationId);
+        zeroCaptureConfigurationRevision.current = measurement.configurationRevision;
+        retainEvidenceConfigurationRevisions();
+        zeroCaptureRef.current = capture;
+        setZeroCapture(capture);
+        setEnvelope(classifyZeroSpanEnvelope(capture));
+        try {
+          await configureAnalyzer(analyzerRef.current);
+        } catch (value) {
+          throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
+        }
+        const sequence = ++analysisSequence.current;
+        const active = classificationRepresentatives(
+          detectionsRef.current.filter((item) => item.state === 'active'),
+          capture.targetDetectionId,
+        );
+        const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
+        if (sequence === analysisSequence.current) setClassifications(results);
+        setAcquisition('complete');
+        return capture;
+      } finally {
+        configurationLease.release();
+      }
     } catch (value) {
       setAcquisition('failed');
       setError(errorMessage(value));
@@ -557,14 +1112,29 @@ export function App() {
 
   async function acquireZeroSpanFromUi(): Promise<void> { try { await acquireZeroSpan(); } catch { /* Visible in the workspace alert. */ } }
 
-  async function configureGeneratorWith(config: GeneratorConfig): Promise<DeviceSnapshot> {
+  function configureGeneratorWith(config: GeneratorConfig) {
+    return runInstrumentTransaction('configure-rf-generator', () => configureGeneratorOwned(config));
+  }
+
+  async function configureGeneratorOwned(config: GeneratorConfig) {
     requireConnected();
     const validated = generatorConfigSchema.parse(config);
     setError(undefined);
     setAcquisition('configuring');
     try {
-      const next = await window.tinySA.configureGenerator(validated);
-      acceptSnapshot(next);
+      const next = await executeInstrumentFeature({
+        kind: 'rf-generator',
+        action: 'configure',
+        frequencyHz: validated.frequencyHz,
+        levelDbm: validated.levelDbm,
+        path: validated.path,
+        modulation: validated.modulation === 'off'
+          ? { mode: 'off' }
+          : validated.modulation === 'am'
+            ? { mode: 'am', modulationFrequencyHz: validated.modulationFrequencyHz, depthPercent: validated.amDepthPercent }
+            : { mode: 'fm', modulationFrequencyHz: validated.modulationFrequencyHz, deviationHz: validated.fmDeviationHz },
+      });
+      acceptFeatureResult(next);
       setAcquisition('complete');
       return next;
     } catch (value) {
@@ -576,14 +1146,18 @@ export function App() {
 
   async function configureGeneratorFromUi(): Promise<void> { try { await configureGeneratorWith(generator); } catch { /* Visible in the workspace alert. */ } }
 
-  async function setOutput(enabled: boolean): Promise<DeviceSnapshot> {
+  function setOutput(enabled: boolean) {
+    return runInstrumentTransaction(enabled ? 'enable-rf-output' : 'disable-rf-output', () => setOutputOwned(enabled));
+  }
+
+  async function setOutputOwned(enabled: boolean) {
     requireConnected();
     setError(undefined);
     setAcquisition('configuring');
     try {
-      if (snapshotRef.current.mode !== 'generator') acceptSnapshot(await window.tinySA.configureGenerator(generatorConfigSchema.parse(generator)));
-      const next = await window.tinySA.setGeneratorOutput(enabled);
-      acceptSnapshot(next);
+      await configureGeneratorOwned(generatorConfigSchema.parse(generator));
+      const next = await executeInstrumentFeature({ kind: 'rf-generator', action: 'set-output', enabled });
+      acceptFeatureResult(next);
       setAcquisition('complete');
       return next;
     } catch (value) {
@@ -595,12 +1169,23 @@ export function App() {
 
   async function setOutputFromUi(enabled: boolean): Promise<void> { try { await setOutput(enabled); } catch { /* Visible in the workspace alert. */ } }
 
-  async function refreshDiagnostics(): Promise<DeviceDiagnostics> {
-    requireConnected();
+  function refreshDiagnostics(): Promise<readonly string[]> {
+    return runInstrumentTransaction('read-instrument-diagnostics', () => refreshDiagnosticsOwned());
+  }
+
+  async function refreshDiagnosticsOwned(): Promise<readonly string[]> {
+    const active = requireConnected();
     setError(undefined);
     setAcquisition('acquiring');
     try {
-      const next = await window.tinySA.readDiagnostics();
+      const capability = active.capabilities.features.find((feature) => feature.kind === 'diagnostics');
+      if (!capability) throw new Error('Connected driver exposes no diagnostics capability');
+      const next: string[] = [];
+      for (const report of capability.reports) {
+        const result = await executeInstrumentFeature({ kind: 'diagnostics', action: 'read', report });
+        if (result.kind !== 'diagnostics') throw new Error(`Expected diagnostics feature result, received ${result.kind}`);
+        next.push(`[${report}]`, ...result.lines);
+      }
       setDiagnostics(next);
       setAcquisition('complete');
       return next;
@@ -613,13 +1198,19 @@ export function App() {
 
   async function refreshDiagnosticsFromUi(): Promise<void> { try { await refreshDiagnostics(); } catch { /* Visible in the workspace alert. */ } }
 
-  async function captureScreen(): Promise<ScreenFrame> {
+  function captureScreen(): Promise<InstrumentScreenFrame> {
+    return runInstrumentTransaction('capture-instrument-screen', () => captureScreenOwned());
+  }
+
+  async function captureScreenOwned(): Promise<InstrumentScreenFrame> {
     requireConnected();
-    assertWorkspaceTransition(workspace, 'device', snapshotRef.current.generatorOutput);
+    assertWorkspaceTransition(workspace, 'device', currentGeneratorOutput());
     setError(undefined);
     setAcquisition('acquiring');
     try {
-      const frame = await window.tinySA.captureScreen();
+      const result = await executeInstrumentFeature({ kind: 'screen', action: 'capture' });
+      if (result.kind !== 'screen') throw new Error(`Expected screen feature result, received ${result.kind}`);
+      const frame = result.frame;
       setScreenFrame(frame);
       applyWorkspace('device');
       setAcquisition('complete');
@@ -632,54 +1223,88 @@ export function App() {
   }
 
   async function captureScreenFromUi(): Promise<void> { try { await captureScreen(); } catch { /* Visible in the workspace alert. */ } }
-  function queueRemoteGesture(gesture: 'press' | 'release', point?: ScreenPoint): Promise<void> {
-    const task = remoteGestureQueue.current.then(() => performRemoteGesture(gesture, point));
-    remoteGestureQueue.current = task.catch(() => undefined);
+  function queueRemoteTap(point: InstrumentScreenPoint): Promise<void> | undefined {
+    // React state does not update synchronously, so the ref is the actual
+    // one-slot admission gate. Repeated pointer events are dropped without
+    // allocating a retained Promise/closure for every stale gesture.
+    if (remoteGestureTask.current) return undefined;
+    const sessionId = instrumentRef.current.session?.sessionId;
+    if (!sessionId) {
+      setError('Remote screen tap requires a connected instrument');
+      return undefined;
+    }
+    const task = runInstrumentTransaction('remote-screen-tap', async () => {
+      requireRemoteGestureSession(sessionId);
+      await performRemoteTap(point, sessionId);
+    });
+    remoteGestureTask.current = task;
+    setRemoteGestureActive(true);
+    void task.then(
+      () => finishRemoteGesture(task),
+      (value) => {
+        if (instrumentRef.current.session?.sessionId === sessionId) {
+          setError(`Remote screen tap failed: ${errorMessage(value)}`);
+        }
+        finishRemoteGesture(task);
+      },
+    );
     return task;
   }
 
-  async function performRemoteGesture(gesture: 'press' | 'release', point?: ScreenPoint): Promise<void> {
-    requireConnected();
+  function finishRemoteGesture(task: Promise<void>): void {
+    if (remoteGestureTask.current !== task) return;
+    remoteGestureTask.current = undefined;
+    setRemoteGestureActive(false);
+  }
+
+  function requireRemoteGestureSession(sessionId: string): InstrumentSessionSnapshot {
+    const active = requireConnected();
+    if (active.sessionId !== sessionId || active.fault) {
+      throw new Error(`Remote screen tap was invalidated with instrument session ${sessionId}`);
+    }
+    return active;
+  }
+
+  async function performRemoteTap(point: InstrumentScreenPoint, sessionId: string): Promise<void> {
+    requireRemoteGestureSession(sessionId);
+    const resume = continuousRequested.current;
     try {
-      if (gesture === 'press') {
-        if (!point) throw new Error('Remote touch press requires a screen coordinate');
-        if (continuousRequested.current) {
-          setAcquisition('retuning');
-          setNotice('Pausing continuous acquisition for remote screen gesture…');
-          await window.tinySA.stopStreaming();
-          continuousRequested.current = false;
-          remoteGesturePausedContinuous.current = true;
-          setContinuous(false);
-        }
-        await window.tinySA.touch(point);
-        return;
+      if (resume) {
+        setAcquisition('retuning');
+        setNotice('Pausing continuous acquisition for remote screen tap…');
+        await stopStreamingAndReleaseConfiguration();
       }
-      await window.tinySA.releaseTouch(point);
-      if (remoteGesturePausedContinuous.current) {
-        await configureAnalyzer(analyzerRef.current, 'retuning');
-        await window.tinySA.startStreaming();
-        remoteGesturePausedContinuous.current = false;
-        continuousRequested.current = true;
-        setContinuous(true);
+      requireRemoteGestureSession(sessionId);
+      await executeInstrumentFeature({ kind: 'touch', action: 'tap', x: point.x, y: point.y });
+      if (resume) {
+        while (true) {
+          requireRemoteGestureSession(sessionId);
+          const targetRevision = analyzerRevision.current;
+          const configured = await configureAnalyzer(analyzerRef.current, 'retuning');
+          if (targetRevision !== analyzerRevision.current) continue;
+          requireRemoteGestureSession(sessionId);
+          await startStreamingWithConfiguration(configured.configurationRevision);
+          if (targetRevision === analyzerRevision.current) break;
+          await stopStreamingAndReleaseConfiguration();
+        }
         setAcquisition('streaming');
-        setNotice('Continuous acquisition resumed after remote screen gesture');
+        setNotice('Continuous acquisition resumed after remote screen tap');
       }
     } catch (value) {
       setAcquisition('failed');
-      setError(`Remote screen ${gesture} failed: ${errorMessage(value)}`);
+      setError(`Remote screen tap failed: ${errorMessage(value)}`);
       throw value;
     }
   }
 
-  async function touchScreen(point: ScreenPoint): Promise<void> { try { await queueRemoteGesture('press', point); } catch { /* Visible in the workspace alert. */ } }
-  async function releaseScreen(point?: ScreenPoint): Promise<void> { try { await queueRemoteGesture('release', point); } catch { /* Visible in the workspace alert. */ } }
+  function tapScreen(point: InstrumentScreenPoint): void { void queueRemoteTap(point); }
 
   async function exportLatest(format: 'csv' | 'json'): Promise<unknown> {
     if (!sweep) throw new Error('Acquire a complete spectrum sweep before exporting');
     setError(undefined);
     try {
-      const result = await window.tinySA.exportSweep({ sweep, format });
-      if (result.status === 'saved') setNotice(`Saved ${result.bytesWritten.toLocaleString()} bytes to ${result.path}`);
+      const result = await window.atomizerFiles.exportSweep({ sweep, format });
+      if (result.status === 'saved') setNotice(`Saved ${result.bytesWritten.toLocaleString()} provenance-bearing bytes to ${result.path}`);
       return result;
     } catch (value) {
       setError(errorMessage(value));
@@ -688,7 +1313,7 @@ export function App() {
   }
 
   function applyWorkspace(next: WorkspaceId): void {
-    assertWorkspaceTransition(workspace, next, snapshotRef.current.generatorOutput);
+    assertWorkspaceTransition(workspace, next, currentGeneratorOutput());
     setWorkspace(next);
     setError(undefined);
   }
@@ -859,11 +1484,20 @@ export function App() {
   }
 
   function systemTopology() {
+    const active = instrumentRef.current.session;
     return {
-      atomizer: { owner: 'tinysa-atomizer', contractVersion: 6 },
-      instrument: snapshot.identity ? { execution: snapshot.identity.execution, transport: snapshot.identity.port.transport, usbIdentityVerified: snapshot.identity.usbIdentityVerified } : null,
-      firmwareTwin: { owner: 'tinysa-firmware', available: ports.some((port) => port.execution === 'firmware-digital-twin'), connected: snapshot.identity?.execution === 'firmware-digital-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
-      signalLab: { owner: 'tinysa-signal-lab', integration: 'reserved-not-connected' },
+      atomizer: { owner: 'tinysa-atomizer', instrumentApiVersion: window.atomizerInstrument.version, role: 'instrument-host' },
+      instrument: active ? {
+        driverId: active.driverId,
+        sourceKind: active.provenance.sourceKind,
+        execution: active.provenance.execution,
+        transport: active.provenance.transport,
+        qualification: active.provenance.qualification,
+        usbIdentityVerified: active.provenance.sourceKind === 'serial-port' ? active.provenance.device.usbIdentityVerified : false,
+        sessionId: active.sessionId,
+      } : null,
+      firmwareTwin: { owner: 'tinysa-firmware', available: candidates.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
+      signalLab: { owner: 'tinysa-signal-lab', available: candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v1', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
     } as const;
   }
 
@@ -878,7 +1512,8 @@ export function App() {
       simulated,
       topology: systemTopology(),
       visibleError: error ?? null,
-      snapshot,
+      instrument,
+      generatorOutput,
       analyzer,
       generator,
       detectionConfig,
@@ -917,7 +1552,7 @@ export function App() {
         error: error ?? null,
         historyCount: history.length,
         topology: systemTopology(),
-        connection: snapshot.connection,
+        connection: instrument.session ? 'connected' : 'disconnected',
         analyzer,
         generator,
         detection: detectionConfig,
@@ -935,35 +1570,37 @@ export function App() {
         controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
         apiCoverage: agentApiCoverage,
       };
-      case 'get_instrument_state': return snapshot;
+      case 'get_instrument_state': return { ...instrument, generatorOutput };
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
       case 'get_detection_results': return agentDetectionResults(detections);
       case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
       case 'read_device_diagnostics': return refreshDiagnostics();
       case 'list_connection_candidates': {
-        const currentPorts = (await window.tinySA.listDevices()).map((port) => portCandidateSchema.parse(port));
-        setPorts(currentPorts);
-        setSelectedPortId((current) => current && currentPorts.some((port) => port.id === current) ? current : currentPorts[0]?.id);
-        const candidates = currentPorts.map((port, index) => ({ candidateId: `candidate-${index + 1}`, manufacturer: port.manufacturer ?? null, product: port.product ?? null, usbMatch: port.usbMatch, execution: port.execution, transport: port.transport, simulated: port.execution !== 'physical', selected: port.id === selectedPortId }));
-        agentConnectionCandidates.current = new Map(candidates.map((candidate, index) => [candidate.candidateId, currentPorts[index]!]));
-        return candidates;
+        const discovery = await runInstrumentTransaction('list-connection-candidates', () => discoverInstruments());
+        acceptDiscovery(discovery.candidates, discovery.failures);
+        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: candidate.sourceKind !== 'serial-port', selected: instrumentCandidateUiKey(candidate) === selectedCandidateId }));
+        agentConnectionCandidates.current = new Map(issued.map((candidate, index) => [candidate.candidateId, discovery.candidates[index]!]));
+        return { candidates: issued, failures: discovery.failures };
       }
       case 'connect_device': {
         const candidateId = (args as { candidateId: string }).candidateId;
         const issued = agentConnectionCandidates.current.get(candidateId);
         agentConnectionCandidates.current.clear();
         if (!issued) throw new Error(`Connection candidate ${candidateId} was not issued by the latest list_connection_candidates result`);
-        const currentPorts = (await window.tinySA.listDevices()).map((port) => portCandidateSchema.parse(port));
-        setPorts(currentPorts);
-        const port = currentPorts.find((candidate) => candidate.id === issued.id);
-        if (!port) throw new Error(`Connection candidate ${candidateId} is no longer available; list candidates again`);
-        if (JSON.stringify(port) !== JSON.stringify(issued)) throw new Error(`Connection candidate ${candidateId} changed after it was listed; list candidates again`);
-        setSelectedPortId(port.id);
-        const next = await connectPort(port);
-        if (!next.identity) throw new Error('Connected device did not provide an identity');
-        return { connected: true, model: next.identity.model, hardwareVersion: next.identity.hardwareVersion, firmwareVersion: next.identity.firmwareVersion, firmwareQualification: next.identity.firmwareQualification, firmwareWarning: next.identity.firmwareWarning ?? null, simulated: next.identity.simulated, verification: next.verification };
+        const next = await runInstrumentTransaction('connect-issued-instrument', async () => {
+          const discovery = await discoverInstruments();
+          acceptDiscovery(discovery.candidates, discovery.failures);
+          const candidate = discovery.candidates.find((current) => current.driverId === issued.driverId
+            && current.sourceKind === issued.sourceKind
+            && current.candidateId === issued.candidateId);
+          if (!candidate) throw new Error(`Connection candidate ${candidateId} is no longer available; list candidates again`);
+          if (!sameInstrumentCandidateDescriptor(candidate, issued)) throw new Error(`Connection candidate ${candidateId} changed after it was listed; list candidates again`);
+          setSelectedCandidateId(instrumentCandidateUiKey(candidate));
+          return connectCandidateOwned(candidate);
+        });
+        return { connected: true, driverId: next.driverId, sourceKind: next.provenance.sourceKind, execution: next.provenance.execution, qualification: next.provenance.qualification, displayName: next.candidate.displayName };
       }
-      case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: (await window.tinySA.getSnapshot()).connection };
+      case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: 'disconnected' };
       case 'inspect_interface': {
         const rendered = inspectRenderedAgentControls();
         return { activeWorkspace: workspace, activeMeasurementView: measurementView, controls: Object.fromEntries(rendered.map((control) => [control.controlId, control.enabled])), rendered };
@@ -988,14 +1625,14 @@ export function App() {
       case 'computer_scroll': return requireComputerActionResult(await window.atomAgent.computerScroll(args as { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }));
       case 'navigate_workspace': applyWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: (args as { workspace: WorkspaceId }).workspace };
       case 'configure_analyzer': {
-        assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput);
+        assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput());
         const patch = analyzerConfigPatchSchema.parse(args);
         const next = await updateAnalyzer(patch);
         applyWorkspace('spectrum');
         return { patch, configuration: next, continuous: continuousRequested.current };
       }
-      case 'acquire_sweep': { assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source }; }
-      case 'start_continuous_sweeps': assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
+      case 'acquire_sweep': { assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity }; }
+      case 'start_continuous_sweeps': assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
       case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
       case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
       case 'set_measurement_view': {
@@ -1024,7 +1661,7 @@ export function App() {
       }
       case 'get_envelope_stft_results': return requireEnvelopeStft();
       case 'acquire_envelope_stft': {
-        assertWorkspaceTransition(workspace, 'spectrum', snapshotRef.current.generatorOutput);
+        assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput());
         const capture = await acquireZeroSpan();
         const result = computeEnvelopeStft(capture, stftConfiguration);
         applyMeasurementView('envelope-stft');
@@ -1107,18 +1744,24 @@ export function App() {
         setSelectedClassificationId(detectionId);
         return { detectionId, selected: true, evidence: 'ui-only' };
       }
-      case 'configure_zero_span': { const next = zeroSpanConfigSchema.parse(args); applyWorkspace('classification'); setZeroConfig(next); return next; }
-      case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', snapshotRef.current.generatorOutput); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result) }; }
-      case 'configure_generator': { const next = generatorConfigSchema.parse(args); setGenerator(next); const configured = await configureGeneratorWith(next); applyWorkspace('generator'); return configured.generator; }
-      case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; const next = await setOutput(enabled); return { enabled, verification: next.verification, execution: next.identity?.execution ?? 'unknown' }; }
-      case 'capture_device_screen': { const frame = await captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.format, capturedAt: frame.capturedAt }; }
+      case 'configure_zero_span': {
+        const patch = args as Partial<Pick<ZeroSpanConfig, 'frequencyHz' | 'points' | 'sweepTimeSeconds'>>;
+        const next = zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch });
+        applyWorkspace('classification');
+        setZeroConfig(next);
+        return next;
+      }
+      case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', currentGeneratorOutput()); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
+      case 'configure_generator': { const next = generatorConfigSchema.parse(args); applyWorkspace('generator'); setGenerator(next); return configureGeneratorWith(next); }
+      case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; applyWorkspace('generator'); await setOutput(enabled); return { enabled, sourceKind: instrumentRef.current.session?.provenance.sourceKind ?? 'unknown', evidence: 'driver-commanded' }; }
+      case 'capture_device_screen': { const frame = await captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.pixelFormat, capturedAt: frame.capturedAt }; }
       case 'remote_device_touch': {
-        const value = args as ScreenPoint & { gesture: 'tap' | 'press' | 'release' };
+        const value = args as InstrumentScreenPoint & { gesture: 'tap' };
         const point = { x: value.x, y: value.y };
-        if (value.gesture === 'tap') { await queueRemoteGesture('press', point); await queueRemoteGesture('release', point); }
-        else if (value.gesture === 'press') await queueRemoteGesture('press', point);
-        else await queueRemoteGesture('release', point);
-        return { completed: value.gesture, point };
+        const task = queueRemoteTap(point);
+        if (!task) throw new Error('A remote screen gesture is already active or no instrument session is connected');
+        await task;
+        return { completed: 'tap', point };
       }
       case 'export_latest_sweep': return exportLatest((args as { format: 'csv' | 'json' }).format);
     }
@@ -1141,8 +1784,8 @@ export function App() {
   </div> : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
-    <TopBar snapshot={snapshot} simulated={simulated} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
-    <Sidebar active={workspace} output={snapshot.generatorOutput} onSelect={changeWorkspace}/>
+    <TopBar instrument={instrument} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
+    <Sidebar active={workspace} output={generatorOutput} generatorAvailable={generatorCapability !== undefined} onSelect={changeWorkspace}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' ? 'classification-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => setError(undefined)}>Dismiss</button></div>}
@@ -1150,7 +1793,7 @@ export function App() {
       {workspace === 'spectrum' && <MeasurementWorkspace
         acquisitionActions={acquisitionActions}
         view={measurementView} onView={changeMeasurementView}
-        analyzer={analyzer} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
+        analyzer={analyzer} spectrumCapability={spectrumCapability} detectedPowerAvailable={detectedPowerCapability !== undefined} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
         traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} visibleFirmwareTraceIds={visibleFirmwareTraceIds} onFirmwareTraceVisibility={configureFirmwareTraceVisibility} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
@@ -1164,23 +1807,63 @@ export function App() {
       />}
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
       {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} selectedId={selectedClassificationId} onSelectedId={setSelectedClassificationId} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
-      {workspace === 'generator' && <GeneratorWorkspace config={generator} snapshot={snapshot} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
-      {workspace === 'device' && <DeviceWorkspace snapshot={snapshot} diagnostics={diagnostics} frame={screenFrame} busy={busy} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTouch={(point) => void touchScreen(point)} onRelease={(point) => void releaseScreen(point)}/>}
+      {workspace === 'generator' && <GeneratorWorkspace config={generator} capability={generatorCapability} output={generatorOutput} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
+      {workspace === 'device' && <DeviceWorkspace session={session} diagnostics={diagnostics} frame={screenFrame} busy={busy} touchBusy={touchBusy} selectedProfile={selectedProfile} onProfile={(profileId) => void selectSignalLabProfile(profileId)} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTap={tapScreen}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={snapshot.identity?.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={session?.provenance.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog
-      ports={ports}
-      selectedId={selectedPortId}
+      candidates={candidates}
+      selectedId={selectedCandidateId}
       busy={connectionBusy}
       error={error}
+      failures={discoveryFailures}
+      preference={instrument.preference}
       connected={connected}
-      onSelect={setSelectedPortId}
-      onRefresh={() => void refreshPorts()}
+      connectionCleanup={instrument.connectionCleanup}
+      onSelect={setSelectedCandidateId}
+      onRefresh={() => void refreshCandidates()}
       onConnect={() => void connect()}
       onDisconnect={() => void disconnect()}
+      onMakeDefault={() => void makeSelectedDefault()}
       onClose={() => setConnectionOpen(false)}
     />}
   </main>;
+}
+
+async function getInstrumentState() {
+  return atomizerInstrumentStateSchema.parse(await window.atomizerInstrument.getState());
+}
+
+async function discoverInstruments() {
+  return instrumentDiscoveryResultSchema.parse(await window.atomizerInstrument.discover());
+}
+
+async function connectInstrument(candidate: InstrumentCandidate) {
+  return instrumentSessionSnapshotSchema.parse(await window.atomizerInstrument.connect(candidate));
+}
+
+async function configureInstrument(configuration: InstrumentConfiguration) {
+  return instrumentConfigurationStateSchema.parse(await window.atomizerInstrument.configure(configuration));
+}
+
+async function acquireInstrument() {
+  return instrumentMeasurementSchema.parse(await window.atomizerInstrument.acquire());
+}
+
+async function startInstrumentStreaming() {
+  return atomizerInstrumentStreamingStateSchema.parse(await window.atomizerInstrument.startStreaming());
+}
+
+async function stopInstrumentStreaming() {
+  return atomizerInstrumentStreamingStateSchema.parse(await window.atomizerInstrument.stopStreaming());
+}
+
+async function executeInstrumentFeatureBoundary(request: InstrumentFeatureRequest) {
+  return atomizerInstrumentFeatureExecutionSchema.parse(await window.atomizerInstrument.executeFeature(request));
+}
+
+async function writeInstrumentPreference(selection: AtomizerInstrumentPreferenceSelection) {
+  return atomizerInstrumentPreferenceStateSchema.parse(await window.atomizerInstrument.writePreference(selection));
 }
 
 function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
@@ -1193,6 +1876,28 @@ export function parseStoredDetection(value: unknown): SignalDetectionConfig {
     return signalDetectionConfigSchema.parse({ ...value, minimumProminenceDb: DEFAULT_DETECTION.minimumProminenceDb });
   }
   return signalDetectionConfigSchema.parse(value);
+}
+
+function preferredCandidate(candidates: readonly InstrumentCandidate[], state: AtomizerInstrumentState): InstrumentCandidate | undefined {
+  const preference = state.preference?.preference;
+  if (!preference) return undefined;
+  return candidates.find((candidate) => candidate.driverId === preference.driverId
+    && (preference.candidateKind === undefined || candidate.sourceKind === preference.candidateKind));
+}
+
+function generatorOutputState(session: InstrumentSessionSnapshot | undefined): GeneratorOutputState {
+  if (session?.rfOutput === 'on') return 'on';
+  if (session?.rfOutput === 'unknown') return 'unknown';
+  return 'off';
+}
+
+function connectionNotice(session: InstrumentSessionSnapshot): string {
+  const provenance = session.provenance;
+  if (provenance.sourceKind === 'signal-lab') return `${session.candidate.displayName} connected as a synthetic measurement source; USB, firmware execution, and RF emission are not claimed`;
+  if (provenance.sourceKind === 'tinysa-firmware-twin') return `${provenance.device.model} executable firmware twin connected through ${provenance.bridge}`;
+  return provenance.device.firmwareQualification === 'custom-unqualified'
+    ? `${provenance.device.model} connected with custom, source-unqualified firmware`
+    : `${provenance.device.model} connected and identified`;
 }
 function parseMarkerBank(value: unknown): readonly MarkerConfiguration[] {
   if (!Array.isArray(value) || value.length !== 8) throw new Error('Marker bank must contain exactly eight markers');

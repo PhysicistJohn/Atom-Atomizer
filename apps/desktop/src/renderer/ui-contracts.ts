@@ -1,17 +1,18 @@
-import type { AnalyzerConfig, DeviceSnapshot, GeneratorConfig, PortCandidate, Sweep } from '@tinysa/contracts';
+import type { AnalyzerConfig, AtomizerInstrumentState, GeneratorConfig, InstrumentCandidate, Sweep } from '@tinysa/contracts';
 
 export type WorkspaceId = 'spectrum' | 'detection' | 'classification' | 'generator' | 'device';
 export type AcquisitionState = 'idle' | 'configuring' | 'retuning' | 'acquiring' | 'streaming' | 'complete' | 'failed';
 export type ConnectionPanelState = 'closed' | 'selecting' | 'connecting' | 'failed';
 export type InspectorSection = 'frequency' | 'acquisition' | 'detection' | 'model' | 'generator';
+export type GeneratorOutputState = 'off' | 'on' | 'unknown';
 
 export interface DesktopUiState {
   workspace: WorkspaceId;
   connectionPanel: ConnectionPanelState;
   acquisition: AcquisitionState;
-  snapshot: DeviceSnapshot;
-  ports: readonly PortCandidate[];
-  selectedPortId?: string;
+  instrument: AtomizerInstrumentState;
+  candidates: readonly InstrumentCandidate[];
+  selectedCandidateId?: string;
   analyzer: AnalyzerConfig;
   generator: GeneratorConfig;
   sweep?: Sweep;
@@ -41,16 +42,32 @@ export const DEFAULT_GENERATOR: GeneratorConfig = {
   amDepthPercent: 50,
   fmDeviationHz: 25_000,
 };
-export const DISCONNECTED_SNAPSHOT: DeviceSnapshot = {
-  connection: 'disconnected', mode: 'idle', generatorOutput: 'off', verification: 'stale'
+export const INITIAL_INSTRUMENT_STATE: AtomizerInstrumentState = {
+  schemaVersion: 1,
+  startup: { status: 'not-started' },
+  streaming: { status: 'stopped' },
+  connectionCleanup: { status: 'not-required' },
 };
 
-export function assertWorkspaceTransition(from: WorkspaceId, to: WorkspaceId, generatorOutput: DeviceSnapshot['generatorOutput']): void {
-  if (from === 'generator' && to !== 'generator' && generatorOutput === 'on') {
-    throw new Error('Disable RF output before leaving the generator workspace');
+export function assertWorkspaceTransition(from: WorkspaceId, to: WorkspaceId, generatorOutput: GeneratorOutputState): void {
+  void from;
+  if (to !== 'generator' && generatorOutput !== 'off') {
+    throw new Error(generatorOutput === 'on'
+      ? 'Disable RF output before leaving the generator workspace'
+      : 'RF output state is unknown; inspect the instrument or disconnect before leaving the generator workspace');
   }
 }
 
-export function selectedPort(state: DesktopUiState): PortCandidate | undefined {
-  return state.ports.find((port) => port.id === state.selectedPortId);
+export function selectedCandidate(state: DesktopUiState): InstrumentCandidate | undefined {
+  return state.candidates.find((candidate) => instrumentCandidateUiKey(candidate) === state.selectedCandidateId);
+}
+
+export function instrumentCandidateUiKey(candidate: InstrumentCandidate): string {
+  return JSON.stringify([candidate.discoveryRevision, candidate.driverId, candidate.sourceKind, candidate.candidateId]);
+}
+
+export function sameInstrumentCandidateDescriptor(left: InstrumentCandidate, right: InstrumentCandidate): boolean {
+  const { discoveryRevision: _leftRevision, ...leftDescriptor } = left;
+  const { discoveryRevision: _rightRevision, ...rightDescriptor } = right;
+  return JSON.stringify(leftDescriptor) === JSON.stringify(rightDescriptor);
 }

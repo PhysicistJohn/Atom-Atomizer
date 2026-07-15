@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import {
-  TINYSA_API_V3_METHODS,
-  analyzerConfigPatchSchema,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
   firmwareTraceIdSchema,
@@ -16,8 +14,6 @@ import {
   traceConfigurationSchema,
   traceIdSchema,
   waterfallConfigurationSchema,
-  zeroSpanConfigSchema,
-  type TinySaApiV3Method,
 } from '@tinysa/contracts';
 
 export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1' as const;
@@ -198,40 +194,43 @@ export interface AgentApiCoverage {
   failure: string;
 }
 
-/** Exhaustive application-layer disposition for every method in TinySaApiV3. */
+const ATOMIZER_DRIVER_API_METHODS = [
+  'getState', 'discover', 'connect', 'disconnect', 'configure', 'acquire',
+  'startStreaming', 'stopStreaming', 'executeFeature', 'readPreference',
+  'writePreference', 'subscribe', 'exportSweep',
+] as const;
+type AtomizerDriverApiMethod = typeof ATOMIZER_DRIVER_API_METHODS[number];
+
+/** Exhaustive application-layer disposition for the renderer's generic driver and file APIs. */
 export const agentApiCoverage = {
-  listDevices: { tools: ['list_connection_candidates'], projection: 'transport-evidence', guarantee: 'Returns opaque candidate IDs with execution and transport labels.', failure: 'Discovery failure is surfaced and does not admit the twin.' },
-  connect: { tools: ['connect_device'], projection: 'device-state', guarantee: 'Connects exactly one previously listed candidate and requires ZS407 identity.', failure: 'Identity or transport failure disconnects and is not substituted.' },
+  getState: { tools: ['get_instrument_state'], projection: 'device-state', guarantee: 'Returns the generic session, capabilities, source provenance, startup preference, and streaming state.', failure: 'Missing source evidence remains absent rather than inferred.' },
+  discover: { tools: ['list_connection_candidates'], projection: 'transport-evidence', guarantee: 'Discovers every registered driver independently and returns opaque renderer-issued IDs.', failure: 'One driver failure is reported without hiding successful independent sources.' },
+  connect: { tools: ['connect_device'], projection: 'device-state', guarantee: 'Connects exactly one fresh candidate through its owning driver and retains source-discriminated provenance.', failure: 'Stale, disappeared, or changed candidates fail; no source is substituted.' },
   disconnect: { tools: ['disconnect_device'], projection: 'device-state', guarantee: 'Stops streaming, commands output off when possible, closes transport, and returns terminal state.', failure: 'RF-off and close failures are preserved; RF state becomes unknown.' },
-  getSnapshot: { tools: ['get_instrument_state'], projection: 'device-state', guarantee: 'Returns identity, execution, capability, verification, mode, and RF state.', failure: 'Missing fields remain absent or unknown rather than inferred.' },
-  configureAnalyzer: { tools: ['configure_analyzer'], projection: 'firmware-readback', guarantee: 'Stages the complete closed analyzer configuration and validates readback.', failure: 'Any command or readback mismatch rejects the operation.' },
-  acquireSweep: { tools: ['acquire_sweep'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete provenance-bearing scalar sweep.', failure: 'Incomplete, malformed, or mismatched execution evidence is rejected.' },
+  configure: { tools: ['configure_analyzer', 'configure_zero_span'], projection: 'device-state', guarantee: 'Admits only a configuration kind and range declared by the connected driver.', failure: 'Unsupported acquisition kinds or out-of-capability values reject before driver I/O.' },
+  acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing measurement.', failure: 'Incomplete, malformed, wrong-session, or wrong-configuration evidence is rejected.' },
   startStreaming: { tools: ['start_continuous_sweeps'], projection: 'transport-evidence', guarantee: 'Starts one serialized sweep loop.', failure: 'First acquisition failure terminates the loop visibly.' },
   stopStreaming: { tools: ['stop_continuous_sweeps'], projection: 'device-state', guarantee: 'Stops after the in-flight operation settles.', failure: 'A non-running stream is rejected rather than treated as success.' },
-  acquireZeroSpan: { tools: ['configure_zero_span', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns complete detected-power time evidence and optional host STFT.', failure: 'Never substitutes I/Q or a partial capture.' },
-  configureGenerator: { tools: ['configure_generator'], projection: 'device-state', guarantee: 'Applies the complete generator configuration with output forced off.', failure: 'Command failure preserves commanded/unknown evidence and rejects.' },
-  setGeneratorOutput: { tools: ['set_rf_output'], projection: 'device-state', guarantee: 'Changes output on the declared backend; enable is action-time approved.', failure: 'Failure makes output verification unknown and is not retried.' },
-  readDiagnostics: { tools: ['read_device_diagnostics'], projection: 'firmware-readback', guarantee: 'Refreshes identity, command, analyzer, battery, device, and sweep evidence.', failure: 'Any required diagnostic failure is surfaced.' },
-  captureScreen: { tools: ['capture_device_screen'], projection: 'firmware-readback', guarantee: 'Returns one exact 480 by 320 RGB565LE frame.', failure: 'Wrong dimensions, format, or byte count is rejected.' },
-  touch: { tools: ['remote_device_touch'], projection: 'device-state', guarantee: 'Sends one approved press or tap to bounded firmware coordinates.', failure: 'Failure is returned without a coordinate or typed-tool bypass.' },
-  releaseTouch: { tools: ['remote_device_touch'], projection: 'device-state', guarantee: 'Sends one approved release gesture.', failure: 'Failure is returned without retry.' },
-  exportSweep: { tools: ['export_latest_sweep'], projection: 'native-export', guarantee: 'Exports only a complete sweep with provenance through explicit user file selection.', failure: 'Cancel is distinct from save; write failure is surfaced.' },
+  executeFeature: { tools: ['configure_generator', 'set_rf_output', 'read_device_diagnostics', 'capture_device_screen', 'remote_device_touch'], projection: 'device-state', guarantee: 'Executes only a feature and range declared by the active driver; RF enable and touch remain approved.', failure: 'Unsupported features fail rather than falling back to another driver or transport.' },
+  readPreference: { tools: ['get_instrument_state'], projection: 'ui-context', guarantee: 'Reports the persisted or factory startup driver preference.', failure: 'Preference load failure remains visible startup evidence.' },
+  writePreference: { tools: [], projection: 'human-safety-boundary', guarantee: 'Startup-source changes remain a local human UI boundary.', failure: 'A preference change never switches the active session implicitly.' },
   subscribe: { tools: ['get_application_state', 'get_instrument_state'], projection: 'ui-context', guarantee: 'Device events update the same state observed by Atom and the UI.', failure: 'Error events remain visible and cannot be converted to success.' },
-} as const satisfies Readonly<Record<TinySaApiV3Method, AgentApiCoverage>>;
+  exportSweep: { tools: ['export_latest_sweep'], projection: 'native-export', guarantee: 'Exports only a complete sweep with provenance through explicit user file selection.', failure: 'Cancel is distinct from save; write failure is surfaced.' },
+} as const satisfies Readonly<Record<AtomizerDriverApiMethod, AgentApiCoverage>>;
 
-if (Object.keys(agentApiCoverage).length !== TINYSA_API_V3_METHODS.length) throw new Error('Atom API coverage is not exhaustive');
+if (Object.keys(agentApiCoverage).length !== ATOMIZER_DRIVER_API_METHODS.length) throw new Error('Atom generic driver API coverage is not exhaustive');
 
 const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'get_application_state', description: 'Read the current TinySA Atomizer workspace, operation state, simulation status, history count, and visible errors.' },
-  { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer, connected execution backend, firmware twin, and reserved SignalLab composition without conflating physical USB and emulation.' },
+  { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer driver host plus active SignalLab, physical TinySA, or firmware-twin source without conflating USB, firmware execution, or synthetic evidence.' },
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
-  { type: 'function', name: 'get_instrument_state', description: 'Read the current connection, tinySA identity and firmware qualification, mode, analyzer/generator state, readback verification, capabilities, fault, and RF output state. This is cached application state; use read_device_diagnostics for fresh telemetry.' },
+  { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance, declared capabilities, active configuration, streaming state, startup preference, and RF command state.' },
   { type: 'function', name: 'get_latest_sweep_summary', description: 'Read the latest spectrum sweep range, peak, robust noise floor, metrics, point count, capture timestamp, and source.' },
   { type: 'function', name: 'get_detection_results', description: 'Read separately projected frequency-local detections and 2.4 GHz frequency-agile activity associations. Activity associations include conditional dynamics and local-look provenance, and are explicitly neither physical emissions nor emitter or protocol identity.' },
   { type: 'function', name: 'get_classification_results', description: 'Read open-set Bayesian observable evidence classes from repeated scalar spectra and optional qualified detected-power envelope evidence. Results include a proper unknown probability and are equivalence classes, never SignalLab selected-state proof, protocol decoding, conformance, or I/Q classification.' },
-  { type: 'function', name: 'read_device_diagnostics', description: 'Refresh and return firmware identity, command catalog, analyzer readback, battery voltage, device ID, and sweep status.' },
+  { type: 'function', name: 'read_device_diagnostics', description: 'Read every diagnostics report declared by the connected driver. Fails when that source exposes no diagnostics feature.' },
   { type: 'function', name: 'list_connection_candidates', description: 'List current connection candidates and issue opaque IDs bound to this exact result. Call immediately before connect_device; raw OS paths and serials are withheld.' },
-  { type: 'function', name: 'connect_device', description: 'Connect exactly one opaque candidate issued by the latest list_connection_candidates result and verify a ZS407 identity. Stale, unknown, or disappeared candidates fail; no candidate is substituted.' },
+  { type: 'function', name: 'connect_device', description: 'Connect exactly one opaque candidate issued by the latest multi-driver discovery result. Stale, changed, unknown, or disappeared candidates fail; no driver or source is substituted.' },
   { type: 'function', name: 'disconnect_device', description: 'Disconnect the active instrument. Unknown RF state remains unknown after uncertain transport loss.' },
   { type: 'function', name: 'inspect_interface', description: 'Inspect the semantic TinySA Atomizer interface map and which app-scoped controls are enabled.' },
   { type: 'function', name: 'computer_action', description: 'Activate one closed, allow-listed semantic control inside TinySA Atomizer. High-impact controls are excluded and fail closed.' },
@@ -241,7 +240,7 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'computer_key', description: 'Send one allow-listed key only when the current TinySA Atomizer focus exactly matches expectedTarget from the last screenshot or computer action.' },
   { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed TinySA Atomizer screenshot. Stale IDs, changed geometry, and protected targets fail closed.' },
   { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output guard as the visual UI.' },
-  { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty patch to the staged swept-analyzer configuration without acquiring. Send only explicitly requested fields; omitted fields—including rbwKhz—are preserved exactly. If both edges are sent, stopHz must exceed startHz. Trigger is atomic: auto requires only mode; normal or single requires mode plus levelDbm. The merged full configuration is runtime-validated.' },
+  { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty startHz, stopHz, or points patch to the staged driver-neutral swept-spectrum configuration. Omitted fields are preserved; capability ranges and merged span order are runtime-validated.' },
   { type: 'function', name: 'acquire_sweep', description: 'Apply the latest staged analyzer revision and acquire exactly one complete sweep; mismatched requested configuration is rejected before measurement reducers.' },
   { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the latest staged analyzer revision and acquire serialized sweeps until explicitly stopped or a failure occurs; superseded in-flight sweeps are quarantined.' },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.' },
@@ -265,13 +264,13 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'auto_scale_spectrum_display', description: 'Derive and apply a host spectrum amplitude axis from the latest complete sweep. Fails when no sweep exists.' },
   { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior.' },
   { type: 'function', name: 'select_classification_candidate', description: 'Select one current detected-signal ID for visual classification inspection without changing measurement evidence.' },
-  { type: 'function', name: 'configure_zero_span', description: 'Replace the complete staged power-versus-time capture configuration. Trigger is atomic: auto has no level; normal/single require levelDbm. Zero span is detected envelope data, never I/Q, and its RBW is separate from swept-analyzer RBW.' },
-  { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one zero-span envelope using the staged capture configuration, then restore the staged swept-analyzer configuration exactly, including auto RBW. Classify only detected-envelope behavior.' },
-  { type: 'function', name: 'configure_generator', description: 'Apply the complete generator configuration while forcing RF output off. Normal path is limited to 6.3 GHz; mixer path to 17.9226 GHz; FM modulation rate is limited to 3.5 kHz. Values remain commanded because firmware lacks reliable generator readback.' },
-  { type: 'function', name: 'set_rf_output', description: 'Enable or disable RF output on the connected execution backend. Enabling requires immediate human approval; results identify physical or twin execution.' },
-  { type: 'function', name: 'capture_device_screen', description: 'Capture the connected backend LCD as an exact 480×320 RGB565 frame and display it in Device.' },
-  { type: 'function', name: 'remote_device_touch', description: 'Send one connected-backend screen gesture. Firmware UI touch may reach RF controls, so every gesture requires immediate human approval.' },
-  { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with measurement and device provenance.' },
+  { type: 'function', name: 'configure_zero_span', description: 'Apply a non-empty frequencyHz, points, or sweepTimeSeconds patch to staged detected-power timeseries capture. This is detected envelope data, never I/Q; driver-reported RBW and attenuation are not configured or fabricated.' },
+  { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one driver-declared detected-power timeseries, then restore the staged swept-spectrum configuration. Classify only detected-envelope behavior.' },
+  { type: 'function', name: 'configure_generator', description: 'Apply the complete driver-neutral generator configuration while forcing RF output off. Path, modulation modes, and ranges must be declared by the active driver.' },
+  { type: 'function', name: 'set_rf_output', description: 'Enable or disable RF output only when the active driver declares an RF-generator feature. Enabling requires immediate human approval.' },
+  { type: 'function', name: 'capture_device_screen', description: 'Capture one frame using the connected driver’s declared dimensions and pixel format. Fails when no screen feature exists.' },
+  { type: 'function', name: 'remote_device_touch', description: 'Send one atomic tap within the connected driver’s declared touch geometry. Every tap requires immediate human approval.' },
+  { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with full source/session provenance and explicit RBW/attenuation qualifications.' },
 ];
 
 const observe = (name: AgentToolName): AgentToolPolicy => ({ name, risk: 'observe', approval: 'never' });
@@ -329,6 +328,19 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   export_latest_sweep: operate('export_latest_sweep'),
 };
 
+const driverNeutralAnalyzerPatchSchema = z.object({
+  startHz: z.number().int().nonnegative().optional(),
+  stopHz: z.number().int().positive().optional(),
+  points: z.number().int().min(2).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, { message: 'Swept-spectrum patch must change at least one field' })
+  .refine((value) => value.startHz === undefined || value.stopHz === undefined || value.stopHz > value.startHz, { path: ['stopHz'], message: 'stopHz must exceed startHz' });
+
+const driverNeutralDetectedPowerPatchSchema = z.object({
+  frequencyHz: z.number().int().nonnegative().optional(),
+  points: z.number().int().positive().optional(),
+  sweepTimeSeconds: z.number().finite().positive().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, { message: 'Detected-power patch must change at least one field' });
+
 export const agentToolInputSchemas = {
   get_application_state: z.object({}).strict(),
   get_system_topology: z.object({}).strict(),
@@ -349,7 +361,7 @@ export const agentToolInputSchemas = {
   computer_key: z.object({ expectedTarget: z.string().min(1).max(128), key: z.enum(['ENTER', 'ESCAPE', 'TAB', 'ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT', 'BACKSPACE', 'META+K', 'CTRL+K']) }).strict(),
   computer_scroll: z.object({ screenshotId: z.uuid(), x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), deltaX: z.number().int().min(-2_000).max(2_000), deltaY: z.number().int().min(-2_000).max(2_000) }).strict(),
   navigate_workspace: z.object({ workspace: z.enum(['spectrum', 'detection', 'classification', 'generator', 'device']) }).strict(),
-  configure_analyzer: analyzerConfigPatchSchema,
+  configure_analyzer: driverNeutralAnalyzerPatchSchema,
   acquire_sweep: z.object({}).strict(),
   start_continuous_sweeps: z.object({}).strict(),
   stop_continuous_sweeps: z.object({}).strict(),
@@ -373,12 +385,12 @@ export const agentToolInputSchemas = {
   auto_scale_spectrum_display: z.object({}).strict(),
   configure_signal_detector: signalDetectionConfigSchema,
   select_classification_candidate: z.object({ detectionId: z.string().min(1).max(128).regex(/^[A-Za-z0-9-]+$/) }).strict(),
-  configure_zero_span: zeroSpanConfigSchema,
+  configure_zero_span: driverNeutralDetectedPowerPatchSchema,
   acquire_zero_span: z.object({}).strict(),
   configure_generator: generatorConfigSchema,
   set_rf_output: z.object({ enabled: z.boolean() }).strict(),
   capture_device_screen: z.object({}).strict(),
-  remote_device_touch: z.object({ x: z.number().int().min(0).max(479), y: z.number().int().min(0).max(319), gesture: z.enum(['tap', 'press', 'release']) }).strict(),
+  remote_device_touch: z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), gesture: z.literal('tap') }).strict(),
   export_latest_sweep: z.object({ format: z.enum(['csv', 'json']) }).strict(),
 } as const satisfies Readonly<Record<AgentToolName, z.ZodType>>;
 
@@ -449,7 +461,7 @@ function createAgentToolParameters(name: AgentToolName): Record<string, unknown>
   if (parameters.type === 'object' && !Array.isArray(parameters.required)) parameters.required = [];
   // Zod refinements are runtime-only. This representable top-level invariant
   // is included explicitly so the model cannot emit an empty analyzer patch.
-  if (name === 'configure_analyzer') parameters.minProperties = 1;
+  if (name === 'configure_analyzer' || name === 'configure_zero_span') parameters.minProperties = 1;
   annotateAgentParameterDescriptions(name, parameters);
   return parameters;
 }
@@ -596,8 +608,8 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 # Execution contract
 - Read-only calls may run when intent is clear. Mutating calls require the user's requested outcome; never add adjacent changes.
 - JSON schemas are authoritative. Obey types, enums, units, bounds, required fields, and closed objects exactly.
-- configure_analyzer is a non-empty patch: send only requested fields. Omitted fields—including rbwKhz—remain staged. Auto trigger is {"mode":"auto"}; normal/single also require levelDbm.
-- configure_generator, configure_zero_span, configure_marker, and configure_trace replace complete configurations. If the user supplied only part, load and read the relevant state first.
+- configure_analyzer is a non-empty driver-neutral patch containing only startHz, stopHz, and points. Omitted fields remain staged; source-reported RBW and attenuation are never invented or configured through this tool.
+- configure_zero_span is a non-empty detected-power patch containing only frequencyHz, points, and sweepTimeSeconds. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
 - Trace Off is configure_trace mode "blank". D1–D4 firmware overlay visibility is separate and never mutates firmware trace state.
 - A connection requires a fresh list_connection_candidates result and its opaque candidateId. Opening a dialog is not connecting.
 - Coordinate click/scroll requires the immediately preceding one-use screenshotId. Type/key requires the exact focused target. Prefer semantic computer_action.
@@ -607,7 +619,7 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 - Distinguish staged, commanded, verified, firmware-readback, host-derived, physical, twin, stale, custom-unqualified, and unknown evidence. Missing evidence is not a measurement.
 - Spectrum-derived views use complete scalar sweeps. Zero span and envelope STFT are detected power, never I/Q, phase, symbols, EVM, decoding, conformance, or protocol identity.
 - Detection candidates are not active emissions until promoted. A frequency-agile 2.4 GHz result is a rolling activity association conditional on admitted local looks; it is never one physical emission, emitter identity, or protocol identity. Observable-class results are measurement hypotheses, never knowledge of SignalLab selected state.
-- Physical USB and the Renode firmware twin are distinct. SignalLab's runtime edge is reserved, not connected.
+- Physical TinySA USB, the Renode firmware twin, and SignalLab are distinct registered drivers. SignalLab is the factory startup default and supplies synthetic scalar measurements through its live bridge; it does not emulate USB, execute firmware, or emit RF.
 
 # Safety and human boundaries
 - RF enable requires explicit user intent and immediate host approval. Every remote firmware-screen gesture also requires approval.

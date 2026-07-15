@@ -6,6 +6,10 @@ Model: `bayesian-observable-equivalence-v5`
 
 Updated: 2026-07-14
 
+Normative specifications, original papers, and the limits inferred from them
+are pinned in [the Bayesian detection and classification research
+basis](./BAYESIAN_DETECTION_CLASSIFICATION_RESEARCH.md).
+
 ## Purpose and claim boundary
 
 Atomizer performs Bayesian inference over observations that the tinySA actually
@@ -23,9 +27,14 @@ EVM, phase, coding, cell identity, packet contents, or complex I/Q behavior.
 The result qualification is `bayesian-observable-equivalence`, its decision
 level is `equivalence-class` or `unknown`, and its score kind is
 `model-posterior`. These are normalized class probabilities conditional on the
-fixed synthetic empirical likelihoods, declared priors, hand-coded band context,
-and observed features. They do not integrate uncertainty in fitted model
-parameters and are not calibrated probabilities of physical-world identity.
+fixed synthetic empirical likelihoods, declared priors, the observed features,
+and the structural support mask `standards-operating-band-context-v1`. That
+versioned table pins specification revisions, clauses, source URLs, and source
+document hashes for TS 45.005 19.0.0, TS 36.101 18.5.0, and TS 38.104 18.12.0.
+It is not a likelihood, survey prior, deployment database, protocol observation,
+or regulatory authorization. The probabilities do not integrate uncertainty in
+fitted model parameters and are not calibrated probabilities of physical-world
+identity.
 
 ## Taxonomy and deliberate ambiguity
 
@@ -55,11 +64,21 @@ when the combined cellular posterior is sufficient. The implementation allows
 measured widths through 25 MHz for a nominal 20 MHz channel because RBW and
 threshold broadening are part of the observation.
 
-FDD/TDD labels use soft band context and only qualified timing evidence within
-the hard fitted-domain interval mask. The mask can reject an unsupported
-observation but never selects a duplex leaf by itself. Wi-Fi OFDM generation, Bluetooth
+FDD/TDD leaves are eligible only when the complete measured occupied interval,
+with a bounded RBW edge tolerance, fits a corresponding FDD or TDD link range
+in `standards-operating-band-context-v1`. This is a hard structural support
+mask, not soft frequency evidence: it can reject an unsupported leaf but never
+selects a duplex leaf by itself. Wi-Fi OFDM generation, Bluetooth
 LE PHY/coding, GSM GMSK versus EDGE modulation order, and BR/EDR modulation
 order remain unresolved by scalar integrated power.
+
+The output ontology does not include supplementary-only operation. The
+standards table keeps SDL and SUL rows explicit: a supplemental row alone does
+not support either fitted FDD or TDD leaf. When an SDL/SUL range overlaps a
+paired or shared row, every compatible mode remains present rather than being
+silently relabeled, and other evidence must resolve or preserve the ambiguity.
+Frequency alone does not establish which standardized mode, deployment, or
+transmitter produced the emission.
 
 Bluetooth leaves require special restraint. Fixed-frequency tinySA zero span
 cannot observe a link-wide Classic slot sequence or an LE advertising event
@@ -73,6 +92,12 @@ not link-wide cadence. Without independently observed cross-channel evidence,
 the primary result is Bluetooth-like band activity or `unknown`; the
 Bluetooth-like posterior remains diagnostic when the primary result is unknown.
 
+LE 1M and LE Coded share 1 Msym/s shaped-binary-FM spectral occupancy closely
+enough that this scalar instrument does not separate them. They are not
+described as physically power-equivalent: coding, packet format, and duration
+differ, while unknown payload/event context and uncalibrated timing make one
+detected-power capture non-identifying.
+
 ## Pinned model and corpus
 
 | Field | Value |
@@ -81,10 +106,13 @@ Bluetooth-like posterior remains diagnostic when the primary result is unknown.
 | Corpus | `observable-scalar-corpus-v7` |
 | Corpus source commit | `03197cb5b4a03b85ef5efe6525f4f28ceedcaef3` |
 | Corpus SHA-256 | `d813b3268eee7240a86b2de725ec78080dc0f3ce829fe0c493bf582b62f8529e` |
-| Model asset SHA-256 | `bb4393e1e0e0e86977def9238a4e1e3dc03511f06b421384ff41316e37e96c9d` |
+| Model asset SHA-256 | `05ec69aacc100f272446b7e00ba36cd112e516b8832585174312bac1f6af7d0c` |
+| Cellular operating-band context | `standards-operating-band-context-v1`: 147 rows (14 GERAN, 67 E-UTRA, 66 NR FR1); TS 45.005 19.0.0, TS 36.101 18.5.0, TS 38.104 18.12.0 |
 | Preprocessing | `scalar-observable-features-v5` |
 | Prior | `engineering-design-class-weights-v1` |
-| Calibration | `synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6` |
+| Calibration | `synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7` |
+| Support-rank order claim | `single-representative-rank-dominates-attempt-min-rank-v1` |
+| Support-rank sampling claim | `empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1` |
 | Representative eligibility | `runtime-domain-qualified-known-representatives-v3` |
 | Decision policy | `observable-open-set-decision-v9` |
 | Canonical scenarios | 35: 17 known and 18 unknown/confuser |
@@ -94,11 +122,11 @@ Bluetooth-like posterior remains diagnostic when the primary result is unknown.
 | Exact observable-equivalence nulls | Seven named scenarios below |
 | Known acquisition validation only | `gsm-900-tdma` |
 | Fitted examples | 8,140 detector-conditioned, fit-eligible first-ready production representatives |
-| Generator-separated support calibration | 1,990 independent fit-eligible acquisition-attempt scores per evidence view |
+| Generator-separated support reference | 1,990 stratified synthetic fit-eligible acquisition-attempt minima per evidence view |
 | Student-t components | 18 |
 | Posterior leaves | 12, including unknown |
 | Feature dimensions | 28 |
-| Minimum maximum-known synthetic support p-value | 0.025 |
+| Minimum maximum-known synthetic support rank | 0.025 engineering cutoff |
 
 The component-fit exclusion is the union of these immutable validation
 partitions:
@@ -132,6 +160,23 @@ Those profiles are UI fixtures, not physical training truth and not the v5
 posterior taxonomy. The v5 model is generated reproducibly from a pinned subset
 of the immutable canonical scalar-observation corpus. Its scenarios are physics- or
 standards-derived instrument projections; they are not conformance waveforms.
+
+The scenario corpus and the operating-band support table are separate assets.
+“Standards-derived scenario” remains limited to the cited instrument projection
+and is not a conformance-waveform claim. The independent
+`standards-operating-band-context-v1` table transcribes the pinned GERAN,
+E-UTRA, and NR FR1 operating-band rows: 14, 67, and 66 rows respectively. It
+preserves FDD, TDD, SDL, and SUL overlap and supplies structural interval
+compatibility only; it does not prove
+protocol identity, actual deployment, paired-channel activity, or regulatory
+authorization.
+
+Wi-Fi is not part of that cellular standards table. Its separate fitted masks
+admit HR-DSSS-like observations only in 2.4--2.5 GHz at 10--30 MHz measured
+width, and OFDM-like observations in 2.4--2.5, 4.9--5.925, or 5.925--7.125 GHz
+at 8--110 MHz measured width. A fully observed 160/320 MHz channel exceeds that
+fitted width, while resource-unit allocation and puncturing are not represented;
+those cases remain unsupported or unresolved.
 
 Corpus v7 evaluates spectrum power at the time each swept bin is visited.
 GSM TDMA, LTE/NR TDD, and Wi-Fi CSMA traffic therefore gate the spectrum itself,
@@ -179,20 +224,34 @@ emission region. Association model `frequency-agile-2g4-activity-v3` records a
 strictly ordered stream of no-candidate, exactly-one eligible narrow candidate,
 and ambiguous opportunities across the complete 2402--2480 MHz geometry. Every
 positive observation retains its local detector evidence and track ID. Dynamics
-model `bayesian-frequency-agile-transition-v2` compares declared agile and
+model `bayesian-frequency-agile-transition-v3` compares declared agile and
 stationary transition likelihoods conditional on positive unambiguous
-observations. The agile side is an equal mixture of the fixed Beta-Binomial
-Classic `Beta(78,1)` and LE `Beta(2,1)` marginals; the stationary side is the
-predeclared fixed Bernoulli likelihood `p_change=0.05`, not an integrated
-stationary Beta prior. The model requires at least eight positives in at least
-three resolution cells and uses a maximum 96-opportunity window. Its promotion
-and retention probabilities are
+observations. The agile side is an equal mixture of two engineering Beta-
+Binomial components: `fullBand79CellChangePrior = Beta(78,1)` and
+`threePrimaryChannelChangePrior = Beta(2,1)`. These neutral names describe a
+79-cell full-band-agile family and a three-primary-channel-agile family;
+neither is a Bluetooth Classic/LE protocol or emitter likelihood. BR/EDR
+adaptive frequency hopping may remap N usable channels, and LE connections and
+secondary-channel activity use channel maps over as many as 37 general-purpose
+channels. Channel selection, advertising-event order, packet occupancy, and
+receiver censoring violate an iid transition interpretation. The stationary
+side is the predeclared fixed Bernoulli likelihood `p_change=0.05`, not an
+integrated stationary Beta prior. The model requires at least eight positives
+in at least three resolution cells and uses a maximum 96-opportunity window. Its
+promotion and retention probabilities are
 0.99 and 0.90. Occurrence probability deliberately cancels; the model does not
 infer SNR or duty cycle from missing looks. The bounded association region,
 opportunity outcomes, source sweeps, member IDs, and both model IDs remain
 separate provenance. The extractor may consult them only for broad band-
 activity features; they do not become a larger emission localization or an
 emitter/link identity.
+
+The evidence contract exposes
+`fullBand79CellAgileLogMarginalLikelihood`,
+`threePrimaryChannelAgileLogMarginalLikelihood`, and
+`primaryChannelCenterHitCount`. The two marginals use only transition counts;
+the primary-center hit count is retained as diagnostic provenance and does not
+turn either engineering family into advertising-event or protocol evidence.
 
 Exact dynamic programming over the sufficient transition counts gives a
 sequential false-promotion probability of `1.3657385209e-5` through 96 positive
@@ -273,6 +332,11 @@ time/frequency skew, aliased rate, or short window is retained as a limitation.
 
 ## Open-set and fail-loud behavior
 
+This is an engineering reject/open-set policy, not an open-set theorem. Chow's
+loss-based reject option does not by itself establish unknown-class validity;
+the research basis separately cites the conformal and open-set literature and
+states which guarantees are absent.
+
 The primary result is `unknown` when evidence is insufficient, the detection
 touches the acquisition boundary, unknown posterior mass is too high, known
 posterior mass is too low, no defensible leaf or aggregate clears the decision
@@ -294,24 +358,32 @@ class. Ranked candidates remain diagnostic alternatives when the primary
 result is unknown; they are not accepted identities.
 
 For each known class, generator-separated calibration converts the maximum
-fixed-component radial-tail score to an inductive finite-sample rank support
-p-value. Calibration v6 treats an acquisition attempt—not correlated local
-fragments from that attempt—as the exchangeable unit. For each known class and
-view it stores one conservative score per fit-eligible attempt: the minimum
-known-class support over that attempt's first-ready eligible representatives.
-The final asset contains 1,990 independent attempt-level scores in each of the
+fixed-component radial-tail score to a synthetic support rank. Calibration v7
+treats an acquisition attempt—not correlated local fragments from that
+attempt—as the reference unit. For each known class and view it stores one
+pointwise-conservative score per fit-eligible attempt: the minimum known-class
+support over that attempt's first-ready eligible representatives. The final
+asset contains 1,990 attempt-level reference scores in each of the
 `spectrum-only`, `envelope-untimed`, and `envelope-timed` views, distributed
-across their originating known classes. Inference selects the matching view,
-takes the maximum class-conditional support p-value across eligible known
-classes, and rejects below 0.025. A support rejection
-must report primary label `unknown`, confidence zero, and explicit
-`synthetic-support-p-value` value and threshold. Ranked candidate model
-posteriors remain available as diagnostic alternatives but are not the primary
-confidence or an accepted identity. Nominal 2.5% support coverage is
-conditional on exchangeability with the pinned SignalLab synthetic calibration
-generator under the same evidence view. It is not posterior-predictive
-parameter integration, physical receiver calibration, or a guarantee for
-ambient RF.
+across their originating known classes. Ties count toward support.
+
+A single member representative's score is no smaller than its attempt minimum,
+so its rank against attempt minima cannot be smaller than the corresponding
+attempt-minimum rank. Metadata records that deterministic property as
+`single-representative-rank-dominates-attempt-min-rank-v1`. The fixed,
+stratified nuisance grids and pooled scenario templates are not exchangeable
+operational samples. Metadata therefore also records
+`empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1`.
+The value is not a conformal p-value and has no finite-sample coverage claim.
+
+Inference selects the matching view, takes the maximum class-conditional
+support rank across eligible known classes, and rejects below the engineering
+cutoff 0.025. A support rejection must report primary label `unknown`,
+confidence zero, and explicit `synthetic-support-rank` value and threshold.
+Ranked candidate model posteriors remain available as diagnostic alternatives
+but are not the primary confidence or an accepted identity. The rank is not
+posterior-predictive parameter integration, physical receiver calibration, or
+a guarantee for ambient RF.
 
 Training and regression validation use the production
 `bayesian-exponential-multiscale-cfar-v3` detector and two-state tracker, not a
@@ -321,7 +393,7 @@ fitting, calibration, and classification consume exactly the latest eight
 admitted local or association sweeps. Admission misses
 are reported separately from classification conditional on admission. The
 tracker's `frequency-agile-2g4-activity-v3`, its
-`bayesian-frequency-agile-transition-v2` dynamics evidence, and
+`bayesian-frequency-agile-transition-v3` dynamics evidence, and
 `simultaneous-regular-components-v1` associations participate with their actual
 runtime provenance and expiry behavior. This is end-to-end synthetic
 detector/tracker/classifier regression, but it remains shared-generator
@@ -345,7 +417,7 @@ Conditional hierarchical accuracy was 0.985318, known coverage 0.993796,
 covered-known hierarchical accuracy 1.0, known top-leaf accuracy 0.993996,
 and the minimum high-SNR known-class hierarchical accuracy was 0.9875. On
 5,525 singleton-truth proper-score samples, fitted-template log loss was
-0.0142141, multiclass Brier score 0.00825527, and ECE 0.00192381. Fitted-unknown
+0.0142141, multiclass Brier score 0.00825527, and ECE 0.00192378. Fitted-unknown
 AUROC and rejection were both 1.0; scenario-excluded strict-typicality AUROC
 was 0.997999 and admitted strict-holdout rejection was 1.0.
 

@@ -2,15 +2,19 @@
 
 const { app, BrowserWindow, dialog } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
-const { existsSync, mkdirSync, readFileSync, appendFileSync } = require('node:fs');
+const { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } = require('node:fs');
 const { request } = require('node:http');
 const { homedir } = require('node:os');
-const { dirname, join, resolve } = require('node:path');
+const { dirname, isAbsolute, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { inspect } = require('node:util');
+const { appendBoundedLogSync } = require('./bounded-log.cjs');
 
 const APP_NAME = 'TinySA Atomizer Dev';
-const LAUNCHER_CONTRACT_VERSION = 2;
+const LAUNCHER_CONTRACT_VERSION = 3;
+const SIGNAL_LAB_INSTRUMENT_POLICY = 'signal-lab-default-no-fallback';
+const SIGNAL_LAB_BRIDGE_CONTRACT_ID = 'tinysa-signal-lab-atomizer-measurement';
+const SIGNAL_LAB_BRIDGE_CONTRACT_VERSION = 1;
 const LOG_FILE = join(homedir(), 'Library', 'Logs', `${APP_NAME}.log`);
 const STARTUP_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 150;
@@ -21,12 +25,15 @@ let quitting = false;
 mkdirSync(dirname(LOG_FILE), { recursive: true });
 
 function formatLogValue(value) {
-  return typeof value === 'string' ? value : inspect(value, { depth: 6, breakLength: 140 });
+  const formatted = typeof value === 'string' ? value : inspect(value, { depth: 6, breakLength: 140 });
+  const bytes = Buffer.from(formatted, 'utf8');
+  if (bytes.length <= 8 * 1024) return formatted;
+  return `${bytes.subarray(0, 8 * 1024).toString('utf8')}…[field truncated]`;
 }
 
 function log(level, ...values) {
   const line = `${new Date().toISOString()} [${level}] ${values.map(formatLogValue).join(' ')}\n`;
-  appendFileSync(LOG_FILE, line, 'utf8');
+  appendBoundedLogSync(LOG_FILE, line);
 }
 
 function requireExactObject(value, expectedKeys, label) {
@@ -69,21 +76,25 @@ function loadContract() {
   const runtimeFile = join(repoRoot, 'tools', 'dev-launcher', 'config.json');
   const runtime = requireExactObject(
     readJson(runtimeFile, 'Development runtime contract'),
-    ['contractVersion', 'firmwareRepository', 'instrumentPolicy', 'port'],
+    ['contractVersion', 'instrumentPolicy', 'port', 'signalLabRepository'],
     'Development runtime contract',
   );
   if (runtime.contractVersion !== LAUNCHER_CONTRACT_VERSION) {
     throw new Error(`Development runtime contract version must be ${LAUNCHER_CONTRACT_VERSION}`);
   }
-  if (runtime.instrumentPolicy !== 'physical-first-executable-twin') {
-    throw new TypeError('instrumentPolicy must be exactly "physical-first-executable-twin"');
+  if (runtime.instrumentPolicy !== SIGNAL_LAB_INSTRUMENT_POLICY) {
+    throw new TypeError(`instrumentPolicy must be exactly "${SIGNAL_LAB_INSTRUMENT_POLICY}"`);
   }
-  if (typeof runtime.firmwareRepository !== 'string' || !runtime.firmwareRepository || runtime.firmwareRepository.startsWith('/')) throw new TypeError('firmwareRepository must be a non-empty path relative to the Atomizer repository');
+  if (typeof runtime.signalLabRepository !== 'string'
+    || !runtime.signalLabRepository
+    || isAbsolute(runtime.signalLabRepository)) {
+    throw new TypeError('signalLabRepository must be a non-empty path relative to the Atomizer repository');
+  }
   if (!Number.isInteger(runtime.port) || runtime.port < 1024 || runtime.port > 65535) {
     throw new TypeError('port must be an integer from 1024 through 65535');
   }
 
-  const firmwareRepository = resolve(repoRoot, runtime.firmwareRepository);
+  const signalLabRepository = resolve(repoRoot, runtime.signalLabRepository);
   const requiredPaths = [
     'package.json',
     '.env',
@@ -98,16 +109,61 @@ function loadContract() {
     const absolutePath = join(repoRoot, relativePath);
     if (!existsSync(absolutePath)) throw new Error(`Required development file is missing: ${absolutePath}`);
   }
-  const bridge = join(firmwareRepository, 'tools', 'run-atomizer-twin-bridge.sh');
-  if (!existsSync(bridge)) throw new Error(`Required executable Firmware twin bridge is missing: ${bridge}`);
+  const signalLabRequiredPaths = [
+    'package.json',
+    'tsconfig.bridge.json',
+    'scripts/build-atomizer-bridge.mjs',
+    'src/atomizer-bridge.ts',
+    'contracts/signal-lab-measurement-bridge-v1.json',
+    'node_modules/typescript/lib/typescript.js',
+  ];
+  for (const relativePath of signalLabRequiredPaths) {
+    const absolutePath = join(signalLabRepository, relativePath);
+    if (!existsSync(absolutePath)) throw new Error(`Required SignalLab bridge input is missing: ${absolutePath}`);
+  }
+  const signalLabPackage = readJson(join(signalLabRepository, 'package.json'), 'SignalLab package contract');
+  if (signalLabPackage?.scripts?.['build:bridge'] !== 'node scripts/build-atomizer-bridge.mjs') {
+    throw new Error('SignalLab package must expose the admitted build:bridge script');
+  }
+  const bridgeContract = readJson(
+    join(signalLabRepository, 'contracts', 'signal-lab-measurement-bridge-v1.json'),
+    'SignalLab measurement bridge contract',
+  );
+  if (bridgeContract.contractId !== SIGNAL_LAB_BRIDGE_CONTRACT_ID
+    || bridgeContract.contractVersion !== SIGNAL_LAB_BRIDGE_CONTRACT_VERSION
+    || bridgeContract.status !== 'active') {
+    throw new Error('SignalLab measurement bridge contract is not the active admitted v1 contract');
+  }
 
   return Object.freeze({
     repoRoot,
     instrumentPolicy: runtime.instrumentPolicy,
-    firmwareRepository,
+    signalLabRepository,
+    signalLabBuildScript: join(signalLabRepository, 'scripts', 'build-atomizer-bridge.mjs'),
+    signalLabBridge: join(signalLabRepository, 'dist', 'bridge', 'atomizer-bridge.js'),
     port: runtime.port,
     devServerUrl: `http://localhost:${runtime.port}`,
   });
+}
+
+function appendProcessOutput(result) {
+  if (result.stdout) appendBoundedLogSync(LOG_FILE, result.stdout);
+  if (result.stderr) appendBoundedLogSync(LOG_FILE, result.stderr);
+}
+
+function requireSafeSignalLabBridge(path) {
+  let metadata;
+  try { metadata = lstatSync(path); }
+  catch (error) { throw new Error(`Built SignalLab bridge is unavailable: ${path}`, { cause: error }); }
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
+    throw new Error(`Built SignalLab bridge must be a regular non-symlink file: ${path}`);
+  }
+  if (realpathSync(path) !== path) throw new Error(`Built SignalLab bridge path must not contain indirection: ${path}`);
+  if ((metadata.mode & 0o111) === 0) throw new Error(`Built SignalLab bridge is not executable: ${path}`);
+  if ((metadata.mode & 0o022) !== 0) throw new Error(`Built SignalLab bridge must not be group- or world-writable: ${path}`);
+  if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
+    throw new Error(`Built SignalLab bridge must be owned by the current user: ${path}`);
+  }
 }
 
 function electronNodeEnvironment(extra = {}) {
@@ -128,10 +184,75 @@ function runBuild(contract, label, cwd, args) {
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
   });
-  if (result.stdout) appendFileSync(LOG_FILE, result.stdout, 'utf8');
-  if (result.stderr) appendFileSync(LOG_FILE, result.stderr, 'utf8');
+  appendProcessOutput(result);
   if (result.error) throw new Error(`${label} could not start: ${formatLogValue(result.error)}`);
   if (result.status !== 0) throw new Error(`${label} failed with exit code ${String(result.status)}. See ${LOG_FILE}`);
+}
+
+function buildAndValidateSignalLabBridge(contract) {
+  log('BUILD', `Building SignalLab measurement bridge from ${contract.signalLabRepository}`);
+  const build = spawnSync(process.execPath, [contract.signalLabBuildScript], {
+    cwd: contract.signalLabRepository,
+    env: electronNodeEnvironment(),
+    encoding: 'utf8',
+    timeout: 60_000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  appendProcessOutput(build);
+  if (build.error) throw new Error(`SignalLab bridge build could not complete: ${formatLogValue(build.error)}`);
+  if (build.status !== 0 || build.signal !== null) {
+    throw new Error(`SignalLab bridge build failed with code ${String(build.status)} signal ${String(build.signal)}. See ${LOG_FILE}`);
+  }
+  requireSafeSignalLabBridge(contract.signalLabBridge);
+
+  const requestId = 'atomizer-dev-launcher-validation';
+  const shutdownRequest = `${JSON.stringify({
+    type: 'request',
+    contractVersion: SIGNAL_LAB_BRIDGE_CONTRACT_VERSION,
+    requestId,
+    method: 'shutdown',
+    params: {},
+  })}\n`;
+  const smoke = spawnSync(process.execPath, ['--disable-proto=throw', contract.signalLabBridge], {
+    cwd: contract.signalLabRepository,
+    env: electronNodeEnvironment(),
+    input: shutdownRequest,
+    encoding: 'utf8',
+    timeout: 10_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  appendProcessOutput(smoke);
+  if (smoke.error) throw new Error(`SignalLab bridge protocol validation could not complete: ${formatLogValue(smoke.error)}`);
+  if (smoke.status !== 0 || smoke.signal !== null) {
+    throw new Error(`SignalLab bridge protocol validation failed with code ${String(smoke.status)} signal ${String(smoke.signal)}. See ${LOG_FILE}`);
+  }
+  const lines = smoke.stdout.trim().split('\n');
+  if (lines.length !== 2) throw new Error(`SignalLab bridge validation expected exactly two protocol lines, received ${lines.length}`);
+  let ready;
+  let response;
+  try {
+    ready = JSON.parse(lines[0]);
+    response = JSON.parse(lines[1]);
+  } catch (error) {
+    throw new Error('SignalLab bridge validation returned malformed JSON', { cause: error });
+  }
+  if (ready.type !== 'ready'
+    || ready.contractId !== SIGNAL_LAB_BRIDGE_CONTRACT_ID
+    || ready.contractVersion !== SIGNAL_LAB_BRIDGE_CONTRACT_VERSION
+    || ready.identity?.claims?.usbEmulated !== false
+    || ready.identity?.claims?.firmwareExecuted !== false
+    || ready.identity?.claims?.rfEmitted !== false) {
+    throw new Error('SignalLab bridge ready handshake did not match the admitted synthetic-source contract');
+  }
+  if (response.type !== 'response'
+    || response.contractVersion !== SIGNAL_LAB_BRIDGE_CONTRACT_VERSION
+    || response.requestId !== requestId
+    || response.ok !== true
+    || response.result?.kind !== 'shutdown'
+    || response.result?.closed !== true) {
+    throw new Error('SignalLab bridge did not acknowledge the correlated validation shutdown');
+  }
+  log('BUILD', `Validated SignalLab bridge handshake and zero exit at ${contract.signalLabBridge}`);
 }
 
 function buildDevelopmentEntries(contract) {
@@ -206,8 +327,8 @@ async function startVite(contract) {
     env: electronNodeEnvironment(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  viteProcess.stdout.on('data', (chunk) => appendFileSync(LOG_FILE, chunk));
-  viteProcess.stderr.on('data', (chunk) => appendFileSync(LOG_FILE, chunk));
+  viteProcess.stdout.on('data', (chunk) => appendBoundedLogSync(LOG_FILE, chunk));
+  viteProcess.stderr.on('data', (chunk) => appendBoundedLogSync(LOG_FILE, chunk));
   viteProcess.on('error', (error) => log('ERROR', 'Vite process error', error));
   log('VITE', `Starting pid=${viteProcess.pid} url=${contract.devServerUrl}`);
   await waitForVite(viteProcess, contract);
@@ -232,9 +353,12 @@ async function launch() {
   process.env.NODE_ENV = 'development';
   process.env.VITE_DEV_SERVER_URL = contract.devServerUrl;
   process.env.TINYSA_ENV_FILE = join(contract.repoRoot, '.env');
-  process.env.TINYSA_FIRMWARE_REPO = contract.firmwareRepository;
+  process.env.ATOMIZER_REPOSITORY_ROOT = contract.repoRoot;
+  process.env.ATOMIZER_SIGNAL_LAB_BRIDGE = contract.signalLabBridge;
+  delete process.env.TINYSA_FIRMWARE_REPO;
   delete process.env.TINYSA_SIMULATOR;
 
+  buildAndValidateSignalLabBridge(contract);
   buildDevelopmentEntries(contract);
   await startVite(contract);
   await app.whenReady();
@@ -249,16 +373,19 @@ async function launch() {
   app.dock.setIcon(icon);
 
   const mainEntry = join(contract.repoRoot, 'apps', 'desktop', 'dist', 'main', 'main.js');
-  log('ELECTRON', `Importing ${mainEntry} with ${contract.instrumentPolicy}`);
+  log('ELECTRON', `Importing ${mainEntry} with ${contract.instrumentPolicy} via ${contract.signalLabBridge}`);
   await import(pathToFileURL(mainEntry).href);
 }
 
 function failLoudly(error) {
   const message = error instanceof Error ? error.message : formatLogValue(error);
   log('FATAL', error);
-  stopVite();
   dialog.showErrorBox(`${APP_NAME} failed to launch`, `${message}\n\nFull startup log:\n${LOG_FILE}`);
-  app.exit(1);
+  process.exitCode = 1;
+  // Once the imported application owns an instrument, app.quit() must pass
+  // through its RF-safe before-quit gate. will-quit stops Vite only after that
+  // gate admits the exit; pre-import startup failures still quit normally.
+  app.quit();
 }
 
 app.setName(APP_NAME);
@@ -270,11 +397,13 @@ if (!hasSingleInstanceLock) {
 } else {
   app.on('second-instance', focusApplication);
   app.on('activate', focusApplication);
-  app.on('before-quit', () => {
+  // The imported application may prevent before-quit while it performs its
+  // RF-safe disconnect. Keep the live-edit server available if that shutdown
+  // fails and the application restores its window for a retry.
+  app.on('will-quit', () => {
     quitting = true;
     stopVite();
   });
-  app.on('will-quit', stopVite);
   process.on('uncaughtException', failLoudly);
   process.on('unhandledRejection', failLoudly);
   log('START', `\n${'='.repeat(72)}\nLaunching from ${process.resourcesPath}`);

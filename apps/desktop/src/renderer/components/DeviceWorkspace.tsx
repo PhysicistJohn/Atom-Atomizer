@@ -1,80 +1,129 @@
 import { useEffect, useRef } from 'react';
-import { AlertTriangle, BatteryCharging, CheckCircle2, Cpu, Fingerprint, MonitorUp, RefreshCw, TerminalSquare, Usb } from 'lucide-react';
-import type { DeviceDiagnostics, DeviceSnapshot, ScreenFrame, ScreenPoint } from '@tinysa/contracts';
+import { AlertTriangle, CheckCircle2, Cpu, Fingerprint, FlaskConical, MonitorUp, RefreshCw, TerminalSquare, Usb } from 'lucide-react';
+import type { InstrumentScreenFrame, InstrumentSessionSnapshot } from '@tinysa/contracts';
+import { SelectParameter } from './ParameterRow.js';
 
-export function DeviceWorkspace({ snapshot, diagnostics, frame, busy, onRefresh, onCapture, onTouch, onRelease }: {
-  snapshot: DeviceSnapshot;
-  diagnostics?: DeviceDiagnostics;
-  frame?: ScreenFrame;
+export interface InstrumentScreenPoint { x: number; y: number }
+
+export function DeviceWorkspace({ session, diagnostics, frame, busy, touchBusy, selectedProfile, onProfile, onRefresh, onCapture, onTap }: {
+  session?: InstrumentSessionSnapshot;
+  diagnostics: readonly string[];
+  frame?: InstrumentScreenFrame;
   busy: boolean;
+  touchBusy: boolean;
+  selectedProfile?: string;
+  onProfile(profileId: string): void;
   onRefresh(): void;
   onCapture(): void;
-  onTouch(point: ScreenPoint): void;
-  onRelease(point?: ScreenPoint): void;
+  onTap(point: InstrumentScreenPoint): void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     if (!frame || !canvas.current) return;
-    drawRgb565(canvas.current, frame);
+    drawFrame(canvas.current, frame);
   }, [frame]);
 
-  const ready = snapshot.connection === 'ready';
-  const point = (event: React.PointerEvent<HTMLCanvasElement>): ScreenPoint => {
+  const screen = session?.capabilities.features.find((feature) => feature.kind === 'screen');
+  const touch = session?.capabilities.features.find((feature) => feature.kind === 'touch');
+  const profile = session?.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+  const diagnosticCapability = session?.capabilities.features.find((feature) => feature.kind === 'diagnostics');
+  const point = (event: React.PointerEvent<HTMLCanvasElement>): InstrumentScreenPoint => {
     const bounds = event.currentTarget.getBoundingClientRect();
+    const width = touch?.width ?? screen?.width ?? 1;
+    const height = touch?.height ?? screen?.height ?? 1;
     return {
-      x: Math.max(0, Math.min(479, Math.floor((event.clientX - bounds.left) / bounds.width * 480))),
-      y: Math.max(0, Math.min(319, Math.floor((event.clientY - bounds.top) / bounds.height * 320))),
+      x: Math.max(0, Math.min(width - 1, Math.floor((event.clientX - bounds.left) / bounds.width * width))),
+      y: Math.max(0, Math.min(height - 1, Math.floor((event.clientY - bounds.top) / bounds.height * height))),
     };
   };
 
+  const identity = identityPresentation(session);
   return <div className="device-layout">
     <section className="device-overview">
-      <div className="panel-header"><div><Cpu size={14}/>Instrument</div><span>{snapshot.identity?.usbIdentityVerified ? 'VERIFIED' : 'NOT VERIFIED'}</span></div>
-      <div className="identity-hero"><div className="identity-chip"><span/><span/><span/><Cpu size={34}/></div><div><h2>{snapshot.identity?.model ?? 'Not connected'}</h2>{snapshot.identity && <p>{snapshot.identity.hardwareVersion} · {snapshot.identity.firmwareVersion}</p>}</div></div>
-      {snapshot.identity?.firmwareWarning && <div className="custom-firmware-warning" role="status"><AlertTriangle size={15}/><span><strong>Custom firmware · source unqualified</strong><small>{snapshot.identity.firmwareWarning}</small></span></div>}
-      <div className="device-facts">
-        <Fact icon={<Usb/>} label="USB identity" value={snapshot.identity ? `${snapshot.identity.port.vendorId ?? '—'}:${snapshot.identity.port.productId ?? '—'}` : '—'} detail={snapshot.identity?.port.product ?? snapshot.identity?.port.path ?? 'Disconnected'}/>
-        <Fact icon={<Fingerprint/>} label="Firmware source" value={snapshot.identity?.firmwareSourceCommit?.slice(0, 12) ?? (snapshot.identity?.firmwareReportedRevision ? `unresolved · ${snapshot.identity.firmwareReportedRevision}` : '—')}/>
-        <Fact icon={<BatteryCharging/>} label="Battery" value={snapshot.telemetry ? `${(snapshot.telemetry.batteryMillivolts / 1_000).toFixed(2)} V` : '—'} detail={snapshot.telemetry ? `Device ID ${snapshot.telemetry.deviceId}` : 'Refresh diagnostics'}/>
-        <Fact icon={<TerminalSquare/>} label="Shell surface" value={diagnostics ? `${diagnostics.commands.length} commands` : '—'} detail={snapshot.capabilities ? `${snapshot.capabilities.protocol.prompt} · CR terminated` : 'Not identified'}/>
-      </div>
-      <div className="device-actions"><button data-agent-control="device.refresh-diagnostics" className="secondary" disabled={!ready || busy} onClick={onRefresh}><RefreshCw size={14}/>Refresh diagnostics</button></div>
+      <div className="panel-header"><div>{session?.provenance.sourceKind === 'signal-lab' ? <FlaskConical size={14}/> : <Cpu size={14}/>}Instrument source</div><span>{identity.qualification}</span></div>
+      <div className="identity-hero"><div className="identity-chip"><span/><span/><span/><Cpu size={34}/></div><div><h2>{identity.title}</h2><p>{identity.subtitle}</p></div></div>
+      {session?.provenance.sourceKind === 'serial-port' && session.provenance.device.firmwareQualification === 'custom-unqualified' && <div className="custom-firmware-warning" role="status"><AlertTriangle size={15}/><span><strong>Custom firmware · source unqualified</strong><small>Reported firmware is retained without invented OEM provenance.</small></span></div>}
+      <div className="device-facts">{identity.facts.map((fact) => <Fact key={fact.label} icon={fact.icon} label={fact.label} value={fact.value} detail={fact.detail}/>)}</div>
+      {profile && <div className="parameter-stack" data-agent-exclusion="human-signal-profile-boundary"><SelectParameter label="SignalLab profile" value={selectedProfile ?? profile.selectedProfileId} options={profile.profiles.map(({ profileId, centerFrequencyHz }) => ({ value: profileId, label: `${profileId} · ${(centerFrequencyHz / 1e6).toFixed(3)} MHz` }))} disabled={busy} controlId="signal-lab.profile" onValue={(value) => onProfile(String(value))}/></div>}
+      <div className="device-actions"><button data-agent-control="device.refresh-diagnostics" className="secondary" disabled={!diagnosticCapability || busy} onClick={onRefresh}><RefreshCw size={14}/>Refresh diagnostics</button></div>
+      {diagnostics.length > 0 && <pre className="diagnostic-lines" aria-label="Instrument diagnostics">{diagnostics.join('\n')}</pre>}
     </section>
 
     <section className="remote-screen-panel">
-      <div className="panel-header"><div><MonitorUp size={14}/>Screen</div><span>{frame ? new Date(frame.capturedAt).toLocaleTimeString() : '480 × 320 · RGB565'}</span></div>
+      <div className="panel-header"><div><MonitorUp size={14}/>Screen</div><span>{frame ? new Date(frame.capturedAt).toLocaleTimeString() : screen ? `${screen.width} × ${screen.height} · ${screen.pixelFormat.toUpperCase()}` : 'UNAVAILABLE'}</span></div>
       <div className="screen-shell">
-        <canvas
+        {screen && <canvas
           ref={canvas}
           data-agent-control="device.remote-touch"
           data-agent-risk="high-impact"
-          width="480"
-          height="320"
-          aria-label="TinySA physical screen mirror"
-          onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); onTouch(point(event)); }}
-          onPointerUp={(event) => { onRelease(point(event)); event.currentTarget.releasePointerCapture(event.pointerId); }}
-          onPointerCancel={() => onRelease()}
-        />
-        {!frame && <div className="screen-empty"><MonitorUp size={26}/><strong>No capture</strong></div>}
+          width={screen.width}
+          height={screen.height}
+          aria-label="Connected instrument screen mirror"
+          aria-disabled={!touch || touchBusy}
+          onPointerUp={(event) => { if (touch && !touchBusy) onTap(point(event)); }}
+        />}
+        {!frame && <div className="screen-empty"><MonitorUp size={26}/><strong>{screen ? 'No capture' : 'Screen capability unavailable'}</strong></div>}
       </div>
-      <div className="screen-actions"><button data-agent-control="device.capture-screen" className="primary" disabled={!ready || busy} onClick={onCapture}><MonitorUp size={14}/>Capture</button><p>Atom-driven touch requires approval.</p></div>
+      <div className="screen-actions"><button data-agent-control="device.capture-screen" className="primary" disabled={!screen || busy} onClick={onCapture}><MonitorUp size={14}/>Capture</button><p>{touch ? 'Atom-driven taps require approval.' : 'This source exposes no touch capability.'}</p></div>
     </section>
 
-    <section className="capability-ledger"><div className="panel-header"><div><CheckCircle2 size={14}/>Capabilities</div><span>{snapshot.capabilities?.evidence.toUpperCase() ?? 'UNAVAILABLE'}</span></div><div className="ledger-grid"><Ledger label="Analyzer" value={snapshot.capabilities ? `${snapshot.capabilities.sweepPoints.max} points · text/raw` : '—'}/><Ledger label="Screen" value={snapshot.capabilities?.screenCapture ? 'Capture + remote touch' : '—'}/><Ledger label="Generator readback" value={snapshot.capabilities?.generatorReadback === false ? 'Unavailable · commanded only' : '—'}/><Ledger label="Qualification" value={snapshot.capabilities?.qualification.replaceAll('-', ' ') ?? '—'}/></div></section>
+    <section className="capability-ledger"><div className="panel-header"><div><CheckCircle2 size={14}/>Capabilities</div><span>DRIVER DECLARED</span></div><div className="ledger-grid">
+      <Ledger label="Acquisition" value={session?.capabilities.acquisitions.map((capability) => capability.kind).join(' · ') || '—'}/>
+      <Ledger label="Features" value={session?.capabilities.features.map((feature) => feature.kind).join(' · ') || 'None'}/>
+      <Ledger label="Source" value={session?.provenance.sourceKind ?? '—'}/>
+      <Ledger label="Qualification" value={session?.provenance.qualification.replaceAll('-', ' ') ?? '—'}/>
+    </div></section>
   </div>;
 }
 
-function Fact({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail?: string }) { return <div className="device-fact"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong>{detail && <em>{detail}</em>}</div></div>; }
+interface IdentityFact { icon: React.ReactNode; label: string; value: string; detail?: string }
+function identityPresentation(session: InstrumentSessionSnapshot | undefined): { title: string; subtitle: string; qualification: string; facts: readonly IdentityFact[] } {
+  if (!session) return { title: 'Not connected', subtitle: 'Choose an instrument source', qualification: 'UNAVAILABLE', facts: [] };
+  const provenance = session.provenance;
+  if (provenance.sourceKind === 'signal-lab') return {
+    title: session.candidate.displayName,
+    subtitle: 'Synthetic scalar measurement source; no device identity is asserted',
+    qualification: 'SYNTHETIC',
+    facts: [
+      { icon: <Fingerprint/>, label: 'Contract', value: `${provenance.contractId} v${provenance.contractVersion}`, detail: provenance.contractSha256.slice(0, 16) },
+      { icon: <FlaskConical/>, label: 'Catalog', value: provenance.catalogSha256.slice(0, 16), detail: `Generator ${provenance.generatorSha256.slice(0, 16)}` },
+      { icon: <Usb/>, label: 'USB identity', value: 'Not claimed', detail: 'usbEmulated=false' },
+      { icon: <TerminalSquare/>, label: 'Firmware / RF', value: 'Not claimed', detail: 'firmwareExecuted=false · rfEmitted=false' },
+    ],
+  };
+  if (provenance.sourceKind === 'tinysa-firmware-twin') return {
+    title: provenance.device.model,
+    subtitle: `${provenance.device.hardwareVersion} · ${provenance.device.firmwareVersion}`,
+    qualification: 'EXECUTABLE TWIN',
+    facts: [
+      { icon: <Fingerprint/>, label: 'Firmware repository', value: provenance.repositoryCommit.slice(0, 12), detail: provenance.firmwareBinarySha256.slice(0, 16) },
+      { icon: <TerminalSquare/>, label: 'Bridge', value: provenance.bridge },
+      { icon: <Usb/>, label: 'USB transactions', value: 'Not modeled' },
+    ],
+  };
+  const port = provenance.serialPort;
+  return {
+    title: provenance.device.model,
+    subtitle: `${provenance.device.hardwareVersion} · ${provenance.device.firmwareVersion}`,
+    qualification: provenance.device.usbIdentityVerified ? 'USB VERIFIED' : 'USB UNVERIFIED',
+    facts: [
+      { icon: <Usb/>, label: 'USB identity', value: port.vendorId && port.productId ? `${port.vendorId}:${port.productId}` : 'Unverified', detail: port.product ?? port.path },
+      { icon: <Fingerprint/>, label: 'Firmware source', value: provenance.device.firmwareSourceCommit?.slice(0, 12) ?? (provenance.device.firmwareReportedRevision ? `unresolved · ${provenance.device.firmwareReportedRevision}` : 'Unresolved') },
+      { icon: <TerminalSquare/>, label: 'Transport', value: provenance.transport },
+    ],
+  };
+}
+
+function Fact({ icon, label, value, detail }: IdentityFact) { return <div className="device-fact"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong>{detail && <em>{detail}</em>}</div></div>; }
 function Ledger({ label, value }: { label: string; value: string }) { return <div><small>{label}</small><strong>{value}</strong></div>; }
 
-function drawRgb565(canvas: HTMLCanvasElement, frame: ScreenFrame): void {
-  if (frame.width !== 480 || frame.height !== 320 || frame.format !== 'rgb565le' || frame.pixels.length !== 307_200) {
-    throw new Error('Screen frame violated the 480×320 RGB565 contract');
-  }
+function drawFrame(canvas: HTMLCanvasElement, frame: InstrumentScreenFrame): void {
+  if (canvas.width !== frame.width || canvas.height !== frame.height) throw new Error('Screen frame dimensions do not match the declared screen capability');
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas 2D context is unavailable');
   const image = context.createImageData(frame.width, frame.height);
-  for (let pixel = 0; pixel < frame.width * frame.height; pixel++) {
+  if (frame.pixelFormat === 'rgba8888') image.data.set(frame.pixels);
+  else for (let pixel = 0; pixel < frame.width * frame.height; pixel++) {
     const encoded = frame.pixels[pixel * 2]! | (frame.pixels[pixel * 2 + 1]! << 8);
     const target = pixel * 4;
     image.data[target] = Math.round(((encoded >> 11) & 0x1f) * 255 / 31);

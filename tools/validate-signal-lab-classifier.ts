@@ -5,7 +5,7 @@ import {
   BayesianWaveformClassifier,
   BAYESIAN_WAVEFORM_MODEL,
   inferPosterior,
-  knownModelSupportPValue,
+  knownModelSupportRank,
   selectObservableDecision,
 } from '../packages/analysis/src/bayesian-waveform-classifier.js';
 import { BAYESIAN_OBSERVABLE_MODEL } from '../packages/analysis/src/models/bayesian-observable-v5.generated.js';
@@ -98,6 +98,8 @@ const FULL_BAND_2G4_STOP_HZ = 2_480_000_000;
 const SELECTION_POLICY = 'online-first-ready-all-representatives-v3' as const;
 const PINNED_TAIL_CALIBRATION_SCORE_UNIT = 'one-score-per-fit-eligible-acquisition-attempt-v1' as const;
 const PINNED_TAIL_CALIBRATION_AGGREGATION_POLICY = 'minimum-support-across-fit-eligible-first-ready-representatives-v1' as const;
+const PINNED_TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY = 'single-representative-rank-dominates-attempt-min-rank-v1' as const;
+const PINNED_TAIL_CALIBRATION_STATISTICAL_INTERPRETATION = 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1' as const;
 const SWEEP_POINTS = 450;
 const SWEEP_TIME_SECONDS = 0.05;
 const ZERO_SPAN_POINTS = 450;
@@ -194,7 +196,7 @@ interface ValidationCase {
   associationModelId?: string;
   associationMemberCount?: number;
   associationRegionBandwidthHz?: number;
-  knownSupportPValue: number;
+  knownSupportRank: number;
   limitations: readonly string[];
   features: Readonly<Record<string, number>>;
 }
@@ -216,7 +218,7 @@ interface EvidenceViewCase {
   truthPosterior: number;
   posterior: Readonly<Record<string, number>>;
   acceptedHierarchy: boolean;
-  supportPValue: number;
+  supportRank: number;
   features: Readonly<Record<string, number>>;
 }
 
@@ -391,7 +393,7 @@ for (const scenario of validationScenarios) {
             ...(detection.associationRegionStartHz === undefined || detection.associationRegionStopHz === undefined
               ? {}
               : { associationRegionBandwidthHz: detection.associationRegionStopHz - detection.associationRegionStartHz }),
-            knownSupportPValue: knownModelSupportPValue(featureObservation),
+            knownSupportRank: knownModelSupportRank(featureObservation),
             limitations: result.evidence.limitations ?? [],
             features: featureObservation.values,
           });
@@ -420,7 +422,7 @@ for (const scenario of validationScenarios) {
               truthPosterior: viewPosterior.find((item) => item.id === mappedTruth)?.probability ?? 0,
               posterior: Object.fromEntries(viewPosterior.map((item) => [item.id, item.probability])),
               acceptedHierarchy: acceptsAnyTruth(viewResult, allowedModelTruths, scenario.occupiedBandwidthHz, featureObservation.bandwidthHz),
-              supportPValue: knownModelSupportPValue(viewObservation),
+              supportRank: knownModelSupportRank(viewObservation),
               features: values,
             });
           }
@@ -468,6 +470,10 @@ const tailCalibrationPolicyValid = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tail
     === PINNED_TAIL_CALIBRATION_SCORE_UNIT
   && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy
     === PINNED_TAIL_CALIBRATION_AGGREGATION_POLICY
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy
+    === PINNED_TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation
+    === PINNED_TAIL_CALIBRATION_STATISTICAL_INTERPRETATION
   && missingTailCalibrationScenarioIds.length === 0
   && unexpectedTailCalibrationScenarioIds.length === 0
   && invalidTailCalibrationAttemptCounts.length === 0
@@ -707,8 +713,8 @@ const fittedUnknownPosteriorAuroc = auroc([
   ...identifiableFitEligibleKnown.map((item) => ({ score: item.unknownPosterior, positive: false })),
 ]);
 const scenarioExcludedStrictTypicalityAuroc = auroc([
-  ...scenarioExcludedStrictUnknown.map((item) => ({ score: 1 - item.knownSupportPValue, positive: true })),
-  ...identifiableFitEligibleKnown.map((item) => ({ score: 1 - item.knownSupportPValue, positive: false })),
+  ...scenarioExcludedStrictUnknown.map((item) => ({ score: 1 - item.knownSupportRank, positive: true })),
+  ...identifiableFitEligibleKnown.map((item) => ({ score: 1 - item.knownSupportRank, positive: false })),
 ]);
 const exactEquivalenceCompatibleRate = fraction(scenarioExcludedExactEquivalence, (item) => item.acceptedHierarchy);
 const strictHoldoutRejectionRate = fraction(scenarioExcludedStrictUnknown, (item) => item.result === 'unknown');
@@ -807,8 +813,8 @@ const evidenceViews = Object.fromEntries((['spectrum-only', 'envelope-untimed'] 
     anyFalseAcceptAttemptIds: falseAcceptedAttemptIds.slice(0, 50),
     falseAcceptedUnknownExamples: falseAcceptedUnknown.slice(0, 20),
     scenarioExcludedStrictSupportAuroc: auroc([
-      ...selectedScenarioExcludedStrict.map((item) => ({ score: 1 - item.supportPValue, positive: true })),
-      ...selectedKnown.map((item) => ({ score: 1 - item.supportPValue, positive: false })),
+      ...selectedScenarioExcludedStrict.map((item) => ({ score: 1 - item.supportRank, positive: true })),
+      ...selectedKnown.map((item) => ({ score: 1 - item.supportRank, positive: false })),
     ]),
     singletonAllowedTruthProperScoreSamples: selectedSingletonTruthFittedDomain.length,
     fittedTemplateLogLoss: -mean(selectedSingletonTruthFittedDomain.map((item) => Math.log(Math.max(1e-15, item.truthPosterior)))),
@@ -818,8 +824,8 @@ const evidenceViews = Object.fromEntries((['spectrum-only', 'envelope-untimed'] 
       return sum + (probability - target) ** 2;
     }, 0))),
     fittedTemplateExpectedCalibrationError: expectedCalibrationError(selectedSingletonTruthFittedDomain.map((item) => ({ confidence: item.topLeafPosterior, correct: item.topLeaf === item.modelTruth })), 10),
-    knownSupport: numericSummary(selectedKnown.map((item) => item.supportPValue)),
-    scenarioExcludedStrictSupport: numericSummary(selectedScenarioExcludedStrict.map((item) => item.supportPValue)),
+    knownSupport: numericSummary(selectedKnown.map((item) => item.supportRank)),
+    scenarioExcludedStrictSupport: numericSummary(selectedScenarioExcludedStrict.map((item) => item.supportRank)),
   }];
 }));
 const falseAcceptedUnknown = unknown.filter((item) => !item.acceptedHierarchy);
@@ -1028,6 +1034,10 @@ const report = {
       modelScoreUnit: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit,
       pinnedRepresentativeAggregationPolicy: PINNED_TAIL_CALIBRATION_AGGREGATION_POLICY,
       modelRepresentativeAggregationPolicy: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy,
+      pinnedRuntimeInterpretationPolicy: PINNED_TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY,
+      modelRuntimeInterpretationPolicy: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy,
+      pinnedStatisticalInterpretation: PINNED_TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
+      modelStatisticalInterpretation: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation,
       attemptCountsByScenario: modelTailCalibrationAttemptCounts,
       missingScenarioIds: missingTailCalibrationScenarioIds,
       unexpectedScenarioIds: unexpectedTailCalibrationScenarioIds,
@@ -1106,9 +1116,9 @@ const report = {
     anyFalseAcceptAttemptCount: falseAcceptedUnknownAttemptIds.length,
     anyFalseAcceptAttemptIds: falseAcceptedUnknownAttemptIds,
     falseAcceptedUnknownExamples: falseAcceptedUnknown.slice(0, 50),
-    modelSupportPValue: {
-      identifiableFitEligibleKnown: numericSummary(identifiableFitEligibleKnown.map((item) => item.knownSupportPValue)),
-      scenarioExcludedUnknown: numericSummary(scenarioExcludedUnknown.map((item) => item.knownSupportPValue)),
+    modelSupportRank: {
+      identifiableFitEligibleKnown: numericSummary(identifiableFitEligibleKnown.map((item) => item.knownSupportRank)),
+      scenarioExcludedUnknown: numericSummary(scenarioExcludedUnknown.map((item) => item.knownSupportRank)),
     },
     fittedTemplateLogLoss,
     fittedTemplateMulticlassBrier: fittedTemplateBrier,
@@ -1154,7 +1164,7 @@ const acceptanceFailures = [
     ? `sampling partitions overlap or lack metadata (fit/cal seeds=${fittingCalibrationSeedOverlap.join(',') || 'none'}; validation/fit seeds=${validationFittingSeedOverlap.join(',') || 'none'}; validation/cal seeds=${validationCalibrationSeedOverlap.join(',') || 'none'}; validation/fit RBWs=${validationFittingRbwOverlap.join(',') || 'none'}; validation/cal RBWs=${validationCalibrationRbwOverlap.join(',') || 'none'}; calibration-seed-count=${modelCalibrationSeeds.length}; calibration-RBW-count=${modelCalibrationRbwDivisors.length})`
     : undefined,
   !tailCalibrationPolicyValid
-    ? `tail-calibration policy/manifest is invalid (score-unit=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit ?? 'missing'}; aggregation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy ?? 'missing'}; missing-scenarios=${missingTailCalibrationScenarioIds.join(',') || 'none'}; unexpected-scenarios=${unexpectedTailCalibrationScenarioIds.join(',') || 'none'}; invalid-counts=${invalidTailCalibrationAttemptCounts.map((item) => `${item.scenarioId}:${item.count}`).join(',') || 'none'}; view-count-mismatches=${tailCalibrationViewCountMismatches.map((item) => `${item.classId}/${item.view}:${item.observed}/${item.expected}`).join(',') || 'none'})`
+    ? `tail-calibration policy/manifest is invalid (score-unit=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit ?? 'missing'}; aggregation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy ?? 'missing'}; runtime-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy ?? 'missing'}; statistical-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation ?? 'missing'}; missing-scenarios=${missingTailCalibrationScenarioIds.join(',') || 'none'}; unexpected-scenarios=${unexpectedTailCalibrationScenarioIds.join(',') || 'none'}; invalid-counts=${invalidTailCalibrationAttemptCounts.map((item) => `${item.scenarioId}:${item.count}`).join(',') || 'none'}; view-count-mismatches=${tailCalibrationViewCountMismatches.map((item) => `${item.classId}/${item.view}:${item.observed}/${item.expected}`).join(',') || 'none'})`
     : undefined,
   !manifestSplitValid ? `model manifest split is invalid (missing-pinned-exclusions=${modelExcludedMissingPinnedIds.join(',') || 'none'}; unexpected-model-exclusions=${modelExcludedUnexpectedIds.join(',') || 'none'}; missing-pinned-exact=${modelExactEquivalenceMissingPinnedIds.join(',') || 'none'}; unexpected-model-exact=${modelExactEquivalenceUnexpectedIds.join(',') || 'none'}; missing-pinned-known-acquisition=${modelKnownAcquisitionMissingPinnedIds.join(',') || 'none'}; unexpected-model-known-acquisition=${modelKnownAcquisitionUnexpectedIds.join(',') || 'none'}; missing-fitted-unknown=${fittedUnknownMissingPinnedIds.join(',') || 'none'}; unexpected-fitted-unknown=${fittedUnknownUnexpectedIds.join(',') || 'none'}; missing-exclusions=${invalidExcludedScenarioIds.join(',') || 'none'}; unexpected-non-unknown-exclusions=${nonUnknownExcludedScenarioIds.join(',') || 'none'}; duplicate-exclusions=${duplicateExcludedScenarioIds.join(',') || 'none'}; invalid-known-acquisition=${invalidKnownAcquisitionValidationIds.join(',') || 'none'}; unknown-truth-known-acquisition=${unknownTruthKnownAcquisitionValidationIds.join(',') || 'none'}; known-acquisition-not-excluded=${knownAcquisitionValidationNotExcludedIds.join(',') || 'none'}; fitted-known-acquisition=${knownAcquisitionValidationFittedComponentIds.join(',') || 'none'}; missing-exact=${invalidExactEquivalenceScenarioIds.join(',') || 'none'}; non-unknown-exact=${nonUnknownExactEquivalenceScenarioIds.join(',') || 'none'}; exact-not-excluded=${exactEquivalenceNotExcludedScenarioIds.join(',') || 'none'}; exact-without-alternative=${exactEquivalenceWithoutDeclaredAlternativeIds.join(',') || 'none'}; fitted-exact-components=${exactEquivalenceFittedComponentIds.join(',') || 'none'}; fitted-ambiguous-unknown=${ambiguousUnknownIncludedInComponentFitIds.join(',') || 'none'}; fitted-unknown=${fittedUnknownScenarioIds.length}; excluded-unknown=${excludedUnknownScenarioIds.length})` : undefined,
   !manifestSplitValid ? `component assignment audit (duplicate=${duplicateFittedComponentScenarioIds.join(',') || 'none'}; missing=${missingFittedComponentScenarioIds.join(',') || 'none'}; unexpected=${unexpectedFittedComponentScenarioIds.join(',') || 'none'}; wrong-class=${wrongClassFittedComponents.map((item) => `${item.scenarioId}:${item.classId}->${item.expectedClassId}`).join(',') || 'none'}; duplicate-classes=${duplicateModelClassIds.join(',') || 'none'}; missing-classes=${missingModelClassIds.join(',') || 'none'}; unexpected-classes=${unexpectedModelClassIds.join(',') || 'none'})` : undefined,
@@ -1340,7 +1350,7 @@ function compareExactCase(
     'associationMode',
     'associationMemberCount',
     'associationRegionBandwidthHz',
-    'knownSupportPValue',
+    'knownSupportRank',
   ] as const) {
     if (!equivalentValue(referenceCase[field], nullCase[field])) {
       add(nuisanceCell, `case.${field}`, referenceCase[field], nullCase[field], representativeIndex);
@@ -1370,7 +1380,7 @@ function compareExactEvidenceView(
     'result',
     'topLeaf',
     'topLeafPosterior',
-    'supportPValue',
+    'supportRank',
   ] as const) {
     if (!equivalentValue(referenceCase[field], nullCase[field])) {
       add(nuisanceCell, `evidence.${field}`, referenceCase[field], nullCase[field], representativeIndex, view);

@@ -5,7 +5,7 @@ import {
   portCandidateSchema,
   type PortCandidate,
 } from '@tinysa/contracts';
-import type { ByteTransport, TransportEvent } from '@tinysa/device';
+import type { ByteTransport, TransportDiscoveryResult, TransportEvent } from '@tinysa/device';
 
 type ByteListener = (bytes: Uint8Array) => void;
 type EventListener = (event: TransportEvent) => void;
@@ -66,7 +66,7 @@ export class FakeTinySaTransport implements ByteTransport {
     });
   }
 
-  async list(): Promise<PortCandidate[]> { return [this.port]; }
+  async list(): Promise<TransportDiscoveryResult> { return { candidates: [this.port], failures: [] }; }
 
   async open(candidate: PortCandidate): Promise<void> {
     if (this.#open) throw new Error('Fake ZS407 port is already open');

@@ -1,4 +1,5 @@
 import type { Sweep } from '@tinysa/contracts';
+import { measurementIdentityKey, sameMeasurementIdentity } from './measurement-provenance.js';
 
 export const FREQUENCY_AGILE_BAND_START_HZ = 2_402_000_000;
 export const FREQUENCY_AGILE_BAND_STOP_HZ = 2_480_000_000;
@@ -43,9 +44,7 @@ export function frequencyAgileSweepGeometryCompatible(previous: Sweep, candidate
     && previous.requested.lna === candidate.requested.lna
     && previous.requested.spurRejection === candidate.requested.spurRejection
     && previous.source === candidate.source
-    && previous.identity.port.id === candidate.identity.port.id
-    && previous.identity.firmwareVersion === candidate.identity.firmwareVersion
-    && previous.identity.execution === candidate.identity.execution;
+    && sameMeasurementIdentity(previous.identity, candidate.identity);
 }
 
 export function frequencyAgileStrictlyOrderedOpportunity(previous: Sweep, candidate: Sweep): boolean {
@@ -84,9 +83,7 @@ export function frequencyAgileGeometryId(sweep: Sweep): string {
     sweep.requested.lna,
     sweep.requested.spurRejection,
     sweep.source,
-    sweep.identity.port.id,
-    sweep.identity.firmwareVersion,
-    sweep.identity.execution,
+    measurementIdentityKey(sweep.identity),
   ].join(':');
 }
 

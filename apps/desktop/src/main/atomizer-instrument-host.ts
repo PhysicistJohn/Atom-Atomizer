@@ -1,0 +1,591 @@
+import {
+  atomizerInstrumentFeatureExecutionSchema,
+  atomizerInstrumentEventSchema,
+  atomizerInstrumentConnectionCleanupStateSchema,
+  atomizerInstrumentPreferenceSelectionSchema,
+  atomizerInstrumentPreferenceStateSchema,
+  atomizerInstrumentStateSchema,
+  atomizerInstrumentStartupStateSchema,
+  atomizerInstrumentStreamingStateSchema,
+  instrumentCandidateSchema,
+  instrumentConfigurationSchema,
+  instrumentConfigurationStateSchema,
+  instrumentDiscoveryResultSchema,
+  instrumentFeatureRequestSchema,
+  instrumentFeatureResultSchema,
+  instrumentManagerEventSchema,
+  instrumentMeasurementSchema,
+  instrumentSessionSnapshotSchema,
+  instrumentTimestampSchema,
+  type AtomizerInstrumentEvent,
+  type AtomizerInstrumentConnectionCleanupState,
+  type AtomizerInstrumentFeatureExecution,
+  type AtomizerInstrumentPreferenceSelection,
+  type AtomizerInstrumentPreferenceState,
+  type AtomizerInstrumentState,
+  type AtomizerInstrumentStartupState,
+  type AtomizerInstrumentStreamingState,
+  type InstrumentCandidate,
+  type InstrumentConfiguration,
+  type InstrumentConfigurationState,
+  type InstrumentDiscoveryResult,
+  type InstrumentDriverId,
+  type InstrumentFeatureRequest,
+  type InstrumentFeatureResult,
+  type InstrumentManagerEvent,
+  type InstrumentMeasurement,
+  type InstrumentSessionSnapshot,
+  type InstrumentSourceKind,
+} from '@tinysa/contracts';
+import { fingerprintInstrumentMeasurement, type InstrumentManager } from '@tinysa/device';
+import type {
+  InstrumentPreference,
+  LoadedInstrumentPreference,
+} from './instrument-preference.js';
+import { selectPreferredInstrument } from './startup-admission.js';
+
+const MAX_REMEMBERED_MEASUREMENTS = 8_192;
+const MAX_PENDING_HOST_OPERATIONS = 64;
+
+export interface AtomizerInstrumentPreferencePort {
+  load(): Promise<LoadedInstrumentPreference>;
+  save(driverId: InstrumentDriverId, candidateKind?: InstrumentSourceKind): Promise<InstrumentPreference>;
+}
+
+export interface AtomizerInstrumentHostRuntime {
+  now(): Date;
+  yieldToEventLoop(): Promise<void>;
+}
+
+const defaultRuntime: AtomizerInstrumentHostRuntime = Object.freeze({
+  now: () => new Date(),
+  yieldToEventLoop: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+});
+
+type ManagerPort = Pick<InstrumentManager,
+  | 'subscribe'
+  | 'snapshot'
+  | 'pendingConnectionCleanup'
+  | 'discover'
+  | 'connect'
+  | 'configure'
+  | 'acquire'
+  | 'executeFeature'
+  | 'disconnect'> & {
+  readonly registry: {
+    get(driverId: InstrumentDriverId): { readonly sourceKinds: readonly InstrumentSourceKind[] } | undefined;
+  };
+};
+
+interface StreamRun {
+  stopRequested: boolean;
+  externalFault?: string;
+  readonly done: Promise<void>;
+  resolveDone(): void;
+}
+
+type HostLifecycle = 'open' | 'closing' | 'closed';
+
+/**
+ * The only application service allowed to invoke InstrumentManager from IPC.
+ * It owns continuous acquisition, startup admission, preference persistence,
+ * and event de-duplication while leaving every device operation in the manager.
+ */
+export class AtomizerInstrumentHost {
+  readonly #listeners = new Set<(event: AtomizerInstrumentEvent) => void>();
+  readonly #unsubscribeManager: () => void;
+  readonly #emittedMeasurements = new Map<string, string>();
+  readonly #measurementOrder: string[] = [];
+  #tail: Promise<void> = Promise.resolve();
+  #pendingOperations = 0;
+  #pendingSafetyOperations = 0;
+  #preference: AtomizerInstrumentPreferenceState | undefined;
+  #startup: AtomizerInstrumentStartupState = { status: 'not-started' };
+  #streaming: AtomizerInstrumentStreamingState = { status: 'stopped' };
+  #connectionCleanup: AtomizerInstrumentConnectionCleanupState = { status: 'not-required' };
+  #streamRun: StreamRun | undefined;
+  #streamBlockers = 0;
+  #disconnectPromise: Promise<void> | undefined;
+  #shutdownPromise: Promise<void> | undefined;
+  #pendingAcquisition: { eventFingerprint?: string } | undefined;
+  #lifecycle: HostLifecycle = 'open';
+
+  constructor(
+    private readonly manager: ManagerPort,
+    private readonly preferences: AtomizerInstrumentPreferencePort,
+    private readonly runtime: AtomizerInstrumentHostRuntime = defaultRuntime,
+    private readonly selectPreference: typeof selectPreferredInstrument = selectPreferredInstrument,
+  ) {
+    this.#unsubscribeManager = manager.subscribe((event) => this.#acceptManagerEvent(event));
+  }
+
+  subscribe(listener: (event: AtomizerInstrumentEvent) => void): () => void {
+    this.#requireOpen();
+    if (typeof listener !== 'function') throw new TypeError('Instrument event listener must be a function');
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  state(): AtomizerInstrumentState {
+    // A schema-valid session can still have failed pre-announcement admission
+    // (for example, synchronous event validation followed by failed teardown).
+    // Keep that teardown lease explicit without presenting it as connected.
+    const session = this.#connectionCleanup.status === 'required'
+      && this.#connectionCleanup.phase === 'rejected-session'
+      ? undefined
+      : this.manager.snapshot();
+    return atomizerInstrumentStateSchema.parse({
+      schemaVersion: 1,
+      startup: this.#startup,
+      streaming: this.#streaming,
+      connectionCleanup: this.#connectionCleanup,
+      ...(this.#preference ? { preference: this.#preference } : {}),
+      ...(session ? { session } : {}),
+    });
+  }
+
+  discover(): Promise<InstrumentDiscoveryResult> {
+    return this.#serializeOpen(async () => instrumentDiscoveryResultSchema.parse(await this.manager.discover()));
+  }
+
+  connect(candidateValue: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
+    this.#requireOpen();
+    const candidate = instrumentCandidateSchema.parse(candidateValue);
+    return this.#withStreamingStopped(async () => {
+      try { return instrumentSessionSnapshotSchema.parse(await this.manager.connect(candidate)); }
+      finally { this.#syncConnectionCleanup(); }
+    });
+  }
+
+  configure(configurationValue: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
+    this.#requireOpen();
+    const configuration = instrumentConfigurationSchema.parse(configurationValue);
+    return this.#withStreamingStopped(async () => {
+      return instrumentConfigurationStateSchema.parse(await this.manager.configure(configuration));
+    });
+  }
+
+  acquire(): Promise<InstrumentMeasurement> {
+    this.#requireSessionWorkAvailable('Manual acquisition');
+    return this.#serializeOpen(async () => {
+      if (this.#streamRun) throw new Error('Manual acquisition is unavailable while continuous acquisition is running');
+      return this.#acquireAndPublish();
+    });
+  }
+
+  async executeFeature(requestValue: InstrumentFeatureRequest): Promise<AtomizerInstrumentFeatureExecution> {
+    this.#requireSessionWorkAvailable('Instrument feature execution');
+    const request = instrumentFeatureRequestSchema.parse(requestValue);
+    if (request.kind === 'signal-lab-profile-selection'
+      || request.kind === 'touch'
+      || (request.kind === 'rf-generator' && request.action === 'configure')) {
+      return this.#withStreamingStopped(async () => {
+        return this.#executeFeatureAndSnapshot(request);
+      });
+    }
+    return this.#serializeOpen(async () => {
+      return this.#executeFeatureAndSnapshot(request);
+    });
+  }
+
+  disconnect(): Promise<void> {
+    // Teardown is intentionally idempotent across Electron lifecycle races.
+    // A renderer-gone event can arrive while before-quit already owns shutdown;
+    // attach to that terminal operation instead of throwing synchronously.
+    if (this.#lifecycle === 'closing' && this.#shutdownPromise) return this.#shutdownPromise;
+    if (this.#lifecycle === 'closed') return Promise.resolve();
+    this.#requireOpen();
+    if (this.#disconnectPromise) return this.#disconnectPromise;
+
+    let resolveDisconnect!: () => void;
+    let rejectDisconnect!: (reason: unknown) => void;
+    const tracked = new Promise<void>((resolve, reject) => {
+      resolveDisconnect = resolve;
+      rejectDisconnect = reject;
+    });
+    // Reserve the operation before stopping a faulted stream can emit an
+    // event and synchronously re-enter this method through an observer.
+    this.#disconnectPromise = tracked;
+    this.#streamBlockers++;
+    const run = this.#requestStreamingStop();
+    void (async () => {
+      try {
+        await run?.done;
+        // Disconnect is an admitted RF-safety operation. If shutdown starts
+        // while it is queued, it must still reach the manager exactly once.
+        await this.#enqueue(() => this.#disconnectOwnedConnections(), 'rf-safe-teardown');
+      } finally {
+        this.#streamBlockers--;
+      }
+    })().then(() => {
+      if (this.#disconnectPromise === tracked) this.#disconnectPromise = undefined;
+      resolveDisconnect();
+    }, (reason: unknown) => {
+      if (this.#disconnectPromise === tracked) this.#disconnectPromise = undefined;
+      rejectDisconnect(reason);
+    });
+    return tracked;
+  }
+
+  startStreaming(): Promise<AtomizerInstrumentStreamingState> {
+    this.#requireSessionWorkAvailable('Continuous acquisition');
+    if (this.#streamRun) return Promise.resolve(atomizerInstrumentStreamingStateSchema.parse(this.#streaming));
+    const session = this.manager.snapshot();
+    if (!session) return Promise.reject(new Error('Continuous acquisition requires an active instrument session'));
+    if (!session.configuration) return Promise.reject(new Error('Continuous acquisition requires an admitted configuration'));
+    if (session.configuration.configuration.kind === 'complex-iq') {
+      return Promise.reject(new Error('Complex-I/Q v1 is a bounded single acquisition and does not support continuous streaming'));
+    }
+
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+    const run: StreamRun = { stopRequested: false, done, resolveDone };
+    this.#streamRun = run;
+    this.#setStreaming({ status: 'running', startedAt: this.#timestamp() });
+    queueMicrotask(() => { void this.#pump(run); });
+    return Promise.resolve(atomizerInstrumentStreamingStateSchema.parse(this.#streaming));
+  }
+
+  async stopStreaming(): Promise<AtomizerInstrumentStreamingState> {
+    this.#requireOpen();
+    const run = this.#requestStreamingStop();
+    await run?.done;
+    return atomizerInstrumentStreamingStateSchema.parse(this.#streaming);
+  }
+
+  readPreference(): Promise<AtomizerInstrumentPreferenceState> {
+    return this.#serializeOpen(async () => this.#acceptPreference(await this.preferences.load()));
+  }
+
+  writePreference(selectionValue: AtomizerInstrumentPreferenceSelection): Promise<AtomizerInstrumentPreferenceState> {
+    return this.#serializeOpen(async () => {
+      const selection = atomizerInstrumentPreferenceSelectionSchema.parse(selectionValue);
+      this.#requireRegisteredPreference(selection.driverId, selection.candidateKind);
+      const preference = await this.preferences.save(selection.driverId, selection.candidateKind);
+      return this.#acceptPreference({ source: 'persisted', preference });
+    });
+  }
+
+  /** Attempts the configured startup candidate once, without fallback. */
+  startPreferredInstrument(): Promise<AtomizerInstrumentState> {
+    this.#requireOpen();
+    if (this.#startup.status !== 'not-started') return Promise.resolve(this.state());
+    return this.#withStreamingStopped(async () => {
+      if (this.#startup.status !== 'not-started') return this.state();
+
+      let preference: AtomizerInstrumentPreferenceState;
+      try { preference = this.#acceptPreference(await this.preferences.load()); }
+      catch (value) { return this.#failStartup('preference-load', value); }
+      this.#requireOpen();
+
+      let discovery: InstrumentDiscoveryResult;
+      try { discovery = instrumentDiscoveryResultSchema.parse(await this.manager.discover()); }
+      catch (value) { return this.#failStartup('discovery', value); }
+      this.#requireOpen();
+
+      let candidate: InstrumentCandidate;
+      try { candidate = this.selectPreference(discovery, preference.preference); }
+      catch (value) { return this.#failStartup('admission', value); }
+
+      try { await this.manager.connect(candidate); }
+      catch (value) {
+        this.#syncConnectionCleanup();
+        return this.#failStartup('connect', value);
+      }
+      this.#syncConnectionCleanup();
+
+      this.#setStartup({ status: 'connected', connectedAt: this.#timestamp() });
+      return this.state();
+    });
+  }
+
+  /** Stops acquisition, tears down admitted sessions, then cleans any pre-admission connection lease. */
+  shutdown(): Promise<void> {
+    if (this.#shutdownPromise) return this.#shutdownPromise;
+
+    let resolveShutdown!: () => void;
+    let rejectShutdown!: (reason: unknown) => void;
+    const tracked = new Promise<void>((resolve, reject) => {
+      resolveShutdown = resolve;
+      rejectShutdown = reject;
+    });
+    // Publish the terminal promise before any state event can synchronously
+    // re-enter shutdown from a renderer observer.
+    this.#shutdownPromise = tracked;
+    this.#lifecycle = 'closing';
+    const run = this.#requestStreamingStop();
+    const admittedDisconnect = this.#disconnectPromise;
+    void (async () => {
+      await run?.done;
+      if (admittedDisconnect) await admittedDisconnect;
+      else await this.#enqueue(() => this.#disconnectOwnedConnections(), 'rf-safe-teardown');
+    })().then(() => {
+      this.#lifecycle = 'closed';
+      this.#unsubscribeManager();
+      this.#listeners.clear();
+      resolveShutdown();
+    }, (reason: unknown) => {
+      this.#lifecycle = 'open';
+      if (this.#shutdownPromise === tracked) this.#shutdownPromise = undefined;
+      rejectShutdown(reason);
+    });
+    return tracked;
+  }
+
+  async #pump(run: StreamRun): Promise<void> {
+    let failure: unknown;
+    try {
+      while (!run.stopRequested && this.#streamRun === run) {
+        await this.#serializeOpen(async () => {
+          if (!run.stopRequested && this.#streamRun === run) await this.#acquireAndPublish();
+        });
+        if (!run.stopRequested && this.#streamRun === run) await this.runtime.yieldToEventLoop();
+      }
+    } catch (value) {
+      failure = value;
+    } finally {
+      if (this.#streamRun === run) {
+        this.#streamRun = undefined;
+        const fault = run.externalFault ?? (failure !== undefined && !run.stopRequested ? errorMessage(failure) : undefined);
+        if (fault !== undefined) {
+          this.#setStreaming({ status: 'faulted', message: fault, failedAt: this.#timestamp() });
+        } else {
+          this.#setStreaming({ status: 'stopped' });
+        }
+      }
+      run.resolveDone();
+    }
+  }
+
+  async #acquireAndPublish(): Promise<InstrumentMeasurement> {
+    if (this.#pendingAcquisition) throw new Error('Instrument host acquisition transaction re-entered');
+    const pending: { eventFingerprint?: string } = {};
+    this.#pendingAcquisition = pending;
+    try {
+      const measurement = instrumentMeasurementSchema.parse(await this.manager.acquire());
+      const fingerprint = fingerprintInstrumentMeasurement(measurement);
+      if (pending.eventFingerprint && pending.eventFingerprint !== fingerprint) {
+        throw new Error('Instrument manager measurement event and acquisition return disagree');
+      }
+      this.#emitMeasurementOnce(measurement, fingerprint, true);
+      return measurement;
+    } finally {
+      if (this.#pendingAcquisition === pending) this.#pendingAcquisition = undefined;
+    }
+  }
+
+  #acceptManagerEvent(value: InstrumentManagerEvent): void {
+    const event = instrumentManagerEventSchema.parse(value);
+    if (event.type === 'measurement') {
+      if (this.#pendingAcquisition) {
+        if (this.#pendingAcquisition.eventFingerprint) {
+          this.#faultActiveStream('Instrument manager emitted more than one measurement for one acquisition');
+          return;
+        }
+        this.#pendingAcquisition.eventFingerprint = fingerprintInstrumentMeasurement(event.measurement);
+      } else {
+        this.#emitMeasurementOnce(event.measurement, fingerprintInstrumentMeasurement(event.measurement), false);
+      }
+    } else {
+      if ((event.type === 'status' && event.status === 'faulted') || event.type === 'error') {
+        this.#faultActiveStream(event.type === 'error' ? event.error.message : event.message ?? 'Instrument session faulted');
+      }
+      this.#emit(event);
+    }
+    if (event.type === 'disconnected') {
+      this.#emittedMeasurements.clear();
+      this.#measurementOrder.length = 0;
+    }
+  }
+
+  #emitMeasurementOnce(measurement: InstrumentMeasurement, fingerprint: string, allowNovel: boolean): void {
+    const key = JSON.stringify([measurement.sessionId, measurement.configurationRevision, measurement.sequence]);
+    const previous = this.#emittedMeasurements.get(key);
+    if (previous) {
+      if (previous !== fingerprint) {
+        const message = `Instrument measurement sequence ${measurement.sequence} changed identity or content`;
+        this.#faultActiveStream(message);
+        throw new Error(message);
+      }
+      return;
+    }
+    if (!allowNovel) {
+      const message = 'Instrument manager emitted a novel measurement outside a host acquisition transaction';
+      this.#faultActiveStream(message);
+      throw new Error(message);
+    }
+    this.#emittedMeasurements.set(key, fingerprint);
+    this.#measurementOrder.push(key);
+    if (this.#measurementOrder.length > MAX_REMEMBERED_MEASUREMENTS) {
+      this.#emittedMeasurements.delete(this.#measurementOrder.shift()!);
+    }
+    this.#emit({ type: 'measurement', measurement });
+  }
+
+  async #executeFeatureAndSnapshot(request: InstrumentFeatureRequest): Promise<AtomizerInstrumentFeatureExecution> {
+    const result = instrumentFeatureResultSchema.parse(await this.manager.executeFeature(request));
+    const session = this.manager.snapshot();
+    if (!session) throw new Error('Instrument feature completed without an active session snapshot');
+    return atomizerInstrumentFeatureExecutionSchema.parse({ result, session });
+  }
+
+  async #disconnectOwnedConnections(): Promise<void> {
+    // InstrumentManager.disconnect is the atomic teardown boundary: admitted
+    // session first, then every driver's retained pre-session connection.
+    try { await this.manager.disconnect(); }
+    finally { this.#syncConnectionCleanup(); }
+  }
+
+  #syncConnectionCleanup(): void {
+    const pending = this.manager.pendingConnectionCleanup();
+    const next = atomizerInstrumentConnectionCleanupStateSchema.parse(pending
+      ? { status: 'required', driverId: pending.driverId, phase: pending.phase }
+      : { status: 'not-required' });
+    if (next.status === this.#connectionCleanup.status
+      && (next.status === 'not-required'
+        || (this.#connectionCleanup.status === 'required'
+          && next.driverId === this.#connectionCleanup.driverId
+          && next.phase === this.#connectionCleanup.phase))) return;
+    this.#connectionCleanup = next;
+    this.#emit({ type: 'connection-cleanup', connectionCleanup: next });
+  }
+
+  #faultActiveStream(message: string): void {
+    const run = this.#streamRun;
+    if (!run) return;
+    run.externalFault = errorMessage(message);
+    run.stopRequested = true;
+  }
+
+  #acceptPreference(value: LoadedInstrumentPreference): AtomizerInstrumentPreferenceState {
+    const preference = atomizerInstrumentPreferenceStateSchema.parse(value);
+    this.#requireRegisteredPreference(preference.preference.driverId, preference.preference.candidateKind);
+    this.#preference = preference;
+    this.#emit({ type: 'preference', preference });
+    return preference;
+  }
+
+  #requireRegisteredPreference(driverId: InstrumentDriverId, candidateKind?: InstrumentSourceKind): void {
+    const driver = this.manager.registry.get(driverId);
+    if (!driver) throw new Error(`Instrument driver ${driverId} is not statically registered`);
+    if (candidateKind && !driver.sourceKinds.includes(candidateKind)) {
+      throw new Error(`Instrument driver ${driverId} does not own source kind ${candidateKind}`);
+    }
+  }
+
+  #failStartup(stage: Extract<AtomizerInstrumentStartupState, { status: 'failed' }>['stage'], value: unknown): AtomizerInstrumentState {
+    this.#setStartup({ status: 'failed', stage, message: errorMessage(value), failedAt: this.#timestamp() });
+    return this.state();
+  }
+
+  #setStartup(value: AtomizerInstrumentStartupState): void {
+    this.#startup = atomizerInstrumentStartupStateSchema.parse(value);
+    this.#emit({ type: 'startup', startup: this.#startup });
+  }
+
+  #setStreaming(value: AtomizerInstrumentStreamingState): void {
+    this.#streaming = atomizerInstrumentStreamingStateSchema.parse(value);
+    this.#emit({ type: 'streaming', streaming: this.#streaming });
+  }
+
+  #emit(value: AtomizerInstrumentEvent): void {
+    const event = atomizerInstrumentEventSchema.parse(value);
+    for (const listener of this.#listeners) {
+      try { listener(event); } catch { /* Renderer observers cannot break lifecycle state. */ }
+    }
+  }
+
+  #requestStreamingStop(): StreamRun | undefined {
+    const run = this.#streamRun;
+    if (run) run.stopRequested = true;
+    else if (this.#streaming.status === 'faulted') this.#setStreaming({ status: 'stopped' });
+    return run;
+  }
+
+  async #withStreamingStopped<T>(operation: () => Promise<T> | T): Promise<T> {
+    this.#requireOpen();
+    if (this.#disconnectPromise) throw new Error('Instrument connection is disconnecting');
+    // Reserve bounded tail ownership before waiting for the current stream to
+    // finish. Otherwise an arbitrary number of connect/configure/feature
+    // callers can all retain closures while awaiting the same `run.done`, and
+    // only encounter the queue ceiling after that wait has completed.
+    const releaseAdmission = this.#reserveAdmission('normal');
+    this.#streamBlockers++;
+    const run = this.#requestStreamingStop();
+    let handedToTail = false;
+    try {
+      await run?.done;
+      const result = this.#enqueueAdmitted(() => {
+        this.#requireOpen();
+        return operation();
+      }, releaseAdmission);
+      handedToTail = true;
+      return await result;
+    } finally {
+      this.#streamBlockers--;
+      if (!handedToTail) releaseAdmission();
+    }
+  }
+
+  #serializeOpen<T>(operation: () => Promise<T> | T): Promise<T> {
+    this.#requireOpen();
+    return this.#enqueue(() => {
+      this.#requireOpen();
+      return operation();
+    });
+  }
+
+  #enqueue<T>(operation: () => Promise<T> | T, admission: 'normal' | 'rf-safe-teardown' = 'normal'): Promise<T> {
+    // Privileged IPC has a smaller global cap, but the host is independently
+    // usable and continuously self-schedules acquisitions. Bound this layer
+    // as well so future in-process consumers cannot grow its Promise tail.
+    let releaseAdmission: () => void;
+    try { releaseAdmission = this.#reserveAdmission(admission); }
+    catch (error) { return Promise.reject(error); }
+    return this.#enqueueAdmitted(operation, releaseAdmission);
+  }
+
+  #enqueueAdmitted<T>(operation: () => Promise<T> | T, releaseAdmission: () => void): Promise<T> {
+    const result = this.#tail.then(operation, operation);
+    this.#tail = result.then(() => undefined, () => undefined);
+    void result.then(releaseAdmission, releaseAdmission);
+    return result;
+  }
+
+  #reserveAdmission(admission: 'normal' | 'rf-safe-teardown'): () => void {
+    if (admission === 'normal' && this.#pendingOperations >= MAX_PENDING_HOST_OPERATIONS) {
+      throw new Error(`Instrument host admission limit of ${MAX_PENDING_HOST_OPERATIONS} pending operations was reached`);
+    }
+    // Disconnect/shutdown are idempotently coalesced by their public methods
+    // and own one separately bounded slot so normal traffic cannot crowd out
+    // the RF-safe teardown path.
+    if (admission === 'rf-safe-teardown' && this.#pendingSafetyOperations >= 1) {
+      throw new Error('Instrument host RF-safe teardown is already pending');
+    }
+    if (admission === 'normal') this.#pendingOperations++;
+    else this.#pendingSafetyOperations++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (admission === 'normal') this.#pendingOperations--;
+      else this.#pendingSafetyOperations--;
+    };
+  }
+
+  #requireSessionWorkAvailable(operation: string): void {
+    this.#requireOpen();
+    if (this.#disconnectPromise) throw new Error(`${operation} is unavailable while the instrument is disconnecting`);
+    if (this.#streamBlockers > 0) throw new Error(`${operation} is unavailable during an instrument connection or configuration transition`);
+  }
+
+  #requireOpen(): void {
+    if (this.#lifecycle !== 'open') throw new Error('Atomizer instrument host is closed');
+  }
+  #timestamp(): string { return instrumentTimestampSchema.parse(this.runtime.now().toISOString()); }
+}
+
+function errorMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value);
+  return (raw.trim() || 'Unknown error').slice(0, 4_096);
+}

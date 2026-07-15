@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import {
+  ATOM_REALTIME_CALL_ARGUMENT_CHARACTER_LIMIT,
+  ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT,
+  ATOM_REALTIME_RESPONSE_OUTPUT_ITEM_LIMIT,
+} from './atom-agent-retention.js';
 import { RealtimeResponseLifecycle, buildRealtimeToolContinuation } from './realtime-voice-lifecycle.js';
 
 const created = (id: string) => ({ type: 'response.created', response: { id } });
@@ -48,5 +53,25 @@ describe('Realtime voice response lifecycle', () => {
     expect(continuation.response.tools.map(tool=>tool.name)).toEqual(['load_atom_tools','get_application_state','computer_screenshot']);
     expect(continuation.response).not.toHaveProperty('max_output_tokens');
     expect(continuation.response).not.toHaveProperty('truncation');
+  });
+
+  it('rejects oversized response collections and variable-width call fields before exposure', () => {
+    const outputOverflow = new RealtimeResponseLifecycle();
+    outputOverflow.begin(created('response-output-overflow'));
+    expect(() => outputOverflow.complete(done('response-output-overflow', Array.from(
+      { length: ATOM_REALTIME_RESPONSE_OUTPUT_ITEM_LIMIT + 1 },
+      () => ({ type: 'message' }),
+    )))).toThrow(/bounded .*item output limit/);
+
+    const idOverflow = new RealtimeResponseLifecycle();
+    idOverflow.begin(created('response-id-overflow'));
+    expect(() => idOverflow.complete(done('response-id-overflow', [call('x'.repeat(ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT + 1))]))).toThrow(/call_id exceeded/);
+
+    const argumentOverflow = new RealtimeResponseLifecycle();
+    argumentOverflow.begin(created('response-argument-overflow'));
+    expect(() => argumentOverflow.complete(done('response-argument-overflow', [{
+      ...call('bounded-call'),
+      arguments: 'x'.repeat(ATOM_REALTIME_CALL_ARGUMENT_CHARACTER_LIMIT + 1),
+    }]))).toThrow(/arguments exceeded/);
   });
 });

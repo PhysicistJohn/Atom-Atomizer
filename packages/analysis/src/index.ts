@@ -31,6 +31,9 @@ import {
   traceBankConfigurationSchema,
   traceIdSchema,
 } from '@tinysa/contracts';
+export { isInstrumentMeasurementIdentity, measurementIdentityKey, sameMeasurementIdentity } from './measurement-provenance.js';
+export { RADIO_OPERATING_BAND_CONTEXT, compatibleRadioDuplexModes } from './radio-operating-band-context.js';
+export type { RadioAirInterface, RadioDuplexMode, RadioLinkDirection, RadioOperatingBand, RadioOperatingBandRange } from './radio-operating-band-context.js';
 import { logGamma, regularizedIncompleteBeta } from './bayesian-predictive.js';
 import {
   BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL,
@@ -690,7 +693,7 @@ export function calculateSweepMetrics(sweep: Sweep): SweepMetrics {
 export function integrateSweepBandPower(sweep: Sweep, startHz: number, stopHz: number): IntegratedBandPower {
   validateSweep(sweep);
   validateFrequencyWindow(sweep, startHz, stopHz, 'Integrated power');
-  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Integrated power requires a positive measured RBW');
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Integrated power requires a positive analysis resolution scale');
   const cells = sweepCells(sweep);
   let integratedMilliwatts = 0;
   let binsUsed = 0;
@@ -722,7 +725,7 @@ export function measureOccupiedBandwidth(
   validateSweep(sweep);
   if (!Number.isFinite(percent) || percent < 10 || percent > 99.9) throw new Error('Occupied-bandwidth percentage must be between 10 and 99.9');
   if (noiseCorrection !== 'none' && noiseCorrection !== 'robust-floor') throw new Error(`Unsupported OBW noise correction: ${String(noiseCorrection)}`);
-  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Occupied bandwidth requires a positive measured RBW');
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Occupied bandwidth requires a positive analysis resolution scale');
   const floorMilliwatts = noiseCorrection === 'robust-floor' ? dbmToMilliwatts(robustNoiseFloor(sweep.powerDbm)) : 0;
   const weighted = sweepCells(sweep).map((cell) => ({
     ...cell,
@@ -1365,7 +1368,7 @@ function validateSweep(sweep: Sweep): void {
   if (!Number.isFinite(sweep.actualStartHz)
     || !Number.isFinite(sweep.actualStopHz)
     || sweep.actualStopHz <= sweep.actualStartHz) throw new Error('Sweep requires finite increasing actual frequency bounds');
-  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Sweep requires a finite positive measured RBW');
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Sweep requires a finite positive analysis resolution scale');
   for (let index = 1; index < sweep.frequencyHz.length; index++) {
     if (sweep.frequencyHz[index]! <= sweep.frequencyHz[index - 1]!) throw new Error('Sweep frequencies are not strictly increasing');
   }
@@ -1604,7 +1607,7 @@ function median(values: readonly number[]): number {
 
 export { SIGNAL_LAB_EMSO_MODEL, SignalLabBayesianClassifier, signalLabWaveformHypotheses } from './signal-lab-classifier.js';
 export type { SignalLabWaveformHypothesis, WaveformEvidence } from './signal-lab-classifier.js';
-export { BAYESIAN_WAVEFORM_MODEL, BayesianWaveformClassifier, inferPosterior, knownModelSupportPValue, observableClassDefinitions, selectObservableDecision } from './bayesian-waveform-classifier.js';
+export { BAYESIAN_WAVEFORM_MODEL, BayesianWaveformClassifier, empiricalSyntheticSupportRank, inferPosterior, knownModelSupportRank, observableClassDefinitions, selectObservableDecision } from './bayesian-waveform-classifier.js';
 export { extractObservableFeatures } from './observable-features.js';
 export { logGamma, logSumExp, mixtureLogLikelihood, posteriorCandidates, regularizedIncompleteBeta, studentTLogDensity, studentTModelTailProbability } from './bayesian-predictive.js';
 export type { ObservableDecisionClass, ObservableLeafClass } from './observable-classifier-model.js';

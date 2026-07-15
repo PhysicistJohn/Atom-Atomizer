@@ -2,7 +2,7 @@ import type { ActivityAssociationObservation, BayesianActivityAssociationEvidenc
 import { logGamma } from './bayesian-predictive.js';
 
 export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
-  id: 'bayesian-frequency-agile-transition-v2',
+  id: 'bayesian-frequency-agile-transition-v3',
   priorAgileDynamicsProbability: 0.01,
   maximumOpportunityWindow: 96,
   modeledSweepTimeSeconds: 0.05,
@@ -10,8 +10,12 @@ export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
   minimumResolutionCells: 3,
   promotionPosteriorProbability: 0.99,
   retentionPosteriorProbability: 0.90,
-  classicChangePrior: [78, 1] as const,
-  leChangePrior: [2, 1] as const,
+  // These Beta shapes are predeclared engineering transition families. Their
+  // means match independent selection from 79 or three cells, respectively,
+  // but a scalar center-change sequence is not a protocol likelihood: AFH,
+  // channel maps, collisions, missed packets, and scheduling are unmodeled.
+  fullBand79CellChangePrior: [78, 1] as const,
+  threePrimaryChannelChangePrior: [2, 1] as const,
   // Predeclared design stationary-null rate. Hardware calibration must verify
   // that a stationary source's transition probability is no greater than this
   // value. This must remain a fixed
@@ -19,8 +23,8 @@ export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
   // prior puts substantial mass on highly agile null sequences and conflicts
   // with the exact fixed-5% sequential false-promotion calculation.
   stationaryChangeProbability: 0.05,
-  advertisingCentersHz: [2_402_000_000, 2_426_000_000, 2_480_000_000] as const,
-  minimumAdvertisingToleranceHz: 1_500_000,
+  primaryChannelCentersHz: [2_402_000_000, 2_426_000_000, 2_480_000_000] as const,
+  minimumPrimaryChannelToleranceHz: 1_500_000,
 } as const;
 
 /**
@@ -45,18 +49,18 @@ export function bayesianFrequencyAgileActivityEvidence(
   for (let index = 1; index < observations.length; index++) {
     if (resolvedCenterChanged(observations[index - 1]!, observations[index]!)) changedTransitionCount++;
   }
-  const advertisingHits = observations.map(advertisingChannelHit);
-  const advertisingChannelHitCount = advertisingHits.filter(Boolean).length;
+  const primaryChannelHits = observations.map(primaryChannelCenterHit);
+  const primaryChannelCenterHitCount = primaryChannelHits.filter(Boolean).length;
 
-  const classicLogMarginalLikelihood = transitionLogMarginal(
+  const fullBand79CellAgileLogMarginalLikelihood = transitionLogMarginal(
     changedTransitionCount,
     transitionCount,
-    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.classicChangePrior,
+    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.fullBand79CellChangePrior,
   );
-  const leLogMarginalLikelihood = transitionLogMarginal(
+  const threePrimaryChannelAgileLogMarginalLikelihood = transitionLogMarginal(
     changedTransitionCount,
     transitionCount,
-    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.leChangePrior,
+    ...BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.threePrimaryChannelChangePrior,
   );
   const stationaryLogMarginalLikelihood = fixedTransitionLogLikelihood(
     changedTransitionCount,
@@ -64,8 +68,8 @@ export function bayesianFrequencyAgileActivityEvidence(
     BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.stationaryChangeProbability,
   );
   const activityLogMarginalLikelihood = logSumExp([
-    Math.log(0.5) + classicLogMarginalLikelihood,
-    Math.log(0.5) + leLogMarginalLikelihood,
+    Math.log(0.5) + fullBand79CellAgileLogMarginalLikelihood,
+    Math.log(0.5) + threePrimaryChannelAgileLogMarginalLikelihood,
   ]);
   const logBayesFactor = activityLogMarginalLikelihood - stationaryLogMarginalLikelihood;
   const posteriorAgileDynamicsProbability = posteriorFromPriorAndLogBayesFactor(
@@ -78,20 +82,20 @@ export function bayesianFrequencyAgileActivityEvidence(
     priorAgileDynamicsProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.priorAgileDynamicsProbability,
     posteriorAgileDynamicsProbability,
     logBayesFactor,
-    classicLogMarginalLikelihood,
-    leLogMarginalLikelihood,
+    fullBand79CellAgileLogMarginalLikelihood,
+    threePrimaryChannelAgileLogMarginalLikelihood,
     stationaryLogMarginalLikelihood,
     positiveObservationCount: observations.length,
     transitionCount,
     changedTransitionCount,
     uniqueResolutionCellCount: resolutionCellCount(observations),
-    advertisingChannelHitCount,
+    primaryChannelCenterHitCount,
     opportunityCount,
     maximumOpportunityWindow: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.maximumOpportunityWindow,
     modeledSweepTimeSeconds: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.modeledSweepTimeSeconds,
     promotionPosteriorProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.promotionPosteriorProbability,
     retentionPosteriorProbability: BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.retentionPosteriorProbability,
-    qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity',
+    qualification: 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity',
   };
 }
 
@@ -147,12 +151,12 @@ function resolutionCellCount(observations: readonly ActivityAssociationObservati
   return cells.length;
 }
 
-function advertisingChannelHit(observation: ActivityAssociationObservation): boolean {
+function primaryChannelCenterHit(observation: ActivityAssociationObservation): boolean {
   const toleranceHz = Math.max(
-    BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.minimumAdvertisingToleranceHz,
+    BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.minimumPrimaryChannelToleranceHz,
     observation.rbwHz,
   );
-  return BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.advertisingCentersHz
+  return BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.primaryChannelCentersHz
     .some((centerHz) => Math.abs(observation.centerHz - centerHz) <= toleranceHz);
 }
 

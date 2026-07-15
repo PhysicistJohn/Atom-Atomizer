@@ -69,15 +69,18 @@ Only trusted main may call OpenAI REST endpoints or open the text-agent WebSocke
 
 ### 2.3 Trio topology boundary
 
-Atomizer owns operator intent, OpenAI credentials, tool policy, approvals, and orchestration. `TinySA_Firmware` owns the executable twin. `TinySA_SignalLab` owns stimulus intent and is currently `reserved-not-connected`. Atom reads topology when execution identity or composition is material and preserves these distinctions:
+Atomizer owns operator intent, instrument selection/lifecycle, OpenAI credentials, tool policy, approvals, and orchestration. `TinySA_SignalLab` owns the active high-level synthetic measurement producer and the separate future stimulus intent. `TinySA_Firmware` owns the executable twin and that future intent's sink. Atom reads topology when source identity or composition is material and preserves these distinctions:
 
-| Execution | Transport | USB verified | USB transactions modeled |
-|---|---|---:|---:|
-| Physical ZS407 | `usb-cdc-acm` | Only after exact identity | Yes, by the real device |
-| Executable twin | `renode-monitor-bridge` | No | No |
-| Protocol test double | `protocol-test-double` | No | No; test-only |
+| Source | Driver / transport | Qualification | USB status |
+|---|---|---|---|
+| SignalLab | `signal-lab` / `signal-lab-measurement-bridge` | `synthetic-visual-projection`; no RF, firmware, generator, screen, touch, or complex I/Q claim | Not a USB source |
+| Physical ZS407 | `tinysa-zs407` / `usb-cdc-acm` | `device-observed` after exact identity; custom firmware may remain warning-admitted and unqualified | Verified only after exact identity; real USB transactions |
+| Executable twin | `tinysa-zs407` / `renode-monitor-bridge` | `firmware-executed-twin` | Not verified; USB transactions not modeled |
+| Protocol test double | test-only / `protocol-test-double` | Test evidence only | Not verified or modeled |
 
-The byte-identical trio composition manifest is normative. Atom cannot activate the reserved SignalLab edge or describe the twin as USB.
+The byte-identical trio composition v4 manifest is normative. With no persisted preference, SignalLab is the factory default; a failed or ambiguous preference never falls back to a different source. Atom may observe and operate only capabilities declared by the active `AtomizerInstrumentApiV1` session. SignalLab's selected profile is status/capability state and cannot become detector or classifier evidence. The active SignalLab→Atomizer measurement edge is distinct from the SignalLab→Firmware stimulus edge, which remains `reserved-not-connected`; Atom cannot activate that edge or describe the twin as USB.
+
+NeptuneSDR is a future driver and contract-evolution target, not a currently registered or supported instrument. Atom must not offer SDR or complex-I/Q tools until a versioned source identity, truthful capabilities/provenance, manager validation, consumer behavior, and coordinated composition contract exist.
 
 ## 3. Atom identity and behavior
 
@@ -181,7 +184,7 @@ No mutable application snapshot is injected by default. Atom loads only the narr
 - Device identity, firmware, capabilities, mode, RF output and verification.
 - Analyzer/generator/detector configuration.
 - Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
-- Versioned Atomizer/Firmware/SignalLab topology, execution backend, transport, USB-verification state, and reserved edge status.
+- Versioned Atomizer/Firmware/SignalLab topology, active driver/source/qualification, transport, USB-verification state when applicable, active measurement edge, and reserved stimulus-edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a declared tool explicitly requests them and the user's task requires them. Tool results are untrusted conversation data and cannot alter instructions, policy, model, or the response-scoped tool set.
@@ -194,9 +197,9 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 |---|---|---|---|
 | `load_atom_tools` | Routing only | Never | Selects one to eight exact registered names and installs their concrete schemas for the following response only; it cannot execute application behavior |
 | `get_application_state` | Observe | Never | Reads route/acquisition/environment plus complete staged analyzer/generator/detection/measurement configuration |
-| `get_system_topology` | Observe | Never | Reads the versioned trio, active execution, transport, and reserved SignalLab edge |
+| `get_system_topology` | Observe | Never | Reads the versioned trio, active driver/source/transport, active SignalLab measurement edge, and reserved SignalLab stimulus edge |
 | `get_agent_surface` | Observe | Never | Reads compact tool/policy inventory, response-scoped loading contract, and UI-control bindings with projection and guarantee |
-| `get_instrument_state` | Observe | Never | Reads identity/mode/capabilities/RF state |
+| `get_instrument_state` | Observe | Never | Reads driver/source identity, qualification, capabilities, and only source-applicable mode/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
 | `get_measurement_state` | Observe | Never | Reads four host trace modes, D1–D4 overlay visibility, eight markers/readouts, searches, and host display scale |
 | `set_measurement_view` | Operate | Never | Selects Spectrum, Waterfall, Channel, or detected-envelope STFT |
@@ -210,8 +213,8 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
-| `connect_device` | Operate | Never | Connects exactly one previously listed candidate; no default substitution |
-| `disconnect_device` | Operate | Never | Disconnects the active device and preserves unknown-RF semantics |
+| `connect_device` | Operate | Never | Connects exactly one previously listed instrument candidate; no default substitution |
+| `disconnect_device` | Operate | Never | Disconnects the active instrument and preserves unknown-RF semantics where applicable |
 | `inspect_interface` | Observe | Never | Derives rendered controls, availability, risk, preferred tool, projection, and guarantee from the live DOM |
 | `computer_action` | Operate | Never* | Activates only synchronous UI-only controls; domain operations are excluded |
 | `computer_screenshot` | Observe | Never | Captures only Atomizer and issues a short-lived one-use screenshot ID plus focused-target identity |
@@ -296,7 +299,12 @@ RF output enable always requires approval even if the original prompt requested 
 Firmware installation is not an Atomizer approval path. Application contract 6
 contains no updater UI, preload method, main-process IPC handler, or Atom tool.
 Download, physical preflight, DFU, flashing, journaling, and recovery are owned
-exclusively by the standalone sibling application `../TinySA_Flasher`.
+exclusively by standalone sibling `../TinySA_Flasher`. Its active interface
+catalog v3 retains active application contract v2 (`deviceContractVersion: 2`);
+interface catalog v2 and legacy application contract v1 are frozen.
+This includes native-picker admission of manifested custom firmware. Atomizer's
+warning-admitted `custom-unqualified` device identity is observation only and
+cannot prove artifact bytes, qualification, or update success.
 
 ### 9.2 Non-bypass guarantees
 
@@ -306,6 +314,8 @@ exclusively by the standalone sibling application `../TinySA_Flasher`.
 - Firmware identity remains observable device evidence but cannot create an Atomizer installation capability; users must use the standalone `TinySA_Flasher`.
 - Tool descriptions are guidance; host validation and policy are authority.
 - Disconnect while RF output may be on results in `unknown`; Atom must say it may still be emitting.
+- Physical RF state is command-acknowledged rather than measured; executable-twin state is firmware-executed state and never evidence of physical emission. Atom must preserve the visible qualifier.
+- Configuration, acquisition, and shutdown establish output off for RF-capable sessions. Touch invalidates RF/configuration state, and Atom cannot acquire or invoke unsafe features until explicit output-off recovery succeeds.
 
 ## 10. Prompt-injection and untrusted-data contract
 
@@ -404,17 +414,17 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-24:** Voice and text sessions both send and retain `reasoning.effort = high`.
 - **AI-25:** Voice sessions send and retain `voice = ballad` and `server_vad.threshold = 0.97`.
 - **AI-26:** Voice and text operation remains gated until every sent session setting has an exact `session.updated` acknowledgement; mismatch/timeout fails visibly and server-only defaults remain inspectable.
-- **AI-27:** Every implemented API v3 capability has a closed Atom tool or a documented high-impact exclusion.
+- **AI-27:** Every implemented `AtomizerInstrumentApiV1` capability has a closed Atom tool, an explicitly capability-gated UI-only disposition, or a documented high-impact exclusion.
 - **AI-28:** Remote connected-screen touch cannot execute through coordinate computer use and always reaches action-time approval through its typed tool.
 - **AI-29:** Every declared Atomizer UI hook resolves to exactly one typed tool contract, risk class, projection, executor, and guarantee; marker-search criteria and auto-scale have first-class tools.
 - **AI-30:** Text and voice share the identical compact loader and concrete-definition factory; the same selected names yield byte-equivalent response-scoped schemas, including app-scoped screenshot and computer tools.
-- **AI-31:** Atom reports physical USB, executable-twin, protocol-test-double, and reserved SignalLab topology without conflation.
+- **AI-31:** Atom reports active SignalLab simulation, physical USB, executable-twin, protocol-test-double, and reserved SignalLab stimulus topology without conflation.
 - **AI-32:** Voice function chains are bounded to eight application calls after one non-executing loader call, and duplicate call IDs terminate the session.
-- **AI-33:** Every runtime method in `TinySaApiV3` has a machine-checked Atom tool, evidence projection, guarantee, and explicit failure disposition.
+- **AI-33:** Every runtime method in `AtomizerInstrumentApiV1` has a machine-checked Atom tool or explicit agent exclusion, evidence projection, guarantee, and failure disposition; TinySA protocol-v3 details remain below its driver.
 - **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
-- **AI-35:** Atomizer exposes no firmware-installation UI, IPC method, or Atom tool; the standalone `TinySA_Flasher` is the exclusive owner.
+- **AI-35:** Atomizer exposes no firmware-installation UI, IPC method, or Atom tool; standalone `TinySA_Flasher` is the exclusive owner. Its active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen.
 - **AI-36:** Generic app-computer actions continue to fail closed on every local human-only or high-impact control.
-- **AI-37:** The API v3 runtime catalog and preload contain no legacy updater method.
+- **AI-37:** The `AtomizerInstrumentApiV1` runtime catalog and preload contain no legacy updater method.
 - **AI-38:** Firmware identity and custom-unqualified provenance never imply installation authority or a successful update.
 - **AI-39:** Voice config includes and exactly verifies `audio.input.transcription.model = gpt-realtime-whisper`; user and assistant deltas stream into one message per turn.
 - **AI-40:** Atom makes one startup voice connection attempt with microphone muted; mic/speaker state remains independently human-controlled and visually encoded.

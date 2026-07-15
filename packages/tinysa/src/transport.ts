@@ -1,4 +1,4 @@
-import type { InstrumentTransportKind, PortCandidate } from '@tinysa/contracts';
+import type { InstrumentSourceKind, InstrumentTransportKind, PortCandidate } from '@tinysa/contracts';
 
 export type TransportEvent = { type: 'opened' } | { type: 'closed'; reason?: string } | { type: 'error'; error: Error };
 export interface TransportAcquisitionMetadata {
@@ -10,9 +10,20 @@ export interface TransportAcquisitionMetadata {
   actualAttenuationDb: number;
   evidence: string;
 }
+export interface TransportDiscoveryFailure {
+  sourceKind: InstrumentSourceKind;
+  transport: InstrumentTransportKind;
+  code: 'enumeration-failed';
+  message: string;
+  recoverable: true;
+}
+export interface TransportDiscoveryResult {
+  candidates: readonly PortCandidate[];
+  failures: readonly TransportDiscoveryFailure[];
+}
 export interface ByteTransport {
   readonly kind: InstrumentTransportKind;
-  list(): Promise<PortCandidate[]>;
+  list(): Promise<TransportDiscoveryResult>;
   open(candidate: PortCandidate): Promise<void>;
   close(): Promise<void>;
   write(bytes: Uint8Array): Promise<void>;

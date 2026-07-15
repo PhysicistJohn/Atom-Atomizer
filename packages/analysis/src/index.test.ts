@@ -554,7 +554,7 @@ describe('signal analysis', () => {
     expect(activity.associationObservations).toHaveLength(8);
     expect(activity.associationOpportunities).toEqual(sweeps.map((sweep) => ({ sweepId: sweep.id, outcome: 'exactly-one' })));
     expect(activity.associationBayesianEvidence).toMatchObject({
-      modelId: 'bayesian-frequency-agile-transition-v2',
+      modelId: 'bayesian-frequency-agile-transition-v3',
       positiveObservationCount: 8,
       transitionCount: 7,
       changedTransitionCount: 7,
@@ -853,12 +853,15 @@ describe('signal analysis', () => {
     expect(result).toMatchObject({
       label: 'unknown', decisionLevel: 'unknown', qualification: 'bayesian-observable-equivalence', scoreKind: 'model-posterior',
       modelId: 'bayesian-observable-equivalence-v5',
-      unknownReason: 'out-of-domain', decisionSupport: { kind: 'synthetic-support-p-value' },
+      unknownReason: 'out-of-domain', decisionSupport: { kind: 'synthetic-support-rank' },
     });
     expect(result.decisionSupport!.threshold).toBeDefined();
     expect(result.decisionSupport!.value).toBeLessThan(result.decisionSupport!.threshold!);
     expect(result.candidates[0]).toMatchObject({ label: 'observable:cw-like' });
     expect(result.modelProvenance).toMatchObject({ producer: 'tinysa-signal-lab', sourceCommit: SIGNAL_LAB_EMSO_MODEL.sourceCommit });
+    expect(result.modelProvenance?.corpusSha256).toBe(SIGNAL_LAB_EMSO_MODEL.corpusSha256);
+    expect(result.modelProvenance).not.toHaveProperty('catalogSha256');
+    expect(result.modelProvenance).not.toHaveProperty('generatorSha256');
     expect(result.candidates.some((candidate) => candidate.label === 'unknown')).toBe(true);
     expect(result.candidates).toHaveLength(12);
     expect(result.candidates.reduce((sum, candidate) => sum + candidate.confidence, 0)).toBeCloseTo(1, 12);
@@ -875,7 +878,7 @@ describe('signal analysis', () => {
     const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
     expect(result).toMatchObject({
       label: 'unknown', decisionLevel: 'unknown', unknownReason: 'out-of-domain',
-      decisionSupport: { kind: 'synthetic-support-p-value' },
+      decisionSupport: { kind: 'synthetic-support-rank' },
     });
     expect(result.decisionSupport!.threshold).toBeDefined();
     expect(result.decisionSupport!.value).toBeLessThan(result.decisionSupport!.threshold!);
@@ -1052,6 +1055,43 @@ describe('signal analysis', () => {
     expect(observation.values).toEqual(baseline.values);
   });
 
+  it('admits truthful half-open raw grids but rejects incomplete or out-of-range observable geometry', () => {
+    const centerHz = 98_000_000;
+    const spanHz = 2_000_000;
+    const power = (frequency: number) => Math.max(-110, -48 - Math.abs(frequency - centerHz) / 2_000);
+    const closed = emsoSweep(centerHz, spanHz, 30, power);
+    const halfOpenFrequencyHz = Array.from(
+      { length: closed.frequencyHz.length },
+      (_, index) => closed.actualStartHz + spanHz * index / closed.frequencyHz.length,
+    );
+    const halfOpen: Sweep = {
+      ...closed,
+      id: 'truthful-half-open-grid',
+      frequencyHz: halfOpenFrequencyHz,
+      powerDbm: halfOpenFrequencyHz.map(power),
+    };
+    const detection = emsoDetection('truthful-half-open-grid', centerHz, 20_000, [halfOpen]);
+    expect(() => extractObservableFeatures(detection, { sweeps: [halfOpen] })).not.toThrow();
+
+    const invalidGrids: readonly Sweep[] = [
+      {
+        ...closed,
+        id: 'materially-incomplete-grid',
+        frequencyHz: closed.frequencyHz.map((_frequency, index) => closed.actualStartHz + spanHz * index / (2 * (closed.frequencyHz.length - 1))),
+      },
+      {
+        ...closed,
+        id: 'out-of-range-grid',
+        frequencyHz: closed.frequencyHz.map((frequency) => frequency - 10_000),
+      },
+    ];
+    for (const sweep of invalidGrids) {
+      const invalidDetection = emsoDetection(sweep.id, centerHz, 20_000, [sweep]);
+      expect(() => extractObservableFeatures(invalidDetection, { sweeps: [sweep] }))
+        .toThrow(/materially incomplete or out-of-range sweep geometry/);
+    }
+  });
+
   it('marginalizes every cadence-rate feature when physical zero-span timing is unqualified', () => {
     const sweeps = Array.from({ length: 3 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
     const detection = emsoDetection('unqualified-time', 98_000_000, 20_000, sweeps);
@@ -1072,6 +1112,42 @@ describe('signal analysis', () => {
     expect(observation.values).toHaveProperty('envelope.rangeDb');
     expect(observation.values).not.toHaveProperty('envelope.logTransitionRateHz');
     expect(Object.keys(observation.values).some((key) => key.startsWith('envelope.periodicEnergy'))).toBe(false);
+  });
+
+  it('discloses synthetic spectrum resolution and unavailable SignalLab RF RBW without inventing values', () => {
+    const sweeps = Array.from({ length: 3 }, (_, index) => ({
+      ...emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)),
+      actualAttenuationDb: null,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent' as const,
+      attenuationQualification: 'not-applicable' as const,
+      source: 'signal-lab-synthetic' as const,
+    }));
+    const detection = emsoDetection('signal-lab-unavailable-rbw', 98_000_000, 20_000, sweeps);
+    const tunedFrequencyHz = detection.peakHz + 10_000;
+    const zeroSpan: ZeroSpanCapture = {
+      kind: 'zero-span', id: 'signal-lab-unavailable-rbw-zs', sequence: 1,
+      capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 50,
+      frequencyHz: tunedFrequencyHz, samplePeriodSeconds: 1 / 9_000,
+      targetDetectionId: detection.id,
+      powerDbm: Array.from({ length: 450 }, (_, index) => index % 10 < 4 ? -45 : -90),
+      requested: { frequencyHz: tunedFrequencyHz, points: 450, rbwKhz: 20, attenuationDb: 'auto', sweepTimeSeconds: 0.05, trigger: { mode: 'auto' } },
+      actualRbwHz: null,
+      actualAttenuationDb: null,
+      resolutionBandwidthQualification: 'unavailable',
+      attenuationQualification: 'not-applicable',
+      source: 'signal-lab-synthetic',
+      complete: true,
+      identity,
+      timingQualification: 'simulation-exact',
+    };
+
+    const observation = extractObservableFeatures(detection, { sweeps, zeroSpan });
+
+    expect(observation.views).toContain('detected-power-envelope');
+    expect(observation.limitations).toContain('synthetic-grid-equivalent-resolution');
+    expect(observation.limitations).toContain('zero-span-rbw-unavailable');
+    expect(observation.values['envelope.tuneOffsetFraction']).toBeCloseTo(1, 12);
+    expect(Object.values(observation.values).every(Number.isFinite)).toBe(true);
   });
 
   it('rejects otherwise matching zero-span evidence outside the calibrated acquisition geometry', () => {
@@ -1176,7 +1252,7 @@ describe('signal analysis', () => {
     expect(() => detector.analyze(makeSweep({ frequencyHz: [], powerDbm: [] }))).toThrow(/at least three measurement points/i);
     expect(() => detector.analyze(makeSweep({ powerDbm: [-90] }))).toThrow(/different lengths/i);
     expect(() => detector.analyze(makeSweep({ powerDbm: [-90, -89, Number.NaN, ...Array(17).fill(-91)] }))).toThrow(/finite/i);
-    expect(() => detector.analyze(makeSweep({ actualRbwHz: 0 }))).toThrow(/positive measured RBW/i);
+    expect(() => detector.analyze(makeSweep({ actualRbwHz: 0 }))).toThrow(/positive analysis resolution scale/i);
     expect(() => detector.analyze(makeSweep({ actualStartHz: 2_000, actualStopHz: 100 }))).toThrow(/frequency bounds/i);
     const repeatedFrequencyHz = [...makeSweep().frequencyHz];
     repeatedFrequencyHz[10] = repeatedFrequencyHz[9]!;

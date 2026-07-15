@@ -129,6 +129,31 @@ describe('analysis visual contracts', () => {
     expect(waveformLabel('signal-lab:fm')).not.toMatch(/replay/i);
   });
 
+  it('labels the synthetic out-of-domain gate as an empirical rank, not a p-value', () => {
+    const rejected = {
+      ...classification,
+      label: 'unknown',
+      confidence: 0,
+      decisionLevel: 'unknown',
+      unknownReason: 'out-of-domain',
+      decisionSupport: { kind: 'synthetic-support-rank', value: 1 / 81, threshold: 0.025 },
+    } satisfies WaveformClassification;
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[detection]}
+      classifications={[rejected]}
+      selectedId={detection.id}
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onZeroConfig={vi.fn()}
+      onAcquireZero={vi.fn()}
+    />);
+
+    expect(view.container.textContent).toContain('synthetic support rank 1.2% < 2.5% cutoff');
+    expect(view.container.textContent).not.toMatch(/support p(?:-value)?/i);
+  });
+
   it('maps every regular-association member to one group result while preserving local-line provenance', () => {
     const members = ['line-left', 'line-center', 'line-right', 'line-edge'];
     const associated = members.map((id, index): DetectedSignal => ({
@@ -216,24 +241,24 @@ describe('analysis visual contracts', () => {
       }],
       associationOpportunities: [{ sweepId: 'sweep-1', outcome: 'exactly-one' }],
       associationBayesianEvidence: {
-        modelId: 'bayesian-frequency-agile-transition-v2',
+        modelId: 'bayesian-frequency-agile-transition-v3',
         priorAgileDynamicsProbability: 0.01,
         posteriorAgileDynamicsProbability: 0.9942,
         logBayesFactor: 11.9,
-        classicLogMarginalLikelihood: -2,
-        leLogMarginalLikelihood: -4,
+        fullBand79CellAgileLogMarginalLikelihood: -2,
+        threePrimaryChannelAgileLogMarginalLikelihood: -4,
         stationaryLogMarginalLikelihood: -14,
         positiveObservationCount: 8,
         transitionCount: 7,
         changedTransitionCount: 7,
         uniqueResolutionCellCount: 8,
-        advertisingChannelHitCount: 1,
+        primaryChannelCenterHitCount: 1,
         opportunityCount: 12,
         maximumOpportunityWindow: 96,
         modeledSweepTimeSeconds: 0.05,
         promotionPosteriorProbability: 0.99,
         retentionPosteriorProbability: 0.9,
-        qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity',
+        qualification: 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity',
       },
       bayesianEvidence: localBayesianEvidence,
     } as DetectedSignal;
@@ -270,7 +295,7 @@ describe('analysis visual contracts', () => {
     expect(provenance).toContain('8 / 12 positive/opportunity looks');
     expect(provenance).toContain('50 ms modeled sweep');
     expect(provenance).toContain('frequency-agile-2g4-activity-v3');
-    expect(provenance).toContain('bayesian-frequency-agile-transition-v2');
+    expect(provenance).toContain('bayesian-frequency-agile-transition-v3');
     expect(provenance).toContain('bayesian-exponential-multiscale-cfar-v3');
     expect(provenance).not.toContain('Local detection');
     expect(view.container.querySelector('.candidate-row')?.textContent).toContain('Activity · 2.4 GHz agile activity · Bluetooth-compatible');

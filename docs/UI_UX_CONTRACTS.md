@@ -27,7 +27,7 @@ No screen may obscure the answers to questions 1–3. Measurement views must ans
 | XP-02 | Safe by construction | No navigation, import, reconnect, preset, or configuration action may enable RF output. |
 | XP-03 | Plot first | The primary measurement plot receives the largest uninterrupted area at the reference window size. |
 | XP-04 | Progressive density | Common controls are visible; advanced controls are grouped without hiding current effective values. |
-| XP-05 | Evidence over certainty | Detection and classification results carry source sweeps, settings, timestamps, device/firmware, and confidence/evidence. |
+| XP-05 | Evidence over certainty | Detection and classification results carry source sweeps, settings, timestamps, source identity/qualification, device/firmware when applicable, and confidence/evidence. |
 | XP-06 | Recoverable interruption | Unplug, timeout, cancellation, window reload, and invalid input end in an actionable state without an indefinite spinner. |
 | XP-07 | Local and private | No remote font, asset, telemetry, inference, or account dependency exists in v1. |
 | XP-08 | Keyboard complete | Every core workflow is achievable without a pointer. |
@@ -43,7 +43,7 @@ The frame contains five regions:
 - **Top bar:** product identity, environment/update badges, instrument connection control, and Atom entry point.
 - **Primary navigation:** only implemented Observe, Analyze, and Generate destinations; unfinished destinations are not rendered as dead affordances.
 - **Workspace:** route-specific header, actions, errors, connection guidance, content and inspector.
-- **Status bar:** connection, device/firmware, trace state, verification state, API version.
+- **Status bar:** connection, driver/source kind, qualification, device/firmware when applicable, trace state, verification state, instrument API version.
 - **Atom rail:** native voice/text agent, tool activity, approvals, and instrument-aware suggestions.
 
 These regions remain mounted across workspace changes. Generator output `on` or `unknown` must remain visible in the navigation and top-level status treatment regardless of active workspace.
@@ -74,26 +74,32 @@ speaking, and error states; a redundant microphone connection button is absent.
 
 Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. Spectrum now contains a bounded four-view measurement stage, 50-sweep history, and native CSV/JSON export.
 
-### 2.3 Executable twin and separate SignalLab
+Workspace availability and controls are derived from the active session's declared capabilities. SignalLab supports swept spectrum, detected power, and its typed profile-selection feature; it does not currently expose channel editing, generator, firmware screen/touch, TinySA diagnostics, or complex-I/Q controls through Atomizer. The physical ZS407 and Firmware twin expose only the features proved by their admitted capability profile. A route that has no meaningful capability for the active source shows a specific unavailable state and source-switch action; it never sends a TinySA-only request to SignalLab or fabricates a generic setting.
 
-Startup completes physical discovery before choosing an execution backend. Exactly one `0483:5740` ZS407 suppresses the twin and is automatically connected through identity, firmware-source, and command-catalog admission. Multiple exact devices suppress the twin and open operator selection. When no exact ZS407 exists, main exposes and automatically connects the sibling Firmware repository's pinned executable Renode twin. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. Discovery, identity/source, or twin boot/evidence failure is visible; no synthesized or test backend is substituted.
+### 2.3 Instrument selection, SignalLab, and the executable twin
 
-SignalLab is a separate application in `../TinySA_SignalLab`. Atomizer neither
-launches it nor imports its runtime state. Its immutable canonical scalar corpus
-is a pinned build-time source for the generated Bayesian observable model; the
-79-profile visual catalog is not the posterior taxonomy and is not feeding the
-instrument. The future `SignalLabStimulusIntent -> Firmware stimulus sink` edge
-is displayed to Atom as `reserved-not-connected`. Activating it requires a new
-coordinated trio contract; the UI must not expose dead SignalLab controls or
-imply a live generator-to-classifier side channel.
+Atomizer discovers each statically registered driver independently and retains driver-scoped failures. Main loads an owner-only version-1 `{driverId, candidateKind?}` preference; when no preference file exists, `signal-lab` is the explicit factory default. The connection surface identifies every candidate by driver, source kind, display name, and truthful capability summary. It connects exactly one preferred match. A corrupt preference, no match, ambiguity, discovery/identity/bridge/evidence failure, or connection failure is actionable and never falls through to a different driver or source kind. Changing the default is an explicit operator action after safe disconnection.
+
+SignalLab remains a separate repository and application in `../TinySA_SignalLab`, but its separately built version-1 NDJSON measurement bridge is now the active high-level source behind Atomizer's `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION`, exposes its closed profile-selection capability, and never labels it as a TinySA, USB device, executable firmware, or RF emitter. Its selected profile is visible source status, not classifier truth: it never appears in a measurement, detector input, classifier input, result rationale, or exported observation provenance. Profile changes invalidate the admitted acquisition configuration before the next acquisition. Bridge failure is visible and cannot activate hardware or the twin.
+
+The `tinysa-zs407` driver exposes physical ZS407 and executable-twin candidates as separate source kinds. Neither suppresses nor substitutes for the other. A physical candidate must pass exact USB, cross-response ZS407, firmware-source, and command-catalog admission; a syntactically valid unknown revision is shown persistently as `CUSTOM FIRMWARE · UNQUALIFIED`, with no invented source commit or qualification. The twin boots the sibling Firmware repository's pinned Renode image. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. The initial physical receive-only evidence remains characterization, not RF calibration or general hardware qualification.
+
+The renderer displays only main-owned RF session state. Physical `on`/`off` is labeled command-acknowledged, twin state is labeled firmware-executed-twin, and neither may be presented as calibrated RF measurement. `unknown` is a risk state, not an indeterminate visual preference: acquisition and unsafe actions remain unavailable until explicit output-off recovery. Firmware-screen touch invalidates the current acquisition configuration and RF state. Stale-session events, stale SignalLab producer epochs, and any response or event that fails runtime validation cannot alter visible state.
+
+SignalLab's immutable canonical scalar corpus remains a pinned build-time source for the generated Bayesian observable model, separate from live source status. The active `SignalLab -> Atomizer` measurement edge does not activate the future `SignalLabStimulusIntent -> Firmware stimulus sink` edge. That edge remains `reserved-not-connected`; activating it requires a coordinated trio contract. The UI and Atom must present these edges separately and never imply a live generator-to-classifier side channel.
+
+NeptuneSDR is not a current candidate, driver, or supported capability. The generic contract's reserved complex-I/Q v1 variant admits one complete `cf32le` buffer capped at 64 MiB, rejects continuous acquisition, and must not create visible SDR controls. A future integration requires a distinct source identity, truthful capability/provenance declarations, bounded sample-transfer behavior (and a new contract before chunking, streaming, or backpressure), renderer and Atom consumers, acceptance evidence, and coordinated contract evolution before any Neptune or complex-I/Q affordance is rendered.
 
 ### 2.3.1 Firmware installation ownership
 
 Atomizer application contract 6 has no firmware-update dialog, top-bar update
 affordance, updater IPC, or Atom updater tool. Installed firmware identity and
-custom-unqualified provenance remain visible as device evidence. Download,
+custom-unqualified provenance remain visible as device evidence. OEM release
+selection, manifested custom-firmware admission, download/import verification,
 preflight, DFU discovery, flashing, journaling, and recovery belong exclusively
-to the standalone sibling application `../TinySA_Flasher`; Atomizer neither
+to standalone sibling `../TinySA_Flasher`. Its active interface catalog v3
+retains active application contract v2 (`deviceContractVersion: 2`); interface
+catalog v2 and legacy application contract v1 are frozen. Atomizer neither
 launches nor remotely operates that safety boundary.
 
 ### 2.4 Active-function control surface
@@ -165,21 +171,20 @@ The unit-terminator interaction follows established X-Series active-function beh
 ### 3.1 Connection state
 
 ```text
-disconnected -> discovering -> selecting -> connecting -> identifying -> ready
-      ^                                                       |
-      |                    recovering <------------------------+
-      +---------------------- faulted <------------------------+
+disconnected -> discovering -> matching preference -> connecting -> admitting -> ready
+      ^                                                                  |
+      +---------------------------- faulted <-----------------------------+
 ```
 
 | State | UI obligation | Allowed actions | Forbidden claims |
 |---|---|---|---|
-| Disconnected | “No instrument”; show connect action | Refresh, select, connect, inspect saved sessions | Current device state, verified settings |
-| Discovering | Bounded progress and cancel | Cancel | Device absent until discovery completes |
-| Selecting | List all candidates with path/identity | Refresh, choose, connect, cancel | Automatically identifying a candidate as genuine solely by VID/PID |
-| Connecting | Disable duplicate connect; show chosen port | Cancel if transport supports it | “Ready” |
-| Identifying | Show protocol negotiation | Disconnect/cancel | Supported capabilities until resolved |
-| Ready | Show identity, firmware, capability state | Supported operations | Verification not supplied by firmware |
-| Recovering | Show cause and attempt count | Cancel reconnect | Silent operation resumption |
+| Disconnected | “No instrument”; show connect action | Refresh, select, connect, inspect saved sessions | Current source state or verified settings |
+| Discovering | Bounded progress plus per-driver outcomes | Cancel | Treating one driver failure as an empty global discovery |
+| Matching preference | Show persisted driver/source-kind intent or SignalLab factory default | Inspect candidates; choose explicitly if startup cannot match | Choosing a different available source as fallback |
+| Selecting | List candidates by driver, source kind, name, and truthful identity summary | Refresh, choose, connect, cancel | Treating USB VID/PID, synthetic status, or twin presence as interchangeable proof |
+| Connecting | Disable duplicate connect; show chosen source | Cancel if the driver supports it | “Ready” |
+| Admitting | Show source-specific protocol and evidence validation | Disconnect/cancel | Capabilities or provenance until resolved |
+| Ready | Show driver/source, qualification, capabilities, and device/firmware only when applicable | Only capability-declared operations | Verification not supplied by the source |
 | Faulted | Preserve typed cause and recovery action | Retry, disconnect, diagnostics | Generic “something went wrong” alone |
 
 ### 3.2 Acquisition state
@@ -217,19 +222,23 @@ Actual output is represented by `off | on | unknown`; `unknown` is not styled as
 
 ### UX-CONNECT-01 — Select and connect
 
-**Trigger:** connection pill, connection banner, or first-run action.  
-**Inputs:** enumerated `PortCandidate[]`, optional remembered candidate ID.  
-**Output:** identified `DeviceSnapshot` or typed failure.  
-**States:** loading, no ports, candidate list, connecting, connected, failed.
+**Trigger:** connection pill, connection banner, or first-run action.
+
+**Inputs:** versioned `InstrumentCandidate[]`, driver-scoped discovery failures, and the active owner-only driver/source-kind preference.
+
+**Output:** validated `InstrumentSessionSnapshot` or typed failure.
+
+**States:** loading, no candidates, partial discovery, candidate list, matching preference, connecting, connected, failed.
 
 Rules:
 
-- Remembered candidates are preselected but never connected without user action in v1.
-- Each option shows human label, OS path, and serial number when present.
-- Refresh retains selection only if the same candidate ID remains.
+- Startup connects only the unique candidate matching the persisted preference, or the SignalLab factory default when the preference file is absent. It never substitutes another driver or source kind.
+- Manual selection and “make default” are explicit and separate; selecting a source for one session must not silently rewrite preference.
+- Each option shows driver, source kind, human label, qualification and only identity fields truthful for that candidate. SignalLab never shows USB/firmware fields; the twin never shows verified USB; a serial candidate may show admitted serial/USB evidence.
+- Refresh retains a manual selection only when the same driver/source-kind/candidate identity remains in the new discovery revision; stale candidates cannot connect.
 - Connecting disables refresh, candidate changes, and duplicate submissions.
 - On success, focus returns to the triggering control and the dialog closes.
-- On failure, the dialog remains open and explains permission, busy-port, unsupported-device, timeout, or transport causes distinctly.
+- On failure, the dialog remains open and distinguishes driver unavailability, bridge identity/protocol, permission, busy-port, unsupported firmware/device, timeout, ambiguity, or source-specific transport causes.
 
 ## 5. Spectrum workspace contract
 
@@ -417,21 +426,22 @@ Classification comprises four explicitly separated evidence levels:
    posterior-predictive parameter integration. Missing dimensions use the exact
    fixed-component marginal. Detector-conditioned, generator-separated
    `spectrum-only`, `envelope-untimed`, and `envelope-timed` calibration sets
-   supply class-conditional inductive synthetic support p-values. Calibration
-   v6 uses one conservative minimum-support score per independent fit-eligible
+   supply empirical class-conditional synthetic support ranks. Calibration v7
+   uses one conservative minimum-support score per fit-eligible
    acquisition attempt, not one score per correlated local fragment; the final
    asset stores 1,990 such scores per evidence view. Inference
-   uses the matching view; the 0.025 rejection rule has coverage meaning only
-   under exchangeability with that pinned generator and view and is physically
-   uncalibrated. A support rejection presents primary label `unknown`, zero
-   confidence, and its support p-value and cutoff; ranked model-posterior
-   candidates remain diagnostic. The decision is the finest
+   uses the matching view. The fixed, stratified synthetic reference grids are
+   not exchangeable operational samples, so the 0.025 engineering rejection
+   cutoff is not a conformal p-value threshold and has no finite-sample coverage
+   meaning. A support rejection presents primary label `unknown`, zero
+   confidence, and its `synthetic-support-rank` value and cutoff; ranked
+   model-posterior candidates remain diagnostic. The decision is the finest
    defensible leaf or ancestor, including deliberate LTE/NR cellular-OFDM
    ambiguity; active SignalLab selection is never an input. Implemented as
    experimental synthetic-domain evidence, not protocol identity or physical
    calibration. Its preprocessing, calibration, and decision provenance are
    `scalar-observable-features-v5`,
-   `synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6`,
+   `synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7`,
    `runtime-domain-qualified-known-representatives-v3`, and
    `observable-open-set-decision-v9`, with prior
    `engineering-design-class-weights-v1`. The 35-scenario, 18-unknown
@@ -440,10 +450,17 @@ Classification comprises four explicitly separated evidence levels:
    `d813b3268eee7240a86b2de725ec78080dc0f3ce829fe0c493bf582b62f8529e`.
    The 28-dimensional, 12-leaf, 18-component final asset was fitted from 8,140
    detector-conditioned representatives and has SHA-256
-   `bb4393e1e0e0e86977def9238a4e1e3dc03511f06b421384ff41316e37e96c9d`.
+   `05ec69aacc100f272446b7e00ba36cd112e516b8832585174312bac1f6af7d0c`.
    Its two Wi-Fi leaf posteriors remain diagnostic; the primary Wi-Fi label is
    only `802.11-compatible channel morphology · PHY unresolved`, never an
    802.11 protocol or PHY identity.
+   Cellular structural eligibility comes from
+   `standards-operating-band-context-v1`, pinned to TS 45.005 19.0.0,
+   TS 36.101 18.5.0, and TS 38.104 18.12.0. It tests complete observed-interval
+   containment with a bounded RBW edge tolerance and preserves every compatible
+   FDD, TDD, SDL, or SUL row in an overlap. It is a model-support mask, not
+   protocol, deployment, survey-prior, or regulatory-authorization evidence;
+   SDL/SUL alone cannot create an FDD/TDD result.
 4. **Validated modulation/protocol classifier:** physical taxonomy, labeled corpus, training pipeline, calibrated model, evaluation and supported-domain statement. Hardware/data gated and not claimed by the Bayesian observable model.
 
 ### UX-CLS-01 — Pipeline visibility
@@ -466,7 +483,7 @@ event and matching acquisition, device, firmware, and execution provenance.
 The provisional 2.4 GHz frequency-agile association stores its bounded band and
 source sweeps separately, together with
 `frequency-agile-2g4-activity-v3` association provenance and
-`bayesian-frequency-agile-transition-v2` dynamics provenance. It never
+`bayesian-frequency-agile-transition-v3` dynamics provenance. It never
 overwrites the frozen emission region, and the UI must distinguish
 association-band activity from emission localization.
 Matching zero span is additionally bound to the target detection. All admitted
@@ -481,10 +498,13 @@ none, exactly one independently CFAR-admitted eligible narrow candidate, or
 ambiguous. The dynamics model conditions change/no-change evidence only on
 positive unambiguous looks, requires at least eight positives over at least
 three resolution cells, and bounds the history to 96 opportunities. Transition
-model v2 compares an equal Classic/LE Beta-Binomial mixture with the fixed
-stationary Bernoulli likelihood `p_change=0.05`. Its exact sequential
-false-promotion upper bound is `1.3657385209e-5` through 96 positive looks under
-that independent stationary null, before the additional three-cell guard. The
+model v3 compares an equal mixture of the neutral
+`fullBand79CellChangePrior = Beta(78,1)` and
+`threePrimaryChannelChangePrior = Beta(2,1)` engineering Beta-Binomial
+families with the fixed stationary Bernoulli likelihood `p_change=0.05`.
+Neither agile family is a Classic/LE protocol or emitter likelihood. Its exact
+sequential false-promotion upper bound is `1.3657385209e-5` through 96 positive
+looks under that independent stationary null, before the additional three-cell guard. The
 UI must not present this model-bound calculation as a physical or merged-emitter
 false-association rate. This is broad band-activity evidence, not
 transmitter/link identity, a recovered hop
@@ -717,11 +737,11 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 
 - **CON-01:** Empty discovery is actionable.
 - **CON-02:** Refresh updates candidates without duplicates.
-- **CON-03:** Missing remembered candidate leaves selection unset, explains the state, and never auto-connects.
+- **CON-03:** A missing or ambiguous preferred candidate explains the state and never auto-connects another source; only an absent preference file authorizes the explicit SignalLab factory default.
 - **CON-04:** Connect submits once.
-- **CON-05:** Identification precedes ready.
-- **CON-06:** Unsupported firmware explains degraded capabilities.
-- **CON-07:** Busy and permission errors have distinct remediation.
+- **CON-05:** Source-specific admission and provenance validation precede ready.
+- **CON-06:** Unsupported/custom firmware explains degraded capabilities without inventing qualification.
+- **CON-07:** Driver unavailable, bridge mismatch, busy-port, and permission errors have distinct remediation.
 - **CON-08:** Unplug rejects current work and updates global state.
 - **CON-09:** Reconnect never resumes acquisition automatically.
 - **CON-10:** Reconnect never restores generator output.
@@ -845,7 +865,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 | Package | Outcome | Depends on | Acceptance |
 |---|---|---|---|
 | UX-00 | Tokens, primitives, frame, accessibility harness | contracts | XP rules; scale review |
-| UX-01 | Connection/global state | transport/device API | CON-01..12 |
+| UX-01 | Connection/global state | driver registry and `AtomizerInstrumentApiV1` | CON-01..12 |
 | UX-02 | Spectrum configuration/acquisition | analyzer service | SPC-01..10 |
 | UX-03 | Spectrum, four-trace, eight-marker, waterfall, channel, and envelope-STFT engines | measured throughput | MEAS-001..12; ADV-001..14; performance/a11y |
 | UX-04 | Detection configuration and sweep segmentation | sweeps | DET-01..07,09 |
@@ -872,8 +892,8 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
 | Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `EnvelopeStftView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
-| Execution admission | `packages/tinysa/src/digital-twin-transport.ts`, `apps/desktop/src/main/main.ts` |
-| Trio/SignalLab topology | `contracts/trio-composition-v3.json`, `packages/agent/src/index.ts` |
+| Execution admission | `packages/tinysa/src/instrument-driver-registry.ts`, `instrument-manager.ts`, `signal-lab-instrument-driver.ts`, `tinysa-instrument-driver.ts`, `apps/desktop/src/main/atomizer-instrument-host.ts` |
+| Trio/driver/SignalLab topology | `contracts/trio-composition-v4.json`, `packages/contracts/src/instrument.ts`, `packages/agent/src/index.ts` |
 | Detection | `components/DetectionWorkspace.tsx`, `packages/analysis` |
 | Classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Generator | `components/GeneratorWorkspace.tsx`, `packages/tinysa` |

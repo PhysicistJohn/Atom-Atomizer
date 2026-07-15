@@ -1,11 +1,39 @@
-import type { PortCandidate } from '@tinysa/contracts';
+import type {
+  InstrumentCandidate,
+  InstrumentDiscoveryResult,
+} from '@tinysa/contracts';
+import type { InstrumentPreference } from './instrument-preference.js';
 
-export function selectStartupInstrument(candidates: readonly PortCandidate[]): PortCandidate | undefined {
-  const exactPhysical = candidates.filter((candidate) => candidate.execution === 'physical' && candidate.usbMatch === 'exact-zs407-cdc');
-  if (exactPhysical.length === 1) return exactPhysical[0];
-  if (exactPhysical.length > 1) return undefined;
+export class PreferredInstrumentAdmissionError extends Error {
+  override readonly name = 'PreferredInstrumentAdmissionError';
+}
 
-  const twins = candidates.filter((candidate) => candidate.execution === 'firmware-digital-twin');
-  if (twins.length > 1) throw new Error(`Discovery returned ${twins.length} executable twins; exactly zero or one is allowed`);
-  return twins[0];
+/**
+ * Selects only the configured driver from one completed discovery generation.
+ * A missing, failed, or ambiguous preferred driver is visible and never falls
+ * through to a different instrument backend.
+ */
+export function selectPreferredInstrument(
+  discovery: InstrumentDiscoveryResult,
+  preference: InstrumentPreference,
+): InstrumentCandidate {
+  const driverFailure = discovery.failures.find((failure) => failure.driverId === preference.driverId
+    && (preference.candidateKind === undefined || failure.sourceKind === undefined || failure.sourceKind === preference.candidateKind));
+  if (driverFailure) {
+    throw new PreferredInstrumentAdmissionError(
+      `Preferred instrument driver ${preference.driverId} failed discovery: ${driverFailure.message}`,
+    );
+  }
+  const matches = discovery.candidates.filter((candidate) => candidate.driverId === preference.driverId
+    && (preference.candidateKind === undefined || candidate.sourceKind === preference.candidateKind));
+  if (matches.length === 0) {
+    const kind = preference.candidateKind ? ` (${preference.candidateKind})` : '';
+    throw new PreferredInstrumentAdmissionError(`Preferred instrument ${preference.driverId}${kind} is unavailable`);
+  }
+  if (matches.length > 1) {
+    throw new PreferredInstrumentAdmissionError(
+      `Preferred instrument ${preference.driverId} matched ${matches.length} candidates; select one explicitly`,
+    );
+  }
+  return matches[0]!;
 }

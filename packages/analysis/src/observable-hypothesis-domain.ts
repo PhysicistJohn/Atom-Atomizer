@@ -2,15 +2,11 @@ import type { DetectedSignal } from '@tinysa/contracts';
 import { BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL } from './bayesian-agile-association.js';
 import type { ObservableFeatureObservation } from './observable-features.js';
 import type { ObservableLeafClass } from './observable-classifier-model.js';
+import { compatibleRadioDuplexModes, type RadioAirInterface } from './radio-operating-band-context.js';
 
-const MODEL_BANDS_MHZ = {
-  gsm: [[380, 500], [698, 1_000], [1_710, 1_990]],
+const FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ = {
   wifiHrDsss: [[2_400, 2_500]],
   wifiOfdm: [[2_400, 2_500], [4_900, 5_925], [5_925, 7_125]],
-  lteFdd: [[698, 960], [1_427, 1_518], [1_710, 2_200]],
-  lteTdd: [[1_850, 1_920], [2_010, 2_025], [2_300, 2_400], [2_496, 2_690], [3_400, 3_800]],
-  nrFdd: [[410, 960], [1_427, 1_518], [1_710, 2_200]],
-  nrTdd: [[1_850, 1_920], [2_010, 2_025], [2_300, 2_690], [3_300, 5_000]],
 } as const;
 
 export type ObservableHypothesisDomainObservation = Partial<Pick<
@@ -37,7 +33,7 @@ export function observableHypothesisHasRequiredEvidence(
   observation: ObservableHypothesisDomainObservation,
 ): boolean {
   if (id === 'wifi-hr-dsss-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.wifiHrDsss);
+    const inFittedBand = fittedObservedIntervalInAnyBand(observation, FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiHrDsss);
     // The fitted 11 Mcps HR-DSSS projection is about 22 MHz wide. Ten MHz is
     // a conservative lower observation boundary, not a universal 802.11 rule.
     const inFittedWidth = observation.bandwidthHz === undefined
@@ -45,13 +41,13 @@ export function observableHypothesisHasRequiredEvidence(
     return inFittedBand && inFittedWidth;
   }
   if (id === 'wifi-ofdm-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.wifiOfdm);
+    const inFittedBand = fittedObservedIntervalInAnyBand(observation, FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiOfdm);
     const inFittedWidth = observation.bandwidthHz === undefined
       || (observation.bandwidthHz >= 8_000_000 && observation.bandwidthHz <= 110_000_000);
     return inFittedBand && inFittedWidth;
   }
   if (id === 'gsm-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, MODEL_BANDS_MHZ.gsm);
+    const inFittedBand = observedIntervalSupportsDuplex(observation, 'geran', 'fdd');
     const inFittedWidth = observation.bandwidthHz === undefined
       || (observation.bandwidthHz >= 80_000 && observation.bandwidthHz <= 500_000);
     return inFittedBand && inFittedWidth;
@@ -60,18 +56,20 @@ export function observableHypothesisHasRequiredEvidence(
     // The narrowest detector-conditioned fitted cellular example is nominal
     // 5 MHz LTE. LTE itself also defines 1.4/3 MHz channels; those are simply
     // outside this asset and must not rescue an open-set support score.
-    const inFittedBand = fittedObservedIntervalInAnyBand(
+    const inFittedBand = observedIntervalSupportsDuplex(
       observation,
-      id === 'lte-fdd-like' ? MODEL_BANDS_MHZ.lteFdd : MODEL_BANDS_MHZ.lteTdd,
+      'e-utra',
+      id === 'lte-fdd-like' ? 'fdd' : 'tdd',
     );
     const inFittedWidth = observation.bandwidthHz === undefined
       || (observation.bandwidthHz >= 3_500_000 && observation.bandwidthHz <= 25_000_000);
     return inFittedBand && inFittedWidth;
   }
   if (id === 'nr-fdd-like' || id === 'nr-tdd-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(
+    const inFittedBand = observedIntervalSupportsDuplex(
       observation,
-      id === 'nr-fdd-like' ? MODEL_BANDS_MHZ.nrFdd : MODEL_BANDS_MHZ.nrTdd,
+      'nr',
+      id === 'nr-fdd-like' ? 'fdd' : 'tdd',
     );
     const inFittedWidth = observation.bandwidthHz === undefined
       || (observation.bandwidthHz >= 10_000_000 && observation.bandwidthHz <= 110_000_000);
@@ -122,7 +120,7 @@ export function observableRepresentativeIsEligibleForModelFit(
   if (id === 'bluetooth-like') {
     return detection.associationMode === 'frequency-agile-2g4-activity'
       && detection.associationBayesianEvidence?.qualification
-        === 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity';
+        === 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity';
   }
   if (id === 'am-dsb-full-carrier-like' || id === 'fm-angle-modulated-like') {
     // A resolved sideband by itself is an RBW-limited line, not an analog
@@ -158,6 +156,38 @@ function fittedObservedIntervalInAnyBand(
   const observedStopHz = observation.occupiedStopHz ?? observation.centerHz + halfBandwidthHz;
   return rangesMhz.some(([startMhz, stopMhz]) => observedStartHz >= startMhz * 1_000_000 - edgeToleranceHz
     && observedStopHz <= stopMhz * 1_000_000 + edgeToleranceHz);
+}
+
+function observedIntervalSupportsDuplex(
+  observation: ObservableHypothesisDomainObservation,
+  airInterface: RadioAirInterface,
+  duplexMode: 'fdd' | 'tdd',
+): boolean {
+  if (observation.centerHz === undefined) return true;
+  const { observedStartHz, observedStopHz, edgeToleranceHz } = observedInterval(observation);
+  return compatibleRadioDuplexModes(airInterface, observedStartHz, observedStopHz, edgeToleranceHz).has(duplexMode);
+}
+
+function observedInterval(observation: ObservableHypothesisDomainObservation): {
+  observedStartHz: number;
+  observedStopHz: number;
+  edgeToleranceHz: number;
+} {
+  const bandwidthHz = observation.bandwidthHz ?? 0;
+  const halfBandwidthHz = bandwidthHz / 2;
+  const logBandwidthRbwRatio = observation.values?.['spectrum.logBandwidthRbwRatio'];
+  const estimatedRbwHz = logBandwidthRbwRatio === undefined || bandwidthHz === 0
+    ? 0
+    : bandwidthHz / 10 ** logBandwidthRbwRatio;
+  const edgeToleranceHz = Math.min(
+    bandwidthHz * 0.05,
+    Number.isFinite(estimatedRbwHz) ? estimatedRbwHz * 2 : 0,
+  );
+  return {
+    observedStartHz: observation.occupiedStartHz ?? observation.centerHz! - halfBandwidthHz,
+    observedStopHz: observation.occupiedStopHz ?? observation.centerHz! + halfBandwidthHz,
+    edgeToleranceHz,
+  };
 }
 
 function inAnyRange(value: number, ranges: readonly (readonly [number, number])[]): boolean {

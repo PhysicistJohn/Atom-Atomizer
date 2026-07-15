@@ -7,7 +7,10 @@ import {
 } from '@tinysa/contracts';
 import { FakeTinySaTransport } from '@tinysa/test-device';
 import { TinySaDeviceService } from './device.js';
-import type { ByteTransport, TransportEvent } from './transport.js';
+import { InstrumentDriverRegistry } from './instrument-driver-registry.js';
+import { InstrumentManager } from './instrument-manager.js';
+import { TinySaZs407InstrumentDriver } from './tinysa-instrument-driver.js';
+import type { ByteTransport, TransportDiscoveryResult, TransportEvent } from './transport.js';
 
 const generator: GeneratorConfig = {
   frequencyHz: 100_000_000,
@@ -113,7 +116,7 @@ describe('device fail-loud lifecycle', () => {
     await service.setGeneratorOutput(true);
 
     await expect(service.disconnect()).rejects.toThrow(/forced output-off failure/);
-    expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'unknown', verification: 'stale' });
+    expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'unknown', verification: 'unknown' });
   });
 
   it('marks an unexpected cable loss as faulted with unknown RF state', async () => {
@@ -125,6 +128,56 @@ describe('device fail-loud lifecycle', () => {
     transport.unplug();
     expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'unknown', verification: 'unknown' });
   });
+
+  it('retains an RF-off session after close failure so manager shutdown can retry to completion', async () => {
+    const transport = new RetryPhysicalCloseTransport();
+    const service = new TinySaDeviceService(transport);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(service),
+    ]));
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+
+    await expect(manager.disconnect()).rejects.toThrow(/forced transient close failure/);
+    expect(manager.snapshot()).toMatchObject({
+      fault: { recoverable: false },
+      rfOutput: 'unknown',
+    });
+    expect(service.snapshot()).toMatchObject({
+      connection: 'faulted',
+      generatorOutput: 'off',
+      verification: 'commanded',
+    });
+
+    await expect(manager.disconnect()).resolves.toBeUndefined();
+    expect(transport.closeCalls).toBe(2);
+    expect(manager.snapshot()).toBeUndefined();
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected' });
+  });
+
+  it('retains a failed-connect transport for explicit app-owned cleanup retries', async () => {
+    const transport = new RetryRejectedConnectCloseTransport();
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(/transport cleanup also failed/);
+    expect(transport.closeCalls).toBe(1);
+    expect(service.snapshot()).toMatchObject({
+      connection: 'faulted',
+      generatorOutput: 'off',
+      verification: 'commanded',
+    });
+
+    await expect(service.cleanupPendingInstrumentConnection()).rejects.toThrow(/forced retained-connect close failure/);
+    expect(transport.closeCalls).toBe(2);
+    expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'off' });
+
+    await expect(service.cleanupPendingInstrumentConnection()).resolves.toBeUndefined();
+    expect(transport.closeCalls).toBe(3);
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected' });
+
+    await expect(service.cleanupPendingInstrumentConnection()).resolves.toBeUndefined();
+    expect(transport.closeCalls).toBe(3);
+  });
 });
 
 class PhysicalFixtureTransport implements ByteTransport {
@@ -133,7 +186,7 @@ class PhysicalFixtureTransport implements ByteTransport {
     id: 'physical-zs407', path: '/dev/tty.fixture', vendorId: '0483', productId: '5740', usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical',
   };
   constructor(private readonly inner: FakeTinySaTransport) {}
-  list(): Promise<PortCandidate[]> { return Promise.resolve([this.port]); }
+  list(): Promise<TransportDiscoveryResult> { return Promise.resolve({ candidates: [this.port], failures: [] }); }
   open(): Promise<void> { return this.inner.open(this.inner.port); }
   close(): Promise<void> { return this.inner.close(); }
   write(bytes: Uint8Array): Promise<void> { return this.inner.write(bytes); }
@@ -147,7 +200,7 @@ class FailDisconnectOutputOffTransport implements ByteTransport {
   readonly #inner = new FakeTinySaTransport();
   #outputOffCount = 0;
   get port(): PortCandidate { return this.#inner.port; }
-  list(): Promise<PortCandidate[]> { return this.#inner.list(); }
+  list(): Promise<TransportDiscoveryResult> { return this.#inner.list(); }
   open(candidate: PortCandidate): Promise<void> { return this.#inner.open(candidate); }
   close(): Promise<void> { return this.#inner.close(); }
   async write(bytes: Uint8Array): Promise<void> {
@@ -155,6 +208,53 @@ class FailDisconnectOutputOffTransport implements ByteTransport {
     if (command === 'output off' && ++this.#outputOffCount === 5) throw new Error('forced output-off failure');
     await this.#inner.write(bytes);
   }
+  onBytes(listener: (bytes: Uint8Array) => void): () => void { return this.#inner.onBytes(listener); }
+  onEvent(listener: (event: TransportEvent) => void): () => void { return this.#inner.onEvent(listener); }
+  consumeAcquisitionMetadata() { return this.#inner.consumeAcquisitionMetadata(); }
+}
+
+class RetryPhysicalCloseTransport implements ByteTransport {
+  readonly kind = 'usb-cdc-acm' as const;
+  readonly port: PortCandidate = {
+    id: 'physical-retry-close', path: '/dev/tty.retry-close', vendorId: '0483', productId: '5740',
+    usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical',
+  };
+  readonly #inner = new FakeTinySaTransport();
+  closeCalls = 0;
+  list(): Promise<TransportDiscoveryResult> { return Promise.resolve({ candidates: [this.port], failures: [] }); }
+  open(): Promise<void> { return this.#inner.open(this.#inner.port); }
+  close(): Promise<void> {
+    this.closeCalls += 1;
+    return this.closeCalls === 1
+      ? Promise.reject(new Error('forced transient close failure'))
+      : this.#inner.close();
+  }
+  write(bytes: Uint8Array): Promise<void> { return this.#inner.write(bytes); }
+  onBytes(listener: (bytes: Uint8Array) => void): () => void { return this.#inner.onBytes(listener); }
+  onEvent(listener: (event: TransportEvent) => void): () => void { return this.#inner.onEvent(listener); }
+  consumeAcquisitionMetadata() { return this.#inner.consumeAcquisitionMetadata(); }
+}
+
+class RetryRejectedConnectCloseTransport implements ByteTransport {
+  readonly kind = 'usb-cdc-acm' as const;
+  readonly port: PortCandidate = {
+    id: 'physical-rejected-connect', path: '/dev/tty.rejected-connect', vendorId: '0483', productId: '5740',
+    usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical',
+  };
+  readonly #inner = new FakeTinySaTransport({
+    versionResponse: 'tinySA4_v1.4-217-gc5dd31f\r\nHW Version:V0.5.4 max2871',
+    infoResponse: 'tinySA ULTRA ZS405\r\nVersion: tinySA4_v1.4-217-gc5dd31f',
+  });
+  closeCalls = 0;
+  list(): Promise<TransportDiscoveryResult> { return Promise.resolve({ candidates: [this.port], failures: [] }); }
+  open(): Promise<void> { return this.#inner.open(this.#inner.port); }
+  close(): Promise<void> {
+    this.closeCalls += 1;
+    return this.closeCalls <= 2
+      ? Promise.reject(new Error('forced retained-connect close failure'))
+      : this.#inner.close();
+  }
+  write(bytes: Uint8Array): Promise<void> { return this.#inner.write(bytes); }
   onBytes(listener: (bytes: Uint8Array) => void): () => void { return this.#inner.onBytes(listener); }
   onEvent(listener: (event: TransportEvent) => void): () => void { return this.#inner.onEvent(listener); }
   consumeAcquisitionMetadata() { return this.#inner.consumeAcquisitionMetadata(); }

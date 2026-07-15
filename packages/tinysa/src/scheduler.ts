@@ -14,8 +14,15 @@ interface Pending {
 
 export interface CommandSchedulerOptions {
   maximumBufferedBytes?: number;
+  maximumPendingCommands?: number;
   onFault?(error: Error): void;
 }
+
+export class CommandSchedulerAdmissionError extends Error {
+  override readonly name = 'CommandSchedulerAdmissionError';
+}
+
+const DEFAULT_MAXIMUM_PENDING_COMMANDS = 64;
 
 export class CommandScheduler {
   #queue: Pending[] = [];
@@ -26,9 +33,14 @@ export class CommandScheduler {
   #failed?: Error;
   #unsubscribe: () => void;
   #maximumBufferedBytes: number;
+  #maximumPendingCommands: number;
 
   constructor(private readonly transport: ByteTransport, private readonly options: CommandSchedulerOptions = {}) {
     this.#maximumBufferedBytes = options.maximumBufferedBytes ?? 4 * 1024 * 1024;
+    this.#maximumPendingCommands = options.maximumPendingCommands ?? DEFAULT_MAXIMUM_PENDING_COMMANDS;
+    if (!Number.isSafeInteger(this.#maximumPendingCommands) || this.#maximumPendingCommands < 1) {
+      throw new RangeError('maximumPendingCommands must be a positive safe integer');
+    }
     this.#unsubscribe = transport.onBytes((bytes) => this.#receive(bytes));
   }
 
@@ -68,6 +80,12 @@ export class CommandScheduler {
     catch (error) { return Promise.reject(error); }
     if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) return Promise.reject(new RangeError('timeoutMs must be positive'));
     if (this.#failed) return Promise.reject(this.#failed);
+    const pendingCommands = this.#queue.length + (this.#active ? 1 : 0);
+    if (pendingCommands >= this.#maximumPendingCommands) {
+      return Promise.reject(new CommandSchedulerAdmissionError(
+        `Command scheduler admission limit of ${this.#maximumPendingCommands} pending commands was reached`,
+      ));
+    }
     return new Promise<T>((resolve, reject) => {
       const pending: Pending = {
         ...input,
@@ -138,7 +156,11 @@ export class CommandScheduler {
     for (const item of this.#queue.splice(0)) item.reject(error);
     this.#buffer = new Uint8Array();
     this.#bufferLength = 0;
-    this.options.onFault?.(error);
+    // Fault observation is advisory. A consumer callback must not turn the
+    // internally handled write/parser failure into a second unhandled Promise
+    // rejection from the fire-and-forget scheduler pump.
+    try { this.options.onFault?.(error); }
+    catch { /* Observers cannot corrupt scheduler failure settlement. */ }
   }
 
   #append(bytes: Uint8Array): void {

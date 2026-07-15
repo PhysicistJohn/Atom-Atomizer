@@ -685,7 +685,9 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
   transform: translateX(-50%);
 }
 .global-notice button { border: 0; color: var(--muted); background: transparent; font-size: 8px; }
-.top-rf-state { padding: 6px 8px !important; border: 1px solid rgba(255,126,114,.32) !important; border-radius: 8px; color: #ffaaa3; background: rgba(255,126,114,.08); font: 8px var(--mono); letter-spacing: .08em; }
+.top-rf-state { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px !important; border: 1px solid rgba(255,126,114,.32) !important; border-radius: 8px; color: #ffaaa3; background: rgba(255,126,114,.08); font: 8px var(--mono); letter-spacing: .08em; white-space: nowrap; }
+.top-rf-state small { color: inherit; font: inherit; opacity: .72; }
+.top-rf-state.off { border-color: rgba(121,220,181,.27) !important; color: #9ae0c5; background: rgba(121,220,181,.06); }
 .top-rf-state.unknown { border-color: rgba(244,198,107,.3) !important; color: var(--amber); background: rgba(244,198,107,.07); }
 .icon-only span { font: 8px var(--mono); }
 .stop-acquisition { border-color: rgba(244,198,107,.26); color: var(--amber); }

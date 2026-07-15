@@ -1,4 +1,5 @@
 import type { DetectedSignal, Sweep, WaveformClassificationEvidence, ZeroSpanCapture } from '@tinysa/contracts';
+import { sameMeasurementIdentity } from './measurement-provenance.js';
 import {
   BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL,
   bayesianFrequencyAgileActivityEvidence,
@@ -15,12 +16,14 @@ export type WaveformEvidence = WaveformClassificationEvidence;
 
 export type ObservableEvidenceLimitation =
   | 'sweep-time-frequency-skew'
+  | 'synthetic-grid-equivalent-resolution'
   | 'partial-span-boundary-censoring'
   | 'insufficient-spectrum-history'
   | 'zero-span-missing'
   | 'zero-span-tune-mismatch'
   | 'zero-span-provenance-mismatch'
   | 'zero-span-timing-unqualified'
+  | 'zero-span-rbw-unavailable'
   | 'zero-span-geometry-out-of-domain'
   | 'timing-rate-aliased'
   | 'timing-window-too-short'
@@ -107,6 +110,9 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
   };
 
   const limitations = new Set<ObservableEvidenceLimitation>(['sweep-time-frequency-skew']);
+  if (sweeps.some((sweep) => sweep.resolutionBandwidthQualification === 'synthetic-grid-equivalent')) {
+    limitations.add('synthetic-grid-equivalent-resolution');
+  }
   if (detection.associationMode === 'frequency-agile-2g4-activity') limitations.add('frequency-agile-band-activity-association');
   if (detection.associationMode === 'regular-spectral-component-activity') limitations.add('regular-spectral-component-activity-association');
   const associationBoundaryCensored = hasCompleteAssociationRegion(detection)
@@ -165,12 +171,12 @@ function coherentSweeps(detection: DetectedSignal, values: readonly Sweep[]): Sw
     && sameFrequencyGrid(sweep.frequencyHz, reference.frequencyHz)
     && sweep.actualRbwHz === reference.actualRbwHz
     && sweep.actualAttenuationDb === reference.actualAttenuationDb
+    && sweep.resolutionBandwidthQualification === reference.resolutionBandwidthQualification
+    && sweep.attenuationQualification === reference.attenuationQualification
     && sweep.requested.detector === reference.requested.detector
     && sweep.requested.lna === reference.requested.lna
     && sweep.requested.spurRejection === reference.requested.spurRejection
-    && sweep.identity.port.id === reference.identity.port.id
-    && sweep.identity.firmwareVersion === reference.identity.firmwareVersion
-    && sweep.identity.execution === reference.identity.execution);
+    && sameMeasurementIdentity(sweep.identity, reference.identity));
 }
 
 function validateAgileAssociationSweeps(detection: DetectedSignal, values: readonly Sweep[]): boolean {
@@ -406,7 +412,7 @@ function activityEvidenceMatches(
     'transitionCount',
     'changedTransitionCount',
     'uniqueResolutionCellCount',
-    'advertisingChannelHitCount',
+    'primaryChannelCenterHitCount',
     'opportunityCount',
     'maximumOpportunityWindow',
     'qualification',
@@ -416,8 +422,8 @@ function activityEvidenceMatches(
     'priorAgileDynamicsProbability',
     'posteriorAgileDynamicsProbability',
     'logBayesFactor',
-    'classicLogMarginalLikelihood',
-    'leLogMarginalLikelihood',
+    'fullBand79CellAgileLogMarginalLikelihood',
+    'threePrimaryChannelAgileLogMarginalLikelihood',
     'stationaryLogMarginalLikelihood',
     'modeledSweepTimeSeconds',
     'promotionPosteriorProbability',
@@ -445,7 +451,9 @@ function observeEnvelope(
   values['envelope.rangeDb'] = high - low;
   values['envelope.standardDeviationDb'] = standardDeviation(capture.powerDbm);
   values['envelope.duty'] = high - low < 1 ? 1 : active.filter(Boolean).length / active.length;
-  values['envelope.tuneOffsetFraction'] = Math.abs(capture.frequencyHz - detection.peakHz) / Math.max(capture.actualRbwHz, detection.bandwidthHz / 2, 1);
+  values['envelope.tuneOffsetFraction'] = Math.abs(capture.frequencyHz - detection.peakHz)
+    / Math.max(capture.actualRbwHz ?? 0, detection.bandwidthHz / 2, 1);
+  if (capture.actualRbwHz === null) limitations.add('zero-span-rbw-unavailable');
   const timingQualified = capture.timingQualification === 'measured-calibrated' || capture.timingQualification === 'simulation-exact';
   if (!timingQualified) {
     limitations.add('zero-span-timing-unqualified');
@@ -482,15 +490,13 @@ function observeEnvelope(
 function matchingZeroSpan(detection: DetectedSignal, binWidthHz: number, referenceSweep: Sweep, capture?: ZeroSpanCapture): ZeroSpanCapture | undefined {
   if (!capture) return undefined;
   if (!zeroSpanProvenanceMatches(detection, referenceSweep, capture)) return undefined;
-  const toleranceHz = Math.max(detection.bandwidthHz / 2, binWidthHz * 3, capture.actualRbwHz * 2);
+  const toleranceHz = Math.max(detection.bandwidthHz / 2, binWidthHz * 3, (capture.actualRbwHz ?? 0) * 2);
   return Math.abs(capture.frequencyHz - detection.peakHz) <= toleranceHz ? capture : undefined;
 }
 
 function zeroSpanProvenanceMatches(detection: DetectedSignal, referenceSweep: Sweep, capture: ZeroSpanCapture): boolean {
   return capture.targetDetectionId === detection.id
-    && capture.identity.port.id === referenceSweep.identity.port.id
-    && capture.identity.firmwareVersion === referenceSweep.identity.firmwareVersion
-    && capture.identity.execution === referenceSweep.identity.execution;
+    && sameMeasurementIdentity(capture.identity, referenceSweep.identity);
 }
 
 function supportedZeroSpanGeometry(capture: ZeroSpanCapture): boolean {
@@ -581,13 +587,78 @@ function localPeaks(values: readonly number[], threshold: number): number[] {
 function validateSweep(sweep: Sweep): void {
   if (!sweep.complete || sweep.frequencyHz.length < 3 || sweep.frequencyHz.length !== sweep.powerDbm.length) throw new Error('Observable classification requires a complete aligned scalar sweep');
   if (sweep.frequencyHz.some((value) => !Number.isFinite(value)) || sweep.powerDbm.some((value) => !Number.isFinite(value))) throw new Error('Observable classification rejects non-finite sweep evidence');
-  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Observable classification requires positive measured RBW');
+  if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Observable classification requires a positive analysis resolution scale');
+  if (sweep.resolutionBandwidthQualification === 'unavailable') {
+    throw new Error('Observable scalar sweep cannot mark a populated analysis resolution scale unavailable');
+  }
+  if (sweep.actualAttenuationDb === null) {
+    if (sweep.attenuationQualification !== 'not-applicable') {
+      throw new Error('Observable scalar sweep requires explicit not-applicable qualification for absent attenuation');
+    }
+  } else {
+    if (!Number.isFinite(sweep.actualAttenuationDb)) throw new Error('Observable classification rejects non-finite attenuation');
+    if (sweep.attenuationQualification === 'not-applicable') {
+      throw new Error('Observable scalar sweep cannot report attenuation when it is not applicable');
+    }
+  }
+  if (!Number.isFinite(sweep.actualStartHz)
+    || !Number.isFinite(sweep.actualStopHz)
+    || sweep.actualStopHz <= sweep.actualStartHz) {
+    throw new Error('Observable classification requires finite increasing actual frequency bounds');
+  }
   for (let index = 1; index < sweep.frequencyHz.length; index++) if (sweep.frequencyHz[index]! <= sweep.frequencyHz[index - 1]!) throw new Error('Observable classification requires strictly increasing frequencies');
+  const spanHz = sweep.actualStopHz - sweep.actualStartHz;
+  const closedStepHz = spanHz / (sweep.frequencyHz.length - 1);
+  const halfOpenStepHz = spanHz / sweep.frequencyHz.length;
+  if (!matchesObservableGrid(sweep.frequencyHz, sweep.actualStartHz, closedStepHz)
+    && !matchesObservableGrid(sweep.frequencyHz, sweep.actualStartHz, halfOpenStepHz)) {
+    throw new Error('Observable classification rejects materially incomplete or out-of-range sweep geometry');
+  }
+  if (sweep.resolutionBandwidthQualification === 'synthetic-grid-equivalent') {
+    const gridSpacingHz = nominalBinWidth(sweep);
+    const toleranceHz = Math.max(1e-9, gridSpacingHz * 1e-9);
+    if (Math.abs(sweep.actualRbwHz - gridSpacingHz) > toleranceHz) {
+      throw new Error('Observable synthetic resolution scale must equal the frequency-grid spacing');
+    }
+  }
+}
+
+function matchesObservableGrid(
+  frequencyHz: readonly number[],
+  startHz: number,
+  stepHz: number,
+): boolean {
+  const toleranceHz = Math.max(1, Math.abs(stepHz) * 1e-9);
+  return Number.isFinite(stepHz)
+    && stepHz > 0
+    && frequencyHz.every((frequency, index) => Math.abs(frequency - (startHz + stepHz * index)) <= toleranceHz);
 }
 
 function validateZeroSpan(capture: ZeroSpanCapture): void {
   if (!capture.complete || capture.powerDbm.length < 20 || capture.powerDbm.some((value) => !Number.isFinite(value))) throw new Error('Observable envelope evidence requires at least 20 finite samples');
   if (!Number.isFinite(capture.samplePeriodSeconds) || capture.samplePeriodSeconds <= 0) throw new Error('Observable envelope evidence requires a positive sample period');
+  if (capture.actualRbwHz === null) {
+    if (capture.resolutionBandwidthQualification !== 'unavailable') {
+      throw new Error('Observable envelope evidence requires explicit unavailable qualification for absent RF RBW');
+    }
+  } else {
+    if (!Number.isFinite(capture.actualRbwHz) || capture.actualRbwHz <= 0) {
+      throw new Error('Observable envelope evidence requires a positive RF RBW when one is reported');
+    }
+    if (capture.resolutionBandwidthQualification === 'unavailable') {
+      throw new Error('Observable envelope evidence cannot mark a reported RF RBW unavailable');
+    }
+  }
+  if (capture.actualAttenuationDb === null) {
+    if (capture.attenuationQualification !== 'not-applicable') {
+      throw new Error('Observable envelope evidence requires explicit not-applicable qualification for absent attenuation');
+    }
+  } else {
+    if (!Number.isFinite(capture.actualAttenuationDb)) throw new Error('Observable envelope evidence rejects non-finite attenuation');
+    if (capture.attenuationQualification === 'not-applicable') {
+      throw new Error('Observable envelope evidence cannot report attenuation when it is not applicable');
+    }
+  }
 }
 
 function robustFloor(values: readonly number[]): number {

@@ -1,6 +1,22 @@
 import { z } from 'zod';
+import {
+  MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1,
+  MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1,
+  MAX_INSTRUMENT_METADATA_CHARACTERS_V1,
+  MAX_INSTRUMENT_POWER_ABS_DB_V1,
+  MAX_INSTRUMENT_SEQUENCE_V1,
+  instrumentDriverIdSchema,
+  instrumentOpaqueIdSchema,
+  instrumentSessionProvenanceSchema,
+  instrumentTimestampSchema,
+  type InstrumentSessionProvenance,
+} from './instrument.js';
 
-export const API_VERSION = 3 as const;
+export * from './instrument.js';
+export * from './atomizer-instrument-api.js';
+
+/** Version of the internal TinySA ZS407 shell/protocol contract, not the public renderer API. */
+export const TINYSA_PROTOCOL_CONTRACT_VERSION = 3 as const;
 export const FIRMWARE_SOURCE_COMMIT = 'c97938697b6c7485e7cab50bca9af76996b7d671' as const;
 export const ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT = 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c' as const;
 export const DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT = 'd12bd826555eee51505542a55fd184ade5817d58' as const;
@@ -373,7 +389,7 @@ export type AnalyzerConfig = z.infer<typeof analyzerConfigSchema>;
 /**
  * Application-layer analyzer edits are patches. The host merges a patch into
  * the current staged configuration and validates the resulting full config
- * before it can reach TinySaApiV3.configureAnalyzer.
+ * before it can reach the generic instrument configuration boundary.
  */
 export const analyzerConfigPatchSchema = z.object(analyzerConfigShape).partial().strict()
   .refine((value) => Object.keys(value).length > 0, { message: 'Analyzer patch must change at least one field' })
@@ -482,6 +498,24 @@ export interface DeviceSnapshot {
   fault?: DeviceFault;
 }
 
+/**
+ * Driver-neutral acquisition identity retained by analysis and exports.
+ *
+ * The wrapper deliberately carries the admitted session/candidate identifiers
+ * alongside source-discriminated provenance.  It must never be projected into
+ * a DeviceIdentity: SignalLab has no USB or firmware identity to report.
+ */
+export interface InstrumentMeasurementIdentity {
+  kind: 'instrument-session';
+  sessionId: string;
+  driverId: string;
+  candidateId: string;
+  provenance: InstrumentSessionProvenance;
+}
+export type MeasurementIdentity = DeviceIdentity | InstrumentMeasurementIdentity;
+export type ResolutionBandwidthQualification = 'device-observed' | 'firmware-executed-twin' | 'synthetic-grid-equivalent' | 'unavailable';
+export type AttenuationQualification = 'device-observed' | 'firmware-executed-twin' | 'not-applicable';
+
 export interface Sweep {
   kind: 'spectrum';
   id: string;
@@ -494,12 +528,16 @@ export interface Sweep {
   actualStartHz: number;
   actualStopHz: number;
   actualRbwHz: number;
-  actualAttenuationDb: number;
-  source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state';
+  actualAttenuationDb: number | null;
+  /** Explicit whenever a driver-neutral projection supplied the analysis value. */
+  resolutionBandwidthQualification?: ResolutionBandwidthQualification;
+  /** Explicit whenever a driver-neutral projection supplied the analysis value. */
+  attenuationQualification?: AttenuationQualification;
+  source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state' | 'instrument-driver-scalar' | 'signal-lab-synthetic';
   rawSweepOffsetDb?: number;
   firmwareTraces?: readonly FirmwareTraceFrame[];
   complete: true;
-  identity: DeviceIdentity;
+  identity: MeasurementIdentity;
 }
 export interface ZeroSpanCapture {
   kind: 'zero-span';
@@ -515,11 +553,15 @@ export interface ZeroSpanCapture {
   targetDetectionId?: string;
   powerDbm: readonly number[];
   requested: ZeroSpanConfig;
-  actualRbwHz: number;
-  actualAttenuationDb: number;
-  source: 'scan-text' | 'renode-executable-state';
+  actualRbwHz: number | null;
+  actualAttenuationDb: number | null;
+  /** Explicit whenever a driver-neutral projection supplied the analysis value. */
+  resolutionBandwidthQualification?: ResolutionBandwidthQualification;
+  /** Explicit whenever a driver-neutral projection supplied the analysis value. */
+  attenuationQualification?: AttenuationQualification;
+  source: 'scan-text' | 'renode-executable-state' | 'instrument-driver-detected-power' | 'signal-lab-synthetic';
   complete: true;
-  identity: DeviceIdentity;
+  identity: MeasurementIdentity;
 }
 export interface ScreenFrame {
   width: 480;
@@ -594,24 +636,26 @@ export interface ActivityAssociationOpportunity {
   outcome: 'none' | 'exactly-one' | 'ambiguous';
 }
 export interface BayesianActivityAssociationEvidence {
-  modelId: 'bayesian-frequency-agile-transition-v2';
+  modelId: 'bayesian-frequency-agile-transition-v3';
   priorAgileDynamicsProbability: number;
   posteriorAgileDynamicsProbability: number;
   logBayesFactor: number;
-  classicLogMarginalLikelihood: number;
-  leLogMarginalLikelihood: number;
+  /** Engineering 79-cell full-band transition family; not a Bluetooth BR/EDR protocol likelihood. */
+  fullBand79CellAgileLogMarginalLikelihood: number;
+  /** Engineering three-primary-channel transition family; not a Bluetooth LE protocol likelihood. */
+  threePrimaryChannelAgileLogMarginalLikelihood: number;
   stationaryLogMarginalLikelihood: number;
   positiveObservationCount: number;
   transitionCount: number;
   changedTransitionCount: number;
   uniqueResolutionCellCount: number;
-  advertisingChannelHitCount: number;
+  primaryChannelCenterHitCount: number;
   opportunityCount: number;
   maximumOpportunityWindow: number;
   modeledSweepTimeSeconds: number;
   promotionPosteriorProbability: number;
   retentionPosteriorProbability: number;
-  qualification: 'synthetic-fixed-sweep-time-conditional-on-unambiguous-cfar-looks-not-emitter-identity';
+  qualification: 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity';
 }
 export interface DetectedSignal {
   id: string;
@@ -671,18 +715,17 @@ export interface WaveformClassification {
   decisionLevel: 'morphology' | 'profile' | 'family' | 'equivalence-class' | 'unknown';
   /** Evidence supporting the primary decision; ranked candidates retain their own score semantics. */
   decisionSupport?: {
-    kind: 'model-posterior' | 'synthetic-support-p-value';
+    kind: 'model-posterior' | 'synthetic-support-rank';
     value: number;
     threshold?: number;
   };
   modelProvenance?: {
     producer: 'tinysa-signal-lab';
     sourceCommit: string;
-    catalogSha256: string;
-    generatorSha256: string;
+    /** Hash of the canonical training-corpus source admitted by the trainer. */
+    corpusSha256: string;
     preprocessing: string;
     modelAssetSha256?: string;
-    datasetSha256?: string;
     priorId?: string;
     calibrationId?: string;
     decisionPolicyId?: string;
@@ -736,14 +779,273 @@ export const screenPointSchema = z.object({
   y: z.number().int().min(0).max(ZS407_FIRMWARE_LIMITS.screenHeight - 1),
 }).strict();
 export type ScreenPoint = z.infer<typeof screenPointSchema>;
+
+/** Text export v1 is intentionally smaller than the binary acquisition limits. */
+export const MAX_SWEEP_EXPORT_POINTS_V1 = 100_000;
+export const MAX_SWEEP_EXPORT_BYTES_V1 = 8 * 1024 * 1024;
+export const MAX_SWEEP_EXPORT_PROVENANCE_CHARACTERS_V1 = 4_096;
+export const MAX_SWEEP_EXPORT_FIRMWARE_TRACES_V1 = 4;
+
+const exportMetadataStringSchema = z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1);
+const exportFrequencySchema = z.number().finite().nonnegative().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz);
+const exportPowerSchema = z.number().finite()
+  .min(-MAX_INSTRUMENT_POWER_ABS_DB_V1)
+  .max(MAX_INSTRUMENT_POWER_ABS_DB_V1);
+function boundedExportArray<Element extends z.ZodType>(
+  element: Element,
+  maximum: number,
+  minimum = 0,
+) {
+  return z.unknown()
+    .transform((value, context) => {
+      if (Array.isArray(value) && value.length > maximum) {
+        context.addIssue({
+          code: 'custom',
+          message: `Sweep export v1 permits at most ${maximum} items`,
+        });
+        return z.NEVER;
+      }
+      return value;
+    })
+    .pipe(z.array(element).min(minimum).max(maximum).readonly());
+}
+const exportDigitalTwinProvenanceSchema = digitalTwinProvenanceSchema.extend({
+  bootEvidence: z.string()
+    .min(1)
+    .max(MAX_SWEEP_EXPORT_PROVENANCE_CHARACTERS_V1)
+    .startsWith('ZS407_TWIN_BOOT=PASS')
+    .optional(),
+}).strict();
+const exportPortCandidateSchema = z.object({
+  id: instrumentOpaqueIdSchema,
+  path: z.string().min(1).max(MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1),
+  manufacturer: exportMetadataStringSchema.optional(),
+  product: exportMetadataStringSchema.optional(),
+  serialNumber: exportMetadataStringSchema.optional(),
+  vendorId: z.string().regex(/^[a-f0-9]{4}$/i).optional(),
+  productId: z.string().regex(/^[a-f0-9]{4}$/i).optional(),
+  usbMatch: usbMatchSchema,
+  transport: instrumentTransportKindSchema,
+  execution: executionEnvironmentSchema,
+  digitalTwin: exportDigitalTwinProvenanceSchema.optional(),
+}).strict().superRefine((candidate, context) => {
+  if (!portCandidateSchema.safeParse(candidate).success) {
+    context.addIssue({ code: 'custom', message: 'Export port provenance is internally inconsistent' });
+  }
+});
+const exportFirmwareSourceCommitSchema = z.union([
+  z.literal(FIRMWARE_SOURCE_COMMIT),
+  z.literal(ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT),
+  z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
+]);
+const exportDeviceIdentitySchema = z.object({
+  model: exportMetadataStringSchema,
+  hardwareVersion: exportMetadataStringSchema,
+  firmwareVersion: exportMetadataStringSchema,
+  firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i).optional(),
+  firmwareSourceCommit: exportFirmwareSourceCommitSchema.optional(),
+  firmwareQualification: z.enum(['supported-oem', 'custom-unqualified', 'executable-twin', 'protocol-test']),
+  firmwareWarning: z.string().min(1).max(MAX_SWEEP_EXPORT_PROVENANCE_CHARACTERS_V1).optional(),
+  port: exportPortCandidateSchema,
+  simulated: z.boolean(),
+  usbIdentityVerified: z.boolean(),
+  execution: executionEnvironmentSchema,
+  digitalTwin: exportDigitalTwinProvenanceSchema.optional(),
+}).strict().superRefine((identity, context) => {
+  if (identity.execution !== identity.port.execution) {
+    context.addIssue({ code: 'custom', path: ['execution'], message: 'Export identity execution must match its admitted port' });
+  }
+  const simulated = identity.execution !== 'physical';
+  if (identity.simulated !== simulated) {
+    context.addIssue({ code: 'custom', path: ['simulated'], message: 'Export identity simulation label must match execution' });
+  }
+  if (Boolean(identity.digitalTwin) !== (identity.execution === 'firmware-digital-twin')) {
+    context.addIssue({ code: 'custom', path: ['digitalTwin'], message: 'Export identity digital-twin provenance must match execution' });
+  }
+  if (identity.execution === 'firmware-digital-twin'
+    && JSON.stringify(identity.digitalTwin) !== JSON.stringify(identity.port.digitalTwin)) {
+    context.addIssue({ code: 'custom', path: ['digitalTwin'], message: 'Export identity and port digital-twin provenance must agree' });
+  }
+  if (identity.usbIdentityVerified && identity.port.usbMatch !== 'exact-zs407-cdc') {
+    context.addIssue({ code: 'custom', path: ['usbIdentityVerified'], message: 'Verified USB identity requires an exact ZS407 match' });
+  }
+});
+const exportInstrumentMeasurementIdentitySchema = z.object({
+  kind: z.literal('instrument-session'),
+  sessionId: instrumentOpaqueIdSchema,
+  driverId: instrumentDriverIdSchema,
+  candidateId: instrumentOpaqueIdSchema,
+  provenance: instrumentSessionProvenanceSchema,
+}).strict();
+const exportMeasurementIdentitySchema = z.union([
+  exportInstrumentMeasurementIdentitySchema,
+  exportDeviceIdentitySchema,
+]);
+const exportFirmwareTraceFrameSchema = z.object({
+  traceId: firmwareTraceIdSchema,
+  role: z.enum(['measured', 'stored', 'raw']),
+  unit: z.literal('dBm'),
+  frozen: z.union([z.boolean(), z.literal('unknown')]),
+  frequencyHz: boundedExportArray(exportFrequencySchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
+  powerDbm: boundedExportArray(exportPowerSchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
+  sourceSweepId: instrumentOpaqueIdSchema,
+  capturedAt: instrumentTimestampSchema,
+  evidence: z.literal('firmware-readback'),
+}).strict().superRefine((trace, context) => {
+  if (trace.frequencyHz.length > MAX_SWEEP_EXPORT_POINTS_V1
+    || trace.powerDbm.length > MAX_SWEEP_EXPORT_POINTS_V1) return;
+  if (trace.frequencyHz.length !== trace.powerDbm.length) {
+    context.addIssue({ code: 'custom', path: ['powerDbm'], message: 'Firmware trace vectors must have equal length' });
+  }
+  for (let index = 1; index < trace.frequencyHz.length; index++) {
+    if (trace.frequencyHz[index]! <= trace.frequencyHz[index - 1]!) {
+      context.addIssue({ code: 'custom', path: ['frequencyHz', index], message: 'Firmware trace frequencies must increase strictly' });
+      break;
+    }
+  }
+});
+export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
+  kind: z.literal('spectrum'),
+  id: instrumentOpaqueIdSchema,
+  sequence: z.number().int().positive().max(MAX_INSTRUMENT_SEQUENCE_V1),
+  capturedAt: instrumentTimestampSchema,
+  elapsedMilliseconds: z.number().finite().nonnegative().max(MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1),
+  frequencyHz: boundedExportArray(exportFrequencySchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
+  powerDbm: boundedExportArray(exportPowerSchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
+  requested: analyzerConfigSchema,
+  actualStartHz: exportFrequencySchema,
+  actualStopHz: exportFrequencySchema,
+  actualRbwHz: z.number().finite().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  actualAttenuationDb: exportPowerSchema.nullable(),
+  resolutionBandwidthQualification: z.enum([
+    'device-observed', 'firmware-executed-twin', 'synthetic-grid-equivalent', 'unavailable',
+  ]).optional(),
+  attenuationQualification: z.enum(['device-observed', 'firmware-executed-twin', 'not-applicable']).optional(),
+  source: z.enum([
+    'scan-text', 'scanraw-binary', 'renode-executable-state', 'instrument-driver-scalar', 'signal-lab-synthetic',
+  ]),
+  rawSweepOffsetDb: exportPowerSchema.optional(),
+  firmwareTraces: boundedExportArray(
+    exportFirmwareTraceFrameSchema,
+    MAX_SWEEP_EXPORT_FIRMWARE_TRACES_V1,
+  ).optional(),
+  complete: z.literal(true),
+  identity: exportMeasurementIdentitySchema,
+}).strict().superRefine((sweep, context) => {
+  if (sweep.frequencyHz.length > MAX_SWEEP_EXPORT_POINTS_V1
+    || sweep.powerDbm.length > MAX_SWEEP_EXPORT_POINTS_V1
+    || (sweep.firmwareTraces?.length ?? 0) > MAX_SWEEP_EXPORT_FIRMWARE_TRACES_V1) return;
+  if (sweep.frequencyHz.length !== sweep.powerDbm.length) {
+    context.addIssue({ code: 'custom', path: ['powerDbm'], message: 'Spectrum export vectors must have equal length' });
+  }
+  if (sweep.frequencyHz.length !== sweep.requested.points) {
+    context.addIssue({ code: 'custom', path: ['frequencyHz'], message: 'Spectrum export vectors must match the requested point count' });
+  }
+  for (let index = 1; index < sweep.frequencyHz.length; index++) {
+    if (sweep.frequencyHz[index]! <= sweep.frequencyHz[index - 1]!) {
+      context.addIssue({ code: 'custom', path: ['frequencyHz', index], message: 'Spectrum export frequencies must increase strictly' });
+      break;
+    }
+  }
+  if (sweep.actualStartHz !== sweep.frequencyHz[0] || sweep.actualStopHz !== sweep.frequencyHz.at(-1)) {
+    context.addIssue({ code: 'custom', path: ['actualStartHz'], message: 'Actual spectrum endpoints must match the exported frequency vector' });
+  }
+  if (sweep.actualAttenuationDb === null && sweep.attenuationQualification !== 'not-applicable') {
+    context.addIssue({ code: 'custom', path: ['attenuationQualification'], message: 'Unavailable attenuation must be explicitly not-applicable' });
+  }
+  if (sweep.source === 'scanraw-binary' && sweep.rawSweepOffsetDb === undefined) {
+    context.addIssue({ code: 'custom', path: ['rawSweepOffsetDb'], message: 'scanraw-binary exports require raw sweep offset evidence' });
+  }
+  if (sweep.rawSweepOffsetDb !== undefined
+    && sweep.source !== 'scanraw-binary'
+    && sweep.source !== 'renode-executable-state') {
+    context.addIssue({ code: 'custom', path: ['rawSweepOffsetDb'], message: 'Raw sweep offset evidence requires binary scan or executable-twin acquisition provenance' });
+  }
+
+  const requireSource = (allowed: readonly Sweep['source'][], label: string): void => {
+    if (!allowed.includes(sweep.source)) {
+      context.addIssue({ code: 'custom', path: ['source'], message: `${label} requires source ${allowed.join(' or ')}` });
+    }
+  };
+  const requireResolutionQualification = (
+    expected: NonNullable<Sweep['resolutionBandwidthQualification']>,
+    required: boolean,
+    label: string,
+  ): void => {
+    if ((required && sweep.resolutionBandwidthQualification !== expected)
+      || (!required && sweep.resolutionBandwidthQualification !== undefined && sweep.resolutionBandwidthQualification !== expected)) {
+      context.addIssue({ code: 'custom', path: ['resolutionBandwidthQualification'], message: `${label} requires ${expected} resolution qualification${required ? '' : ' when specified'}` });
+    }
+  };
+  const requireAttenuation = (
+    expected: NonNullable<Sweep['attenuationQualification']> | undefined,
+    value: 'observed' | 'not-applicable',
+    required: boolean,
+    label: string,
+  ): void => {
+    if ((required && sweep.attenuationQualification !== expected)
+      || (!required && sweep.attenuationQualification !== undefined && sweep.attenuationQualification !== expected)) {
+      context.addIssue({ code: 'custom', path: ['attenuationQualification'], message: `${label} has contradictory attenuation qualification` });
+    }
+    if ((value === 'not-applicable') !== (sweep.actualAttenuationDb === null)) {
+      context.addIssue({ code: 'custom', path: ['actualAttenuationDb'], message: `${label} has contradictory attenuation value` });
+    }
+  };
+
+  if ('kind' in sweep.identity) {
+    const provenance = sweep.identity.provenance;
+    if (sweep.rawSweepOffsetDb !== undefined) {
+      context.addIssue({ code: 'custom', path: ['rawSweepOffsetDb'], message: 'Driver-neutral instrument-session projection cannot assert transport raw-sweep offset evidence' });
+    }
+    if (provenance.sourceKind === 'serial-port') {
+      requireSource(['instrument-driver-scalar'], 'Physical instrument-session provenance');
+      requireResolutionQualification('device-observed', true, 'Physical instrument-session provenance');
+      requireAttenuation('device-observed', 'observed', true, 'Physical instrument-session provenance');
+    } else if (provenance.sourceKind === 'tinysa-firmware-twin') {
+      requireSource(['renode-executable-state'], 'Executable-twin instrument-session provenance');
+      requireResolutionQualification('firmware-executed-twin', true, 'Executable-twin instrument-session provenance');
+      requireAttenuation('firmware-executed-twin', 'observed', true, 'Executable-twin instrument-session provenance');
+    } else {
+      requireSource(['signal-lab-synthetic'], 'SignalLab instrument-session provenance');
+      requireResolutionQualification('synthetic-grid-equivalent', true, 'SignalLab instrument-session provenance');
+      requireAttenuation('not-applicable', 'not-applicable', true, 'SignalLab instrument-session provenance');
+      const minimumGridSpacing = Math.min(...sweep.frequencyHz.slice(1).map(
+        (frequency, index) => frequency - sweep.frequencyHz[index]!,
+      ));
+      if (!Number.isFinite(minimumGridSpacing) || minimumGridSpacing <= 0 || sweep.actualRbwHz !== minimumGridSpacing) {
+        context.addIssue({ code: 'custom', path: ['actualRbwHz'], message: 'SignalLab synthetic-grid resolution must equal the minimum exported frequency spacing' });
+      }
+    }
+  } else if (sweep.identity.execution === 'physical') {
+    requireSource(['scan-text', 'scanraw-binary'], 'Physical legacy device provenance');
+    requireResolutionQualification('device-observed', false, 'Physical legacy device provenance');
+    requireAttenuation('device-observed', 'observed', false, 'Physical legacy device provenance');
+  } else if (sweep.identity.execution === 'firmware-digital-twin') {
+    requireSource(['renode-executable-state'], 'Executable-twin legacy device provenance');
+    requireResolutionQualification('firmware-executed-twin', false, 'Executable-twin legacy device provenance');
+    requireAttenuation('firmware-executed-twin', 'observed', false, 'Executable-twin legacy device provenance');
+  } else {
+    requireSource(['scan-text', 'scanraw-binary'], 'Protocol-test legacy device provenance');
+    if (sweep.resolutionBandwidthQualification !== undefined || sweep.attenuationQualification !== undefined) {
+      context.addIssue({ code: 'custom', path: ['identity'], message: 'Protocol-test legacy provenance cannot claim observed measurement qualifications' });
+    }
+    requireAttenuation(undefined, 'observed', false, 'Protocol-test legacy device provenance');
+  }
+});
 export const sweepExportRequestSchema = z.object({
-  sweep: z.custom<Sweep>((value) => Boolean(value && typeof value === 'object' && (value as Sweep).kind === 'spectrum')),
+  sweep: sweepExportSweepSchema,
   format: z.enum(['csv', 'json']),
 }).strict();
 export type SweepExportRequest = z.infer<typeof sweepExportRequestSchema>;
 export type SweepExportResult =
   | { status: 'saved'; path: string; format: 'csv' | 'json'; bytesWritten: number }
   | { status: 'cancelled'; format: 'csv' | 'json' };
+
+export const ATOMIZER_FILES_API_VERSION = 1 as const;
+export interface AtomizerFilesApiV1 {
+  readonly version: typeof ATOMIZER_FILES_API_VERSION;
+  exportSweep(request: SweepExportRequest): Promise<SweepExportResult>;
+}
 
 export type DeviceErrorCode = 'not-connected' | 'unsupported' | 'invalid-state' | 'invalid-request' | 'timeout' | 'cancelled' | 'transport' | 'protocol' | 'identity-mismatch';
 export interface DeviceError { code: DeviceErrorCode; message: string; operationId?: string; recoverable: boolean; }
@@ -768,35 +1070,3 @@ export interface AnalysisApiV2 {
   analyzeSweep(sweep: Sweep): Promise<readonly DetectedSignal[]>;
   classify(detection: DetectedSignal, evidence: WaveformClassificationEvidence): Promise<WaveformClassification>;
 }
-
-export const TINYSA_API_V3_METHODS = [
-  'listDevices', 'connect', 'disconnect', 'getSnapshot', 'configureAnalyzer', 'acquireSweep',
-  'startStreaming', 'stopStreaming', 'acquireZeroSpan', 'configureGenerator', 'setGeneratorOutput',
-  'readDiagnostics', 'captureScreen', 'touch', 'releaseTouch', 'exportSweep', 'subscribe',
-] as const;
-export type TinySaApiV3Method = typeof TINYSA_API_V3_METHODS[number];
-
-export interface TinySaApiV3 {
-  readonly version: typeof API_VERSION;
-  listDevices(): Promise<PortCandidate[]>;
-  connect(port: PortCandidate): Promise<DeviceSnapshot>;
-  disconnect(): Promise<void>;
-  getSnapshot(): Promise<DeviceSnapshot>;
-  configureAnalyzer(config: AnalyzerConfig): Promise<DeviceSnapshot>;
-  acquireSweep(): Promise<Sweep>;
-  startStreaming(): Promise<void>;
-  stopStreaming(): Promise<void>;
-  acquireZeroSpan(config: ZeroSpanConfig): Promise<ZeroSpanCapture>;
-  configureGenerator(config: GeneratorConfig): Promise<DeviceSnapshot>;
-  setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot>;
-  readDiagnostics(): Promise<DeviceDiagnostics>;
-  captureScreen(): Promise<ScreenFrame>;
-  touch(point: ScreenPoint): Promise<void>;
-  releaseTouch(point?: ScreenPoint): Promise<void>;
-  exportSweep(request: SweepExportRequest): Promise<SweepExportResult>;
-  subscribe(listener: (event: DeviceEvent) => void): () => void;
-}
-
-type AssertNoApiMethodDrift<T extends never> = T;
-type _TinySaApiMethodsMissingFromRuntimeCatalog = AssertNoApiMethodDrift<Exclude<Exclude<keyof TinySaApiV3, 'version'>, TinySaApiV3Method>>;
-type _TinySaApiRuntimeCatalogUnknownMethods = AssertNoApiMethodDrift<Exclude<TinySaApiV3Method, Exclude<keyof TinySaApiV3, 'version'>>>;

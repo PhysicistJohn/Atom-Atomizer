@@ -27,14 +27,12 @@ export const BAYESIAN_WAVEFORM_MODEL = {
   minimumAggregatePosterior: 0.68,
   minimumSiblingMargin: 0.12,
   maximumUnknownPosteriorForAcceptance: 0.4,
-  // Inductive rank calibration turns each class's fixed-model radial score
-  // into a finite-sample synthetic support p-value. The 2.5% rule has its
-  // coverage meaning only under exchangeability with the pinned SignalLab
-  // calibration generator. Maximizing across eligible known classes protects
-  // known-class retention but is anti-conservative for open-set rejection;
-  // this remains a synthetic development gate, not a physical false-accept p-value.
-  // It remains explicitly uncalibrated for physical receiver data.
-  minimumKnownSyntheticSupportPValue: 0.025,
+  // This is an engineering cutoff on a finite synthetic-reference lower-tail
+  // rank. The fixed, stratified SNR/RBW/scenario grid is not an exchangeable
+  // sample from an operational population, so 0.025 is neither a conformal
+  // alpha nor a 2.5% false-rejection guarantee. Physical data remain wholly
+  // uncalibrated.
+  minimumKnownSyntheticSupportRank: 0.025,
 } as const;
 
 interface BayesianDecision {
@@ -61,17 +59,17 @@ export class BayesianWaveformClassifier {
     }
     signal?.throwIfAborted();
     const candidates = inferPosterior(observation);
-    const knownSupportPValue = knownModelSupportPValue(observation);
+    const knownSupportRank = knownModelSupportRank(observation);
     const boundaryCensored = observation.limitations.includes('partial-span-boundary-censoring');
     const insufficientSweeps = observation.sweepIds.length < BAYESIAN_WAVEFORM_MODEL.minimumSpectrumSweeps;
     const decision = boundaryCensored
       ? unknownDecision(probability(candidates, 'unknown-signal'), 'out-of-domain')
       : insufficientSweeps
         ? unknownDecision(probability(candidates, 'unknown-signal'), 'insufficient-evidence')
-        : selectDecision(candidates, observation, knownSupportPValue);
+        : selectDecision(candidates, observation, knownSupportRank);
     const supportRejected = decision.label === 'unknown'
       && decision.reason === 'out-of-domain'
-      && knownSupportPValue < BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportPValue;
+      && knownSupportRank < BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportRank;
     const outputCandidates = candidates.map((candidate) => ({
       label: candidate.id === 'unknown-signal' ? 'unknown' : `observable:${candidate.id}`,
       confidence: candidate.probability,
@@ -87,16 +85,14 @@ export class BayesianWaveformClassifier {
       scoreKind: 'model-posterior',
       decisionLevel: decision.level,
       decisionSupport: supportRejected
-        ? { kind: 'synthetic-support-p-value', value: knownSupportPValue, threshold: BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportPValue }
+        ? { kind: 'synthetic-support-rank', value: knownSupportRank, threshold: BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportRank }
         : { kind: 'model-posterior', value: decision.probability },
       modelProvenance: {
         producer: 'tinysa-signal-lab',
         sourceCommit: BAYESIAN_WAVEFORM_MODEL.sourceCommit,
-        catalogSha256: BAYESIAN_WAVEFORM_MODEL.corpusSha256,
-        generatorSha256: BAYESIAN_WAVEFORM_MODEL.corpusSha256,
+        corpusSha256: BAYESIAN_WAVEFORM_MODEL.corpusSha256,
         preprocessing: BAYESIAN_WAVEFORM_MODEL.preprocessing,
         modelAssetSha256: BAYESIAN_WAVEFORM_MODEL.modelAssetSha256,
-        datasetSha256: BAYESIAN_WAVEFORM_MODEL.corpusSha256,
         priorId: BAYESIAN_WAVEFORM_MODEL.priorId,
         calibrationId: BAYESIAN_WAVEFORM_MODEL.calibrationId,
         decisionPolicyId: BAYESIAN_WAVEFORM_MODEL.decisionPolicyId,
@@ -110,7 +106,7 @@ export class BayesianWaveformClassifier {
         sweepIds: observation.sweepIds,
         ...(observation.zeroSpanCaptureId ? { zeroSpanCaptureId: observation.zeroSpanCaptureId } : {}),
         views: observation.views,
-        features: { ...observation.values, 'model.maximumKnownSyntheticSupportPValue': knownSupportPValue },
+        features: { ...observation.values, 'model.maximumKnownSyntheticSupportRank': knownSupportRank },
         limitations: observation.limitations,
       },
     };
@@ -141,13 +137,13 @@ type DecisionObservation = Pick<ObservableFeatureObservation, 'centerHz' | 'band
 export function selectObservableDecision(
   candidates: readonly PosteriorCandidate[],
   observation?: DecisionObservation,
-  knownSupportPValue?: number,
+  knownSupportRank?: number,
 ): { label: ObservableDecisionClass | 'unknown'; probability: number } {
-  const decision = selectDecision(candidates, observation, knownSupportPValue ?? (observation ? knownModelSupportPValue(observation) : 1));
+  const decision = selectDecision(candidates, observation, knownSupportRank ?? (observation ? knownModelSupportRank(observation) : 1));
   return { label: decision.label, probability: decision.probability };
 }
 
-export function knownModelSupportPValue(
+export function knownModelSupportRank(
   observation: Pick<ObservableFeatureObservation, 'values'>
     & Partial<Pick<ObservableFeatureObservation, 'occupiedStartHz' | 'occupiedStopHz' | 'centerHz' | 'bandwidthHz' | 'limitations'>>,
 ): number {
@@ -168,19 +164,44 @@ export function knownModelSupportPValue(
       const rawTailScore = Math.max(...model.components.map((component) => studentTModelTailProbability(observation.values, component)));
       const calibration = model.tailCalibrationScoresByView?.[view];
       if (!calibration?.length) throw new Error(`Known class ${model.id} has no ${view} synthetic support calibration`);
-      const rank = calibration.filter((value) => value <= rawTailScore).length;
-      return (rank + 1) / (calibration.length + 1);
+      return empiricalSyntheticSupportRank(rawTailScore, calibration);
     }));
+}
+
+/**
+ * Smoothed empirical lower-tail rank against a sorted synthetic reference.
+ *
+ * If an acquisition attempt has representative supports S_1...S_k and its
+ * stored reference score is M=min(S_1...S_k), monotonicity gives R(S_j)>=R(M)
+ * for every member j. That makes the attempt-minimum reference conservative
+ * for a single member's rank. It does not create an exchangeability or
+ * coverage guarantee for the fixed synthetic nuisance grid.
+ */
+export function empiricalSyntheticSupportRank(rawSupport: number, sortedReference: readonly number[]): number {
+  if (!Number.isFinite(rawSupport) || rawSupport < 0 || rawSupport > 1) {
+    throw new Error('Synthetic support must be finite and within [0, 1]');
+  }
+  if (!sortedReference.length) throw new Error('Synthetic support reference must not be empty');
+  let previous = Number.NEGATIVE_INFINITY;
+  let lowerOrEqual = 0;
+  for (const value of sortedReference) {
+    if (!Number.isFinite(value) || value < 0 || value > 1 || value < previous) {
+      throw new Error('Synthetic support reference must be sorted, finite, and within [0, 1]');
+    }
+    if (value <= rawSupport) lowerOrEqual += 1;
+    previous = value;
+  }
+  return (lowerOrEqual + 1) / (sortedReference.length + 1);
 }
 
 function selectDecision(
   candidates: readonly PosteriorCandidate[],
   observation?: DecisionObservation,
-  knownSupportPValue = observation ? knownModelSupportPValue(observation) : 1,
+  knownSupportRank = observation ? knownModelSupportRank(observation) : 1,
 ): BayesianDecision {
   const unknownPosterior = probability(candidates, 'unknown-signal');
   const knownPosterior = 1 - unknownPosterior;
-  if (knownSupportPValue < BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportPValue) return unknownDecision(unknownPosterior, 'out-of-domain');
+  if (knownSupportRank < BAYESIAN_WAVEFORM_MODEL.minimumKnownSyntheticSupportRank) return unknownDecision(unknownPosterior, 'out-of-domain');
   if (unknownPosterior > BAYESIAN_WAVEFORM_MODEL.maximumUnknownPosteriorForAcceptance || knownPosterior < BAYESIAN_WAVEFORM_MODEL.minimumKnownPosterior) return unknownDecision(unknownPosterior, 'out-of-domain');
 
   const topKnown = candidates.find((candidate) => candidate.id !== 'unknown-signal');
@@ -316,7 +337,7 @@ export { observableClassDefinitions } from './observable-classifier-model.js';
 function assertGeneratedModel(): void {
   if (BAYESIAN_OBSERVABLE_MODEL.id !== 'bayesian-observable-equivalence-v5'
     || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v5'
-    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-conformal-independent-attempt-min-support-detector-conditioned-physical-uncalibrated-v6'
+    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.classificationSweeps !== 8
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons?.standard !== 24
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons.fullBand2g4 !== 96
@@ -324,7 +345,9 @@ function assertGeneratedModel(): void {
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy !== 'equal-weight-per-first-ready-production-representative-v2'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'runtime-domain-qualified-known-representatives-v3'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit !== 'one-score-per-fit-eligible-acquisition-attempt-v1'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-fit-eligible-first-ready-representatives-v1') {
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-fit-eligible-first-ready-representatives-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy !== 'single-representative-rank-dominates-attempt-min-rank-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation !== 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1') {
     throw new Error('Observable model asset does not match the v5 production admission contract');
   }
   const ids = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => model.id);

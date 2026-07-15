@@ -3,10 +3,12 @@ import WebSocket from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, ATOM_TOOL_LOADER_NAME, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeVoiceSessionConfig } from '@tinysa/agent';
 import { OpenAiGateway } from './ai-gateway.js';
+import { REALTIME_TEXT_CONNECTION_TIMEOUT_MS } from './realtime-text.js';
 
 const originalKey = process.env.OPENAI_KEY;
 beforeEach(() => { process.env.OPENAI_KEY = 'test-key-not-real'; });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   if (originalKey === undefined) delete process.env.OPENAI_KEY;
   else process.env.OPENAI_KEY = originalKey;
@@ -138,6 +140,52 @@ describe('trusted OpenAI gateway', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('reserves all four text-session slots before socket creation and rejects a concurrent fifth', async () => {
+    const sockets: HangingRealtimeSocket[] = [];
+    const socketFactory = vi.fn(() => {
+      const socket = new HangingRealtimeSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+    const gateway = new OpenAiGateway({ socketFactory });
+    const pending = Array.from({ length: 4 }, (_value, index) => gateway.agentTurn({ prompt: `Pending ${index}` }));
+    try {
+      await expect(gateway.agentTurn({ prompt: 'Fifth concurrent turn' })).rejects.toThrow(/capacity of 4/i);
+      expect(socketFactory).toHaveBeenCalledTimes(4);
+    } finally {
+      gateway.close();
+      await Promise.allSettled(pending);
+    }
+    expect(sockets.every((socket) => socket.closeCalls === 1)).toBe(true);
+  });
+
+  it('times out hung text connections, closes every socket, and releases their reserved slots', async () => {
+    vi.useFakeTimers();
+    const hangingSockets = Array.from({ length: 4 }, () => new HangingRealtimeSocket());
+    const hangingQueue = [...hangingSockets];
+    const socketFactory = vi.fn(() => {
+      const socket = hangingQueue.shift();
+      return (socket ?? new FakeRealtimeSocket()) as unknown as WebSocket;
+    });
+    const gateway = new OpenAiGateway({ socketFactory });
+    const pending = Array.from({ length: 4 }, (_value, index) => gateway.agentTurn({ prompt: `Hung ${index}` }));
+    const timeoutAssertions = pending.map((turn) => expect(turn).rejects.toThrow(/did not open within 10 seconds/i));
+    try {
+      await vi.advanceTimersByTimeAsync(REALTIME_TEXT_CONNECTION_TIMEOUT_MS);
+      await Promise.all(timeoutAssertions);
+      expect(socketFactory).toHaveBeenCalledTimes(4);
+      expect(hangingQueue).toHaveLength(0);
+      expect(hangingSockets.every((socket) => socket.closeCalls === 1)).toBe(true);
+      vi.useRealTimers();
+
+      await expect(gateway.agentTurn({ prompt: 'Capacity recovered.' })).resolves.toMatchObject({ text: 'Realtime ready.' });
+      expect(socketFactory).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+      gateway.close();
+    }
+  });
+
   it('fails closed without a trusted-process key', async () => {
     delete process.env.OPENAI_KEY;
     await expect(new OpenAiGateway().agentTurn({ prompt: 'hello' })).rejects.toThrow(/OPENAI_KEY/);
@@ -192,6 +240,20 @@ class FakeRealtimeSocket extends EventEmitter {
 
   close(): void {
     if (this.readyState === WebSocket.CLOSED) return;
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close');
+  }
+}
+
+class HangingRealtimeSocket extends EventEmitter {
+  readyState: number = WebSocket.CONNECTING;
+  closeCalls = 0;
+
+  send(): void { /* A connection that never opens cannot send. */ }
+
+  close(): void {
+    if (this.readyState === WebSocket.CLOSED) return;
+    this.closeCalls += 1;
     this.readyState = WebSocket.CLOSED;
     this.emit('close');
   }

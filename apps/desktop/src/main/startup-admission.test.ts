@@ -1,34 +1,87 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
-  TINYSA_USB_PRODUCT_ID,
-  TINYSA_USB_VENDOR_ID,
-  type PortCandidate,
+  type InstrumentCandidate,
+  type InstrumentDiscoveryResult,
 } from '@tinysa/contracts';
-import { selectStartupInstrument } from './startup-admission.js';
+import {
+  PreferredInstrumentAdmissionError,
+  selectPreferredInstrument,
+} from './startup-admission.js';
 
-const exact = physical('exact', 'exact-zs407-cdc');
-const unverified = physical('unverified', 'unverified-serial');
-const twin: PortCandidate = {
-  id: 'twin', path: 'renode://zs407', usbMatch: 'firmware-digital-twin', transport: 'renode-monitor-bridge', execution: 'firmware-digital-twin',
-  digitalTwin: { contractVersion: 1, bridge: 'renode-monitor-v1', firmwareRelease: 'lab-v0.2.0-protocol', repositoryCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT, firmwareBinarySha256: 'a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7', usbTransactionsModeled: false },
-};
+describe('preferred driver admission', () => {
+  const signalLab = driverCandidate('signal-lab', 'signal-lab', 'signal-lab:default');
+  const tinySa = driverCandidate('tinysa-zs407', 'serial-port', '/dev/tty.usbmodem407');
 
-describe('startup instrument admission', () => {
-  it('selects one exact physical ZS407 ahead of every other candidate', () => expect(selectStartupInstrument([unverified, twin, exact])).toEqual(exact));
-  it('requires operator choice when multiple exact physical devices exist', () => expect(selectStartupInstrument([exact, physical('second', 'exact-zs407-cdc')])).toBeUndefined());
-  it('selects the executable twin only when no exact physical device exists', () => expect(selectStartupInstrument([unverified, twin])).toEqual(twin));
-  it('does not select an unverified serial device', () => expect(selectStartupInstrument([unverified])).toBeUndefined());
-  it('fails loudly if discovery violates the single-twin invariant', () => expect(() => selectStartupInstrument([twin, { ...twin, id: 'twin-2' }])).toThrow(/2 executable twins/));
+  it('selects only the configured SignalLab driver', () => {
+    expect(selectPreferredInstrument(driverDiscovery([signalLab, tinySa]), preference('signal-lab'))).toEqual(signalLab);
+  });
+
+  it('does not fall back when the preferred driver is unavailable', () => {
+    expect(() => selectPreferredInstrument(driverDiscovery([tinySa]), preference('signal-lab')))
+      .toThrow(PreferredInstrumentAdmissionError);
+  });
+
+  it('surfaces the preferred driver discovery failure', () => {
+    expect(() => selectPreferredInstrument({
+      ...driverDiscovery([tinySa]),
+      failures: [{ driverId: 'signal-lab', code: 'source-unavailable', recoverable: true, message: 'bridge executable unavailable' }],
+    }, preference('signal-lab'))).toThrow(/bridge executable unavailable/);
+  });
+
+  it('admits an explicitly preferred usable source when another source owned by the same driver failed', () => {
+    const twin = driverCandidate('tinysa-zs407', 'tinysa-firmware-twin', 'twin:one');
+    const discovery = {
+      ...driverDiscovery([twin]),
+      failures: [{
+        driverId: 'tinysa-zs407' as const,
+        sourceKind: 'serial-port' as const,
+        code: 'source-unavailable' as const,
+        recoverable: true,
+        message: 'USB enumeration unavailable',
+      }],
+    };
+    expect(selectPreferredInstrument(discovery, {
+      ...preference('tinysa-zs407'), candidateKind: 'tinysa-firmware-twin',
+    })).toEqual(twin);
+    expect(() => selectPreferredInstrument(discovery, preference('tinysa-zs407')))
+      .toThrow(/failed discovery/);
+  });
+
+  it('requires explicit choice when a driver preference is ambiguous', () => {
+    expect(() => selectPreferredInstrument(
+      driverDiscovery([signalLab, driverCandidate('signal-lab', 'signal-lab', 'signal-lab:second')]),
+      preference('signal-lab'),
+    )).toThrow(/matched 2 candidates/);
+  });
+
+  it('honors the optional source-kind discriminator', () => {
+    expect(selectPreferredInstrument(driverDiscovery([signalLab, tinySa]), {
+      ...preference('tinysa-zs407'),
+      candidateKind: 'serial-port',
+    })).toEqual(tinySa);
+  });
 });
 
-function physical(id: string, usbMatch: 'exact-zs407-cdc' | 'unverified-serial'): PortCandidate {
+function driverCandidate(driverId: string, sourceKind: string, candidateId: string): InstrumentCandidate {
   return {
-    id,
-    path: `/dev/${id}`,
-    ...(usbMatch === 'exact-zs407-cdc' ? { vendorId: TINYSA_USB_VENDOR_ID, productId: TINYSA_USB_PRODUCT_ID } : {}),
-    usbMatch,
-    transport: 'usb-cdc-acm',
-    execution: 'physical',
+    schemaVersion: 1,
+    driverId,
+    candidateId,
+    displayName: candidateId,
+    sourceKind,
+    discoveryRevision: 'discovery:1',
+  } as InstrumentCandidate;
+}
+
+function driverDiscovery(candidates: readonly InstrumentCandidate[]): InstrumentDiscoveryResult {
+  return {
+    discoveryRevision: 'discovery:1',
+    discoveredAt: '2026-07-14T12:00:00.000Z',
+    candidates,
+    failures: [],
   };
+}
+
+function preference(driverId: string) {
+  return { schemaVersion: 1 as const, driverId, updatedAt: '2026-07-14T12:00:00.000Z' };
 }

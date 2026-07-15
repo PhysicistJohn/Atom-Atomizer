@@ -29,7 +29,7 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
     ? 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL'
     : result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'MEASURED WAVEFORM HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
   const scoreLabel = result?.scoreKind === 'model-posterior' ? 'synthetic-model posterior · uncalibrated' : 'relative score';
-  const supportRejected = result?.decisionSupport?.kind === 'synthetic-support-p-value';
+  const supportRejected = result?.decisionSupport?.kind === 'synthetic-support-rank';
 
   return <div className="classification-grid">
     <section className="pipeline-panel"><div className="pipeline"><PipelineStep icon={<Database/>} label="Capture" detail={sweep ? `${sweep.frequencyHz.length} points · ${sweep.source}` : 'No sweep'} ready={Boolean(sweep)}/><ArrowRight/><PipelineStep icon={<Fingerprint/>} label="Detect" detail={`${localDetectionCount} local${activityAssociationCount ? ` · ${activityAssociationCount} activity association${activityAssociationCount === 1 ? '' : 's'}` : ''}`} ready={detections.length > 0}/><ArrowRight/><PipelineStep icon={<BrainCircuit/>} label="Classify" detail={result?.modelId ?? 'No result'} ready={Boolean(result)}/></div></section>
@@ -41,7 +41,7 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
         {result.label === 'unknown' && <p>{result.unknownReason?.replaceAll('-', ' ') ?? 'Evidence rejected'}</p>}
         {!supportRejected && <div className="confidence-gauge"><span style={{ width: `${result.confidence * 100}%` }}/></div>}
         <strong>{supportRejected
-          ? `synthetic support p ${(result.decisionSupport!.value * 100).toFixed(1)}% < ${((result.decisionSupport!.threshold ?? 0) * 100).toFixed(1)}% cutoff`
+          ? `synthetic support rank ${(result.decisionSupport!.value * 100).toFixed(1)}% < ${((result.decisionSupport!.threshold ?? 0) * 100).toFixed(1)}% cutoff`
           : `${Math.round(result.confidence * 100)}% ${scoreLabel}`}</strong>
         <div className="ranked-candidates">{result.candidates.slice(0, 4).map((candidate) => <div key={candidate.label}><span>{waveformLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}{result.candidates.length > 4 && <small>+{result.candidates.length - 4} lower-ranked hypotheses</small>}</div>
         <ResultProvenance detection={selected} result={result}/>

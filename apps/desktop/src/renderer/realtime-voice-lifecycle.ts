@@ -1,4 +1,9 @@
 import { createAtomRealtimeToolResponseConfig, type AgentToolName } from '@tinysa/agent';
+import {
+  ATOM_REALTIME_CALL_ARGUMENT_CHARACTER_LIMIT,
+  ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT,
+  ATOM_REALTIME_RESPONSE_OUTPUT_ITEM_LIMIT,
+} from './atom-agent-retention.js';
 
 export interface CompletedRealtimeFunctionCall {
   responseId: string;
@@ -30,7 +35,7 @@ export class RealtimeResponseLifecycle {
     const root = record(event, 'response.created event');
     if (root.type !== 'response.created') throw new Error(`Expected response.created, received ${String(root.type)}`);
     const response = record(root.response, 'response.created response');
-    const responseId = requiredString(response.id, 'response.created response.id');
+    const responseId = requiredBoundedString(response.id, 'response.created response.id', ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT);
     if (this.#activeResponseId) {
       throw new Error(`Realtime response ${responseId} started while ${this.#activeResponseId} was still active`);
     }
@@ -42,13 +47,16 @@ export class RealtimeResponseLifecycle {
     const root = record(event, 'response.done event');
     if (root.type !== 'response.done') throw new Error(`Expected response.done, received ${String(root.type)}`);
     const response = record(root.response, 'response.done response');
-    const responseId = requiredString(response.id, 'response.done response.id');
+    const responseId = requiredBoundedString(response.id, 'response.done response.id', ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT);
     if (this.#activeResponseId !== responseId) {
       throw new Error(`Realtime completed response ${responseId} while active response was ${this.#activeResponseId ?? 'missing'}`);
     }
     this.#activeResponseId = undefined;
-    const status = requiredString(response.status, 'response.done response.status');
+    const status = requiredBoundedString(response.status, 'response.done response.status', 64);
     if (!Array.isArray(response.output)) throw new Error('response.done response.output is not an array');
+    if (response.output.length > ATOM_REALTIME_RESPONSE_OUTPUT_ITEM_LIMIT) {
+      throw new Error(`response.done exceeded the bounded ${ATOM_REALTIME_RESPONSE_OUTPUT_ITEM_LIMIT}-item output limit`);
+    }
     const calls = response.output
       .filter((item) => record(item, 'response.done output item').type === 'function_call')
       .map((item): CompletedRealtimeFunctionCall => {
@@ -56,9 +64,9 @@ export class RealtimeResponseLifecycle {
         if (call.status !== 'completed') throw new Error(`Realtime function call ${String(call.call_id)} was not completed`);
         return {
           responseId,
-          callId: requiredString(call.call_id, 'response.done function call.call_id'),
-          name: requiredString(call.name, 'response.done function call.name'),
-          arguments: requiredString(call.arguments, 'response.done function call.arguments'),
+          callId: requiredBoundedString(call.call_id, 'response.done function call.call_id', ATOM_REALTIME_CALL_ID_CHARACTER_LIMIT),
+          name: requiredBoundedString(call.name, 'response.done function call.name', 128),
+          arguments: requiredBoundedString(call.arguments, 'response.done function call.arguments', ATOM_REALTIME_CALL_ARGUMENT_CHARACTER_LIMIT, true),
         };
       });
     if (new Set(calls.map((call) => call.callId)).size !== calls.length) {
@@ -110,8 +118,9 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requiredString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !value.length) throw new Error(`${label} is missing`);
+function requiredBoundedString(value: unknown, label: string, characterLimit: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && !value.length)) throw new Error(`${label} is missing`);
+  if (value.length > characterLimit) throw new Error(`${label} exceeded the bounded ${characterLimit}-character limit`);
   return value;
 }
 
