@@ -1608,6 +1608,6 @@ function median(values: readonly number[]): number {
 export { SIGNAL_LAB_EMSO_MODEL, SignalLabBayesianClassifier, signalLabWaveformHypotheses } from './signal-lab-classifier.js';
 export type { SignalLabWaveformHypothesis, WaveformEvidence } from './signal-lab-classifier.js';
 export { BAYESIAN_WAVEFORM_MODEL, BayesianWaveformClassifier, empiricalSyntheticSupportRank, inferPosterior, knownModelSupportRank, observableClassDefinitions, selectObservableDecision } from './bayesian-waveform-classifier.js';
-export { extractObservableFeatures } from './observable-features.js';
+export { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, extractObservableFeatures } from './observable-features.js';
 export { logGamma, logSumExp, mixtureLogLikelihood, posteriorCandidates, regularizedIncompleteBeta, studentTLogDensity, studentTModelTailProbability } from './bayesian-predictive.js';
 export type { ObservableDecisionClass, ObservableLeafClass } from './observable-classifier-model.js';

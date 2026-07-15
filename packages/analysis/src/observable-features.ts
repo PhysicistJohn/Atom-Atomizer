@@ -14,6 +14,11 @@ import {
 
 export type WaveformEvidence = WaveformClassificationEvidence;
 
+export const BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY = {
+  points: 450,
+  sweepTimeSeconds: 0.05,
+} as const;
+
 export type ObservableEvidenceLimitation =
   | 'sweep-time-frequency-skew'
   | 'synthetic-grid-equivalent-resolution'
@@ -501,9 +506,9 @@ function zeroSpanProvenanceMatches(detection: DetectedSignal, referenceSweep: Sw
 
 function supportedZeroSpanGeometry(capture: ZeroSpanCapture): boolean {
   const durationSeconds = capture.samplePeriodSeconds * Math.max(1, capture.powerDbm.length - 1);
-  const requestedGeometryMatches = capture.powerDbm.length === 450
-    && capture.requested.points === 450
-    && Math.abs(capture.requested.sweepTimeSeconds - 0.05) <= 1e-9;
+  const requestedGeometryMatches = capture.powerDbm.length === BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points
+    && capture.requested.points === BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points
+    && Math.abs(capture.requested.sweepTimeSeconds - BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds) <= 1e-9;
   if (!requestedGeometryMatches) return false;
   // Host wall time includes command/transport overhead and is not an honest
   // sample clock. It may support untimed envelope statistics under the pinned

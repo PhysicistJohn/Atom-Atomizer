@@ -205,6 +205,26 @@ describe('operator vertical slice', () => {
     expect(() => parseStoredDetection({ threshold: 'corrupt' })).toThrow();
   });
 
+  it('opens Classify with the persisted pre-model 100 ms capture geometry intact and explicitly out of model', async () => {
+    localStorage.setItem('tinysa-atomizer:v2:zero-span', JSON.stringify({
+      frequencyHz: 433_920_000,
+      points: 290,
+      rbwKhz: 100,
+      attenuationDb: 'auto',
+      sweepTimeSeconds: 0.1,
+      trigger: { mode: 'auto' },
+    }));
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Classify$/i }));
+
+    const captureGeometry = screen.getByRole('combobox', { name: 'Capture geometry' }) as HTMLSelectElement;
+    expect(captureGeometry.value).toBe('current');
+    expect(captureGeometry.selectedOptions[0]?.textContent).toBe('290 × 100 ms · current · outside pinned Bayesian geometry');
+  });
+
   it('classifies one representative per regular component association and honors a zero-span target', () => {
     const associated = (id: string, startHz: number): DetectedSignal => ({
       id,

@@ -64,6 +64,7 @@ import {
   firmwareTraceVisibilitySchema,
 } from '@tinysa/contracts';
 import {
+  BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
   SignalDetector,
   SignalLabBayesianClassifier,
   SignalTracker,
@@ -126,10 +127,10 @@ const DEFAULT_DETECTION: SignalDetectionConfig = {
 };
 const DEFAULT_ZERO_SPAN: ZeroSpanConfig = {
   frequencyHz: 433_920_000,
-  points: 450,
+  points: BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points,
   rbwKhz: 100,
   attenuationDb: 'auto',
-  sweepTimeSeconds: 0.05,
+  sweepTimeSeconds: BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds,
   trigger: { mode: 'auto' },
 };
 // The Bayesian 2.4 GHz activity association retains up to 96 stable-geometry

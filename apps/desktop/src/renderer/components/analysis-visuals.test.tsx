@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DetectedSignal, Sweep, WaveformClassification, ZeroSpanConfig } from '@tinysa/contracts';
-import { ClassificationWorkspace, waveformLabel } from './ClassificationWorkspace.js';
+import { ClassificationWorkspace, classificationCaptureGeometryMenu, selectClassificationCaptureGeometry, waveformLabel } from './ClassificationWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 
 const sweep = {
@@ -89,6 +89,46 @@ const zeroConfig: ZeroSpanConfig = {
 afterEach(cleanup);
 
 describe('analysis visual contracts', () => {
+  it.each([
+    { points: 450, sweepTimeSeconds: 0.05, expectedToken: 'pinned', expectedLabel: '450 × 50 ms · pinned Bayesian geometry' },
+    { points: 290, sweepTimeSeconds: 0.05, expectedToken: 'current', expectedLabel: '290 × 50 ms · current · outside pinned Bayesian geometry' },
+    { points: 450, sweepTimeSeconds: 0.1, expectedToken: 'current', expectedLabel: '450 × 100 ms · current · outside pinned Bayesian geometry' },
+    { points: 290, sweepTimeSeconds: 0.1, expectedToken: 'current', expectedLabel: '290 × 100 ms · current · outside pinned Bayesian geometry' },
+    { points: 20, sweepTimeSeconds: 0.003, expectedToken: 'current', expectedLabel: '20 × 3 ms · current · outside pinned Bayesian geometry' },
+    { points: 450, sweepTimeSeconds: 60, expectedToken: 'current', expectedLabel: '450 × 60 s · current · outside pinned Bayesian geometry' },
+  ])('represents the full contract-valid capture geometry $points × $sweepTimeSeconds s', ({ points, sweepTimeSeconds, expectedToken, expectedLabel }) => {
+    const menu = classificationCaptureGeometryMenu({ ...zeroConfig, points, sweepTimeSeconds });
+    expect(menu.value).toBe(expectedToken);
+    expect(menu.options.find((option) => option.value === expectedToken)?.label).toBe(expectedLabel);
+  });
+
+  it('renders legacy geometry as out-of-model and selects pinned points and duration atomically', () => {
+    const legacy = { ...zeroConfig, points: 290, sweepTimeSeconds: 0.1 };
+    const onZeroConfig = vi.fn();
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[]}
+      classifications={[]}
+      onSelectedId={vi.fn()}
+      zeroConfig={legacy}
+      busy={false}
+      onZeroConfig={onZeroConfig}
+      onAcquireZero={vi.fn()}
+    />);
+    const select = within(view.container).getByRole('combobox', { name: 'Capture geometry' }) as HTMLSelectElement;
+    expect(select.value).toBe('current');
+    expect(select.selectedOptions[0]?.textContent).toBe('290 × 100 ms · current · outside pinned Bayesian geometry');
+    fireEvent.change(select, { target: { value: 'pinned' } });
+    expect(onZeroConfig).toHaveBeenCalledWith({ ...legacy, points: 450, sweepTimeSeconds: 0.05 });
+    view.unmount();
+
+    expect(() => classificationCaptureGeometryMenu({ ...zeroConfig, sweepTimeSeconds: 0.002 })).toThrow();
+    expect(() => classificationCaptureGeometryMenu({ ...zeroConfig, points: 19 })).toThrow();
+    expect(() => classificationCaptureGeometryMenu({ ...zeroConfig, sweepTimeSeconds: '0.1' as unknown as number })).toThrow();
+    expect(() => selectClassificationCaptureGeometry(zeroConfig, 'current')).toThrow(/has no menu option/);
+    expect(() => selectClassificationCaptureGeometry(legacy, 'invented')).toThrow(/has no menu option/);
+  });
+
   it('renders detection geometry only when the owning workspace enables it', () => {
     const view = render(<SpectrumPlot sweep={sweep} detections={[detection]} busy={false}/>);
     expect(view.container.querySelector('.detection-band')).toBeNull();
