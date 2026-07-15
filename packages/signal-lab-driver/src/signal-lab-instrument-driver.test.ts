@@ -43,7 +43,7 @@ const FIXTURE_DESCRIPTORS = SIGNAL_LAB_PROFILE_IDS.map((id) => ({
   disclosure: 'Synthetic fixture only.',
 }));
 
-type FixtureBehavior = 'normal' | 'dishonest-ready-hash' | 'mutate-artifact-during-startup' | 'mutate-source-provenance-during-startup' | 'stale-measurement-epoch' | 'unchanged-profile-epoch' | 'exit-after-status';
+type FixtureBehavior = 'normal' | 'dishonest-ready-hash' | 'mutate-artifact-during-startup' | 'mutate-source-provenance-during-startup' | 'stale-measurement-epoch' | 'shifted-spectrum-geometry' | 'unchanged-profile-epoch' | 'exit-after-status';
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -408,6 +408,32 @@ describe('SignalLab instrument driver', () => {
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
 
+  it('faults the instrument session when a malicious bridge shifts admitted measurement geometry', async () => {
+    const fixture = await createBridgeFixture('shifted-spectrum-geometry');
+    const driver = fixture.driver();
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const session = await driver.connect({ ...descriptor, discoveryRevision: 'discovery:test' });
+    const events: unknown[] = [];
+    session.subscribe((event) => events.push(event));
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:spectrum-geometry',
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
+    });
+
+    await expect(session.acquire()).rejects.toThrow(/spectrum result geometry does not match the admitted request/);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'status', status: 'faulted' }),
+      expect.objectContaining({ type: 'error', error: expect.objectContaining({ recoverable: false }) }),
+    ]));
+    await expect(session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:after-geometry-fault',
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
+    })).rejects.toThrow(/spectrum result geometry does not match the admitted request/);
+    await expect(session.disconnect()).resolves.toBeUndefined();
+  });
+
   it('replays a bridge failure that occurs after status but before the first session subscriber', async () => {
     const fixture = await createBridgeFixture('exit-after-status');
     const driver = fixture.driver();
@@ -600,8 +626,10 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   else if (request.method === 'acquire_spectrum') {
     sequence += 1;
     const { startHz, stopHz, points } = request.params;
-    const measurement = { ...base(), kind: 'swept-spectrum', startHz, stopHz, points,
-      frequencyHz: Array.from({ length: points }, (_, index) => startHz + (stopHz - startHz) * index / (points - 1)), powerDbm: Array(points).fill(-70) };
+    const resultStartHz = ${JSON.stringify(behavior)} === 'shifted-spectrum-geometry' ? startHz + 1000 : startHz;
+    const resultStopHz = ${JSON.stringify(behavior)} === 'shifted-spectrum-geometry' ? stopHz + 1000 : stopHz;
+    const measurement = { ...base(), kind: 'swept-spectrum', startHz: resultStartHz, stopHz: resultStopHz, points,
+      frequencyHz: Array.from({ length: points }, (_, index) => resultStartHz + (resultStopHz - resultStartHz) * index / (points - 1)), powerDbm: Array(points).fill(-70) };
     if (${JSON.stringify(behavior)} === 'stale-measurement-epoch') measurement.configurationRevision = '20000000-0000-4000-8000-000000000099';
     reply(request, measurement);
   } else if (request.method === 'acquire_detected_power') {

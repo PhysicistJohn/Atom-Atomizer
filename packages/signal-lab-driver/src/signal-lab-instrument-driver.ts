@@ -391,6 +391,15 @@ class SignalLabInstrumentSession implements InstrumentSession {
           points: configuration.points,
         });
         this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
+        if (source.startHz !== configuration.startHz
+          || source.stopHz !== configuration.stopHz
+          || source.points !== configuration.points
+          || source.frequencyHz.length !== configuration.points
+          || source.powerDbm.length !== configuration.points) {
+          throw this.#terminalProtocolFailure(
+            'SignalLab spectrum result geometry does not match the admitted configuration',
+          );
+        }
         this.#acceptSourceSequence(source.sequence);
         const measurement = parseInstrumentMeasurement({
           schemaVersion: 1,
@@ -412,16 +421,22 @@ class SignalLabInstrumentSession implements InstrumentSession {
         this.#emit({ type: 'status', sessionId: this.sessionId, status: 'ready' });
         return measurement;
       }
+      const expectedSamplePeriodSeconds = configuration.sweepTimeSeconds / configuration.sampleCount;
       const source = await this.#client.acquireDetectedPower({
         centerFrequencyHz: configuration.centerHz,
         points: configuration.sampleCount,
-        samplePeriodSeconds: configuration.sweepTimeSeconds / configuration.sampleCount,
+        samplePeriodSeconds: expectedSamplePeriodSeconds,
       });
       this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
-      this.#acceptSourceSequence(source.sequence);
-      if (source.centerFrequencyHz !== configuration.centerHz) {
-        throw new Error('SignalLab detected-power result center does not match the admitted configuration');
+      if (source.centerFrequencyHz !== configuration.centerHz
+        || source.points !== configuration.sampleCount
+        || source.samplePeriodSeconds !== expectedSamplePeriodSeconds
+        || source.powerDbm.length !== configuration.sampleCount) {
+        throw this.#terminalProtocolFailure(
+          'SignalLab detected-power result geometry does not match the admitted configuration',
+        );
       }
+      this.#acceptSourceSequence(source.sequence);
       const measurement = parseInstrumentMeasurement({
         schemaVersion: 1,
         measurementId: source.measurementId,

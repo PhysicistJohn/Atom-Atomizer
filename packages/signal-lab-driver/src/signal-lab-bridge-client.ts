@@ -467,7 +467,11 @@ export class SignalLabBridgeClient {
       ));
     }
     const requestId = `atomizer-${++this.#requestSequence}`;
-    const line = JSON.stringify({ type: 'request', contractVersion: 1, requestId, method, params });
+    // Bind admission to the exact request bytes dispatched below. Keeping a
+    // private snapshot prevents a caller from mutating its input while the
+    // producer is computing a response and thereby changing what we accept.
+    const admittedParams = structuredClone(params);
+    const line = JSON.stringify({ type: 'request', contractVersion: 1, requestId, method, params: admittedParams });
     if (Buffer.byteLength(line, 'utf8') > MAX_REQUEST_LINE_BYTES) {
       return Promise.reject(new SignalLabBridgeProtocolError('SignalLab request exceeds the versioned line bound'));
     }
@@ -477,7 +481,7 @@ export class SignalLabBridgeClient {
         this.#fail(error);
         reject(error);
       }, this.#options.requestTimeoutMs);
-      this.#pending = { requestId, method, resolve: resolveValue, reject, timer };
+      this.#pending = { requestId, method, params: admittedParams, resolve: resolveValue, reject, timer };
     });
     try {
       this.#child.stdin.write(`${line}\n`, 'utf8', (error) => {
@@ -624,6 +628,7 @@ interface BridgeResult {
 interface PendingRequest {
   readonly requestId: string;
   readonly method: BridgeMethod;
+  readonly params: BridgeParams[BridgeMethod];
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
@@ -810,7 +815,7 @@ function parseResponse(value: unknown, pending: PendingRequest, ready: SignalLab
     literal(response.type, 'response', 'SignalLab response type');
     literal(response.contractVersion, 1, 'SignalLab response contract version');
     literal(response.requestId, pending.requestId, 'SignalLab response correlation ID');
-    return parseSuccessResult(response.result, pending.method, ready);
+    return parseSuccessResult(response.result, pending, ready);
   }
   if (response.ok === false) {
     exactKeys(response, ['type', 'contractVersion', 'requestId', 'ok', 'error'], [], 'SignalLab error response');
@@ -829,10 +834,33 @@ function parseResponse(value: unknown, pending: PendingRequest, ready: SignalLab
   throw new SignalLabBridgeProtocolError('SignalLab response must carry a literal boolean ok discriminator');
 }
 
-function parseSuccessResult(value: unknown, method: BridgeMethod, ready: SignalLabBridgeReady): unknown {
+function parseSuccessResult(value: unknown, pending: PendingRequest, ready: SignalLabBridgeReady): unknown {
+  const { method } = pending;
   if (method === 'status' || method === 'select_profile' || method === 'configure_channel') return parseStatus(value, ready);
-  if (method === 'acquire_spectrum') return parseSpectrum(value, ready);
-  if (method === 'acquire_detected_power') return parseDetectedPower(value, ready);
+  if (method === 'acquire_spectrum') {
+    const measurement = parseSpectrum(value, ready);
+    const requested = pending.params as BridgeParams['acquire_spectrum'];
+    if (measurement.startHz !== requested.startHz
+      || measurement.stopHz !== requested.stopHz
+      || measurement.points !== requested.points) {
+      throw new SignalLabBridgeProtocolError(
+        'SignalLab spectrum result geometry does not match the admitted request',
+      );
+    }
+    return measurement;
+  }
+  if (method === 'acquire_detected_power') {
+    const measurement = parseDetectedPower(value, ready);
+    const requested = pending.params as BridgeParams['acquire_detected_power'];
+    if (measurement.centerFrequencyHz !== requested.centerFrequencyHz
+      || measurement.points !== requested.points
+      || measurement.samplePeriodSeconds !== requested.samplePeriodSeconds) {
+      throw new SignalLabBridgeProtocolError(
+        'SignalLab detected-power result geometry does not match the admitted request',
+      );
+    }
+    return measurement;
+  }
   const result = exactRecord(value, ['kind', 'closed'], [], 'SignalLab shutdown result');
   literal(result.kind, 'shutdown', 'SignalLab shutdown kind');
   literal(result.closed, true, 'SignalLab shutdown state');

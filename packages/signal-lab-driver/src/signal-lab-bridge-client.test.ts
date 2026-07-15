@@ -219,6 +219,43 @@ describe('SignalLab bridge client', () => {
     await expect(client.close()).rejects.toThrow(/correlation ID/);
   });
 
+  it('binds every measurement response to an immutable request snapshot and faults on geometry drift', async () => {
+    const cases = [
+      ['shifted-spectrum-geometry', 'spectrum'],
+      ['wrong-spectrum-points', 'spectrum'],
+      ['wrong-detected-center', 'detected'],
+      ['wrong-detected-points', 'detected'],
+      ['wrong-detected-sample-period', 'detected'],
+    ] as const;
+    for (const [mode, kind] of cases) {
+      const fixture = await createFixture(mode);
+      const failures: Error[] = [];
+      const client = await SignalLabBridgeClient.launch(await fixture.location(), {
+        readyTimeoutMs: 1_000,
+        requestTimeoutMs: 1_000,
+        shutdownTimeoutMs: 200,
+        onTerminalFailure: (error) => failures.push(error),
+      });
+      const spectrumRequest = { startHz: 99_000_000, stopHz: 101_000_000, points: 5 };
+      const request = kind === 'spectrum'
+        ? client.acquireSpectrum(spectrumRequest)
+        : client.acquireDetectedPower({ centerFrequencyHz: 100_000_000, points: 4, samplePeriodSeconds: 0.001 });
+
+      // A malicious result matches this post-dispatch mutation exactly. It
+      // must still be compared with the private snapshot that was serialized.
+      if (mode === 'shifted-spectrum-geometry') {
+        spectrumRequest.startHz += 1_000;
+        spectrumRequest.stopHz += 1_000;
+      }
+
+      await expect(request).rejects.toThrow(/result geometry does not match the admitted request/);
+      await expect(client.status()).rejects.toThrow(/result geometry does not match the admitted request/);
+      expect(client.requestCount).toBe(1);
+      expect(failures).toHaveLength(1);
+      await expect(client.close()).rejects.toThrow(/result geometry does not match the admitted request/);
+    }
+  });
+
   it('makes any selected-waveform metadata or optional asset-hash drift terminal', async () => {
     for (const mode of ['waveform-metadata-drift', 'waveform-asset-hash-drift'] as const) {
       const fixture = await createFixture(mode);
@@ -368,6 +405,8 @@ describe('SignalLab bridge client', () => {
 
 type FixtureMode = 'valid' | 'wrong-correlation' | 'delayed-status' | 'silent-after-ready' | 'exit-after-ready'
   | 'close-stdout-after-ready' | 'malformed-ready' | 'extra-ready-field' | 'duplicate-ready' | 'electron-node-runtime'
+  | 'shifted-spectrum-geometry' | 'wrong-spectrum-points' | 'wrong-detected-center'
+  | 'wrong-detected-points' | 'wrong-detected-sample-period'
   | 'waveform-metadata-drift' | 'waveform-asset-hash-drift' | 'insecure-source-url'
   | 'duplicate-source-url' | 'source-reference-whitespace' | 'source-qualification-mismatch'
   | 'legacy-standard-field' | 'projection-boosted' | 'projection-single-prb'
@@ -518,12 +557,18 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     else if (request.method === 'acquire_spectrum') {
       sequence += 1;
       const { startHz, stopHz, points } = request.params;
-      const frequencyHz = Array.from({ length: points }, (_, index) => startHz + (stopHz - startHz) * index / (points - 1));
-      reply(request, measurement({ kind: 'swept-spectrum', startHz, stopHz, points, frequencyHz, powerDbm: Array(points).fill(-70) }));
+      const resultStartHz = ${JSON.stringify(mode)} === 'shifted-spectrum-geometry' ? startHz + 1000 : startHz;
+      const resultStopHz = ${JSON.stringify(mode)} === 'shifted-spectrum-geometry' ? stopHz + 1000 : stopHz;
+      const resultPoints = ${JSON.stringify(mode)} === 'wrong-spectrum-points' ? points + 1 : points;
+      const frequencyHz = Array.from({ length: resultPoints }, (_, index) => resultStartHz + (resultStopHz - resultStartHz) * index / (resultPoints - 1));
+      reply(request, measurement({ kind: 'swept-spectrum', startHz: resultStartHz, stopHz: resultStopHz, points: resultPoints, frequencyHz, powerDbm: Array(resultPoints).fill(-70) }));
     } else if (request.method === 'acquire_detected_power') {
       sequence += 1;
       const { centerFrequencyHz, points, samplePeriodSeconds } = request.params;
-      reply(request, measurement({ kind: 'detected-power-timeseries', centerFrequencyHz, points, samplePeriodSeconds, powerDbm: Array(points).fill(-65) }));
+      const resultCenterFrequencyHz = ${JSON.stringify(mode)} === 'wrong-detected-center' ? centerFrequencyHz + 1 : centerFrequencyHz;
+      const resultPoints = ${JSON.stringify(mode)} === 'wrong-detected-points' ? points + 1 : points;
+      const resultSamplePeriodSeconds = ${JSON.stringify(mode)} === 'wrong-detected-sample-period' ? samplePeriodSeconds * 2 : samplePeriodSeconds;
+      reply(request, measurement({ kind: 'detected-power-timeseries', centerFrequencyHz: resultCenterFrequencyHz, points: resultPoints, samplePeriodSeconds: resultSamplePeriodSeconds, powerDbm: Array(resultPoints).fill(-65) }));
     } else if (request.method === 'shutdown') {
       reply(request, { kind: 'shutdown', closed: true });
       setTimeout(() => process.exit(0), 5);
