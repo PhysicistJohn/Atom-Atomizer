@@ -1533,6 +1533,17 @@ describe('signal analysis', () => {
     expect(() => extractObservableFeatures(detection, { sweeps })).not.toThrow();
   });
 
+  it('still binds a one-look frozen origin to the public current-track fields', () => {
+    const sweep = emsoSweep(98_000_000, 2_000_000, 1, (frequency) =>
+      Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 2_000));
+    const detection = emsoDetection('one-look-current-origin', 98_000_000, 20_000, [sweep]);
+    expect(() => extractObservableFeatures(detection, { sweeps: [sweep] })).not.toThrow();
+    expect(() => extractObservableFeatures({
+      ...detection,
+      peakDbm: detection.peakDbm + 1,
+    }, { sweeps: [sweep] })).toThrow(/coherent complete scalar sweep/);
+  });
+
   it('binds the newest admitted local evidence sweep to the track last-seen timestamp', () => {
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
       Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 2_000)));

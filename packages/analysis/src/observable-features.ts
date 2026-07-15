@@ -566,7 +566,12 @@ function localHistorySweepsReplayUniquely(
       // it to the origin can falsely reject an exactly bound candidate merely
       // because another distinct candidate was also close enough that the
       // live tracker could have considered it.
-      if (sweep.id === origin.sourceSweep.id) return true;
+      // A one-look history has the origin as its newest look; in that case the
+      // normal branch must still bind the public current-track fields to the
+      // detector replay. With two or more looks the causal ordering places
+      // the retained origin behind index zero, so only redundant loose
+      // uniqueness is skipped.
+      if (sweep.id === origin.sourceSweep.id && index !== 0) return true;
       const compatible = analyzeBayesianSweep(sweep, detection.detectorConfig).filter((candidate) =>
         candidate.detectorId === detection.detectorId
         && candidate.associationMode === 'frequency-local'
