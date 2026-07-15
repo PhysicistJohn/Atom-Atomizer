@@ -102,6 +102,21 @@ describe('device fail-loud lifecycle', () => {
     expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
   });
 
+  it('invalidates an older RF-off acknowledgement when a later output-off attempt is rejected', async () => {
+    const bytes = new FakeTinySaTransport({
+      commandResponseSequences: { 'output off': ['', '', 'output?', ''] },
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+
+    await expect(service.configureAnalyzer(analyzer)).rejects.toThrow(/rejected command output off/i);
+    await service.disconnect();
+
+    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(4);
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+  });
+
   it('admits an otherwise valid ZS407 custom revision with explicit unqualified provenance', async () => {
     const bytes = new FakeTinySaTransport({
       versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',

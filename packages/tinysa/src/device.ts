@@ -650,6 +650,10 @@ export class TinySaDeviceService {
   }
 
   async #command(command: string, timeoutMs = 10_000): Promise<string> {
+    // An older acknowledgement cannot survive a fresh output-off attempt. If
+    // the write executes but its reply is rejected or lost, teardown must send
+    // output-off again instead of treating the earlier state as current.
+    if (command === 'output off') this.#rfOffAcknowledged = false;
     const response = await this.#ready().execute(command, timeoutMs);
     assertFirmwareSuccess(response, command);
     if (command === 'output off') this.#rfOffAcknowledged = true;

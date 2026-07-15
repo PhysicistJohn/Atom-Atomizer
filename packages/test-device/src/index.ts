@@ -23,6 +23,8 @@ export interface FakeOptions {
   helpCommands?: readonly string[];
   /** Exact command responses used by fail-closed protocol boundary tests. */
   commandResponses?: Readonly<Record<string, string>>;
+  /** Per-command response sequence; its final value is retained after exhaustion. */
+  commandResponseSequences?: Readonly<Record<string, readonly string[]>>;
 }
 
 const encoder = new TextEncoder();
@@ -54,6 +56,7 @@ export class FakeTinySaTransport implements ByteTransport {
   #sweepIndex = 0;
   #rawSweepOffsetDb = 174;
   #lastPowers: readonly number[] = [];
+  #commandResponseIndexes = new Map<string, number>();
 
   constructor(private readonly options: FakeOptions = {}) {
     this.port = portCandidateSchema.parse({
@@ -97,7 +100,12 @@ export class FakeTinySaTransport implements ByteTransport {
     const command = wire.slice(0, -1);
     if (!command || command.length > 47 || !/^[\x20-\x7e]+$/.test(command)) throw new Error('Fake ZS407 received a malformed command');
     this.writes.push(command);
-    const payload = this.options.commandResponses?.[command] ?? this.#response(command);
+    const sequence = this.options.commandResponseSequences?.[command];
+    const responseIndex = this.#commandResponseIndexes.get(command) ?? 0;
+    if (sequence) this.#commandResponseIndexes.set(command, responseIndex + 1);
+    const payload = sequence?.[Math.min(responseIndex, sequence.length - 1)]
+      ?? this.options.commandResponses?.[command]
+      ?? this.#response(command);
     const boot = this.#bootPending ? encoder.encode('\r\ntinySA Shell\r\nch> ') : new Uint8Array();
     this.#bootPending = false;
     const echo = encoder.encode(`${command}\r\n`);
