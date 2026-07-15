@@ -63,6 +63,7 @@ import {
   type WaveformClassification,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
+  type ZeroSpanConfigPatch,
   firmwareTraceVisibilitySchema,
 } from '@tinysa/contracts';
 import {
@@ -121,6 +122,7 @@ import {
   reconcileAnalyzerConfiguration,
   reconcileDetectedPowerConfiguration,
   sameSweptSpectrumConfiguration,
+  stageDetectedPowerConfigurationPatch,
   sweptSpectrumConfigurationFor,
 } from './instrument-configuration.js';
 import { agentDetectionResults } from './agent-detection-results.js';
@@ -986,6 +988,23 @@ export function App() {
     }
   }
 
+  function updateZeroSpanFromUi(input: ZeroSpanConfig): void {
+    try {
+      const next = zeroSpanConfigSchema.parse(input);
+      const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
+      if (!capability || capability.kind !== 'detected-power-timeseries') {
+        throw new Error('Active instrument does not advertise detected-power acquisition');
+      }
+      detectedPowerConfigurationFor(capability, next);
+      if (JSON.stringify(next) === JSON.stringify(zeroConfig)) return;
+      setZeroConfig(next);
+      clearClassificationCapture();
+    } catch (value) {
+      setError(`Detected-power configuration failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
   async function recordSweep(
     next: Sweep,
     configurationRevision: string,
@@ -1616,7 +1635,7 @@ export function App() {
     stagedAnalyzer: AnalyzerConfig = analyzer,
     stagedDetectedPower: ZeroSpanConfig = zeroConfig,
   ) {
-    const active = instrumentRef.current.configuration;
+    const active = instrumentRef.current.session?.configuration;
     return {
       admitted: active ? {
         configurationRevision: active.configurationRevision,
@@ -1869,13 +1888,15 @@ export function App() {
         return { detectionId, selected: true, evidence: 'ui-only' };
       }
       case 'configure_zero_span': {
-        const patch = args as Partial<Pick<ZeroSpanConfig, 'frequencyHz' | 'points' | 'sweepTimeSeconds'>>;
-        const next = zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch });
         const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
-        if (capability?.kind === 'detected-power-timeseries') detectedPowerConfigurationFor(capability, next);
+        const { patch, configuration: next } = stageDetectedPowerConfigurationPatch(
+          capability?.kind === 'detected-power-timeseries' ? capability : undefined,
+          zeroConfig,
+          args as ZeroSpanConfigPatch,
+        );
         applyWorkspace('classification');
         setZeroConfig(next);
-        return { scalarConfiguration: agentConfigurationContext(analyzer, next) };
+        return { patch, scalarConfiguration: agentConfigurationContext(analyzer, next) };
       }
       case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', currentGeneratorOutput()); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); applyWorkspace('generator'); setGenerator(next); return configureGeneratorWith(next); }
@@ -1919,7 +1940,7 @@ export function App() {
       {workspace === 'spectrum' && <MeasurementWorkspace
         acquisitionActions={acquisitionActions}
         view={measurementView} onView={changeMeasurementView}
-        analyzer={analyzer} spectrumCapability={spectrumCapability} detectedPowerAvailable={detectedPowerCapability !== undefined} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
+        analyzer={analyzer} spectrumCapability={spectrumCapability} detectedPowerCapability={detectedPowerCapability} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
         traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} visibleFirmwareTraceIds={visibleFirmwareTraceIds} onFirmwareTraceVisibility={configureFirmwareTraceVisibility} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
@@ -1929,10 +1950,16 @@ export function App() {
         waterfall={waterfallConfiguration} onWaterfall={configureWaterfall}
         channel={channelConfiguration} onChannel={configureChannelMeasurement}
         zeroConfig={zeroConfig} zeroCapture={zeroCapture} stft={stftConfiguration}
-        onZeroConfig={setZeroConfig} onStft={configureEnvelopeStft} onAcquireZero={() => void acquireZeroSpanFromUi()}
+        onZeroConfig={updateZeroSpanFromUi} onStft={configureEnvelopeStft} onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
-      {workspace === 'classification' && <ClassificationWorkspace sweep={sweep} detections={detections} classifications={classifications} selectedId={selectedClassificationId} onSelectedId={setSelectedClassificationId} zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope} busy={!connected || busy} onZeroConfig={setZeroConfig} onAcquireZero={() => void acquireZeroSpanFromUi()}/>}
+      {workspace === 'classification' && <ClassificationWorkspace
+        sweep={sweep} detections={detections} classifications={classifications}
+        selectedId={selectedClassificationId} onSelectedId={setSelectedClassificationId}
+        zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope}
+        capability={detectedPowerCapability} busy={!connected || busy}
+        onZeroConfig={updateZeroSpanFromUi} onAcquireZero={() => void acquireZeroSpanFromUi()}
+      />}
       {workspace === 'generator' && <GeneratorWorkspace config={generator} capability={generatorCapability} output={generatorOutput} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
       {workspace === 'device' && <DeviceWorkspace session={session} diagnostics={diagnostics} frame={screenFrame} busy={busy} touchBusy={touchBusy} selectedProfile={selectedProfile} onProfile={(profileId) => void selectSignalLabProfile(profileId)} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTap={tapScreen}/>}
     </section>

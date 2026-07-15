@@ -1,15 +1,19 @@
 import { useMemo } from 'react';
 import { AudioWaveform, Play, ScanLine } from 'lucide-react';
-import type { EnvelopeStftConfiguration, EnvelopeStftResult, ZeroSpanCapture, ZeroSpanConfig } from '@tinysa/contracts';
+import { zeroSpanConfigSchema, type EnvelopeStftConfiguration, type EnvelopeStftResult, type InstrumentAcquisitionCapability, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { computeEnvelopeStft } from '@tinysa/analysis';
 import { formatFrequency } from '../format.js';
 import { atomicColor } from './WaterfallView.js';
 import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
+import { DetectedPowerReceiverControls } from './ReceiverControlRows.js';
+
+type DetectedPowerCapability = Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
 
 export interface EnvelopeStftViewProps {
   zeroConfig: ZeroSpanConfig;
   capture?: ZeroSpanCapture;
   configuration: EnvelopeStftConfiguration;
+  capability?: DetectedPowerCapability;
   connected: boolean;
   streaming: boolean;
   busy: boolean;
@@ -18,10 +22,11 @@ export interface EnvelopeStftViewProps {
   onAcquire(): void;
 }
 
-export function EnvelopeStftView({ zeroConfig, capture, configuration, connected, streaming, busy, onZeroConfig, onConfiguration, onAcquire }: EnvelopeStftViewProps) {
+export function EnvelopeStftView({ zeroConfig, capture, configuration, capability, connected, streaming, busy, onZeroConfig, onConfiguration, onAcquire }: EnvelopeStftViewProps) {
   const analysis = useMemo(() => evaluate(capture, configuration), [capture, configuration]);
   const captureUnavailable = !connected || streaming || busy;
   const captureLabel = !connected ? 'Connect an instrument' : streaming ? 'Stop acquisition first' : busy ? 'Wait for current operation' : 'Acquire zero span';
+  const stageZeroPatch = (patch: Partial<ZeroSpanConfig>) => onZeroConfig(zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch }));
   return <section className="envelope-stft-view" aria-label="Detected-envelope STFT">
     <div className="stft-visual">
       <header className="analysis-view-head">
@@ -35,9 +40,10 @@ export function EnvelopeStftView({ zeroConfig, capture, configuration, connected
     <aside className="stft-console">
       <div className="channel-console-title"><span><ScanLine size={14}/></span><strong>Capture</strong></div>
       <div className="stft-form parameter-stack">
-        <EditableParameter label="Tuned frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={0} step={1} controlId="stft.frequency" onCommit={(value) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(value) })}/>
-        <EditableParameter label="Capture samples" value={zeroConfig.points} displayValue={`${zeroConfig.points} points`} minimum={20} maximum={450} step={1} controlId="stft.samples" onCommit={(value) => onZeroConfig({ ...zeroConfig, points: Number(value) })}/>
-        <EditableParameter label="Capture time" value={zeroConfig.sweepTimeSeconds} displayValue={formatDuration(zeroConfig.sweepTimeSeconds)} unit="s" minimum={0.003} maximum={60} step={0.001} controlId="stft.capture-time" onCommit={(value) => onZeroConfig({ ...zeroConfig, sweepTimeSeconds: Number(value) })}/>
+        <EditableParameter label="Tuned frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min ?? 0} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={captureUnavailable || !capability || capability.controls.model === 'synthetic-scalar'} controlId="stft.frequency" onCommit={(value) => stageZeroPatch({ frequencyHz: Number(value) })}/>
+        <EditableParameter label="Capture samples" value={zeroConfig.points} displayValue={`${zeroConfig.points} points`} minimum={capability?.sampleCount.min ?? 1} maximum={capability?.sampleCount.max} step={capability?.sampleCount.step ?? 1} disabled={captureUnavailable || !capability} controlId="stft.samples" onCommit={(value) => stageZeroPatch({ points: Number(value) })}/>
+        <EditableParameter label="Capture time" value={zeroConfig.sweepTimeSeconds} displayValue={formatDuration(zeroConfig.sweepTimeSeconds)} unit="s" minimum={capability?.sweepTimeSeconds.manualSeconds.min ?? Number.MIN_VALUE} maximum={capability?.sweepTimeSeconds.manualSeconds.max} step={capability?.sweepTimeSeconds.manualSeconds.step ?? 'any'} disabled={captureUnavailable || !capability} controlId="stft.capture-time" onCommit={(value) => stageZeroPatch({ sweepTimeSeconds: Number(value) })}/>
+        <DetectedPowerReceiverControls config={zeroConfig} capability={capability} disabled={busy || streaming} controlPrefix="stft" onChange={stageZeroPatch}/>
         <SelectParameter label="STFT window" value={configuration.windowSize} options={[16, 32, 64, 128, 256].map((value) => ({ value, label: `Hann · ${value} points` }))} controlId="stft.window" onValue={(value) => {
           const windowSize = Number(value) as EnvelopeStftConfiguration['windowSize'];
           onConfiguration({ ...configuration, windowSize, hopSize: Math.min(configuration.hopSize, windowSize) });

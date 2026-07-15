@@ -22,6 +22,7 @@ import {
   type DeviceTelemetry,
   type FirmwareTraceFrame,
   type GeneratorConfig,
+  type NumericRange,
   type PortCandidate,
   type ScreenFrame,
   type ScreenPoint,
@@ -107,14 +108,54 @@ export class TinySaDeviceService {
 
       await this.#command('output off');
       await this.#command('mode input');
-      const readback = await this.#readAnalyzerReadback();
+      let readback = await this.#readAnalyzerReadback();
+      let capabilities: DeviceCapabilities;
+      if (identity.firmwareQualification === 'custom-unqualified') {
+        let probedCapabilities: DeviceCapabilities | undefined;
+        let probeFailed = false;
+        let probeFailure: unknown;
+        try {
+          probedCapabilities = await buildCapabilities(
+            this.#commands,
+            identity,
+            readback,
+            (command) => this.#ready().execute(command, 10_000),
+          );
+        } catch (error) {
+          probeFailed = true;
+          probeFailure = error;
+        }
+        // A custom shell's help probes are executable, untrusted commands. A
+        // probe is not allowed to leave the device in an emitting mode or to
+        // silently rewrite the acquisition geometry that was admitted. The
+        // restoration attempt is mandatory even when parsing a probe failed.
+        try {
+          await this.#command('output off');
+          await this.#command('mode input');
+          const afterProbes = await this.#readAnalyzerReadback();
+          assertSameProbeGeometry(readback, afterProbes);
+          readback = afterProbes;
+        } catch (restorationFailure) {
+          if (probeFailed) {
+            throw new AggregateError(
+              [probeFailure, restorationFailure],
+              'Custom firmware probing failed and receive-safe state could not be re-established',
+            );
+          }
+          throw restorationFailure;
+        }
+        if (probeFailed) throw probeFailure;
+        if (!probedCapabilities) throw new TinySaDeviceError('protocol', 'Custom firmware probing returned no capabilities', false);
+        capabilities = probedCapabilities;
+      } else {
+        capabilities = await buildCapabilities(
+          this.#commands,
+          identity,
+          readback,
+          (command) => this.#ready().execute(command, 10_000),
+        );
+      }
       const telemetry = await this.#readTelemetry(readback.sweepStatus);
-      const capabilities = await buildCapabilities(
-        this.#commands,
-        identity,
-        readback,
-        (command) => this.#ready().execute(command, 10_000),
-      );
       const now = new Date().toISOString();
       this.#set({
         connection: 'ready',
@@ -657,7 +698,7 @@ export class TinySaDeviceService {
     let response: string;
     try {
       response = await this.#ready().execute(command, timeoutMs);
-      assertFirmwareSuccess(response, command);
+      assertFirmwareMutationAcknowledged(response, command);
     } catch (value) {
       if (command === 'output off' && this.#snapshot.connection !== 'disconnected') {
         const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged', true);
@@ -783,10 +824,26 @@ async function buildCapabilities(
     : await customReceiverSurface(commands, query);
   const analyzerFrequency = sourceQualified
     ? { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz, unit: 'Hz' as const }
-    : { min: Math.min(readback.startHz, readback.stopHz), max: Math.max(readback.startHz, readback.stopHz), unit: 'Hz' as const };
+    : intersectQuantizedRange(
+      {
+        min: Math.min(readback.startHz, readback.stopHz),
+        max: Math.max(readback.startHz, readback.stopHz),
+        unit: 'Hz',
+      },
+      ZS407_FIRMWARE_LIMITS.analyzerMinimumHz,
+      ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz,
+      1,
+      'analyzer frequency',
+    );
   const sweepPoints = sourceQualified
     ? { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints, step: 1, unit: 'points' as const }
-    : { min: readback.points, max: readback.points, unit: 'points' as const };
+    : intersectQuantizedRange(
+      { min: readback.points, max: readback.points, unit: 'points' },
+      ZS407_FIRMWARE_LIMITS.minimumSweepPoints,
+      ZS407_FIRMWARE_LIMITS.maximumSweepPoints,
+      1,
+      'sweep point count',
+    );
   const generatorAdvertised = sourceQualified
     && ['mode', 'output', 'freq', 'level', 'modulation'].every((command) => commands.includes(command));
   return {
@@ -818,8 +875,11 @@ async function buildCapabilities(
     scalarReceiver: observed.scalarReceiver,
     maxSweepPoints: sweepPoints.max,
     screen: { width: 480, height: 320, format: 'rgb565le' },
-    screenCapture: commands.includes('capture'),
-    remoteTouch: commands.includes('touch') && commands.includes('release'),
+    // Command-name presence is not behavioral proof for an unqualified
+    // custom build. Capture and touch remain unavailable until a future safe,
+    // exact probe can establish their wire contract.
+    screenCapture: sourceQualified && commands.includes('capture'),
+    remoteTouch: sourceQualified && commands.includes('touch') && commands.includes('release'),
     streaming: observed.scalarReceiver.sweptSpectrum,
     rawSweep: observed.scalarReceiver.acquisitionFormats.includes('raw'),
     rawSweepOffsetReadback: observed.rawSweepOffsetReadback,
@@ -890,6 +950,48 @@ function knownReceiverSurface(commands: readonly string[]): ObservedReceiverSurf
   };
 }
 
+function assertSameProbeGeometry(before: AnalyzerReadback, after: AnalyzerReadback): void {
+  if (before.startHz === after.startHz && before.stopHz === after.stopHz && before.points === after.points) return;
+  throw new TinySaDeviceError(
+    'protocol',
+    `Custom firmware capability probes changed analyzer geometry from ${before.startHz}..${before.stopHz}/${before.points} to ${after.startHz}..${after.stopHz}/${after.points}`,
+    false,
+  );
+}
+
+function intersectQuantizedRange(
+  advertised: NumericRange,
+  supportedMinimum: number,
+  supportedMaximum: number,
+  step: number,
+  label: string,
+): NumericRange {
+  const lower = Math.max(advertised.min, supportedMinimum);
+  const upper = Math.min(advertised.max, supportedMaximum);
+  const tolerance = Math.max(1, Math.abs(lower), Math.abs(upper)) * Number.EPSILON * 16;
+  const minimumTick = Math.ceil(lower / step - tolerance);
+  const maximumTick = Math.floor(upper / step + tolerance);
+  if (!Number.isSafeInteger(minimumTick) || !Number.isSafeInteger(maximumTick) || maximumTick < minimumTick) {
+    throw new TinySaDeviceError(
+      'unsupported',
+      `Custom firmware ${label} range ${advertised.min}..${advertised.max} has no value in the supported ${supportedMinimum}..${supportedMaximum} range at step ${step}`,
+      false,
+    );
+  }
+  return {
+    min: quantizedValue(minimumTick, step),
+    max: quantizedValue(maximumTick, step),
+    step,
+    unit: advertised.unit,
+  };
+}
+
+function quantizedValue(tick: number, step: number): number {
+  // Multiplication by decimal steps otherwise leaks binary artifacts into the
+  // public capability contract (for example 3 * 0.1).
+  return Number((tick * step).toPrecision(15));
+}
+
 async function customReceiverSurface(
   commands: readonly string[],
   query: (command: string) => Promise<string>,
@@ -902,38 +1004,70 @@ async function customReceiverSurface(
     if (!commands.includes(command)) continue;
     usage.set(command, await query(`${command} ?`));
   }
-  const rbw = parseAdvertisedRange(usage.get('rbw'), 'rbw', 'kHz');
-  const attenuation = parseAdvertisedRange(usage.get('attenuate'), 'attenuate', 'dB');
-  const sweepSeconds = parseAdvertisedRange(usage.get('sweeptime'), 'sweeptime', 'seconds');
-  if (!rbw || rbw.range.min <= 0
-    || !attenuation || attenuation.range.min < 0
-    || !sweepSeconds || sweepSeconds.range.min <= 0) {
+  const advertisedRbw = parseAdvertisedRange(usage.get('rbw'), 'rbw', 'kHz');
+  const advertisedAttenuation = parseAdvertisedRange(usage.get('attenuate'), 'attenuate', 'dB');
+  const advertisedSweepSeconds = parseAdvertisedRange(usage.get('sweeptime'), 'sweeptime', 'seconds');
+  if (!advertisedRbw || !advertisedAttenuation || !advertisedSweepSeconds) {
     throw new TinySaDeviceError(
       'unsupported',
       'Custom firmware did not advertise parseable RBW, attenuation, and sweep-time ranges',
       false,
     );
   }
+  const rbw = {
+    ...advertisedRbw,
+    range: intersectQuantizedRange(
+      advertisedRbw.range,
+      ZS407_FIRMWARE_LIMITS.minimumRbwKhz,
+      ZS407_FIRMWARE_LIMITS.maximumRbwKhz,
+      0.1,
+      'RBW',
+    ),
+  };
+  const attenuation = {
+    ...advertisedAttenuation,
+    range: intersectQuantizedRange(advertisedAttenuation.range, 0, 31, 1, 'attenuation'),
+  };
+  const sweepSeconds = {
+    ...advertisedSweepSeconds,
+    range: intersectQuantizedRange(
+      advertisedSweepSeconds.range,
+      ZS407_FIRMWARE_LIMITS.minimumSweepSeconds,
+      ZS407_FIRMWARE_LIMITS.maximumSweepSeconds,
+      0.000_001,
+      'sweep-time',
+    ),
+  };
 
-  const traceUsage = usage.get('trace') ?? '';
-  const rawSweepOffsetReadback = hasParseableRawSweepOffset(usage.get('zero'));
-  const sweepSyntax = /sweep\s+\{start\(Hz\)\}[^\r\n]*\[stop\(Hz\)\][^\r\n]*\[points\]/i.test(usage.get('sweep') ?? '');
-  const traceDbm = optionAdvertised(traceUsage, 'dBm');
-  const firmwareTraceReadback = traceDbm && optionAdvertised(traceUsage, 'value');
-  const detectors = advertisedDetectors(usage.get('calc') ?? '');
-  const spurRejection = advertisedOptions(usage.get('spur') ?? '', ['off', 'on', 'auto'] as const);
-  const avoidSpurs = advertisedOptions(usage.get('avoid') ?? '', ['off', 'on', 'auto'] as const);
-  const lowNoiseAmplifier = advertisedOptions(usage.get('lna') ?? '', ['off', 'on'] as const);
-  const advertisedTriggerModes = advertisedOptions(usage.get('trigger') ?? '', ['auto', 'normal', 'single'] as const);
+  const trace = parseTraceUsage(usage.get('trace'));
+  const rawSweepOffsetReadback = hasExactRawSweepOffsetUsage(usage.get('zero'));
+  const sweepSyntax = hasExactSingleLine(
+    usage.get('sweep'),
+    /^usage: sweep \{start\(Hz\)\} \[stop\(Hz\)\] \[points\]$/,
+  );
+  const traceDbm = trace?.options.includes('dBm') ?? false;
+  const firmwareTraceReadback = traceDbm && (trace?.valueReadback ?? false);
+  const detectors = advertisedDetectors(usage.get('calc'));
+  const spurRejection = parseOptionUsage(usage.get('spur'), 'spur', ['off', 'on', 'auto'] as const);
+  const avoidSpurs = parseOptionUsage(usage.get('avoid'), 'avoid', ['off', 'on', 'auto', 'dump'] as const)
+    .filter((value): value is 'off' | 'on' | 'auto' => value !== 'dump');
+  const lowNoiseAmplifier = parseOptionUsage(usage.get('lna'), 'lna', ['off', 'on'] as const);
+  const advertisedTriggerModes = parseTriggerUsage(usage.get('trigger'));
   // The custom shell advertises trigger mode names but no threshold range.
   // Preserve only auto; leveled modes require a truthful numeric range.
   const triggerModes = advertisedTriggerModes.includes('auto') ? ['auto'] as const : [];
   const acquisitionFormats: ('text' | 'raw')[] = [];
-  if (/scan\s+\{start\(Hz\)\}\s+\{stop\(Hz\)\}[^\r\n]*\[points\]/i.test(usage.get('scan') ?? '')) {
+  if (hasExactSingleLine(
+    usage.get('scan'),
+    /^usage: scan \{start\(Hz\)\} \{stop\(Hz\)\} \[points\] \[outmask\]$/,
+  )) {
     acquisitionFormats.push('text');
   }
   if (rawSweepOffsetReadback
-    && /scanraw\s+\{start\(Hz\)\}\s+\{stop\(Hz\)\}[^\r\n]*\[points\]/i.test(usage.get('scanraw') ?? '')) {
+    && hasExactSingleLine(
+      usage.get('scanraw'),
+      /^usage: scanraw \{start\(Hz\)\} \{stop\(Hz\)\} \[points\] \[options\]$/,
+    )) {
     acquisitionFormats.push('raw');
   }
   const commonReceiverSyntax = sweepSyntax && traceDbm && triggerModes.length > 0;
@@ -966,45 +1100,108 @@ async function customReceiverSurface(
   };
 }
 
-function hasParseableRawSweepOffset(response: string | undefined): boolean {
-  if (!response) return false;
-  try {
-    parseRawSweepOffset(response);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function parseAdvertisedRange(
   response: string | undefined,
   command: string,
   unit: DeviceCapabilities['rbwKhz']['unit'],
 ): { readonly range: DeviceCapabilities['rbwKhz']; readonly automatic: boolean } | undefined {
   if (!response) return undefined;
+  const lines = exactResponseLines(response);
+  if (lines.length < 1 || lines.length > 2) return undefined;
   const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = response.match(new RegExp(`${escaped}\\s+(-?\\d+(?:\\.\\d+)?)\\.\\.(-?\\d+(?:\\.\\d+)?)(\\|auto)?`, 'i'));
+  const match = lines[0]?.match(new RegExp(`^usage: ${escaped} (-?\\d+(?:\\.\\d+)?)\\.\\.(-?\\d+(?:\\.\\d+)?)(\\|auto)?$`));
+  if (!match || (lines[1] !== undefined && !isExactRangeReadback(command, lines[1]))) return undefined;
   const min = Number(match?.[1]);
   const max = Number(match?.[2]);
   if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return undefined;
   return { range: { min, max, unit }, automatic: match?.[3] !== undefined };
 }
 
-function advertisedDetectors(response: string): DeviceCapabilities['scalarReceiver']['detectors'] {
+function isExactRangeReadback(command: string, line: string): boolean {
+  // The known shell's `attenuate ?` reply includes the current value after
+  // its one usage declaration. RBW and sweeptime `?` replies do not.
+  if (command === 'attenuate') return /^\d+(?:\.\d+)?$/.test(line);
+  return false;
+}
+
+function advertisedDetectors(response: string | undefined): DeviceCapabilities['scalarReceiver']['detectors'] {
   const values: readonly [string, DeviceCapabilities['scalarReceiver']['detectors'][number]][] = [
     ['off', 'sample'], ['minh', 'minimum-hold'], ['maxh', 'maximum-hold'], ['maxd', 'maximum-decay'],
     ['aver4', 'average-4'], ['aver16', 'average-16'], ['aver', 'average'], ['quasi', 'quasi-peak'],
   ];
-  return values.filter(([wire]) => optionAdvertised(response, wire)).map(([, value]) => value);
+  const advertised = parseOptionUsage(
+    response,
+    'calc',
+    ['off', 'minh', 'maxh', 'maxd', 'aver4', 'aver16', 'aver', 'quasi', 'log', 'lin'] as const,
+    '[{trace#}] ',
+  );
+  return values.filter(([wire]) => advertised.includes(wire as typeof advertised[number])).map(([, value]) => value);
 }
 
-function advertisedOptions<const Value extends string>(response: string, values: readonly Value[]): readonly Value[] {
-  return values.filter((value) => optionAdvertised(response, value));
+function parseOptionUsage<const Value extends string>(
+  response: string | undefined,
+  command: string,
+  allowed: readonly Value[],
+  exactPrefix = '',
+): readonly Value[] {
+  const lines = exactResponseLines(response);
+  if (lines.length !== 1) return [];
+  const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedPrefix = exactPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = lines[0]?.match(new RegExp(`^usage: ${escapedCommand} ${escapedPrefix}([a-z0-9|]+)$`));
+  if (!match) return [];
+  const options = match[1]!.split('|');
+  if (!options.length || new Set(options).size !== options.length || options.some((value) => !allowed.includes(value as Value))) return [];
+  return options as Value[];
 }
 
-function optionAdvertised(response: string, value: string): boolean {
-  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`, 'i').test(response);
+function parseTraceUsage(response: string | undefined): {
+  readonly options: readonly ('dBm' | 'dBmV' | 'dBuV' | 'RAW' | 'V' | 'Vpp' | 'W')[];
+  readonly valueReadback: boolean;
+} | undefined {
+  const lines = exactResponseLines(response);
+  if (lines.length < 1 || lines.length > 2) return undefined;
+  const match = lines[0]?.match(/^(?:usage: )?trace \{(dBm(?:V)?|dBuV|RAW|V|Vpp|W)(?:\|(dBm(?:V)?|dBuV|RAW|V|Vpp|W))*\}$/);
+  if (!match) return undefined;
+  const opening = lines[0]!.indexOf('{');
+  const options = lines[0]!.slice(opening + 1, -1).split('|') as ('dBm' | 'dBmV' | 'dBuV' | 'RAW' | 'V' | 'Vpp' | 'W')[];
+  if (new Set(options).size !== options.length) return undefined;
+  if (lines[1] !== undefined && lines[1] !== 'trace [{trace#}] value') return undefined;
+  return { options, valueReadback: lines.length === 2 };
+}
+
+function parseTriggerUsage(response: string | undefined): readonly ('auto' | 'normal' | 'single')[] {
+  const lines = exactResponseLines(response);
+  let optionsText: string | undefined;
+  if (lines.length === 2 && lines[0] === 'trigger {value}') {
+    optionsText = lines[1]?.match(/^trigger \{(auto(?:\|normal)?(?:\|single)?)\}$/)?.[1];
+  } else if (lines.length === 1) {
+    optionsText = lines[0]?.match(/^usage: trigger (auto(?:\|normal)?(?:\|single)?)$/)?.[1];
+  }
+  if (!optionsText) return [];
+  const options = optionsText.split('|') as ('auto' | 'normal' | 'single')[];
+  return new Set(options).size === options.length ? options : [];
+}
+
+function hasExactRawSweepOffsetUsage(response: string | undefined): boolean {
+  const lines = exactResponseLines(response);
+  if (lines.length !== 2 || lines[0] !== 'zero {level}' || !/^-?\d+dBm$/.test(lines[1] ?? '')) return false;
+  try {
+    parseRawSweepOffset(lines[1]!);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasExactSingleLine(response: string | undefined, pattern: RegExp): boolean {
+  const lines = exactResponseLines(response);
+  return lines.length === 1 && pattern.test(lines[0]!);
+}
+
+function exactResponseLines(response: string | undefined): readonly string[] {
+  if (!response) return [];
+  return response.replaceAll('\r', '').split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
 function parseIdentity(versionResponse: string, infoResponse: string, port: PortCandidate): DeviceIdentity {
@@ -1252,10 +1449,25 @@ function assertZeroSpanReadback(config: ZeroSpanConfig, readback: AnalyzerReadba
 function assertFirmwareSuccess(response: string, command: string): void {
   const failure = response.match(/(?:Command timeout|frequency range is invalid|sweep points exceeds[^\r\n]*|Key unmatched\.|^usage:[^\r\n]*)/im)?.[0];
   if (failure) throw new TinySaDeviceError('protocol', `${command} failed: ${failure}`, false);
+  const genericFailure = nonEmptyLines(response).find((line) => (
+    /\b(?:error|unknown|invalid|unsupported|failed|failure)\b/i.test(line)
+    || /\bnot\s+(?:recognized|supported)\b/i.test(line)
+  ));
+  if (genericFailure) throw new TinySaDeviceError('protocol', `${command} failed: ${genericFailure}`, false);
   const operation = command.trim().split(/\s+/, 1)[0];
   if (response.trim() === `${command}?` || response.trim() === `${operation}?`) {
     throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
   }
+}
+
+function assertFirmwareMutationAcknowledged(response: string, command: string): void {
+  const reply = response.trim();
+  if (!reply) return;
+  const operation = command.trim().split(/\s+/, 1)[0];
+  if (reply === `${command}?` || reply === `${operation}?`) {
+    throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
+  }
+  throw new TinySaDeviceError('protocol', `${command} failed: unexpected non-empty reply ${nonEmptyLines(response)[0] ?? reply}`, false);
 }
 
 function formatDecimal(value: number): string {

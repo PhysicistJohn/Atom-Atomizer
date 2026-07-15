@@ -8,7 +8,7 @@ const validToolArguments = {
   list_connection_candidates: {}, connect_device: { candidateId: 'candidate-1' }, disconnect_device: {},
   inspect_interface: {}, computer_action: { controlId: 'measurement.setup', action: 'activate' }, computer_screenshot: {}, computer_click: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20 },
   computer_type: { expectedTarget: 'analyzer.start', text: '98000000' }, computer_key: { expectedTarget: 'analyzer.start', key: 'ENTER' }, computer_scroll: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20, deltaX: 0, deltaY: 120 },
-  navigate_workspace: { workspace: 'spectrum' }, configure_analyzer: { startHz: 93_000_000, stopHz: 95_000_000 }, acquire_sweep: {},
+  navigate_workspace: { workspace: 'spectrum' }, configure_analyzer: { startHz: 93_000_000, stopHz: 95_000_000, acquisitionFormat: 'raw', rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, detector: 'average-4', spurRejection: 'auto', lna: 'off', avoidSpurs: 'on', trigger: { mode: 'normal', levelDbm: -70 } }, acquire_sweep: {},
   start_continuous_sweeps: {}, stop_continuous_sweeps: {}, get_measurement_state: {}, select_marker: { markerId: 1 },
   configure_marker: { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 94_000_000, tracking: 'fixed' },
   configure_marker_search: { minimumLevelDbm: -95, minimumExcursionDb: 8 }, search_marker: { markerId: 1, action: 'peak' },
@@ -20,7 +20,7 @@ const validToolArguments = {
   get_envelope_stft_results: {}, acquire_envelope_stft: {},
   configure_signal_detector: { threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 },
   select_classification_candidate: { detectionId: 'signal-12' },
-  configure_zero_span: { frequencyHz: 94_000_000, points: 290, sweepTimeSeconds: 0.1 },
+  configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, trigger: { mode: 'single', levelDbm: -65 } },
   acquire_zero_span: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
   set_rf_output: { enabled: false }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
@@ -136,6 +136,9 @@ describe('Atom agent contracts',()=>{
     }
     for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
+    expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
+    expect(agentControlBinding('classification.envelope.trigger-level').preferredTool).toBe('configure_zero_span');
+    expect(agentControlBinding('stft.attenuation-mode').preferredTool).toBe('configure_zero_span');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
   });
@@ -153,15 +156,16 @@ describe('Atom agent contracts',()=>{
     expect(()=>validateAgentToolCall({callId:'1',name:'raw_serial',arguments:'{}'})).toThrow(/Unknown/);
     expect(()=>validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{"startHz":2,"stopHz":1,"points":450,"rbwKhz":null,"attenuationDb":"auto"}'})).toThrow();
   });
-  it('accepts non-empty analyzer patches and rejects empty or invalid patches',()=>{
+  it('accepts complete receiver-control patches and rejects empty or invalid patches',()=>{
     expect(validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{"startHz":93000000,"stopHz":95000000}'}).args).toEqual({startHz:93000000,stopHz:95000000});
     expect(validateAgentToolCall({callId:'2',name:'configure_analyzer',arguments:'{"points":225}'}).args).toEqual({points:225});
     expect(()=>validateAgentToolCall({callId:'3',name:'configure_analyzer',arguments:'{}'})).toThrow(/at least one/i);
-    expect(()=>validateAgentToolCall({callId:'4',name:'configure_analyzer',arguments:'{"lna":"on"}'})).toThrow();
+    expect(validateAgentToolCall({callId:'4',name:'configure_analyzer',arguments:'{"lna":"on","detector":"average-16","trigger":{"mode":"normal","levelDbm":-72}}'}).args).toEqual({lna:'on',detector:'average-16',trigger:{mode:'normal',levelDbm:-72}});
     expect(()=>validateAgentToolCall({callId:'5',name:'configure_analyzer',arguments:'{"startHz":2,"stopHz":1}'})).toThrow(/stopHz/i);
     expect(validateAgentToolCall({callId:'6',name:'configure_zero_span',arguments:'{"frequencyHz":100000000}'}).args).toEqual({frequencyHz:100000000});
-    expect(()=>validateAgentToolCall({callId:'7',name:'configure_zero_span',arguments:'{"rbwKhz":100}'})).toThrow();
-    expect(()=>validateAgentToolCall({callId:'8',name:'remote_device_touch',arguments:'{"x":1,"y":2,"gesture":"press"}'})).toThrow();
+    expect(validateAgentToolCall({callId:'7',name:'configure_zero_span',arguments:'{"rbwKhz":100,"attenuationDb":"auto","trigger":{"mode":"single","levelDbm":-80}}'}).args).toEqual({rbwKhz:100,attenuationDb:'auto',trigger:{mode:'single',levelDbm:-80}});
+    expect(()=>validateAgentToolCall({callId:'8',name:'configure_zero_span',arguments:'{"trigger":{"mode":"auto","levelDbm":-80}}'})).toThrow();
+    expect(()=>validateAgentToolCall({callId:'9',name:'remote_device_touch',arguments:'{"x":1,"y":2,"gesture":"press"}'})).toThrow();
   });
   it('marks RF output as high impact',()=>expect(validateAgentToolCall({callId:'1',name:'set_rf_output',arguments:'{"enabled":true}'}).policy.approval).toBe('at-action'));
   it('requires an opaque candidate ID for device connection',()=>{

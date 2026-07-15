@@ -422,15 +422,24 @@ export const analyzerConfigPatchSchema = z.object(analyzerConfigShape).partial()
   });
 export type AnalyzerConfigPatch = z.infer<typeof analyzerConfigPatchSchema>;
 
-export const zeroSpanConfigSchema = z.object({
+const zeroSpanConfigShape = {
   frequencyHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
   points: z.number().int().min(ZS407_FIRMWARE_LIMITS.minimumSweepPoints).max(ZS407_FIRMWARE_LIMITS.maximumSweepPoints),
   rbwKhz: z.union([z.literal('auto'), z.number().finite().min(ZS407_FIRMWARE_LIMITS.minimumRbwKhz).max(ZS407_FIRMWARE_LIMITS.maximumRbwKhz)]),
   attenuationDb: z.union([z.literal('auto'), z.number().int().min(0).max(31)]),
   sweepTimeSeconds: z.number().finite().min(ZS407_FIRMWARE_LIMITS.minimumSweepSeconds).max(ZS407_FIRMWARE_LIMITS.maximumSweepSeconds),
   trigger: triggerConfigSchema,
-}).strict();
+} as const;
+
+export const zeroSpanConfigSchema = z.object(zeroSpanConfigShape).strict();
 export type ZeroSpanConfig = z.infer<typeof zeroSpanConfigSchema>;
+
+/** Detected-power staging follows the same merge-then-admit contract as the
+ * swept analyzer. Receiver-only controls remain representable here so the
+ * active driver can either admit them truthfully or reject them explicitly. */
+export const zeroSpanConfigPatchSchema = z.object(zeroSpanConfigShape).partial().strict()
+  .refine((value) => Object.keys(value).length > 0, { message: 'Zero-span patch must change at least one field' });
+export type ZeroSpanConfigPatch = z.infer<typeof zeroSpanConfigPatchSchema>;
 
 export const generatorConfigSchema = z.object({
   frequencyHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.generatorMixerMaximumHz),

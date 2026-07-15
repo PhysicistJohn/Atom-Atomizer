@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  analyzerConfigPatchSchema,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
   firmwareTraceIdSchema,
@@ -14,6 +15,7 @@ import {
   traceConfigurationSchema,
   traceIdSchema,
   waterfallConfigurationSchema,
+  zeroSpanConfigPatchSchema,
 } from '@tinysa/contracts';
 
 export const ATOM_AGENT_MODEL = 'gpt-realtime-2.1' as const;
@@ -139,16 +141,17 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^acquisition\.single$/, preferredTool: 'acquire_sweep', risk: 'operate', projection: 'transport', guarantee: 'Requests one complete acquisition from the connected execution backend.' },
   { pattern: /^acquisition\.continuous\.start$/, preferredTool: 'start_continuous_sweeps', risk: 'operate', projection: 'transport', guarantee: 'Starts serialized acquisition until stop or first failure.' },
   { pattern: /^acquisition\.continuous\.stop$/, preferredTool: 'stop_continuous_sweeps', risk: 'operate', projection: 'transport', guarantee: 'Stops after the current in-flight command completes.' },
-  { pattern: /^analyzer\.(start|stop|points|rbw|transfer|attenuation|sweep-time|detector|spur-rejection|avoid-spurs|lna|trigger|trigger-level)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'commanded', guarantee: 'Stages a complete validated analyzer configuration.' },
+  { pattern: /^analyzer\.(start|stop|points|rbw(-mode)?|transfer|attenuation(-mode)?|sweep-time(-mode)?|detector|spur-rejection|avoid-spurs|lna|trigger|trigger-level)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'commanded', guarantee: 'Stages a capability-validated analyzer patch while preserving omitted controls.' },
   { pattern: /^analyzer\.preset\.(fm|2g4|5g)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'ui-only', guarantee: 'Stages one declared frequency preset while preserving the remaining analyzer configuration.' },
   { pattern: /^analyzer\.advanced$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Opens or closes only the local advanced analyzer disclosure.' },
   { pattern: /^detection\.(threshold-mode|margin|absolute-level|prominence|minimum-bandwidth|promote|release)$/, preferredTool: 'configure_signal_detector', risk: 'operate', projection: 'host-derived', guarantee: 'Stages deterministic host signal-detection criteria.' },
-  { pattern: /^classification\.envelope-(frequency|window)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages detected-power zero-span capture settings.' },
+  { pattern: /^classification\.envelope-(frequency|window|rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages capability-validated detected-power capture settings.' },
+  { pattern: /^classification\.envelope\.(rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages capability-validated detected-power receiver controls.' },
   { pattern: /^classification\.capture-envelope$/, preferredTool: 'acquire_zero_span', risk: 'operate', projection: 'transport', guarantee: 'Acquires detected power versus time without claiming I/Q.' },
   { pattern: /^classification\.candidate\.[A-Za-z0-9-]{1,128}\.select$/, preferredTool: 'select_classification_candidate', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one current detected-signal result for visual inspection.' },
   { pattern: /^waterfall\.(floor|ceiling|depth)$/, preferredTool: 'configure_waterfall', risk: 'operate', projection: 'host-derived', guarantee: 'Configures a coherent scalar-sweep history projection.' },
   { pattern: /^channel\.(center|main-bandwidth|spacing|adjacent-bandwidth|adjacent-count|occupied-power|obw-noise)$/, preferredTool: 'configure_channel_measurement', risk: 'operate', projection: 'host-derived', guarantee: 'Configures bounded channel, ACP, ACLR, and OBW integration.' },
-  { pattern: /^stft\.(frequency|samples|capture-time)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages the detected-power capture consumed by envelope STFT.' },
+  { pattern: /^stft\.(frequency|samples|capture-time|rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages the capability-validated detected-power capture consumed by envelope STFT.' },
   { pattern: /^stft\.(window|hop|range|remove-dc)$/, preferredTool: 'configure_envelope_stft', risk: 'operate', projection: 'host-derived', guarantee: 'Configures the Hann-windowed detected-envelope STFT.' },
   { pattern: /^stft\.capture$/, preferredTool: 'acquire_envelope_stft', risk: 'operate', projection: 'transport', guarantee: 'Acquires detected power and derives its envelope STFT.' },
   { pattern: /^marker\.[1-8]\.select$/, preferredTool: 'select_marker', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host marker without changing its visibility or reading configuration.' },
@@ -264,7 +267,7 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'auto_scale_spectrum_display', description: 'Derive and apply a host spectrum amplitude axis from the latest complete sweep. Fails when no sweep exists.' },
   { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior.' },
   { type: 'function', name: 'select_classification_candidate', description: 'Select one current detected-signal ID for visual classification inspection without changing measurement evidence.' },
-  { type: 'function', name: 'configure_zero_span', description: 'Apply a non-empty frequencyHz, points, or sweepTimeSeconds patch to staged detected-power timeseries capture. This is detected envelope data, never I/Q; driver-reported RBW and attenuation are not configured or fabricated.' },
+  { type: 'function', name: 'configure_zero_span', description: 'Apply a non-empty patch to staged detected-power timeseries capture. Receiver RBW, attenuation, and trigger are capability-validated; synthetic sources accept only geometry and exact timing. This is detected envelope data, never I/Q.' },
   { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one driver-declared detected-power timeseries, then restore the staged swept-spectrum configuration. Classify only detected-envelope behavior.' },
   { type: 'function', name: 'configure_generator', description: 'Apply the complete driver-neutral generator configuration while forcing RF output off. Path, modulation modes, and ranges must be declared by the active driver.' },
   { type: 'function', name: 'set_rf_output', description: 'Enable or disable RF output only when the active driver declares an RF-generator feature. Enabling requires immediate human approval.' },
@@ -328,19 +331,6 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   export_latest_sweep: operate('export_latest_sweep'),
 };
 
-const driverNeutralAnalyzerPatchSchema = z.object({
-  startHz: z.number().int().nonnegative().optional(),
-  stopHz: z.number().int().positive().optional(),
-  points: z.number().int().min(2).optional(),
-}).strict().refine((value) => Object.keys(value).length > 0, { message: 'Swept-spectrum patch must change at least one field' })
-  .refine((value) => value.startHz === undefined || value.stopHz === undefined || value.stopHz > value.startHz, { path: ['stopHz'], message: 'stopHz must exceed startHz' });
-
-const driverNeutralDetectedPowerPatchSchema = z.object({
-  frequencyHz: z.number().int().nonnegative().optional(),
-  points: z.number().int().positive().optional(),
-  sweepTimeSeconds: z.number().finite().positive().optional(),
-}).strict().refine((value) => Object.keys(value).length > 0, { message: 'Detected-power patch must change at least one field' });
-
 export const agentToolInputSchemas = {
   get_application_state: z.object({}).strict(),
   get_system_topology: z.object({}).strict(),
@@ -361,7 +351,7 @@ export const agentToolInputSchemas = {
   computer_key: z.object({ expectedTarget: z.string().min(1).max(128), key: z.enum(['ENTER', 'ESCAPE', 'TAB', 'ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT', 'BACKSPACE', 'META+K', 'CTRL+K']) }).strict(),
   computer_scroll: z.object({ screenshotId: z.uuid(), x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), deltaX: z.number().int().min(-2_000).max(2_000), deltaY: z.number().int().min(-2_000).max(2_000) }).strict(),
   navigate_workspace: z.object({ workspace: z.enum(['spectrum', 'detection', 'classification', 'generator', 'device']) }).strict(),
-  configure_analyzer: driverNeutralAnalyzerPatchSchema,
+  configure_analyzer: analyzerConfigPatchSchema,
   acquire_sweep: z.object({}).strict(),
   start_continuous_sweeps: z.object({}).strict(),
   stop_continuous_sweeps: z.object({}).strict(),
@@ -385,7 +375,7 @@ export const agentToolInputSchemas = {
   auto_scale_spectrum_display: z.object({}).strict(),
   configure_signal_detector: signalDetectionConfigSchema,
   select_classification_candidate: z.object({ detectionId: z.string().min(1).max(128).regex(/^[A-Za-z0-9-]+$/) }).strict(),
-  configure_zero_span: driverNeutralDetectedPowerPatchSchema,
+  configure_zero_span: zeroSpanConfigPatchSchema,
   acquire_zero_span: z.object({}).strict(),
   configure_generator: generatorConfigSchema,
   set_rf_output: z.object({ enabled: z.boolean() }).strict(),
@@ -441,6 +431,10 @@ const agentParameterDescriptions: Readonly<Record<string, string>> = Object.free
   'configure_signal_detector.threshold.levelDbm': 'Absolute detection threshold in dBm.',
   'configure_signal_detector.threshold.marginDb': 'Detection margin above the robust noise floor in dB.',
   'configure_zero_span.rbwKhz': 'Resolution bandwidth for this temporary detected-envelope capture; it does not change staged swept-analyzer RBW.',
+  'configure_zero_span.frequencyHz': 'Center frequency for this temporary detected-envelope capture in integer hertz.',
+  'configure_zero_span.points': 'Requested detected-power sample count. Omit to preserve the staged value.',
+  'configure_zero_span.attenuationDb': 'Requested receiver input attenuation in dB or auto. Omit to preserve the staged value.',
+  'configure_zero_span.sweepTimeSeconds': 'Requested detected-power capture duration in seconds. Omit to preserve the staged value.',
   'configure_zero_span.trigger': 'Complete zero-span trigger; auto has no level, normal/single require levelDbm.',
   'configure_zero_span.trigger.mode': 'Zero-span trigger mode discriminator.',
   'configure_zero_span.trigger.levelDbm': 'Required zero-span trigger threshold in dBm for normal or single mode.',
@@ -609,7 +603,7 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 - Read-only calls may run when intent is clear. Mutating calls require the user's requested outcome; never add adjacent changes.
 - JSON schemas are authoritative. Obey types, enums, units, bounds, required fields, and closed objects exactly.
 - configure_analyzer is a non-empty staged patch. The active driver's closed capability model admits every supported receiver control (format, RBW, attenuation, sweep time, detector, spur handling, LNA, and trigger) or rejects it; synthetic sources carry only their declared exact timing and never receive invented RF controls.
-- configure_zero_span is a non-empty detected-power patch containing frequencyHz, points, or sweepTimeSeconds. Its receiver RBW, attenuation, and trigger remain staged and are applied only by a receiver-capable driver; synthetic sources admit no RF settings. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
+- configure_zero_span is a non-empty staged detected-power patch. Its frequency, sample count, duration, RBW, attenuation, and trigger are merged with staged values, then admitted by the active driver's closed capability model; synthetic sources accept only their declared geometry and exact timing and reject RF controls. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
 - Trace Off is configure_trace mode "blank". D1–D4 firmware overlay visibility is separate and never mutates firmware trace state.
 - A connection requires a fresh list_connection_candidates result and its opaque candidateId. Opening a dialog is not connecting.
 - Coordinate click/scroll requires the immediately preceding one-use screenshotId. Type/key requires the exact focused target. Prefer semantic computer_action.

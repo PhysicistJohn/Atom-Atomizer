@@ -331,6 +331,15 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .quick-ranges button, .segmented button { min-width: 0; height: 31px; padding: 0 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink-soft); background: rgba(255,255,255,.035); font-size: 9px; }
 .quick-ranges button:hover, .segmented button.active { border-color: var(--line-strong); color: var(--ink); background: rgba(255,255,255,.07); }
 .acquisition-dock:disabled .quick-ranges { opacity: .42; }
+.receiver-control-disclosure { border-bottom: 1px solid var(--line); }
+.receiver-control-disclosure > summary { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; color: var(--ink-soft); cursor: pointer; list-style: none; }
+.receiver-control-disclosure > summary::-webkit-details-marker { display: none; }
+.receiver-control-disclosure > summary span { font-size: 10px; }
+.receiver-control-disclosure > summary strong { color: var(--quiet); font: 7px var(--mono); font-weight: 500; text-transform: uppercase; }
+.receiver-control-disclosure[open] > summary { color: var(--energy); background: rgba(10,132,255,.035); }
+.receiver-control-rows { display: flex; flex-direction: column; }
+.receiver-control-applicability { margin: 10px 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--quiet); background: rgba(255,255,255,.018); font: 7px/1.55 var(--mono); text-transform: uppercase; }
+.receiver-control-applicability.synthetic { border-color: rgba(100,210,255,.12); color: #74818f; background: rgba(100,210,255,.025); }
 
 .plot-panel { overflow: hidden; background: transparent; }
 .panel-header {
@@ -1011,7 +1020,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 }
 .generator-form.parameter-stack { max-height: none; overflow: visible; }
 .generator-form.parameter-stack .inline-error { margin: 0; padding: 10px 14px; border-bottom: 1px solid rgba(255,69,58,.18); }
-.zero-controls.parameter-stack { gap: 0; padding: 0; }
+.zero-controls.parameter-stack { gap: 0; overflow: auto; padding: 0; }
 .zero-controls.parameter-stack .panel-action { margin-top: auto; }
 
 @keyframes stage-overlay-enter { from { opacity: 0; transform: translateY(-6px) scale(.992); } to { opacity: 1; transform: none; } }

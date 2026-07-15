@@ -402,6 +402,124 @@ describe('instrument boundary contracts', () => {
         sourceKind: 'signal-lab', signalLab: { sourceId: 'forged' }, discoveryRevision: 'discovery:forged',
       },
     }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        acquisitions: snapshot.capabilities.acquisitions.map((capability) => ({
+          ...capability,
+          sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+          controls: syntheticScalarControls(),
+        })),
+      },
+    }).success).toBe(false);
+  });
+
+  it('enforces the complete SignalLab source boundary in the public snapshot schema', () => {
+    const snapshot = signalLabSnapshot();
+    expect(instrumentSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      capabilities: { ...snapshot.capabilities, features: [] },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        acquisitions: snapshot.capabilities.acquisitions.slice(0, 1),
+      },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        acquisitions: snapshot.capabilities.acquisitions.map((capability) => ({
+          ...capability,
+          sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.1, max: 0.1 } },
+        })),
+      },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        features: [{
+          ...snapshot.capabilities.features[0],
+          profiles: [{ profileId: 'fm', centerFrequencyHz: 2_000, recommendedSpanHz: 200 }],
+        }],
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects capability ranges from which no schema-valid configuration can be built', () => {
+    const acquisition = {
+      spectrum: {
+        kind: 'swept-spectrum', frequencyHz: { min: 0, max: 1 }, points: { min: 2, max: 2 },
+        sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 1 } },
+        controls: receiverSpectrumCapability(), powerUnit: 'dBm',
+      },
+      detected: {
+        kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 1 }, sampleCount: { min: 1, max: 1 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 1 } },
+        controls: receiverDetectedPowerCapability(), powerUnit: 'dBm', timing: 'uniform',
+      },
+      iq: {
+        kind: 'complex-iq', centerFrequencyHz: { min: 0, max: 1 }, sampleRateHz: { min: 2, max: 2 },
+        bandwidthHz: { min: 1, max: 2 }, sampleCount: { min: 1, max: 1 }, sampleFormat: 'cf32le',
+      },
+    } as const;
+    for (const capability of Object.values(acquisition)) {
+      expect(instrumentCapabilitiesSchema.safeParse({ schemaVersion: 1, acquisitions: [capability], features: [] }).success).toBe(true);
+    }
+    const constructibleConfigurations = [{
+      kind: 'swept-spectrum', startHz: acquisition.spectrum.frequencyHz.min,
+      stopHz: acquisition.spectrum.frequencyHz.max, points: acquisition.spectrum.points.min,
+      sweepTimeSeconds: 'auto', controls: receiverSpectrumControls(),
+    }, {
+      kind: 'detected-power-timeseries', centerHz: acquisition.detected.centerFrequencyHz.min,
+      sampleCount: acquisition.detected.sampleCount.min,
+      sweepTimeSeconds: acquisition.detected.sweepTimeSeconds.manualSeconds.min,
+      controls: {
+        schemaVersion: 1, model: 'receiver', resolutionBandwidthKhz: 'auto',
+        attenuationDb: 'auto', trigger: { mode: 'auto' },
+      },
+    }, {
+      kind: 'complex-iq', centerHz: acquisition.iq.centerFrequencyHz.min,
+      sampleRateHz: acquisition.iq.sampleRateHz.min, bandwidthHz: acquisition.iq.bandwidthHz.min,
+      sampleCount: acquisition.iq.sampleCount.min, sampleFormat: 'cf32le',
+    }];
+    for (const configuration of constructibleConfigurations) {
+      expect(instrumentConfigurationSchema.safeParse(configuration).success).toBe(true);
+    }
+    for (const invalid of [
+      { ...acquisition.spectrum, points: { min: 0, max: 1 } },
+      { ...acquisition.spectrum, frequencyHz: { min: 0, max: 10, step: 11 } },
+      { ...acquisition.detected, sampleCount: { min: 0, max: 1 } },
+      { ...acquisition.iq, sampleRateHz: { min: 0, max: 2 } },
+      { ...acquisition.iq, bandwidthHz: { min: 0, max: 2 } },
+      { ...acquisition.iq, sampleCount: { min: 0, max: 1 } },
+      { ...acquisition.iq, sampleRateHz: { min: 1, max: 1 }, bandwidthHz: { min: 2, max: 2 } },
+      { ...acquisition.iq, sampleRateHz: { min: 1, max: 3, step: 4 }, bandwidthHz: { min: 2, max: 2 } },
+    ]) {
+      expect(instrumentCapabilitiesSchema.safeParse({ schemaVersion: 1, acquisitions: [invalid], features: [] }).success).toBe(false);
+    }
+    expect(instrumentCapabilitiesSchema.safeParse({
+      schemaVersion: 1,
+      acquisitions: [acquisition.spectrum],
+      features: [{
+        kind: 'rf-generator', paths: [{ path: 'normal', frequencyHz: { min: 1, max: 2 } }],
+        levelDbm: { min: -100, max: -10 },
+        modulation: { off: true, am: { modulationFrequencyHz: { min: 0, max: 0 }, depthPercent: { min: 0, max: 100 } } },
+      }],
+    }).success).toBe(false);
+    expect(instrumentCapabilitiesSchema.safeParse({
+      schemaVersion: 1,
+      acquisitions: [acquisition.spectrum],
+      features: [{
+        kind: 'rf-generator', paths: [{ path: 'normal', frequencyHz: { min: 0, max: 0 } }],
+        levelDbm: { min: -100, max: -10 }, modulation: { off: true },
+      }],
+    }).success).toBe(false);
   });
 
   it('binds every measurement to opaque session and configuration revisions', () => {
@@ -697,5 +815,55 @@ function signalLabCandidate() {
     displayName: 'SignalLab',
     sourceKind: 'signal-lab' as const,
     signalLab: { sourceId: 'default' },
+  };
+}
+
+function signalLabSnapshot() {
+  const candidate = { ...signalLabCandidate(), discoveryRevision: 'discovery:signal-lab' };
+  return {
+    sessionId: 'session:signal-lab',
+    driverId: candidate.driverId,
+    candidate,
+    provenance: {
+      sourceKind: 'signal-lab' as const,
+      sourceId: candidate.signalLab.sourceId,
+      execution: 'signal-lab-simulation' as const,
+      transport: 'signal-lab-measurement-bridge' as const,
+      qualification: 'synthetic-visual-projection' as const,
+      verifiedAt: '2026-07-14T18:00:00.000Z',
+      producerConfigurationEpoch: 'producer-epoch:1',
+      contractId: 'tinysa-signal-lab-atomizer-measurement' as const,
+      contractVersion: 1 as const,
+      contractSha256: 'a'.repeat(64),
+      catalogSha256: 'b'.repeat(64),
+      generatorSha256: 'c'.repeat(64),
+      claims: { usbEmulated: false as const, firmwareExecuted: false as const, rfEmitted: false as const },
+    },
+    capabilities: {
+      schemaVersion: 1 as const,
+      acquisitions: [{
+        kind: 'swept-spectrum' as const,
+        frequencyHz: { min: 1, max: 1_000, step: 1 },
+        points: { min: 2, max: 450, step: 1 },
+        sweepTimeSeconds: { automatic: false as const, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: syntheticScalarControls(),
+        powerUnit: 'dBm' as const,
+      }, {
+        kind: 'detected-power-timeseries' as const,
+        centerFrequencyHz: { min: 1, max: 1_000, step: 1 },
+        sampleCount: { min: 1, max: 450, step: 1 },
+        sweepTimeSeconds: { automatic: false as const, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: syntheticScalarControls(),
+        powerUnit: 'dBm' as const,
+        timing: 'uniform' as const,
+      }],
+      features: [{
+        kind: 'signal-lab-profile-selection' as const,
+        profiles: [{ profileId: 'fm', centerFrequencyHz: 100, recommendedSpanHz: 200 }],
+        selectedProfileId: 'fm',
+      }],
+    },
+    rfOutput: 'not-supported' as const,
+    rfOutputQualification: 'not-applicable' as const,
   };
 }

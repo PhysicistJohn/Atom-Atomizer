@@ -45,7 +45,7 @@ export interface MeasurementWorkspaceProps {
   onView(view: MeasurementViewId): void;
   analyzer: AnalyzerConfig;
   spectrumCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
-  detectedPowerAvailable: boolean;
+  detectedPowerCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
   busy: boolean;
   connected: boolean;
   streaming: boolean;
@@ -103,7 +103,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
         <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={selectView}/>
         <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={selectView}/>
         <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={selectView}/>
-        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} disabled={!props.detectedPowerAvailable} onView={selectView}/>
+        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} disabled={!props.detectedPowerCapability} onView={selectView}/>
       </div>
       <div className="measurement-view-utilities">
         <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
@@ -124,7 +124,12 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
         {props.view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
         {props.view === 'waterfall' && <WaterfallView history={props.history} configuration={props.waterfall} onConfiguration={props.onWaterfall}/>} 
         {props.view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} onConfiguration={props.onChannel}/>} 
-        {props.view === 'envelope-stft' && <EnvelopeStftView zeroConfig={props.zeroConfig} capture={props.zeroCapture} configuration={props.stft} connected={props.connected} streaming={props.streaming} busy={props.busy} onZeroConfig={props.onZeroConfig} onConfiguration={props.onStft} onAcquire={props.onAcquireZero}/>} 
+        {props.view === 'envelope-stft' && <EnvelopeStftView
+          zeroConfig={props.zeroConfig} capture={props.zeroCapture} configuration={props.stft}
+          capability={props.detectedPowerCapability} connected={props.connected}
+          streaming={props.streaming} busy={props.busy} onZeroConfig={props.onZeroConfig}
+          onConfiguration={props.onStft} onAcquire={props.onAcquireZero}
+        />}
       </div>
     </div>
   </section>;

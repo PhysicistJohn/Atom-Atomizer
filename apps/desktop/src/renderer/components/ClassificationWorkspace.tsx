@@ -1,11 +1,14 @@
 import { useEffect } from 'react';
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint } from 'lucide-react';
 import { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, observableClassDefinitions, signalLabWaveformHypotheses, type EnvelopeClassification } from '@tinysa/analysis';
-import { zeroSpanConfigSchema, type DetectedSignal, type Sweep, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
+import { zeroSpanConfigSchema, type DetectedSignal, type InstrumentAcquisitionCapability, type Sweep, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
+import { DetectedPowerReceiverControls } from './ReceiverControlRows.js';
 
-export function ClassificationWorkspace({ sweep, detections, classifications, selectedId, onSelectedId, zeroConfig, zeroCapture, envelope, busy, onZeroConfig, onAcquireZero }: {
+type DetectedPowerCapability = Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
+
+export function ClassificationWorkspace({ sweep, detections, classifications, selectedId, onSelectedId, zeroConfig, zeroCapture, envelope, capability, busy, onZeroConfig, onAcquireZero }: {
   sweep?: Sweep;
   detections: readonly DetectedSignal[];
   classifications: readonly WaveformClassification[];
@@ -14,11 +17,12 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
   zeroConfig: ZeroSpanConfig;
   zeroCapture?: ZeroSpanCapture;
   envelope?: EnvelopeClassification;
+  capability?: DetectedPowerCapability;
   busy: boolean;
   onZeroConfig(config: ZeroSpanConfig): void;
   onAcquireZero(): void;
 }) {
-  const captureGeometryMenu = classificationCaptureGeometryMenu(zeroConfig);
+  const captureGeometryMenu = classificationCaptureGeometryMenu(zeroConfig, capability);
   useEffect(() => {
     if (!selectedId || !detections.some((item) => item.id === selectedId)) onSelectedId(detections[0]?.id);
   }, [detections, selectedId, onSelectedId]);
@@ -31,6 +35,7 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
     : result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'MEASURED WAVEFORM HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
   const scoreLabel = result?.scoreKind === 'model-posterior' ? 'synthetic-model posterior · uncalibrated' : 'relative score';
   const supportRejected = result?.decisionSupport?.kind === 'synthetic-support-rank';
+  const stageZeroPatch = (patch: Partial<ZeroSpanConfig>) => onZeroConfig(zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch }));
 
   return <div className="classification-grid">
     <section className="pipeline-panel"><div className="pipeline"><PipelineStep icon={<Database/>} label="Capture" detail={sweep ? `${sweep.frequencyHz.length} points · ${sweep.source}` : 'No sweep'} ready={Boolean(sweep)}/><ArrowRight/><PipelineStep icon={<Fingerprint/>} label="Detect" detail={`${localDetectionCount} local${activityAssociationCount ? ` · ${activityAssociationCount} activity association${activityAssociationCount === 1 ? '' : 's'}` : ''}`} ready={detections.length > 0}/><ArrowRight/><PipelineStep icon={<BrainCircuit/>} label="Classify" detail={result?.modelId ?? 'No result'} ready={Boolean(result)}/></div></section>
@@ -60,13 +65,13 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
         : `${formatFrequency(detection.bandwidthHz)} · ${formatLevel(detection.peakDbm)} · ${detection.persistenceSweeps}×`}</small></span><em className={state}>{classification ? `${activityAssociation ? 'Activity · ' : groupResult ? 'Group · ' : ''}${waveformLabel(classification.label)}` : 'Pending'}</em></button>;
     })}</div> : <div className="table-empty"><Fingerprint size={20}/><strong>No candidates</strong><span>Run a sweep.</span></div>}</section>
 
-    <section className="zero-span-panel"><div className="panel-header"><div><Activity size={14}/>Envelope</div><span>{zeroCapture ? `${zeroCapture.powerDbm.length} samples` : 'DETECTED POWER · NOT I/Q'}</span></div><div className="zero-span-body"><div className="zero-controls parameter-stack"><EditableParameter label="Center frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={0} disabled={busy} controlId="classification.envelope-frequency" onCommit={(value) => onZeroConfig({ ...zeroConfig, frequencyHz: Number(value) })}/><SelectParameter label="Capture geometry" value={captureGeometryMenu.value} options={captureGeometryMenu.options} disabled={busy} controlId="classification.envelope-window" onValue={(value) => onZeroConfig(selectClassificationCaptureGeometry(zeroConfig, value))}/><div className="panel-action"><button className="secondary full" disabled={busy} onClick={onAcquireZero} data-agent-control="classification.capture-envelope">Capture envelope</button></div></div><EnvelopePlot capture={zeroCapture}/><div className="envelope-result"><small>CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : '—'}</strong>{envelope && <span>{Math.round(envelope.confidence * 100)}% · {envelope.features.transitionCount} transitions</span>}</div></div></section>
+    <section className="zero-span-panel"><div className="panel-header"><div><Activity size={14}/>Envelope</div><span>{zeroCapture ? `${zeroCapture.powerDbm.length} samples` : 'DETECTED POWER · NOT I/Q'}</span></div><div className="zero-span-body"><div className="zero-controls parameter-stack"><EditableParameter label="Center frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min ?? 0} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={busy || !capability || capability.controls.model === 'synthetic-scalar'} controlId="classification.envelope-frequency" onCommit={(value) => stageZeroPatch({ frequencyHz: Number(value) })}/><SelectParameter label="Capture geometry" value={captureGeometryMenu.value} options={captureGeometryMenu.options} disabled={busy || !capability} controlId="classification.envelope-window" onValue={(value) => onZeroConfig(selectClassificationCaptureGeometry(zeroConfig, value, capability))}/><DetectedPowerReceiverControls config={zeroConfig} capability={capability} disabled={busy} controlPrefix="classification.envelope" onChange={stageZeroPatch}/><div className="panel-action"><button className="secondary full" disabled={busy} onClick={onAcquireZero} data-agent-control="classification.capture-envelope">Capture envelope</button></div></div><EnvelopePlot capture={zeroCapture}/><div className="envelope-result"><small>CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : '—'}</strong>{envelope && <span>{Math.round(envelope.confidence * 100)}% · {envelope.features.transitionCount} transitions</span>}</div></div></section>
   </div>;
 }
 
 type ClassificationCaptureGeometryToken = 'pinned' | 'current';
 
-export function classificationCaptureGeometryMenu(configuration: ZeroSpanConfig): {
+export function classificationCaptureGeometryMenu(configuration: ZeroSpanConfig, capability?: DetectedPowerCapability): {
   readonly value: ClassificationCaptureGeometryToken;
   readonly options: readonly { value: ClassificationCaptureGeometryToken; label: string }[];
 } {
@@ -75,22 +80,32 @@ export function classificationCaptureGeometryMenu(configuration: ZeroSpanConfig)
     value: 'pinned',
     label: `${BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points} × ${formatCaptureWindow(BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds)} · pinned Bayesian geometry`,
   } as const;
-  if (hasPinnedClassificationCaptureGeometry(current)) return { value: 'pinned', options: [pinned] };
+  const pinnedSupported = capability === undefined
+    || (rangePermits(BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points, capability.sampleCount)
+      && rangePermits(BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds, capability.sweepTimeSeconds.manualSeconds));
+  if (hasPinnedClassificationCaptureGeometry(current) && pinnedSupported) return { value: 'pinned', options: [pinned] };
   return {
     value: 'current',
     options: [
-      pinned,
-      { value: 'current', label: `${current.points} × ${formatCaptureWindow(current.sweepTimeSeconds)} · current · outside pinned Bayesian geometry` },
+      ...(pinnedSupported ? [pinned] : []),
+      { value: 'current' as const, label: `${current.points} × ${formatCaptureWindow(current.sweepTimeSeconds)} · current · ${pinnedSupported ? 'outside pinned Bayesian geometry' : 'only capability-admitted geometry'}` },
     ],
   };
 }
 
-export function selectClassificationCaptureGeometry(configuration: ZeroSpanConfig, token: string): ZeroSpanConfig {
+export function selectClassificationCaptureGeometry(configuration: ZeroSpanConfig, token: string, capability?: DetectedPowerCapability): ZeroSpanConfig {
   const current = zeroSpanConfigSchema.parse(configuration);
-  const menu = classificationCaptureGeometryMenu(current);
+  const menu = classificationCaptureGeometryMenu(current, capability);
   if (!menu.options.some((option) => option.value === token)) throw new Error(`Capture geometry selection ${token} has no menu option`);
   if (token === 'current') return current;
   return zeroSpanConfigSchema.parse({ ...current, ...BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY });
+}
+
+function rangePermits(value: number, range: { min: number; max: number; step?: number }): boolean {
+  if (value < range.min || value > range.max) return false;
+  if (range.step === undefined) return true;
+  const steps = (value - range.min) / range.step;
+  return Math.abs(steps - Math.round(steps)) <= 1e-9 * Math.max(1, Math.abs(steps));
 }
 
 function hasPinnedClassificationCaptureGeometry(configuration: ZeroSpanConfig): boolean {

@@ -37,6 +37,7 @@ export const MAX_INSTRUMENT_SEQUENCE_V1 = Number.MAX_SAFE_INTEGER;
 export const MAX_INSTRUMENT_DRIVER_ID_CHARACTERS_V1 = 128;
 export const MAX_INSTRUMENT_OPAQUE_ID_CHARACTERS_V1 = 256;
 export const MAX_INSTRUMENT_SOURCE_KINDS_V1 = 3;
+export const SIGNAL_LAB_EXACT_SWEEP_SECONDS_V1 = 0.05;
 
 export const INSTRUMENT_CONTRACT_LIMITS_V1 = Object.freeze({
   complexIqBytes: MAX_COMPLEX_IQ_BYTES_V1,
@@ -222,10 +223,10 @@ export const instrumentCandidateSchema = z.discriminatedUnion('sourceKind', [
 ]);
 export type InstrumentCandidate = z.infer<typeof instrumentCandidateSchema>;
 
-function boundedIntegerRangeSchema(maximum: number) {
+function boundedIntegerRangeSchema(maximum: number, minimum = 0) {
   return z.object({
-    min: z.number().int().nonnegative().max(maximum),
-    max: z.number().int().nonnegative().max(maximum),
+    min: z.number().int().min(minimum).max(maximum),
+    max: z.number().int().min(minimum).max(maximum),
     step: z.number().int().positive().max(maximum).optional(),
   }).strict().superRefine((range, context) => {
     if (range.max < range.min) context.addIssue({ code: 'custom', path: ['max'], message: 'Range maximum must not be below its minimum' });
@@ -243,10 +244,11 @@ function boundedFiniteRangeSchema(minimum: number, maximum: number) {
 }
 
 const frequencyRangeSchema = boundedIntegerRangeSchema(MAX_INSTRUMENT_FREQUENCY_HZ_V1);
-const sampleRateRangeSchema = boundedIntegerRangeSchema(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1);
-const sweptSpectrumPointRangeSchema = boundedIntegerRangeSchema(MAX_SWEPT_SPECTRUM_POINTS_V1);
-const detectedPowerSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_DETECTED_POWER_SAMPLES_V1);
-const complexIqSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_COMPLEX_IQ_SAMPLES_V1);
+const positiveFrequencyRangeSchema = boundedIntegerRangeSchema(MAX_INSTRUMENT_FREQUENCY_HZ_V1, 1);
+const sampleRateRangeSchema = boundedIntegerRangeSchema(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1, 1);
+const sweptSpectrumPointRangeSchema = boundedIntegerRangeSchema(MAX_SWEPT_SPECTRUM_POINTS_V1, 2);
+const detectedPowerSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_DETECTED_POWER_SAMPLES_V1, 1);
+const complexIqSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_COMPLEX_IQ_SAMPLES_V1, 1);
 const durationRangeSchema = boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_DURATION_SECONDS_V1)
   .refine((range) => range.min > 0, { path: ['min'], message: 'Range minimum must be positive' });
 const scalarSweepTimeCapabilitySchema = z.object({
@@ -345,6 +347,9 @@ export const sweptSpectrumCapabilitySchema = z.object({
 }).strict().superRefine((capability, context) => {
   if (capability.frequencyHz.max <= capability.frequencyHz.min) {
     context.addIssue({ code: 'custom', path: ['frequencyHz', 'max'], message: 'Swept-spectrum frequency capability must contain at least two distinct frequencies' });
+  } else if (capability.frequencyHz.step !== undefined
+    && capability.frequencyHz.min + capability.frequencyHz.step > capability.frequencyHz.max) {
+    context.addIssue({ code: 'custom', path: ['frequencyHz', 'step'], message: 'Swept-spectrum frequency step must admit a second frequency' });
   }
 });
 export const detectedPowerTimeseriesCapabilitySchema = z.object({
@@ -366,7 +371,11 @@ export const complexIqCapabilitySchema = z.object({
   bandwidthHz: sampleRateRangeSchema,
   sampleCount: complexIqSampleCountRangeSchema,
   sampleFormat: z.literal('cf32le'),
-}).strict();
+}).strict().superRefine((capability, context) => {
+  if (capability.bandwidthHz.min > maximumReachableRangeValue(capability.sampleRateHz)) {
+    context.addIssue({ code: 'custom', path: ['bandwidthHz', 'min'], message: 'Complex-I/Q capability must admit a bandwidth no greater than an advertised sample rate' });
+  }
+});
 export const instrumentAcquisitionCapabilitySchema = z.discriminatedUnion('kind', [
   sweptSpectrumCapabilitySchema,
   detectedPowerTimeseriesCapabilitySchema,
@@ -376,7 +385,7 @@ export type InstrumentAcquisitionCapability = z.infer<typeof instrumentAcquisiti
 
 const rfGeneratorPathCapabilitySchema = z.object({
   path: z.enum(['normal', 'mixer']),
-  frequencyHz: frequencyRangeSchema,
+  frequencyHz: positiveFrequencyRangeSchema,
 }).strict();
 
 export const rfGeneratorCapabilitySchema = z.object({
@@ -386,11 +395,11 @@ export const rfGeneratorCapabilitySchema = z.object({
   modulation: z.object({
     off: z.literal(true),
     am: z.object({
-      modulationFrequencyHz: frequencyRangeSchema,
+      modulationFrequencyHz: positiveFrequencyRangeSchema,
       depthPercent: boundedIntegerRangeSchema(100),
     }).strict().optional(),
     fm: z.object({
-      modulationFrequencyHz: frequencyRangeSchema,
+      modulationFrequencyHz: positiveFrequencyRangeSchema,
       deviationHz: sampleRateRangeSchema,
     }).strict().optional(),
   }).strict(),
@@ -473,6 +482,78 @@ export const instrumentCapabilitiesSchema = z.object({
   }
 });
 export type InstrumentCapabilities = z.infer<typeof instrumentCapabilitiesSchema>;
+
+export interface InstrumentCapabilitySourceBindingIssue {
+  readonly path: readonly (string | number)[];
+  readonly message: string;
+}
+
+/** Source identity closes the otherwise generic capability union. Keep this
+ * independent of manager code because snapshots cross the public IPC schema. */
+export function instrumentCapabilitySourceBindingIssues(
+  sourceKind: InstrumentSourceKind,
+  capabilities: InstrumentCapabilities,
+): readonly InstrumentCapabilitySourceBindingIssue[] {
+  const issues: InstrumentCapabilitySourceBindingIssue[] = [];
+  const scalar = capabilities.acquisitions.filter((capability) => capability.kind !== 'complex-iq');
+  if (sourceKind === 'signal-lab') {
+    const spectrum = capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
+    const detected = capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
+    if (capabilities.acquisitions.length !== 2 || !spectrum || !detected) {
+      issues.push({ path: ['acquisitions'], message: 'SignalLab must advertise exactly swept-spectrum and detected-power acquisitions' });
+    }
+    if (capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')
+      || scalar.some((capability) => capability.controls.model !== 'synthetic-scalar')) {
+      issues.push({ path: ['acquisitions'], message: 'SignalLab acquisitions must use only synthetic scalar controls' });
+    }
+    for (const [index, capability] of capabilities.acquisitions.entries()) {
+      if (capability.kind === 'complex-iq') continue;
+      if (capability.sweepTimeSeconds.automatic
+        || capability.sweepTimeSeconds.manualSeconds.min !== SIGNAL_LAB_EXACT_SWEEP_SECONDS_V1
+        || capability.sweepTimeSeconds.manualSeconds.max !== SIGNAL_LAB_EXACT_SWEEP_SECONDS_V1) {
+        issues.push({
+          path: ['acquisitions', index, 'sweepTimeSeconds'],
+          message: `SignalLab scalar acquisitions must advertise exact non-automatic ${SIGNAL_LAB_EXACT_SWEEP_SECONDS_V1}s timing`,
+        });
+      }
+    }
+    const profileFeature = capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+    if (capabilities.features.length !== 1 || !profileFeature) {
+      issues.push({ path: ['features'], message: 'SignalLab must advertise exactly one profile-selection feature' });
+    } else if (spectrum && detected) {
+      for (const [profileIndex, profile] of profileFeature.profiles.entries()) {
+        if (!numericRangePermits(profile.centerFrequencyHz, spectrum.frequencyHz)) {
+          issues.push({ path: ['features', 0, 'profiles', profileIndex, 'centerFrequencyHz'], message: 'SignalLab profile center must lie on the swept-spectrum frequency grid' });
+        }
+        if (!numericRangePermits(profile.centerFrequencyHz, detected.centerFrequencyHz)) {
+          issues.push({ path: ['features', 0, 'profiles', profileIndex, 'centerFrequencyHz'], message: 'SignalLab profile center must lie on the detected-power frequency grid' });
+        }
+      }
+    }
+    return issues;
+  }
+  if (scalar.some((capability) => capability.controls.model !== 'receiver')) {
+    issues.push({ path: ['acquisitions'], message: `${sourceKind} scalar acquisitions must expose receiver controls` });
+  }
+  if (capabilities.features.some((feature) => feature.kind === 'signal-lab-profile-selection')) {
+    issues.push({ path: ['features'], message: `${sourceKind} cannot advertise SignalLab profile selection` });
+  }
+  return issues;
+}
+
+function numericRangePermits(value: number, range: { min: number; max: number; step?: number }): boolean {
+  if (value < range.min || value > range.max) return false;
+  if (range.step === undefined) return true;
+  const steps = (value - range.min) / range.step;
+  return Math.abs(steps - Math.round(steps)) <= 1e-9 * Math.max(1, Math.abs(steps));
+}
+
+/** Range maxima are inclusive ceilings; when a step is present the largest
+ * constructible value is the final lattice point at or below that ceiling. */
+function maximumReachableRangeValue(range: { min: number; max: number; step?: number }): number {
+  if (range.step === undefined) return range.max;
+  return range.min + Math.floor((range.max - range.min) / range.step) * range.step;
+}
 
 export const instrumentMeasurementQualificationSchema = z.enum([
   'device-observed',
@@ -941,6 +1022,9 @@ export const instrumentSessionSnapshotSchema = z.object({
   } else if (session.candidate.sourceKind === 'signal-lab' && session.provenance.sourceKind === 'signal-lab'
     && session.candidate.signalLab.sourceId !== session.provenance.sourceId) {
     context.addIssue({ code: 'custom', path: ['provenance', 'sourceId'], message: 'Session SignalLab source must match the admitted candidate' });
+  }
+  for (const issue of instrumentCapabilitySourceBindingIssues(session.candidate.sourceKind, session.capabilities)) {
+    context.addIssue({ code: 'custom', path: ['capabilities', ...issue.path], message: issue.message });
   }
   const supportsRf = session.capabilities.features.some((feature) => feature.kind === 'rf-generator');
   if (supportsRf && session.rfOutput === 'not-supported') {

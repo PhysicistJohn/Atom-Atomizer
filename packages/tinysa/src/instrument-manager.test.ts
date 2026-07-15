@@ -136,9 +136,25 @@ describe('InstrumentManager discovery and selection', () => {
   });
 
   it('rejects source-capability contradictions before announcing a session', async () => {
+    const validSignalLab = signalLabCapabilities([]);
     const forbiddenSignalLabCapabilities: readonly InstrumentCapabilities[] = [
       analyzerCapabilities(),
       complexIqCapabilities(),
+      { ...validSignalLab, features: [] },
+      {
+        ...validSignalLab,
+        acquisitions: validSignalLab.acquisitions.map((capability) => capability.kind === 'swept-spectrum'
+          ? { ...capability, sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.05, max: 0.05 } } }
+          : capability),
+      },
+      {
+        ...validSignalLab,
+        features: [{
+          kind: 'signal-lab-profile-selection',
+          profiles: [{ profileId: 'outside', centerFrequencyHz: 6_000_000_001, recommendedSpanHz: 1_000_000 }],
+          selectedProfileId: 'outside',
+        }],
+      },
       signalLabCapabilities([generatorCapability()]),
       signalLabCapabilities([{ kind: 'screen', width: 2, height: 1, pixelFormat: 'rgb565le' }]),
       signalLabCapabilities([{ kind: 'touch', width: 2, height: 1 }]),
@@ -1636,24 +1652,29 @@ function complexIqCapabilities(): InstrumentCapabilities {
 }
 
 function signalLabCapabilities(features: readonly InstrumentFeatureCapability[]): InstrumentCapabilities {
+  const admittedFeatures: readonly InstrumentFeatureCapability[] = features.length > 0 ? features : [{
+    kind: 'signal-lab-profile-selection',
+    profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
+    selectedProfileId: 'cw',
+  }];
   return {
     schemaVersion: 1,
     acquisitions: [
       {
-        kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000_000 },
+        kind: 'swept-spectrum', frequencyHz: { min: 1, max: 6_000_000_000 },
         points: { min: 2, max: 450 },
         sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
         controls: syntheticScalarCapability(), powerUnit: 'dBm',
       },
       {
-        kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 1_000_000_000 },
+        kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 6_000_000_000 },
         sampleCount: { min: 1, max: 450 },
         sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
         controls: syntheticScalarCapability(),
         powerUnit: 'dBm', timing: 'uniform',
       },
     ],
-    features,
+    features: admittedFeatures,
   };
 }
 

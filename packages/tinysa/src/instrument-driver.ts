@@ -4,6 +4,7 @@ import {
   MAX_INSTRUMENT_SOURCE_KINDS_V1,
   instrumentCandidateDescriptorSchema,
   instrumentCandidateSchema,
+  instrumentCapabilitySourceBindingIssues,
   instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
   instrumentDriverIdSchema,
@@ -197,23 +198,8 @@ function assertCapabilitySourceBinding(
   capabilities: InstrumentCapabilities,
   driverId: InstrumentDriverId,
 ): void {
-  const scalarCapabilities = capabilities.acquisitions.filter((capability) => capability.kind !== 'complex-iq');
-  if (candidate.sourceKind === 'signal-lab') {
-    if (capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')
-      || scalarCapabilities.some((capability) => capability.controls.model !== 'synthetic-scalar')) {
-      throw new InstrumentDriverContractError(`Driver ${driverId} SignalLab session must expose only synthetic scalar acquisitions`);
-    }
-    if (capabilities.features.some((feature) => feature.kind !== 'signal-lab-profile-selection')) {
-      throw new InstrumentDriverContractError(`Driver ${driverId} SignalLab session advertised a capability outside its closed profile-selection feature boundary`);
-    }
-    return;
-  }
-  if (scalarCapabilities.some((capability) => capability.controls.model !== 'receiver')) {
-    throw new InstrumentDriverContractError(`Driver ${driverId} ${candidate.sourceKind} session must expose receiver controls for every scalar acquisition`);
-  }
-  if (capabilities.features.some((feature) => feature.kind === 'signal-lab-profile-selection')) {
-    throw new InstrumentDriverContractError(`Driver ${driverId} advertised SignalLab profile selection for a non-SignalLab candidate`);
-  }
+  const issue = instrumentCapabilitySourceBindingIssues(candidate.sourceKind, capabilities)[0];
+  if (issue) throw new InstrumentDriverContractError(`Driver ${driverId} ${issue.message}`);
 }
 
 function assertProvenanceBinding(

@@ -4,6 +4,7 @@ import {
   detectedPowerConfigurationFor,
   reconcileAnalyzerConfiguration,
   reconcileDetectedPowerConfiguration,
+  stageDetectedPowerConfigurationPatch,
   sweptSpectrumConfigurationFor,
 } from './instrument-configuration.js';
 
@@ -81,6 +82,23 @@ describe('renderer admitted scalar configuration', () => {
     }
   });
 
+  it('merges typed zero-span receiver controls and rejects them for SignalLab', () => {
+    expect(stageDetectedPowerConfigurationPatch(receiverDetectedPower, zero, {
+      rbwKhz: 30,
+      attenuationDb: 'auto',
+      trigger: { mode: 'normal', levelDbm: -67 },
+    })).toEqual({
+      patch: { rbwKhz: 30, attenuationDb: 'auto', trigger: { mode: 'normal', levelDbm: -67 } },
+      configuration: { ...zero, rbwKhz: 30, attenuationDb: 'auto', trigger: { mode: 'normal', levelDbm: -67 } },
+    });
+    expect(() => stageDetectedPowerConfigurationPatch(syntheticDetectedPower, zero, { rbwKhz: 30 }))
+      .toThrow(/rbwKhz is not applicable to synthetic scalar acquisition/);
+    expect(() => stageDetectedPowerConfigurationPatch(syntheticDetectedPower, zero, { trigger: { mode: 'auto' } }))
+      .toThrow(/trigger is not applicable to synthetic scalar acquisition/);
+    expect(stageDetectedPowerConfigurationPatch(syntheticDetectedPower, zero, { sweepTimeSeconds: 0.05 }).configuration.sweepTimeSeconds)
+      .toBe(0.05);
+  });
+
   it('fails closed instead of rewriting staged timing to a synthetic capability', () => {
     expect(() => sweptSpectrumConfigurationFor(syntheticSpectrum, { ...analyzer, sweepTimeSeconds: 'auto' }))
       .toThrow(/exactly 0.05s, not auto/);
@@ -151,6 +169,7 @@ describe('renderer admitted scalar configuration', () => {
   });
 
   it('rejects receiver values outside advertised steps and trigger ranges', () => {
+    if (receiverSpectrum.controls.model !== 'receiver') throw new Error('Receiver fixture lost its receiver control model');
     const stepped: typeof receiverSpectrum = {
       ...receiverSpectrum,
       sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } },

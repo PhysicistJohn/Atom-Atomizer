@@ -3,11 +3,13 @@ import {
   detectedPowerTimeseriesConfigurationSchema,
   sweptSpectrumConfigurationSchema,
   zeroSpanConfigSchema,
+  zeroSpanConfigPatchSchema,
   type AnalyzerConfig,
   type DetectedPowerTimeseriesConfiguration,
   type InstrumentAcquisitionCapability,
   type SweptSpectrumConfiguration,
   type ZeroSpanConfig,
+  type ZeroSpanConfigPatch,
 } from '@tinysa/contracts';
 
 type SpectrumCapability = Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
@@ -92,6 +94,24 @@ export function detectedPowerConfigurationFor(
   });
   requireDetectedPowerCapability(configuration, capability);
   return configuration;
+}
+
+/** Merge one typed detected-power staging patch and validate it against the
+ * active source model before it becomes visible application state. */
+export function stageDetectedPowerConfigurationPatch(
+  capability: DetectedPowerCapability | undefined,
+  staged: ZeroSpanConfig,
+  input: ZeroSpanConfigPatch,
+): { readonly patch: ZeroSpanConfigPatch; readonly configuration: ZeroSpanConfig } {
+  const patch = zeroSpanConfigPatchSchema.parse(input);
+  const configuration = zeroSpanConfigSchema.parse({ ...staged, ...patch });
+  if (capability?.controls.model === 'synthetic-scalar') {
+    const receiverOnly = ['rbwKhz', 'attenuationDb', 'trigger']
+      .find((key) => key in patch);
+    if (receiverOnly) throw new Error(`${receiverOnly} is not applicable to synthetic scalar acquisition`);
+  }
+  if (capability) detectedPowerConfigurationFor(capability, configuration);
+  return { patch, configuration };
 }
 
 /**
