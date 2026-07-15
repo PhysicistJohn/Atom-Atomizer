@@ -240,7 +240,7 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'computer_key', description: 'Send one allow-listed key only when the current TinySA Atomizer focus exactly matches expectedTarget from the last screenshot or computer action.' },
   { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed TinySA Atomizer screenshot. Stale IDs, changed geometry, and protected targets fail closed.' },
   { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output guard as the visual UI.' },
-  { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty startHz, stopHz, or points patch to the staged driver-neutral swept-spectrum configuration. Omitted fields are preserved; capability ranges and merged span order are runtime-validated.' },
+  { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty patch to visible swept-spectrum staging. Receiver controls are capability-validated; synthetic sources accept only geometry and their exact timing. Omitted fields are preserved, and staging is distinct from the host-admitted configuration.' },
   { type: 'function', name: 'acquire_sweep', description: 'Apply the latest staged analyzer revision and acquire exactly one complete sweep; mismatched requested configuration is rejected before measurement reducers.' },
   { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the latest staged analyzer revision and acquire serialized sweeps until explicitly stopped or a failure occurs; superseded in-flight sweeps are quarantined.' },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.' },
@@ -608,8 +608,8 @@ You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists le
 # Execution contract
 - Read-only calls may run when intent is clear. Mutating calls require the user's requested outcome; never add adjacent changes.
 - JSON schemas are authoritative. Obey types, enums, units, bounds, required fields, and closed objects exactly.
-- configure_analyzer is a non-empty driver-neutral patch containing only startHz, stopHz, and points. Omitted fields remain staged; source-reported RBW and attenuation are never invented or configured through this tool.
-- configure_zero_span is a non-empty detected-power patch containing only frequencyHz, points, and sweepTimeSeconds. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
+- configure_analyzer is a non-empty staged patch. The active driver's closed capability model admits every supported receiver control (format, RBW, attenuation, sweep time, detector, spur handling, LNA, and trigger) or rejects it; synthetic sources carry only their declared exact timing and never receive invented RF controls.
+- configure_zero_span is a non-empty detected-power patch containing frequencyHz, points, or sweepTimeSeconds. Its receiver RBW, attenuation, and trigger remain staged and are applied only by a receiver-capable driver; synthetic sources admit no RF settings. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
 - Trace Off is configure_trace mode "blank". D1–D4 firmware overlay visibility is separate and never mutates firmware trace state.
 - A connection requires a fresh list_connection_candidates result and its opaque candidateId. Opening a dialog is not connecting.
 - Coordinate click/scroll requires the immediately preceding one-use screenshotId. Type/key requires the exact focused target. Prefer semantic computer_action.

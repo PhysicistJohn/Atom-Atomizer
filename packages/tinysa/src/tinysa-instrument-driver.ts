@@ -1,12 +1,13 @@
 import {
-  ZS407_FIRMWARE_LIMITS,
   instrumentCandidateSchema,
+  instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
   instrumentFeatureCommandSchema,
   instrumentMeasurementSchema,
   instrumentSessionEventSchema,
   type AnalyzerConfig,
   type DeviceDiagnostics,
+  type DeviceCapabilities,
   type DeviceEvent,
   type DeviceSnapshot,
   type GeneratorConfig,
@@ -29,6 +30,7 @@ import {
 } from '@tinysa/contracts';
 import type { InstrumentDriver, InstrumentSession } from './instrument-driver.js';
 import type { TransportDiscoveryResult } from './transport.js';
+import { tinySaAnalyzerConfiguration, tinySaDetectedPowerConfiguration } from './scalar-configuration.js';
 
 export const TINYSA_ZS407_DRIVER_ID = 'tinysa-zs407' as const;
 
@@ -39,8 +41,9 @@ export interface TinySaInstrumentDevicePort {
   disconnect(): Promise<void>;
   cleanupPendingInstrumentConnection(): Promise<void>;
   configureAnalyzer(configuration: AnalyzerConfig): Promise<DeviceSnapshot>;
+  configureZeroSpan(configuration: ZeroSpanConfig): Promise<DeviceSnapshot>;
   acquireSweep(): Promise<Sweep>;
-  acquireZeroSpan(configuration: ZeroSpanConfig): Promise<ZeroSpanCapture>;
+  acquireZeroSpan(): Promise<ZeroSpanCapture>;
   configureGenerator(configuration: GeneratorConfig): Promise<DeviceSnapshot>;
   setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot>;
   readDiagnostics(): Promise<DeviceDiagnostics>;
@@ -100,7 +103,11 @@ export class TinySaZs407InstrumentDriver implements InstrumentDriver {
       throw new Error('TinySA device service did not return one ready identified session');
     }
     const provenance = tinySaSessionProvenance(candidate, snapshot.identity, snapshot.connectedAt);
-    return new TinySaInstrumentSession(this.device, candidate, snapshot.sessionId, provenance, snapshot.generatorOutput);
+    const capabilities = tinySaCapabilities(snapshot.capabilities);
+    const rfOutput = capabilities.features.some((feature) => feature.kind === 'rf-generator')
+      ? snapshot.generatorOutput
+      : 'not-supported';
+    return new TinySaInstrumentSession(this.device, candidate, snapshot.sessionId, provenance, capabilities, rfOutput);
   }
 }
 
@@ -118,9 +125,10 @@ class TinySaInstrumentSession implements InstrumentSession {
     readonly candidate: InstrumentCandidate,
     readonly sessionId: string,
     readonly provenance: InstrumentSessionProvenance,
-    readonly rfOutput: 'off' | 'on' | 'unknown',
+    capabilities: InstrumentCapabilities,
+    readonly rfOutput: 'off' | 'on' | 'unknown' | 'not-supported',
   ) {
-    this.capabilities = tinySaCapabilities();
+    this.capabilities = capabilities;
     this.#unsubscribe = device.subscribe((event) => this.#forwardDeviceEvent(event));
   }
 
@@ -138,7 +146,9 @@ class TinySaInstrumentSession implements InstrumentSession {
     const command = instrumentConfigurationCommandSchema.parse(commandValue);
     this.#requireSession(command.sessionId);
     if (command.configuration.kind === 'swept-spectrum') {
-      await this.device.configureAnalyzer(defaultAnalyzerConfiguration(command.configuration));
+      await this.device.configureAnalyzer(tinySaAnalyzerConfiguration(command.configuration));
+    } else if (command.configuration.kind === 'detected-power-timeseries') {
+      await this.device.configureZeroSpan(tinySaDetectedPowerConfiguration(command.configuration));
     } else if (command.configuration.kind === 'complex-iq') {
       throw new Error('TinySA ZS407 does not support complex-I/Q acquisition');
     }
@@ -149,6 +159,12 @@ class TinySaInstrumentSession implements InstrumentSession {
     this.#requireOpen();
     const command = this.#configuration;
     if (!command) throw new Error('TinySA instrument session is not configured');
+    if (this.rfOutput === 'not-supported') {
+      // A reduced custom firmware can safely omit generator configuration
+      // from its public capabilities while the mandatory output-off command
+      // still protects every acquisition at the device boundary.
+      await this.device.setGeneratorOutput(false);
+    }
     let measurement: InstrumentMeasurement;
     if (command.configuration.kind === 'swept-spectrum') {
       const sweep = await this.device.acquireSweep();
@@ -169,7 +185,7 @@ class TinySaInstrumentSession implements InstrumentSession {
         powerDbm: sweep.powerDbm,
       };
     } else if (command.configuration.kind === 'detected-power-timeseries') {
-      const capture = await this.device.acquireZeroSpan(defaultZeroSpanConfiguration(command.configuration));
+      const capture = await this.device.acquireZeroSpan();
       measurement = {
         schemaVersion: 1,
         kind: 'detected-power-timeseries',
@@ -223,9 +239,28 @@ class TinySaInstrumentSession implements InstrumentSession {
     }
     if (command.kind === 'touch') {
       const point = { x: command.x, y: command.y };
-      await this.device.touch(point);
-      try { await this.device.releaseTouch(point); }
-      catch (cause) { throw new Error('TinySA touch was sent but release could not be confirmed', { cause }); }
+      let touchFailure: unknown;
+      try {
+        await this.device.touch(point);
+        try { await this.device.releaseTouch(point); }
+        catch (cause) { throw new Error('TinySA touch was sent but release could not be confirmed', { cause }); }
+      } catch (cause) {
+        touchFailure = cause;
+      }
+      let rfOffFailure: unknown;
+      if (this.rfOutput === 'not-supported') {
+        // Touch can change the device's operating mode even when this custom
+        // firmware has no safely advertisable generator configuration range.
+        // Keep the public feature narrow while still returning only after the
+        // mandatory non-emitting state has been acknowledged.
+        try { await this.device.setGeneratorOutput(false); }
+        catch (cause) { rfOffFailure = cause; }
+      }
+      if (touchFailure !== undefined && rfOffFailure !== undefined) {
+        throw new AggregateError([touchFailure, rfOffFailure], 'TinySA touch failed and RF output-off recovery also failed');
+      }
+      if (touchFailure !== undefined) throw touchFailure;
+      if (rfOffFailure !== undefined) throw new Error('TinySA touch completed but RF output-off recovery failed', { cause: rfOffFailure });
       return { ...command, accepted: true };
     }
     if (command.kind === 'diagnostics') {
@@ -377,83 +412,113 @@ function sameDescriptor(candidate: InstrumentCandidate, descriptor: InstrumentCa
   return JSON.stringify(withoutRevision) === JSON.stringify(descriptor);
 }
 
-function tinySaCapabilities(): InstrumentCapabilities {
-  return {
-    schemaVersion: 1,
-    acquisitions: [
-      {
-        kind: 'swept-spectrum',
-        frequencyHz: { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
-        points: { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints },
-        powerUnit: 'dBm',
+function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities {
+  const scalar = device.scalarReceiver;
+  const acquisitions: InstrumentCapabilities['acquisitions'][number][] = [];
+  if (scalar.sweptSpectrum && device.analyzerFrequency.max > device.analyzerFrequency.min) {
+    acquisitions.push({
+      kind: 'swept-spectrum',
+      frequencyHz: numericRange(device.analyzerFrequency),
+      points: numericRange(device.sweepPoints),
+      sweepTimeSeconds: {
+        automatic: scalar.sweepTimeAutomatic,
+        manualSeconds: numericRange(device.sweepSeconds),
       },
-      {
-        kind: 'detected-power-timeseries',
-        centerFrequencyHz: { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz },
-        sampleCount: { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints },
-        // This conservative interval range keeps every advertised sample-count
-        // combination inside the firmware's admitted total sweep duration.
-        sampleIntervalSeconds: {
-          min: ZS407_FIRMWARE_LIMITS.minimumSweepSeconds / ZS407_FIRMWARE_LIMITS.minimumSweepPoints,
-          max: ZS407_FIRMWARE_LIMITS.maximumSweepSeconds / ZS407_FIRMWARE_LIMITS.maximumSweepPoints,
+      controls: {
+        schemaVersion: 1,
+        model: 'receiver',
+        acquisitionFormats: scalar.acquisitionFormats,
+        resolutionBandwidthKhz: {
+          automatic: scalar.resolutionBandwidthAutomatic,
+          manual: numericRange(device.rbwKhz),
         },
-        powerUnit: 'dBm',
-        timing: 'uniform',
+        attenuationDb: {
+          automatic: scalar.attenuationAutomatic,
+          manual: numericRange(device.attenuationDb),
+        },
+        detectors: scalar.detectors,
+        spurRejection: scalar.spurRejection,
+        lowNoiseAmplifier: scalar.lowNoiseAmplifier,
+        avoidSpurs: scalar.avoidSpurs,
+        triggerModes: scalar.triggerModes,
+        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: numericRange(scalar.triggerLevelDbm) } : {}),
       },
-    ],
-    features: [
-      {
-        kind: 'rf-generator',
-        paths: [
-          { path: 'normal', frequencyHz: { min: 1, max: ZS407_FIRMWARE_LIMITS.generatorFundamentalMaximumHz } },
-          { path: 'mixer', frequencyHz: { min: 1, max: ZS407_FIRMWARE_LIMITS.generatorMixerMaximumHz } },
-        ],
-        levelDbm: { min: ZS407_FIRMWARE_LIMITS.generatorMinimumDbm, max: ZS407_FIRMWARE_LIMITS.generatorMaximumDbm, step: 0.5 },
-        modulation: {
-          off: true,
+      powerUnit: 'dBm',
+    });
+  }
+  if (scalar.detectedPower) {
+    acquisitions.push({
+      kind: 'detected-power-timeseries',
+      centerFrequencyHz: numericRange(device.analyzerFrequency),
+      sampleCount: numericRange(device.sweepPoints),
+      sweepTimeSeconds: {
+        automatic: false,
+        manualSeconds: numericRange(device.sweepSeconds),
+      },
+      controls: {
+        schemaVersion: 1,
+        model: 'receiver',
+        resolutionBandwidthKhz: {
+          automatic: scalar.resolutionBandwidthAutomatic,
+          manual: numericRange(device.rbwKhz),
+        },
+        attenuationDb: {
+          automatic: scalar.attenuationAutomatic,
+          manual: numericRange(device.attenuationDb),
+        },
+        triggerModes: scalar.triggerModes,
+        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: numericRange(scalar.triggerLevelDbm) } : {}),
+      },
+      powerUnit: 'dBm',
+      timing: 'uniform',
+    });
+  }
+
+  const features: InstrumentCapabilities['features'][number][] = [];
+  if (device.generatorFrequency && device.generatorFundamentalMaximumHz !== undefined
+    && device.generatorLevel && device.modulation.includes('off')) {
+    features.push({
+      kind: 'rf-generator',
+      paths: [
+        {
+          path: 'normal',
+          frequencyHz: { min: device.generatorFrequency.min, max: device.generatorFundamentalMaximumHz },
+        },
+        { path: 'mixer', frequencyHz: numericRange(device.generatorFrequency) },
+      ],
+      levelDbm: numericRange(device.generatorLevel),
+      modulation: {
+        off: true,
+        ...(device.modulation.includes('am') ? {
           am: {
             modulationFrequencyHz: { min: 1, max: 10_000, step: 1 },
             depthPercent: { min: 0, max: 100, step: 1 },
           },
+        } : {}),
+        ...(device.modulation.includes('fm') ? {
           fm: {
             modulationFrequencyHz: { min: 1, max: 3_500, step: 1 },
             deviationHz: { min: 1_000, max: 300_000, step: 1 },
           },
-        },
+        } : {}),
       },
-      { kind: 'screen', width: ZS407_FIRMWARE_LIMITS.screenWidth, height: ZS407_FIRMWARE_LIMITS.screenHeight, pixelFormat: 'rgb565le' },
-      { kind: 'touch', width: ZS407_FIRMWARE_LIMITS.screenWidth, height: ZS407_FIRMWARE_LIMITS.screenHeight },
-      { kind: 'diagnostics', reports: ['identity', 'health', 'configuration'] },
-    ],
-  };
+    });
+  }
+  if (device.screenCapture) {
+    features.push({ kind: 'screen', width: device.screen.width, height: device.screen.height, pixelFormat: device.screen.format });
+  }
+  if (device.remoteTouch) features.push({ kind: 'touch', width: device.screen.width, height: device.screen.height });
+  if (device.rawSweepOffsetReadback) features.push({ kind: 'diagnostics', reports: ['identity', 'health', 'configuration'] });
+
+  return instrumentCapabilitiesSchema.parse({
+    schemaVersion: 1,
+    acquisitions,
+    features,
+  });
 }
 
-function defaultAnalyzerConfiguration(configuration: Extract<InstrumentConfigurationCommand['configuration'], { kind: 'swept-spectrum' }>): AnalyzerConfig {
-  return {
-    startHz: configuration.startHz,
-    stopHz: configuration.stopHz,
-    points: configuration.points,
-    acquisitionFormat: 'raw',
-    rbwKhz: 'auto',
-    attenuationDb: 'auto',
-    sweepTimeSeconds: 'auto',
-    detector: 'sample',
-    spurRejection: 'auto',
-    lna: 'off',
-    avoidSpurs: 'auto',
-    trigger: { mode: 'auto' },
-  };
-}
-
-function defaultZeroSpanConfiguration(configuration: Extract<InstrumentConfigurationCommand['configuration'], { kind: 'detected-power-timeseries' }>): ZeroSpanConfig {
-  return {
-    frequencyHz: configuration.centerHz,
-    points: configuration.sampleCount,
-    rbwKhz: 'auto',
-    attenuationDb: 'auto',
-    sweepTimeSeconds: configuration.sampleCount * configuration.sampleIntervalSeconds,
-    trigger: { mode: 'auto' },
-  };
+function numericRange(range: { min: number; max: number; step?: number }): { min: number; max: number; step?: number } {
+  return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
 }
 
 function defaultGeneratorConfiguration(

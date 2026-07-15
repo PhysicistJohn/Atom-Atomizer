@@ -249,22 +249,113 @@ const detectedPowerSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_DETECT
 const complexIqSampleCountRangeSchema = boundedIntegerRangeSchema(MAX_COMPLEX_IQ_SAMPLES_V1);
 const durationRangeSchema = boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_DURATION_SECONDS_V1)
   .refine((range) => range.min > 0, { path: ['min'], message: 'Range minimum must be positive' });
+const scalarSweepTimeCapabilitySchema = z.object({
+  automatic: z.boolean(),
+  manualSeconds: durationRangeSchema,
+}).strict();
+const detectedPowerSweepTimeCapabilitySchema = z.object({
+  // Detected-power v1 binds a requested total duration to returned cadence;
+  // it has no configuration representation for an automatic duration.
+  automatic: z.literal(false),
+  manualSeconds: durationRangeSchema,
+}).strict();
 const powerRangeSchema = boundedFiniteRangeSchema(
   -MAX_INSTRUMENT_POWER_ABS_DB_V1,
   MAX_INSTRUMENT_POWER_ABS_DB_V1,
 );
 
+const receiverScalarSpectrumControlCapabilitySchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  acquisitionFormats: z.array(z.enum(['text', 'raw'])).min(1).max(2).readonly(),
+  resolutionBandwidthKhz: z.object({
+    automatic: z.boolean(),
+    manual: boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000)
+      .refine((range) => range.min > 0, { path: ['min'], message: 'RBW minimum must be positive' }),
+  }).strict(),
+  attenuationDb: z.object({
+    automatic: z.boolean(),
+    manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
+  }).strict(),
+  detectors: z.array(z.enum([
+    'sample', 'minimum-hold', 'maximum-hold', 'maximum-decay',
+    'average-4', 'average-16', 'average', 'quasi-peak',
+  ])).min(1).max(8).readonly(),
+  spurRejection: z.array(z.enum(['off', 'on', 'auto'])).min(1).max(3).readonly(),
+  lowNoiseAmplifier: z.array(z.enum(['off', 'on'])).min(1).max(2).readonly(),
+  avoidSpurs: z.array(z.enum(['off', 'on', 'auto'])).min(1).max(3).readonly(),
+  triggerModes: z.array(z.enum(['auto', 'normal', 'single'])).min(1).max(3).readonly(),
+  triggerLevelDbm: powerRangeSchema.optional(),
+}).strict().superRefine((capability, context) => {
+  for (const key of ['acquisitionFormats', 'detectors', 'spurRejection', 'lowNoiseAmplifier', 'avoidSpurs', 'triggerModes'] as const) {
+    if (new Set(capability[key]).size !== capability[key].length) {
+      context.addIssue({ code: 'custom', path: [key], message: `${key} capability values must be unique` });
+    }
+  }
+  const hasLeveledTrigger = capability.triggerModes.some((mode) => mode !== 'auto');
+  if (hasLeveledTrigger && capability.triggerLevelDbm === undefined) {
+    context.addIssue({ code: 'custom', path: ['triggerLevelDbm'], message: 'Normal or single trigger modes require a trigger-level capability' });
+  } else if (!hasLeveledTrigger && capability.triggerLevelDbm !== undefined) {
+    context.addIssue({ code: 'custom', path: ['triggerLevelDbm'], message: 'An auto-only trigger capability must omit the unused trigger-level range' });
+  }
+});
+
+const receiverDetectedPowerControlCapabilitySchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  resolutionBandwidthKhz: z.object({
+    automatic: z.boolean(),
+    manual: boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000)
+      .refine((range) => range.min > 0, { path: ['min'], message: 'RBW minimum must be positive' }),
+  }).strict(),
+  attenuationDb: z.object({
+    automatic: z.boolean(),
+    manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
+  }).strict(),
+  triggerModes: z.array(z.enum(['auto', 'normal', 'single'])).min(1).max(3).readonly(),
+  triggerLevelDbm: powerRangeSchema.optional(),
+}).strict().superRefine((capability, context) => {
+  if (new Set(capability.triggerModes).size !== capability.triggerModes.length) {
+    context.addIssue({ code: 'custom', path: ['triggerModes'], message: 'Trigger-mode capability values must be unique' });
+  }
+  const hasLeveledTrigger = capability.triggerModes.some((mode) => mode !== 'auto');
+  if (hasLeveledTrigger && capability.triggerLevelDbm === undefined) {
+    context.addIssue({ code: 'custom', path: ['triggerLevelDbm'], message: 'Normal or single trigger modes require a trigger-level capability' });
+  } else if (!hasLeveledTrigger && capability.triggerLevelDbm !== undefined) {
+    context.addIssue({ code: 'custom', path: ['triggerLevelDbm'], message: 'An auto-only trigger capability must omit the unused trigger-level range' });
+  }
+});
+
+const syntheticScalarControlCapabilitySchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('synthetic-scalar'),
+  timingQualification: z.literal('simulation-exact'),
+}).strict();
+
 export const sweptSpectrumCapabilitySchema = z.object({
   kind: z.literal('swept-spectrum'),
   frequencyHz: frequencyRangeSchema,
   points: sweptSpectrumPointRangeSchema,
+  sweepTimeSeconds: scalarSweepTimeCapabilitySchema,
+  controls: z.discriminatedUnion('model', [
+    receiverScalarSpectrumControlCapabilitySchema,
+    syntheticScalarControlCapabilitySchema,
+  ]),
   powerUnit: z.literal('dBm'),
-}).strict();
+}).strict().superRefine((capability, context) => {
+  if (capability.frequencyHz.max <= capability.frequencyHz.min) {
+    context.addIssue({ code: 'custom', path: ['frequencyHz', 'max'], message: 'Swept-spectrum frequency capability must contain at least two distinct frequencies' });
+  }
+});
 export const detectedPowerTimeseriesCapabilitySchema = z.object({
   kind: z.literal('detected-power-timeseries'),
   centerFrequencyHz: frequencyRangeSchema,
   sampleCount: detectedPowerSampleCountRangeSchema,
-  sampleIntervalSeconds: durationRangeSchema,
+  sweepTimeSeconds: detectedPowerSweepTimeCapabilitySchema,
+  controls: z.discriminatedUnion('model', [
+    receiverDetectedPowerControlCapabilitySchema,
+    syntheticScalarControlCapabilitySchema,
+  ]),
   powerUnit: z.literal('dBm'),
   timing: z.literal('uniform'),
 }).strict();
@@ -597,20 +688,86 @@ export const instrumentFeatureResultSchema = z.union([
 ]);
 export type InstrumentFeatureResult = z.infer<typeof instrumentFeatureResultSchema>;
 
+const scalarTriggerSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('auto') }).strict(),
+  z.object({
+    mode: z.enum(['normal', 'single']),
+    levelDbm: boundedPowerSchema,
+  }).strict(),
+]);
+const receiverScalarSpectrumControlsSchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  acquisitionFormat: z.enum(['text', 'raw']),
+  resolutionBandwidthKhz: z.union([
+    z.literal('auto'),
+    z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000),
+  ]),
+  attenuationDb: z.union([
+    z.literal('auto'),
+    z.number().finite().nonnegative().max(MAX_INSTRUMENT_POWER_ABS_DB_V1),
+  ]),
+  detector: z.enum([
+    'sample', 'minimum-hold', 'maximum-hold', 'maximum-decay',
+    'average-4', 'average-16', 'average', 'quasi-peak',
+  ]),
+  spurRejection: z.enum(['off', 'on', 'auto']),
+  lowNoiseAmplifier: z.enum(['off', 'on']),
+  avoidSpurs: z.enum(['off', 'on', 'auto']),
+  trigger: scalarTriggerSchema,
+}).strict();
+const receiverDetectedPowerControlsSchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  resolutionBandwidthKhz: z.union([
+    z.literal('auto'),
+    z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000),
+  ]),
+  attenuationDb: z.union([
+    z.literal('auto'),
+    z.number().finite().nonnegative().max(MAX_INSTRUMENT_POWER_ABS_DB_V1),
+  ]),
+  trigger: scalarTriggerSchema,
+}).strict();
+const syntheticScalarControlsSchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('synthetic-scalar'),
+  timingQualification: z.literal('simulation-exact'),
+}).strict();
+
 export const sweptSpectrumConfigurationSchema = z.object({
   kind: z.literal('swept-spectrum'),
   startHz: frequencyHzSchema,
   stopHz: positiveFrequencyHzSchema,
   points: z.number().int().min(2).max(MAX_SWEPT_SPECTRUM_POINTS_V1),
-}).strict().refine((configuration) => configuration.stopHz > configuration.startHz, {
-  path: ['stopHz'], message: 'Sweep stop must exceed sweep start',
+  sweepTimeSeconds: z.union([
+    z.literal('auto'),
+    z.number().finite().positive().max(MAX_INSTRUMENT_DURATION_SECONDS_V1),
+  ]),
+  controls: z.discriminatedUnion('model', [
+    receiverScalarSpectrumControlsSchema,
+    syntheticScalarControlsSchema,
+  ]),
+}).strict().superRefine((configuration, context) => {
+  if (configuration.stopHz <= configuration.startHz) {
+    context.addIssue({ code: 'custom', path: ['stopHz'], message: 'Sweep stop must exceed sweep start' });
+  }
+  if (configuration.controls.model === 'synthetic-scalar' && configuration.sweepTimeSeconds === 'auto') {
+    context.addIssue({ code: 'custom', path: ['sweepTimeSeconds'], message: 'Synthetic scalar sweeps require an exact simulated sweep time' });
+  }
 });
+export type SweptSpectrumConfiguration = z.infer<typeof sweptSpectrumConfigurationSchema>;
 export const detectedPowerTimeseriesConfigurationSchema = z.object({
   kind: z.literal('detected-power-timeseries'),
   centerHz: frequencyHzSchema,
   sampleCount: z.number().int().positive().max(MAX_DETECTED_POWER_SAMPLES_V1),
-  sampleIntervalSeconds: z.number().finite().positive().max(MAX_INSTRUMENT_DURATION_SECONDS_V1),
+  sweepTimeSeconds: z.number().finite().positive().max(MAX_INSTRUMENT_DURATION_SECONDS_V1),
+  controls: z.discriminatedUnion('model', [
+    receiverDetectedPowerControlsSchema,
+    syntheticScalarControlsSchema,
+  ]),
 }).strict();
+export type DetectedPowerTimeseriesConfiguration = z.infer<typeof detectedPowerTimeseriesConfigurationSchema>;
 export const complexIqConfigurationSchema = z.object({
   kind: z.literal('complex-iq'),
   centerHz: frequencyHzSchema,

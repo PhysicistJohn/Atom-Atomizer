@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
+  FIRMWARE_SOURCE_COMMIT,
   instrumentCandidateSchema,
   type AnalyzerConfig,
+  type DeviceCapabilities,
   type DeviceDiagnostics,
   type DeviceEvent,
   type DeviceSnapshot,
@@ -15,6 +17,7 @@ import {
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
 import { TinySaZs407InstrumentDriver, type TinySaInstrumentDevicePort } from './tinysa-instrument-driver.js';
+import { admittedTinySaDetectedPowerConfiguration, admittedTinySaSpectrumConfiguration } from './scalar-configuration.js';
 import type { TransportDiscoveryResult } from './transport.js';
 
 const physical: PortCandidate = {
@@ -93,13 +96,43 @@ describe('TinySaZs407InstrumentDriver', () => {
       sourceKind: 'serial-port', qualification: 'device-observed',
       device: { usbIdentityVerified: true },
     });
+    expect(session.capabilities.acquisitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'swept-spectrum', sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } },
+        controls: expect.objectContaining({
+          model: 'receiver', acquisitionFormats: ['text', 'raw'],
+          resolutionBandwidthKhz: {
+            automatic: true, manual: { min: 0.2, max: 850, step: 0.1 },
+          },
+          detectors: expect.arrayContaining(['sample', 'quasi-peak']),
+        }),
+      }),
+      expect.objectContaining({
+        kind: 'detected-power-timeseries', sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } },
+        controls: expect.objectContaining({
+          model: 'receiver', triggerModes: ['auto', 'normal', 'single'],
+          triggerLevelDbm: { min: -174, max: 30 },
+        }),
+      }),
+    ]));
 
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:1',
-      configuration: { kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20 },
+      configuration: {
+        kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'quasi-peak', spurRejection: 'on', lowNoiseAmplifier: 'on',
+          avoidSpurs: 'off', trigger: { mode: 'normal', levelDbm: -63 },
+        },
+      },
     });
-    expect(device.analyzer).toMatchObject({ startHz: 88_000_000, stopHz: 108_000_000, points: 20, acquisitionFormat: 'raw' });
+    expect(device.analyzer).toEqual({
+      startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+      acquisitionFormat: 'text', rbwKhz: 30, attenuationDb: 7, detector: 'quasi-peak',
+      spurRejection: 'on', lna: 'on', avoidSpurs: 'off', trigger: { mode: 'normal', levelDbm: -63 },
+    });
     await expect(session.acquire()).resolves.toMatchObject({
       kind: 'swept-spectrum', sessionId: session.sessionId, configurationRevision: 'configuration:1',
       elapsedMilliseconds: 1, resolutionBandwidthHz: 10_000, attenuationDb: 0,
@@ -109,13 +142,16 @@ describe('TinySaZs407InstrumentDriver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:2',
-      configuration: { kind: 'detected-power-timeseries', centerHz: 98_000_000, sampleCount: 20, sampleIntervalSeconds: 0.001 },
+      configuration: {
+        kind: 'detected-power-timeseries', centerHz: 98_000_000, sampleCount: 20, sweepTimeSeconds: 0.02,
+        controls: { schemaVersion: 1, model: 'receiver', resolutionBandwidthKhz: 100, attenuationDb: 9, trigger: { mode: 'single', levelDbm: -71 } },
+      },
     });
+    expect(device.zero).toEqual({ frequencyHz: 98_000_000, points: 20, sweepTimeSeconds: 0.02, rbwKhz: 100, attenuationDb: 9, trigger: { mode: 'single', levelDbm: -71 } });
     const detected = await session.acquire();
     expect(detected).toMatchObject({ kind: 'detected-power-timeseries', centerHz: 98_000_000 });
     if (detected.kind !== 'detected-power-timeseries') throw new Error('Expected detected-power fixture');
     expect(detected.powerDbm).toHaveLength(20);
-    expect(device.zero).toMatchObject({ frequencyHz: 98_000_000, points: 20, sweepTimeSeconds: 0.02 });
   });
 
   it('routes generator, screen, touch, diagnostics, and safe disconnect through the driver', async () => {
@@ -197,7 +233,7 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
       };
     this.#snapshot = {
       connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded',
-      sessionId: 'session:tiny', capabilities: {} as DeviceSnapshot['capabilities'],
+      sessionId: 'session:tiny', capabilities: fullDeviceCapabilities(),
       identity,
       connectedAt: '2026-07-14T12:00:00.000Z',
       pendingPort: candidate,
@@ -205,22 +241,23 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
     return this.snapshot();
   }
   async configureAnalyzer(configuration: AnalyzerConfig): Promise<DeviceSnapshot> { this.analyzer = configuration; return this.snapshot(); }
+  async configureZeroSpan(configuration: ZeroSpanConfig): Promise<DeviceSnapshot> { this.zero = configuration; return this.snapshot(); }
   async acquireSweep(): Promise<Sweep> {
     const configuration = this.analyzer!;
     return {
       kind: 'spectrum', id: 'sweep:1', sequence: 1, capturedAt: '2026-07-14T12:00:00.000Z', elapsedMilliseconds: 1,
       frequencyHz: Array.from({ length: configuration.points }, (_, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1)),
-      powerDbm: Array.from({ length: configuration.points }, () => -80), requested: configuration,
+      powerDbm: Array.from({ length: configuration.points }, () => -80), requested: admittedTinySaSpectrumConfiguration(configuration),
       actualStartHz: configuration.startHz, actualStopHz: configuration.stopHz, actualRbwHz: 10_000, actualAttenuationDb: 0,
       source: 'scanraw-binary', complete: true, identity: {} as Sweep['identity'],
     };
   }
-  async acquireZeroSpan(configuration: ZeroSpanConfig): Promise<ZeroSpanCapture> {
-    this.zero = configuration;
+  async acquireZeroSpan(): Promise<ZeroSpanCapture> {
+    const configuration = this.zero!;
     return {
       kind: 'zero-span', id: 'zero:1', sequence: 2, capturedAt: '2026-07-14T12:00:01.000Z', elapsedMilliseconds: 1,
       frequencyHz: configuration.frequencyHz, samplePeriodSeconds: configuration.sweepTimeSeconds / configuration.points,
-      powerDbm: Array.from({ length: configuration.points }, () => -70), requested: configuration,
+      powerDbm: Array.from({ length: configuration.points }, () => -70), requested: admittedTinySaDetectedPowerConfiguration(configuration),
       actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity: {} as ZeroSpanCapture['identity'],
     };
   }
@@ -254,6 +291,44 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
     if (event) listener(event);
     return () => this.#listeners.delete(listener);
   }
+}
+
+function fullDeviceCapabilities(): DeviceCapabilities {
+  return {
+    profile: 'tinySA4-zs407',
+    protocol: {
+      transport: 'usb-cdc-acm', vendorId: '0483', productId: '5740', prompt: 'ch> ',
+      commandTerminator: '\r', echoesCommands: true, maximumCommandCharacters: 47,
+      usbTransactionsModeled: true,
+    },
+    analyzerFrequency: { min: 0, max: 17_922_600_000, unit: 'Hz' },
+    analyzerNormalMaximumHz: 6_000_000_000,
+    analyzerUltraTransitionHz: 5_340_000_000,
+    generatorFrequency: { min: 1, max: 17_922_600_000, unit: 'Hz' },
+    generatorFundamentalMaximumHz: 6_300_000_000,
+    generatorLevel: { min: -115, max: -18.5, step: 0.5, unit: 'dBm' },
+    rbwKhz: { min: 0.2, max: 850, step: 0.1, unit: 'kHz' },
+    attenuationDb: { min: 0, max: 31, step: 1, unit: 'dB' },
+    sweepPoints: { min: 20, max: 450, step: 1, unit: 'points' },
+    sweepSeconds: { min: 0.003, max: 60, step: 0.000_001, unit: 'seconds' },
+    scalarReceiver: {
+      sweptSpectrum: true, detectedPower: true, acquisitionFormats: ['text', 'raw'],
+      resolutionBandwidthAutomatic: true, attenuationAutomatic: true, sweepTimeAutomatic: true,
+      detectors: ['sample', 'minimum-hold', 'maximum-hold', 'maximum-decay', 'average-4', 'average-16', 'average', 'quasi-peak'],
+      spurRejection: ['off', 'on', 'auto'], lowNoiseAmplifier: ['off', 'on'],
+      avoidSpurs: ['off', 'on', 'auto'], triggerModes: ['auto', 'normal', 'single'],
+      triggerLevelDbm: { min: -174, max: 30, unit: 'dBm' },
+    },
+    maxSweepPoints: 450,
+    screen: { width: 480, height: 320, format: 'rgb565le' },
+    screenCapture: true, remoteTouch: true, streaming: true, rawSweep: true,
+    rawSweepOffsetReadback: true, markerCount: 8, traceCount: 4,
+    firmwareMarkers: true, firmwareTraces: true, generatorReadback: false,
+    modulation: ['off', 'am', 'fm'],
+    commands: ['version', 'info', 'help', 'output', 'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'trace', 'calc', 'spur', 'avoid', 'lna', 'trigger', 'freq', 'level', 'modulation', 'capture', 'touch', 'release'],
+    evidence: 'device-observed', hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
+    qualification: 'custom-firmware-unqualified',
+  };
 }
 
 function disconnectedSnapshot(): DeviceSnapshot {

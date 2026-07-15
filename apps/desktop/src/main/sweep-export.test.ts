@@ -15,7 +15,13 @@ const minimumFrequencySpacingHz = Math.min(...frequencyHz.slice(1).map((frequenc
 const sweep: Sweep = {
   kind: 'spectrum', id: 'sweep-1', sequence: 1, capturedAt: '2026-07-10T12:34:56.000Z', elapsedMilliseconds: 10,
   frequencyHz, powerDbm,
-  requested: { startHz: 100, stopHz: 200, points: 20, acquisitionFormat: 'text', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } },
+  requested: {
+    kind: 'swept-spectrum', startHz: 100, stopHz: 200, points: 20, sweepTimeSeconds: 'auto',
+    controls: {
+      schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 'auto', attenuationDb: 'auto',
+      detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' },
+    },
+  },
   actualStartHz: 100, actualStopHz: 200, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true,
   identity: { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'sim', firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'protocol-test', port: { id: 'sim', path: 'simulator://zs407', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' }, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' },
 };
@@ -24,12 +30,16 @@ describe('sweep export', () => {
   it('serializes provenance-preserving CSV', () => {
     const value = serializeSweep(sweep, 'csv');
     expect(value).toContain('frequency_hz,power_dbm,sweep_id');
+    expect(value).toContain('requested_configuration_json');
+    expect(value).toContain('""model"":""receiver""');
     expect(value).toContain('100,-90,sweep-1');
     expect(value).toContain('tinySA Ultra+ ZS407');
   });
 
   it('serializes the complete contract as JSON', () => {
-    expect(JSON.parse(serializeSweep(sweep, 'json'))).toMatchObject({ kind: 'spectrum', id: 'sweep-1', identity: { simulated: true } });
+    expect(JSON.parse(serializeSweep(sweep, 'json'))).toMatchObject({
+      kind: 'spectrum', id: 'sweep-1', identity: { simulated: true }, requested: sweep.requested,
+    });
   });
 
   it('preserves unavailable attenuation as null in JSON and an empty CSV field', () => {
@@ -40,6 +50,10 @@ describe('sweep export', () => {
       attenuationQualification: 'not-applicable',
       resolutionBandwidthQualification: 'synthetic-grid-equivalent',
       source: 'signal-lab-synthetic',
+      requested: {
+        kind: 'swept-spectrum', startHz: 100, stopHz: 200, points: 20, sweepTimeSeconds: 0.05,
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+      },
       identity: signalLabIdentity(),
     };
     expect(JSON.parse(serializeSweep(unavailable, 'json'))).toMatchObject({
@@ -148,6 +162,7 @@ describe('sweep export', () => {
         label: 'SignalLab instrument session',
         value: {
           ...sweep,
+          requested: syntheticRequested(),
           actualRbwHz: gridSpacing,
           actualAttenuationDb: null,
           source: 'signal-lab-synthetic',
@@ -192,6 +207,53 @@ describe('sweep export', () => {
     expect(sweepExportRequestSchema.safeParse({
       format: 'json', sweep: { ...sweep, rawSweepOffsetDb: 32 },
     }).success).toBe(false);
+  });
+
+  it('binds requested geometry and control model to the exported provenance', () => {
+    const signalLab: Sweep = {
+      ...sweep,
+      requested: syntheticRequested(),
+      actualRbwHz: minimumFrequencySpacingHz,
+      actualAttenuationDb: null,
+      source: 'signal-lab-synthetic',
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      attenuationQualification: 'not-applicable',
+      identity: signalLabIdentity(),
+    };
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...signalLab, requested: sweep.requested },
+    }).success).toBe(false);
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...sweep, requested: syntheticRequested() },
+    }).success).toBe(false);
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...sweep, requested: { ...sweep.requested, startHz: 102 } },
+    }).success).toBe(false);
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...sweep, requested: { ...sweep.requested, stopHz: 202 } },
+    }).success).toBe(false);
+  });
+
+  it('exports a future receiver sweep above the TinySA frequency ceiling', () => {
+    const startHz = 24_000_000_000;
+    const stopHz = 24_100_000_000;
+    const futureFrequencyHz = Array.from({ length: 20 }, (_value, index) => startHz + (stopHz - startHz) * index / 19);
+    const identity = serialSessionIdentity();
+    if (!('kind' in identity)) throw new Error('Expected instrument-session identity');
+    const future: Sweep = {
+      ...sweep,
+      frequencyHz: futureFrequencyHz,
+      requested: { ...sweep.requested, startHz, stopHz },
+      actualStartHz: startHz,
+      actualStopHz: stopHz,
+      actualRbwHz: 5_000_000,
+      source: 'instrument-driver-scalar',
+      resolutionBandwidthQualification: 'device-observed',
+      attenuationQualification: 'device-observed',
+      identity: { ...identity, driverId: 'neptune-sdr', candidateId: 'serial:neptune' },
+    };
+    expect(() => serializeSweep(future, 'json')).not.toThrow();
+    expect(JSON.parse(serializeSweep(future, 'json')).actualStopHz).toBe(stopHz);
   });
 
   it('rejects an oversized text artifact before returning output', () => {
@@ -250,6 +312,13 @@ function signalLabIdentity(): Sweep['identity'] {
       generatorSha256: 'c'.repeat(64),
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
     },
+  };
+}
+
+function syntheticRequested(): Extract<Sweep['requested'], { kind: 'swept-spectrum' }> {
+  return {
+    kind: 'swept-spectrum', startHz: 100, stopHz: 200, points: 20, sweepTimeSeconds: 0.05,
+    controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
   };
 }
 

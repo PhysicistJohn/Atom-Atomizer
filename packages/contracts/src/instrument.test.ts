@@ -78,10 +78,16 @@ describe('instrument boundary contracts', () => {
     const capabilities = instrumentCapabilitiesSchema.parse({
       schemaVersion: 1,
       acquisitions: [
-        { kind: 'swept-spectrum', frequencyHz: { min: 0, max: 1_000_000 }, points: { min: 20, max: 450, step: 1 }, powerUnit: 'dBm' },
+        {
+          kind: 'swept-spectrum', frequencyHz: { min: 0, max: 1_000_000 }, points: { min: 20, max: 450, step: 1 },
+          sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+          controls: receiverSpectrumCapability(), powerUnit: 'dBm',
+        },
         {
           kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 1_000_000 },
-          sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 0.000_15, max: 0.1 },
+          sampleCount: { min: 20, max: 450 },
+          sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60 } },
+          controls: receiverDetectedPowerCapability(),
           powerUnit: 'dBm', timing: 'uniform',
         },
         {
@@ -135,7 +141,9 @@ describe('instrument boundary contracts', () => {
       schemaVersion: 1,
       acquisitions: [{
         kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 1 },
-        sampleCount: { min: 1, max: 2 }, sampleIntervalSeconds: { min: 0, max: 1 },
+        sampleCount: { min: 1, max: 2 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0, max: 1 } },
+        controls: receiverDetectedPowerCapability(),
         powerUnit: 'dBm', timing: 'uniform',
       }],
       features: [],
@@ -206,6 +214,73 @@ describe('instrument boundary contracts', () => {
     expect(instrumentConfigurationSchema.safeParse({
       kind: 'complex-iq', centerHz: 2_450_000_000, sampleRateHz: 1_000_000,
       bandwidthHz: 800_000, sampleCount: MAX_COMPLEX_IQ_SAMPLES_V1 + 1, sampleFormat: 'cf32le',
+    }).success).toBe(false);
+  });
+
+  it('keeps receiver controls explicit while synthetic scalar configurations carry only exact timing', () => {
+    const receiver = {
+      kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3, sweepTimeSeconds: 0.05,
+      controls: receiverSpectrumControls(),
+    };
+    const synthetic = {
+      kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3, sweepTimeSeconds: 0.05,
+      controls: syntheticScalarControls(),
+    };
+    expect(instrumentConfigurationSchema.parse(receiver)).toEqual(receiver);
+    expect(instrumentConfigurationSchema.parse(synthetic)).toEqual(synthetic);
+    expect(instrumentConfigurationSchema.safeParse({ ...synthetic, sweepTimeSeconds: 'auto' }).success).toBe(false);
+    expect(instrumentConfigurationSchema.safeParse({
+      ...synthetic,
+      controls: { ...synthetic.controls, attenuationDb: 0 },
+    }).success).toBe(false);
+    expect(instrumentConfigurationSchema.safeParse({
+      ...receiver,
+      controls: { ...receiver.controls, lowNoiseAmplifier: 'unsupported' },
+    }).success).toBe(false);
+    expect(instrumentConfigurationSchema.safeParse({
+      ...receiver,
+      controls: { ...receiver.controls, attenuationDb: -1 },
+    }).success).toBe(false);
+  });
+
+  it('requires a trigger-level capability exactly when a receiver advertises leveled trigger modes', () => {
+    const spectrum = {
+      kind: 'swept-spectrum' as const,
+      frequencyHz: { min: 0, max: 1_000 },
+      points: { min: 2, max: 3 },
+      sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+      controls: receiverSpectrumCapability(),
+      powerUnit: 'dBm' as const,
+    };
+    const capabilities = (controls: unknown) => ({
+      schemaVersion: 1 as const,
+      acquisitions: [{ ...spectrum, controls }],
+      features: [],
+    });
+    expect(instrumentCapabilitiesSchema.safeParse(capabilities({
+      ...spectrum.controls, triggerModes: ['normal'], triggerLevelDbm: undefined,
+    })).success).toBe(false);
+    expect(instrumentCapabilitiesSchema.safeParse(capabilities({
+      ...spectrum.controls, triggerModes: ['auto'], triggerLevelDbm: undefined,
+    })).success).toBe(true);
+    expect(instrumentCapabilitiesSchema.safeParse(capabilities({
+      ...spectrum.controls, triggerModes: ['auto'], triggerLevelDbm: { min: -174, max: 30 },
+    })).success).toBe(false);
+  });
+
+  it('rejects an automatic detected-power duration that v1 configurations cannot express', () => {
+    expect(instrumentCapabilitiesSchema.safeParse({
+      schemaVersion: 1,
+      acquisitions: [{
+        kind: 'detected-power-timeseries',
+        centerFrequencyHz: { min: 0, max: 1_000 },
+        sampleCount: { min: 2, max: 3 },
+        sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+        controls: receiverDetectedPowerCapability(),
+        powerUnit: 'dBm',
+        timing: 'uniform',
+      }],
+      features: [],
     }).success).toBe(false);
   });
 
@@ -304,7 +379,11 @@ describe('instrument boundary contracts', () => {
       },
       capabilities: {
         schemaVersion: 1 as const,
-        acquisitions: [{ kind: 'swept-spectrum' as const, frequencyHz: { min: 0, max: 1_000 }, points: { min: 2, max: 3 }, powerUnit: 'dBm' as const }],
+        acquisitions: [{
+          kind: 'swept-spectrum' as const, frequencyHz: { min: 0, max: 1_000 }, points: { min: 2, max: 3 },
+          sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+          controls: receiverSpectrumCapability(), powerUnit: 'dBm' as const,
+        }],
         features: [],
       },
       rfOutput: 'not-supported' as const,
@@ -559,6 +638,40 @@ describe('instrument boundary contracts', () => {
     expect(timeseriesElementReads).toBe(0);
   });
 });
+
+function receiverSpectrumCapability() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const, acquisitionFormats: ['text', 'raw'] as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    detectors: ['sample', 'quasi-peak'] as const,
+    spurRejection: ['off', 'on', 'auto'] as const, lowNoiseAmplifier: ['off', 'on'] as const,
+    avoidSpurs: ['off', 'on', 'auto'] as const, triggerModes: ['auto', 'normal', 'single'] as const,
+    triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+
+function receiverDetectedPowerCapability() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    triggerModes: ['auto', 'normal', 'single'] as const, triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+
+function receiverSpectrumControls() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const, acquisitionFormat: 'raw' as const,
+    resolutionBandwidthKhz: 'auto' as const, attenuationDb: 'auto' as const,
+    detector: 'sample' as const, spurRejection: 'auto' as const, lowNoiseAmplifier: 'off' as const,
+    avoidSpurs: 'auto' as const, trigger: { mode: 'auto' as const },
+  };
+}
+
+function syntheticScalarControls() {
+  return { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const };
+}
 
 function serialCandidate() {
   return {

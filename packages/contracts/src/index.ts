@@ -2,13 +2,19 @@ import { z } from 'zod';
 import {
   MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1,
   MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1,
+  MAX_INSTRUMENT_FREQUENCY_HZ_V1,
   MAX_INSTRUMENT_METADATA_CHARACTERS_V1,
   MAX_INSTRUMENT_POWER_ABS_DB_V1,
+  MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1,
   MAX_INSTRUMENT_SEQUENCE_V1,
   instrumentDriverIdSchema,
   instrumentOpaqueIdSchema,
   instrumentSessionProvenanceSchema,
+  sweptSpectrumConfigurationSchema,
+  detectedPowerTimeseriesConfigurationSchema,
   instrumentTimestampSchema,
+  type SweptSpectrumConfiguration,
+  type DetectedPowerTimeseriesConfiguration,
   type InstrumentSessionProvenance,
 } from './instrument.js';
 
@@ -153,15 +159,31 @@ export interface DeviceCapabilities {
     bridgeContractVersion?: 1;
   };
   analyzerFrequency: NumericRange;
-  analyzerNormalMaximumHz: number;
-  analyzerUltraTransitionHz: number;
-  generatorFrequency: NumericRange;
-  generatorFundamentalMaximumHz: number;
-  generatorLevel: NumericRange;
+  analyzerNormalMaximumHz?: number;
+  analyzerUltraTransitionHz?: number;
+  /** Present only when the connected firmware advertised the complete generator command surface. */
+  generatorFrequency?: NumericRange;
+  generatorFundamentalMaximumHz?: number;
+  generatorLevel?: NumericRange;
   rbwKhz: NumericRange;
   attenuationDb: NumericRange;
   sweepPoints: NumericRange;
   sweepSeconds: NumericRange;
+  /** Command- and syntax-derived scalar receiver surface for this exact connected firmware. */
+  scalarReceiver: {
+    sweptSpectrum: boolean;
+    detectedPower: boolean;
+    acquisitionFormats: readonly ('text' | 'raw')[];
+    resolutionBandwidthAutomatic: boolean;
+    attenuationAutomatic: boolean;
+    sweepTimeAutomatic: boolean;
+    detectors: readonly TraceDetector[];
+    spurRejection: readonly SpurRejection[];
+    lowNoiseAmplifier: readonly ('off' | 'on')[];
+    avoidSpurs: readonly SpurRejection[];
+    triggerModes: readonly TriggerMode[];
+    triggerLevelDbm?: NumericRange;
+  };
   maxSweepPoints: number;
   screen: { width: 480; height: 320; format: 'rgb565le' };
   screenCapture: boolean;
@@ -169,8 +191,8 @@ export interface DeviceCapabilities {
   streaming: boolean;
   rawSweep: boolean;
   rawSweepOffsetReadback: boolean;
-  markerCount: 8;
-  traceCount: 4;
+  markerCount?: 8;
+  traceCount?: 4;
   firmwareMarkers: boolean;
   firmwareTraces: boolean;
   generatorReadback: false;
@@ -524,7 +546,8 @@ export interface Sweep {
   elapsedMilliseconds: number;
   frequencyHz: readonly number[];
   powerDbm: readonly number[];
-  requested: AnalyzerConfig;
+  /** Exact scalar configuration admitted by the main-process driver boundary. */
+  requested: SweptSpectrumConfiguration;
   actualStartHz: number;
   actualStopHz: number;
   actualRbwHz: number;
@@ -552,7 +575,8 @@ export interface ZeroSpanCapture {
   /** Detection selected when this envelope capture was requested, when bound by the host workflow. */
   targetDetectionId?: string;
   powerDbm: readonly number[];
-  requested: ZeroSpanConfig;
+  /** Exact detected-power configuration admitted by the main-process driver boundary. */
+  requested: DetectedPowerTimeseriesConfiguration;
   actualRbwHz: number | null;
   actualAttenuationDb: number | null;
   /** Explicit whenever a driver-neutral projection supplied the analysis value. */
@@ -787,7 +811,7 @@ export const MAX_SWEEP_EXPORT_PROVENANCE_CHARACTERS_V1 = 4_096;
 export const MAX_SWEEP_EXPORT_FIRMWARE_TRACES_V1 = 4;
 
 const exportMetadataStringSchema = z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1);
-const exportFrequencySchema = z.number().finite().nonnegative().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz);
+const exportFrequencySchema = z.number().finite().nonnegative().max(MAX_INSTRUMENT_FREQUENCY_HZ_V1);
 const exportPowerSchema = z.number().finite()
   .min(-MAX_INSTRUMENT_POWER_ABS_DB_V1)
   .max(MAX_INSTRUMENT_POWER_ABS_DB_V1);
@@ -912,10 +936,10 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
   elapsedMilliseconds: z.number().finite().nonnegative().max(MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1),
   frequencyHz: boundedExportArray(exportFrequencySchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
   powerDbm: boundedExportArray(exportPowerSchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
-  requested: analyzerConfigSchema,
+  requested: sweptSpectrumConfigurationSchema,
   actualStartHz: exportFrequencySchema,
   actualStopHz: exportFrequencySchema,
-  actualRbwHz: z.number().finite().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  actualRbwHz: z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1),
   actualAttenuationDb: exportPowerSchema.nullable(),
   resolutionBandwidthQualification: z.enum([
     'device-observed', 'firmware-executed-twin', 'synthetic-grid-equivalent', 'unavailable',
@@ -940,6 +964,9 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
   }
   if (sweep.frequencyHz.length !== sweep.requested.points) {
     context.addIssue({ code: 'custom', path: ['frequencyHz'], message: 'Spectrum export vectors must match the requested point count' });
+  }
+  if (!matchesRequestedExportGrid(sweep.frequencyHz, sweep.requested.startHz, sweep.requested.stopHz)) {
+    context.addIssue({ code: 'custom', path: ['requested'], message: 'Spectrum export frequency grid must match the complete requested geometry' });
   }
   for (let index = 1; index < sweep.frequencyHz.length; index++) {
     if (sweep.frequencyHz[index]! <= sweep.frequencyHz[index - 1]!) {
@@ -998,14 +1025,17 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
       context.addIssue({ code: 'custom', path: ['rawSweepOffsetDb'], message: 'Driver-neutral instrument-session projection cannot assert transport raw-sweep offset evidence' });
     }
     if (provenance.sourceKind === 'serial-port') {
+      requireExportControlModel(sweep, context, 'receiver', 'Physical instrument-session provenance');
       requireSource(['instrument-driver-scalar'], 'Physical instrument-session provenance');
       requireResolutionQualification('device-observed', true, 'Physical instrument-session provenance');
       requireAttenuation('device-observed', 'observed', true, 'Physical instrument-session provenance');
     } else if (provenance.sourceKind === 'tinysa-firmware-twin') {
+      requireExportControlModel(sweep, context, 'receiver', 'Executable-twin instrument-session provenance');
       requireSource(['renode-executable-state'], 'Executable-twin instrument-session provenance');
       requireResolutionQualification('firmware-executed-twin', true, 'Executable-twin instrument-session provenance');
       requireAttenuation('firmware-executed-twin', 'observed', true, 'Executable-twin instrument-session provenance');
     } else {
+      requireExportControlModel(sweep, context, 'synthetic-scalar', 'SignalLab instrument-session provenance');
       requireSource(['signal-lab-synthetic'], 'SignalLab instrument-session provenance');
       requireResolutionQualification('synthetic-grid-equivalent', true, 'SignalLab instrument-session provenance');
       requireAttenuation('not-applicable', 'not-applicable', true, 'SignalLab instrument-session provenance');
@@ -1017,14 +1047,17 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
       }
     }
   } else if (sweep.identity.execution === 'physical') {
+    requireExportControlModel(sweep, context, 'receiver', 'Physical legacy device provenance');
     requireSource(['scan-text', 'scanraw-binary'], 'Physical legacy device provenance');
     requireResolutionQualification('device-observed', false, 'Physical legacy device provenance');
     requireAttenuation('device-observed', 'observed', false, 'Physical legacy device provenance');
   } else if (sweep.identity.execution === 'firmware-digital-twin') {
+    requireExportControlModel(sweep, context, 'receiver', 'Executable-twin legacy device provenance');
     requireSource(['renode-executable-state'], 'Executable-twin legacy device provenance');
     requireResolutionQualification('firmware-executed-twin', false, 'Executable-twin legacy device provenance');
     requireAttenuation('firmware-executed-twin', 'observed', false, 'Executable-twin legacy device provenance');
   } else {
+    requireExportControlModel(sweep, context, 'receiver', 'Protocol-test legacy device provenance');
     requireSource(['scan-text', 'scanraw-binary'], 'Protocol-test legacy device provenance');
     if (sweep.resolutionBandwidthQualification !== undefined || sweep.attenuationQualification !== undefined) {
       context.addIssue({ code: 'custom', path: ['identity'], message: 'Protocol-test legacy provenance cannot claim observed measurement qualifications' });
@@ -1032,6 +1065,39 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
     requireAttenuation(undefined, 'observed', false, 'Protocol-test legacy device provenance');
   }
 });
+
+function requireExportControlModel(
+  sweep: Sweep,
+  context: z.RefinementCtx,
+  expected: Sweep['requested']['controls']['model'],
+  label: string,
+): void {
+  if (sweep.requested.controls.model !== expected) {
+    context.addIssue({ code: 'custom', path: ['requested', 'controls', 'model'], message: `${label} requires ${expected} requested controls` });
+  }
+}
+
+function matchesRequestedExportGrid(
+  frequencyHz: readonly number[],
+  startHz: number,
+  stopHz: number,
+): boolean {
+  if (frequencyHz.length < 2) return false;
+  const spanHz = stopHz - startHz;
+  return matchesExportUniformGrid(frequencyHz, startHz, spanHz / (frequencyHz.length - 1))
+    || matchesExportUniformGrid(frequencyHz, startHz, spanHz / frequencyHz.length);
+}
+
+function matchesExportUniformGrid(
+  frequencyHz: readonly number[],
+  startHz: number,
+  stepHz: number,
+): boolean {
+  const toleranceHz = Math.max(1, Math.abs(stepHz) * 1e-9);
+  return Number.isFinite(stepHz)
+    && stepHz > 0
+    && frequencyHz.every((frequency, index) => Math.abs(frequency - (startHz + stepHz * index)) <= toleranceHz);
+}
 export const sweepExportRequestSchema = z.object({
   sweep: sweepExportSweepSchema,
   format: z.enum(['csv', 'json']),

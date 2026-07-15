@@ -551,7 +551,11 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
 
   #sweepTimeCommand(args: string[]): string {
     if (!args.length) return `usage: sweeptime 0.003..60\r\n${this.#sweepTimeSeconds === 'auto' ? '0.08' : this.#sweepTimeSeconds}s`;
-    const value = numeric(args[0], 'sweep time'); if (value < 0.003 || value > 60) return 'usage: sweeptime 0.003..60'; this.#sweepTimeSeconds = value; return '';
+    const value = numeric(args[0], 'sweep time');
+    if (value === 0) { this.#sweepTimeSeconds = 'auto'; return ''; }
+    if (value < 0.003 || value > 60) return 'usage: sweeptime 0.003..60';
+    this.#sweepTimeSeconds = value;
+    return '';
   }
 
   #detectorCommand(args: string[]): string {

@@ -135,6 +135,39 @@ describe('InstrumentManager discovery and selection', () => {
     expect(events.map((event) => event.type)).toEqual(['discovery']);
   });
 
+  it('rejects source-capability contradictions before announcing a session', async () => {
+    const forbiddenSignalLabCapabilities: readonly InstrumentCapabilities[] = [
+      analyzerCapabilities(),
+      complexIqCapabilities(),
+      signalLabCapabilities([generatorCapability()]),
+      signalLabCapabilities([{ kind: 'screen', width: 2, height: 1, pixelFormat: 'rgb565le' }]),
+      signalLabCapabilities([{ kind: 'touch', width: 2, height: 1 }]),
+      signalLabCapabilities([{ kind: 'diagnostics', reports: ['identity'] }]),
+    ];
+    for (const [index, capabilities] of forbiddenSignalLabCapabilities.entries()) {
+      let session: StubSession;
+      const driver = new StubDriver(
+        'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+        async (candidate) => (session = new StubSession(candidate, capabilities)),
+      );
+      const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+      await expect(manager.connect((await manager.discover()).candidates[0]!))
+        .rejects.toMatchObject({ code: 'driver-contract' });
+      expect(session!.disconnectCalls, `forbidden SignalLab capability case ${index}`).toBe(1);
+      expect(manager.snapshot()).toBeUndefined();
+    }
+
+    let serialSession: StubSession;
+    const serialDriver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => (serialSession = new StubSession(candidate, signalLabCapabilities([]))),
+    );
+    const serialManager = new InstrumentManager(new InstrumentDriverRegistry([serialDriver]), deterministicRuntime());
+    await expect(serialManager.connect((await serialManager.discover()).candidates[0]!))
+      .rejects.toMatchObject({ code: 'driver-contract' });
+    expect(serialSession!.disconnectCalls).toBe(1);
+  });
+
   it('rejects stale candidates and admits only one active session', async () => {
     let session: StubSession | undefined;
     const driver = new StubDriver(
@@ -475,6 +508,78 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
   });
 
+  it('rejects receiver/synthetic control-model substitution before driver dispatch', async () => {
+    let physicalSession: StubSession;
+    const physical = new InstrumentManager(new InstrumentDriverRegistry([new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => (physicalSession = new StubSession(candidate, analyzerCapabilities())),
+    )]), deterministicRuntime());
+    await physical.connect((await physical.discover()).candidates[0]!);
+    await expect(physical.configure({
+      ...sweepConfiguration(),
+      controls: { ...receiverSpectrumControls(), trigger: { mode: 'normal', levelDbm: 31 } },
+    })).rejects.toMatchObject({ code: 'unsupported-capability' });
+    await expect(physical.configure({
+      ...sweepConfiguration(),
+      controls: { ...receiverSpectrumControls(), resolutionBandwidthKhz: 0.25 },
+    })).rejects.toMatchObject({ code: 'unsupported-capability' });
+    await expect(physical.configure({
+      ...sweepConfiguration(),
+      sweepTimeSeconds: 0.003_000_1,
+    })).rejects.toMatchObject({ code: 'unsupported-capability' });
+    await expect(physical.configure(syntheticSweepConfiguration()))
+      .rejects.toMatchObject({ code: 'unsupported-capability' });
+    expect(physicalSession!.configureCalls).toHaveLength(0);
+
+    let syntheticSession: StubSession;
+    const synthetic = new InstrumentManager(new InstrumentDriverRegistry([new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (syntheticSession = new StubSession(candidate, signalLabCapabilities([]))),
+    )]), deterministicRuntime());
+    await synthetic.connect((await synthetic.discover()).candidates[0]!);
+    await expect(synthetic.configure(sweepConfiguration()))
+      .rejects.toMatchObject({ code: 'unsupported-capability' });
+    expect(syntheticSession!.configureCalls).toHaveLength(0);
+  });
+
+  it('isolates admitted configuration state from a driver mutating its dispatched clone', async () => {
+    let session: StubSession;
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, analyzerCapabilities());
+        session.onConfigure = async (command) => {
+          if (command.configuration.kind !== 'swept-spectrum') throw new Error('Expected spectrum fixture');
+          command.configuration.stopHz = 2_000_000;
+          command.configuration.controls = syntheticScalarControls();
+        };
+        return session;
+      },
+    )]), deterministicRuntime());
+    const events: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => events.push(event));
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    const requested = sweepConfiguration();
+    const state = await manager.configure(requested);
+
+    expect(session!.configureCalls[0]?.configuration).toMatchObject({
+      stopHz: 2_000_000,
+      controls: { model: 'synthetic-scalar' },
+    });
+    expect(state.configuration).toEqual(requested);
+    expect(manager.snapshot()?.configuration?.configuration).toEqual(requested);
+    expect(events.filter((event) => event.type === 'configured')).toEqual([
+      { type: 'configured', configuration: state },
+    ]);
+    expect(Object.isFrozen(state.configuration)).toBe(true);
+    expect(() => {
+      if (state.configuration.kind !== 'swept-spectrum') throw new Error('Expected spectrum fixture');
+      state.configuration.stopHz = 900_000;
+    }).toThrow();
+    expect(manager.snapshot()?.configuration?.configuration).toEqual(requested);
+  });
+
   it('rejects an oversized future-SDR scalar return without publishing or retaining its vectors', async () => {
     let session: StubSession;
     const driver = new StubDriver(
@@ -581,7 +686,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     );
     const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
     await manager.connect((await manager.discover()).candidates[0]!);
-    const configuration = await manager.configure(sweepConfiguration());
+    const configuration = await manager.configure(syntheticSweepConfiguration());
     session!.onAcquire = async () => ({
       ...sweptMeasurement(session!, configuration.configurationRevision, 1),
       producerConfigurationEpoch: 'producer-epoch:stale',
@@ -596,7 +701,9 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       schemaVersion: 1,
       acquisitions: [{
         kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 1_000_000_000 },
-        sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 0.000_15, max: 0.1 },
+        sampleCount: { min: 20, max: 450 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60 } },
+        controls: receiverDetectedPowerCapability(),
         powerUnit: 'dBm', timing: 'uniform',
       }],
       features: [],
@@ -610,20 +717,46 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
 
     await expect(manager.configure({
       kind: 'detected-power-timeseries', centerHz: 100_000_000, sampleCount: 20,
-      sampleIntervalSeconds: 0.000_149,
+      sweepTimeSeconds: 0.002_98, controls: receiverDetectedPowerControls(),
     })).rejects.toMatchObject({ code: 'unsupported-capability' });
     expect(session!.configureCalls).toHaveLength(0);
 
     const configuration = await manager.configure({
       kind: 'detected-power-timeseries', centerHz: 100_000_000, sampleCount: 20,
-      sampleIntervalSeconds: 0.001,
+      sweepTimeSeconds: 0.02, controls: receiverDetectedPowerControls(),
     });
     session!.onAcquire = async () => detectedMeasurement(session!, configuration.configurationRevision, 0.001_1, 'wall-clock-derived');
     await expect(manager.acquire()).resolves.toMatchObject({ sampleIntervalSeconds: 0.001_1 });
 
     const exact = await manager.configure(configuration.configuration);
-    session!.onAcquire = async () => detectedMeasurement(session!, exact.configurationRevision, 0.001_1, 'simulation-exact');
-    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+    session!.onAcquire = async () => detectedMeasurement(session!, exact.configurationRevision, 0.001, 'simulation-exact');
+    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract', message: expect.stringMatching(/falsely claimed simulation-exact/) });
+  });
+
+  it('requires synthetic detected-power measurements to preserve simulation-exact qualification', async () => {
+    for (const timingQualification of ['wall-clock-derived', 'measured-calibrated'] as const) {
+      let session: StubSession;
+      const manager = new InstrumentManager(new InstrumentDriverRegistry([new StubDriver(
+        'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+        async (candidate) => (session = new StubSession(candidate, signalLabCapabilities([
+          {
+            kind: 'signal-lab-profile-selection',
+            profiles: [{
+              profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 1_000_000,
+            }],
+            selectedProfileId: 'cw',
+          },
+        ]))),
+      )]), deterministicRuntime());
+      await manager.connect((await manager.discover()).candidates[0]!);
+      const configuration = await manager.configure(syntheticDetectedPowerConfiguration(100_000_000, 20));
+      session!.onAcquire = async () => detectedMeasurement(
+        session!, configuration.configurationRevision, 0.05 / 20, timingQualification,
+      );
+      await expect(manager.acquire()).rejects.toMatchObject({
+        code: 'driver-contract', message: expect.stringMatching(/simulation-exact timing qualification/),
+      });
+    }
   });
 
   it('forwards only session-bound, configuration-bound, monotonic events', async () => {
@@ -805,7 +938,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       async (candidate) => (signalSession = new StubSession(candidate, signalLabCapabilities([]))),
     )]), deterministicRuntime());
     await signal.connect((await signal.discover()).candidates[0]!);
-    const signalConfiguration = await signal.configure(sweepConfiguration());
+    const signalConfiguration = await signal.configure(syntheticSweepConfiguration());
     signalSession!.onAcquire = async () => ({
       ...sweptMeasurement(signalSession!, signalConfiguration.configurationRevision, 1),
       resolutionBandwidthHz: 10,
@@ -1035,7 +1168,7 @@ describe('InstrumentManager feature boundary', () => {
     const events: InstrumentManagerEvent[] = [];
     manager.subscribe((event) => events.push(event));
     await manager.connect((await manager.discover()).candidates[0]!);
-    await manager.configure(sweepConfiguration());
+    await manager.configure(syntheticSweepConfiguration());
     events.length = 0;
 
     await expect(manager.executeFeature({
@@ -1054,10 +1187,10 @@ describe('InstrumentManager feature boundary', () => {
       .toContainEqual(expect.objectContaining({ kind: 'signal-lab-profile-selection', selectedProfileId: 'fm' }));
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'not-configured' });
     await expect(manager.configure({
-      kind: 'detected-power-timeseries', centerHz: 100_000_000, sampleCount: 20, sampleIntervalSeconds: 0.001,
+      ...syntheticDetectedPowerConfiguration(100_000_000, 20),
     })).rejects.toMatchObject({ code: 'unsupported-capability' });
     await expect(manager.configure({
-      kind: 'detected-power-timeseries', centerHz: 101_000_000, sampleCount: 20, sampleIntervalSeconds: 0.001,
+      ...syntheticDetectedPowerConfiguration(101_000_000, 20),
     })).resolves.toMatchObject({ configuration: { centerHz: 101_000_000 } });
     await expect(manager.executeFeature({
       kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'not-advertised',
@@ -1090,13 +1223,13 @@ describe('InstrumentManager feature boundary', () => {
     manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
     const candidate = (await manager.discover()).candidates[0]!;
     await manager.connect(candidate);
-    await manager.configure(sweepConfiguration());
+    await manager.configure(syntheticSweepConfiguration());
 
     await expect(manager.executeFeature({
       kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm',
     })).rejects.toMatchObject({ code: 'driver-failure' });
     expect(manager.snapshot()?.configuration).toBeUndefined();
-    await expect(manager.configure(sweepConfiguration())).rejects.toMatchObject({ code: 'driver-failure' });
+    await expect(manager.configure(syntheticSweepConfiguration())).rejects.toMatchObject({ code: 'driver-failure' });
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-failure' });
     await expect(manager.executeFeature({
       kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'cw',
@@ -1193,7 +1326,7 @@ describe('InstrumentManager feature boundary', () => {
       'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
       async (candidate) => {
         if (rejectConnect) throw new Error('bridge boot failed');
-        return new StubSession(candidate, analyzerCapabilities());
+        return new StubSession(candidate, signalLabCapabilities([]));
       },
     );
     driver.onPendingConnectionCleanup = async () => {
@@ -1219,7 +1352,7 @@ describe('InstrumentManager feature boundary', () => {
     let rejectCleanup = true;
     const driver = new StubDriver(
       'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
-      async (candidate) => new StubSession(candidate, analyzerCapabilities()),
+      async (candidate) => new StubSession(candidate, signalLabCapabilities([])),
     );
     driver.onPendingConnectionCleanup = async () => {
       if (rejectCleanup) throw new Error('late bridge child did not exit');
@@ -1357,7 +1490,10 @@ class StubDriver implements InstrumentDriver {
     readonly driverId: InstrumentDriverId,
     readonly sourceKinds: readonly InstrumentSourceKind[],
     private readonly discoverImpl: () => Promise<readonly InstrumentCandidateDescriptor[] | InstrumentDriverDiscoveryResult>,
-    private readonly connectImpl: (candidate: InstrumentCandidate) => Promise<InstrumentSession> = async (candidate) => new StubSession(candidate, analyzerCapabilities()),
+    private readonly connectImpl: (candidate: InstrumentCandidate) => Promise<InstrumentSession> = async (candidate) => new StubSession(
+      candidate,
+      candidate.sourceKind === 'signal-lab' ? signalLabCapabilities([]) : analyzerCapabilities(),
+    ),
   ) {}
 
   async discover(): Promise<InstrumentDriverDiscoveryResult> {
@@ -1476,6 +1612,8 @@ function analyzerCapabilities(features: readonly InstrumentFeatureCapability[] =
       kind: 'swept-spectrum',
       frequencyHz: { min: 0, max: 1_000_000 },
       points: { min: 2, max: 450, step: 1 },
+      sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } },
+      controls: receiverSpectrumCapability(),
       powerUnit: 'dBm',
     }],
     features,
@@ -1503,11 +1641,15 @@ function signalLabCapabilities(features: readonly InstrumentFeatureCapability[])
     acquisitions: [
       {
         kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000_000 },
-        points: { min: 2, max: 450 }, powerUnit: 'dBm',
+        points: { min: 2, max: 450 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: syntheticScalarCapability(), powerUnit: 'dBm',
       },
       {
         kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 1_000_000_000 },
-        sampleCount: { min: 1, max: 450 }, sampleIntervalSeconds: { min: 0.000_001, max: 10 },
+        sampleCount: { min: 1, max: 450 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: syntheticScalarCapability(),
         powerUnit: 'dBm', timing: 'uniform',
       },
     ],
@@ -1516,7 +1658,78 @@ function signalLabCapabilities(features: readonly InstrumentFeatureCapability[])
 }
 
 function sweepConfiguration() {
-  return { kind: 'swept-spectrum' as const, startHz: 100, stopHz: 300, points: 3 };
+  return {
+    kind: 'swept-spectrum' as const, startHz: 100, stopHz: 300, points: 3,
+    sweepTimeSeconds: 'auto' as const,
+    controls: receiverSpectrumControls(),
+  };
+}
+
+function syntheticSweepConfiguration() {
+  return {
+    kind: 'swept-spectrum' as const, startHz: 100, stopHz: 300, points: 3,
+    sweepTimeSeconds: 0.05,
+    controls: syntheticScalarControls(),
+  };
+}
+
+function syntheticDetectedPowerConfiguration(centerHz: number, sampleCount: number) {
+  return {
+    kind: 'detected-power-timeseries' as const,
+    centerHz, sampleCount, sweepTimeSeconds: 0.05,
+    controls: syntheticScalarControls(),
+  };
+}
+
+function receiverSpectrumCapability() {
+  return {
+    schemaVersion: 1 as const,
+    model: 'receiver' as const,
+    acquisitionFormats: ['text', 'raw'] as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850, step: 0.1 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    detectors: ['sample', 'quasi-peak'] as const,
+    spurRejection: ['off', 'on', 'auto'] as const,
+    lowNoiseAmplifier: ['off', 'on'] as const,
+    avoidSpurs: ['off', 'on', 'auto'] as const,
+    triggerModes: ['auto', 'normal', 'single'] as const,
+    triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+
+function receiverDetectedPowerCapability() {
+  return {
+    schemaVersion: 1 as const,
+    model: 'receiver' as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850, step: 0.1 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    triggerModes: ['auto', 'normal', 'single'] as const,
+    triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+
+function receiverSpectrumControls() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const, acquisitionFormat: 'raw' as const,
+    resolutionBandwidthKhz: 'auto' as const, attenuationDb: 'auto' as const,
+    detector: 'sample' as const, spurRejection: 'auto' as const,
+    lowNoiseAmplifier: 'off' as const, avoidSpurs: 'auto' as const, trigger: { mode: 'auto' as const },
+  };
+}
+
+function receiverDetectedPowerControls() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const,
+    resolutionBandwidthKhz: 'auto' as const, attenuationDb: 'auto' as const, trigger: { mode: 'auto' as const },
+  };
+}
+
+function syntheticScalarCapability() {
+  return { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const };
+}
+
+function syntheticScalarControls() {
+  return syntheticScalarCapability();
 }
 
 function iqConfiguration() {
@@ -1556,7 +1769,7 @@ function detectedMeasurement(
   session: StubSession,
   configurationRevision: string,
   sampleIntervalSeconds: number,
-  timingQualification: 'wall-clock-derived' | 'simulation-exact',
+  timingQualification: 'wall-clock-derived' | 'measured-calibrated' | 'simulation-exact',
 ): InstrumentMeasurement {
   return {
     schemaVersion: 1,

@@ -420,11 +420,11 @@ export class InstrumentManager {
     const configuration = instrumentConfigurationSchema.parse(configurationValue);
     requireCapability(active, configuration);
     const configurationRevision = this.#opaqueId('configuration');
-    const command = instrumentConfigurationCommandSchema.parse({
+    const command = deepFreeze(instrumentConfigurationCommandSchema.parse({
       sessionId: active.session.sessionId,
       configurationRevision,
       configuration,
-    });
+    }));
     // A failed reconfiguration leaves the acquisition state unknown. Never
     // continue acquiring against the prior revision by assumption.
     this.#invalidateConfiguration(active);
@@ -435,7 +435,8 @@ export class InstrumentManager {
     }
     const faultRevision = active.faultRevision;
     try {
-      await active.session.configure(command);
+      const dispatch = instrumentConfigurationCommandSchema.parse(structuredClone(command));
+      await active.session.configure(dispatch);
       this.#assertPostAwaitState(active, faultRevision);
     }
     catch (value) {
@@ -443,7 +444,9 @@ export class InstrumentManager {
       if (changesRfMode) this.#faultActive(active, failure);
       throw failure;
     }
-    const state = instrumentConfigurationStateSchema.parse({ ...command, configuredAt: this.#timestamp() });
+    const admittedCommand = instrumentConfigurationCommandSchema.parse(structuredClone(command));
+    requireCapability(active, admittedCommand.configuration);
+    const state = deepFreeze(instrumentConfigurationStateSchema.parse({ ...admittedCommand, configuredAt: this.#timestamp() }));
     active.configuration = state;
     this.#resetMeasurementState(active);
     if (changesRfMode) this.#setRfOutput(active, 'off');
@@ -896,10 +899,13 @@ function requireCapability(active: ActiveSession, configuration: InstrumentConfi
     requireRange(configuration.startHz, capability.frequencyHz, 'sweep start');
     requireRange(configuration.stopHz, capability.frequencyHz, 'sweep stop');
     requireRange(configuration.points, capability.points, 'sweep points');
+    requireScalarSweepTime(configuration.sweepTimeSeconds, capability.sweepTimeSeconds, 'sweep time');
+    requireSweptSpectrumControls(configuration.controls, capability.controls);
   } else if (capability.kind === 'detected-power-timeseries' && configuration.kind === 'detected-power-timeseries') {
     requireRange(configuration.centerHz, capability.centerFrequencyHz, 'detected-power center');
     requireRange(configuration.sampleCount, capability.sampleCount, 'detected-power sample count');
-    requireRange(configuration.sampleIntervalSeconds, capability.sampleIntervalSeconds, 'detected-power sample interval');
+    requireScalarSweepTime(configuration.sweepTimeSeconds, capability.sweepTimeSeconds, 'detected-power sweep time');
+    requireDetectedPowerControls(configuration.controls, capability.controls);
     if (active.session.candidate.sourceKind === 'signal-lab') {
       const profileCapability = active.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
       if (!profileCapability || profileCapability.kind !== 'signal-lab-profile-selection') {
@@ -920,6 +926,73 @@ function requireCapability(active: ActiveSession, configuration: InstrumentConfi
     requireRange(configuration.bandwidthHz, capability.bandwidthHz, 'I/Q bandwidth');
     requireRange(configuration.sampleCount, capability.sampleCount, 'I/Q total sample count');
     if (configuration.sampleFormat !== capability.sampleFormat) throw new InstrumentManagerError('unsupported-capability', 'I/Q sample format is unsupported');
+  }
+}
+
+function requireScalarSweepTime(
+  value: 'auto' | number,
+  capability: { automatic: boolean; manualSeconds: { min: number; max: number; step?: number } },
+  label: string,
+): void {
+  if (value === 'auto') {
+    if (!capability.automatic) throw new InstrumentManagerError('unsupported-capability', `${label} does not support automatic selection`);
+    return;
+  }
+  requireRange(value, capability.manualSeconds, label);
+}
+
+function requireAutomaticOrRange(
+  value: 'auto' | number,
+  capability: { automatic: boolean; manual: { min: number; max: number; step?: number } },
+  label: string,
+): void {
+  if (value === 'auto') {
+    if (!capability.automatic) throw new InstrumentManagerError('unsupported-capability', `${label} does not support automatic selection`);
+    return;
+  }
+  requireRange(value, capability.manual, label);
+}
+
+function requireSweptSpectrumControls(
+  controls: Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>['controls'],
+  capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'swept-spectrum' }>['controls'],
+): void {
+  if (controls.model !== capability.model) {
+    throw new InstrumentManagerError('unsupported-capability', `Sweep control model ${controls.model} is not supported by ${capability.model}`);
+  }
+  if (controls.model === 'synthetic-scalar') return;
+  if (capability.model !== 'receiver') throw new InstrumentManagerError('driver-contract', 'Receiver sweep control capability lookup was inconsistent');
+  if (!capability.acquisitionFormats.includes(controls.acquisitionFormat)) {
+    throw new InstrumentManagerError('unsupported-capability', `Acquisition format ${controls.acquisitionFormat} is unsupported`);
+  }
+  requireAutomaticOrRange(controls.resolutionBandwidthKhz, capability.resolutionBandwidthKhz, 'resolution bandwidth');
+  requireAutomaticOrRange(controls.attenuationDb, capability.attenuationDb, 'attenuation');
+  if (!capability.detectors.includes(controls.detector)) throw new InstrumentManagerError('unsupported-capability', `Detector ${controls.detector} is unsupported`);
+  if (!capability.spurRejection.includes(controls.spurRejection)) throw new InstrumentManagerError('unsupported-capability', `Spur rejection ${controls.spurRejection} is unsupported`);
+  if (!capability.lowNoiseAmplifier.includes(controls.lowNoiseAmplifier)) throw new InstrumentManagerError('unsupported-capability', `LNA ${controls.lowNoiseAmplifier} is unsupported`);
+  if (!capability.avoidSpurs.includes(controls.avoidSpurs)) throw new InstrumentManagerError('unsupported-capability', `Avoid-spurs ${controls.avoidSpurs} is unsupported`);
+  if (!capability.triggerModes.includes(controls.trigger.mode)) throw new InstrumentManagerError('unsupported-capability', `Trigger mode ${controls.trigger.mode} is unsupported`);
+  if (controls.trigger.mode !== 'auto') {
+    if (!capability.triggerLevelDbm) throw new InstrumentManagerError('driver-contract', `Trigger mode ${controls.trigger.mode} has no advertised level range`);
+    requireRange(controls.trigger.levelDbm, capability.triggerLevelDbm, 'trigger level');
+  }
+}
+
+function requireDetectedPowerControls(
+  controls: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>['controls'],
+  capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'detected-power-timeseries' }>['controls'],
+): void {
+  if (controls.model !== capability.model) {
+    throw new InstrumentManagerError('unsupported-capability', `Detected-power control model ${controls.model} is not supported by ${capability.model}`);
+  }
+  if (controls.model === 'synthetic-scalar') return;
+  if (capability.model !== 'receiver') throw new InstrumentManagerError('driver-contract', 'Receiver detected-power control capability lookup was inconsistent');
+  requireAutomaticOrRange(controls.resolutionBandwidthKhz, capability.resolutionBandwidthKhz, 'resolution bandwidth');
+  requireAutomaticOrRange(controls.attenuationDb, capability.attenuationDb, 'attenuation');
+  if (!capability.triggerModes.includes(controls.trigger.mode)) throw new InstrumentManagerError('unsupported-capability', `Trigger mode ${controls.trigger.mode} is unsupported`);
+  if (controls.trigger.mode !== 'auto') {
+    if (!capability.triggerLevelDbm) throw new InstrumentManagerError('driver-contract', `Trigger mode ${controls.trigger.mode} has no advertised level range`);
+    requireRange(controls.trigger.levelDbm, capability.triggerLevelDbm, 'trigger level');
   }
 }
 
@@ -996,6 +1069,12 @@ function requireRange(value: number, range: { min: number; max: number; step?: n
   }
 }
 
+function deepFreeze<Value>(value: Value): Value {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) deepFreeze(Reflect.get(value, key));
+  return Object.freeze(value);
+}
+
 function assertMeasurementBinding(
   measurement: InstrumentMeasurement,
   active: ActiveSession,
@@ -1032,8 +1111,14 @@ function assertMeasurementBinding(
       || measurement.powerDbm.length !== requested.sampleCount) {
       throw new InstrumentManagerError('driver-contract', 'Detected-power measurement does not match configured geometry');
     }
-    if (measurement.timingQualification === 'simulation-exact'
-      && measurement.sampleIntervalSeconds !== requested.sampleIntervalSeconds) {
+    if (requested.controls.model === 'synthetic-scalar' && measurement.timingQualification !== 'simulation-exact') {
+      throw new InstrumentManagerError('driver-contract', 'Synthetic detected-power measurement did not preserve its admitted simulation-exact timing qualification');
+    }
+    if (requested.controls.model === 'receiver' && measurement.timingQualification === 'simulation-exact') {
+      throw new InstrumentManagerError('driver-contract', 'Receiver detected-power measurement falsely claimed simulation-exact timing');
+    }
+    if (requested.controls.model === 'synthetic-scalar'
+      && measurement.sampleIntervalSeconds !== requested.sweepTimeSeconds / requested.sampleCount) {
       throw new InstrumentManagerError('driver-contract', 'Simulation-exact detected-power cadence does not match the configured interval');
     }
   } else if (measurement.kind === 'complex-iq' && requested.kind === 'complex-iq') {

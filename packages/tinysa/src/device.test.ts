@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FIRMWARE_SOURCE_COMMIT,
   ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+  type AnalyzerConfig,
   type GeneratorConfig,
   type PortCandidate,
 } from '@tinysa/contracts';
@@ -20,6 +21,21 @@ const generator: GeneratorConfig = {
   modulationFrequencyHz: 1_000,
   amDepthPercent: 80,
   fmDeviationHz: 3_000,
+};
+
+const analyzer: AnalyzerConfig = {
+  startHz: 88_000_000,
+  stopHz: 108_000_000,
+  points: 20,
+  acquisitionFormat: 'text',
+  rbwKhz: 30,
+  attenuationDb: 7,
+  sweepTimeSeconds: 0.25,
+  detector: 'quasi-peak',
+  spurRejection: 'on',
+  lna: 'on',
+  avoidSpurs: 'off',
+  trigger: { mode: 'normal', levelDbm: -63 },
 };
 
 describe('device fail-loud lifecycle', () => {
@@ -76,6 +92,16 @@ describe('device fail-loud lifecycle', () => {
     await expect(new TinySaDeviceService(transport).connect(transport.port)).rejects.toThrow(/not a ZS407/);
   });
 
+  it('does not treat an operation-only unknown response as acknowledgement of mandatory output-off', async () => {
+    const bytes = new FakeTinySaTransport({ commandResponses: { 'output off': 'output?' } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(/rejected command output off/i);
+
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+  });
+
   it('admits an otherwise valid ZS407 custom revision with explicit unqualified provenance', async () => {
     const bytes = new FakeTinySaTransport({
       versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
@@ -97,6 +123,211 @@ describe('device fail-loud lifecycle', () => {
     expect(bytes.writes.slice(0, 6)).toEqual(['output off', 'version', 'info', 'help', 'output off', 'mode input']);
     expect(connected.generatorOutput).toBe('off');
     await service.disconnect();
+  });
+
+  it('projects only the proven reduced custom-firmware receiver surface and exact advertised ranges', async () => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
+      helpCommands: [
+        'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+        'scan', 'trace', 'sweeptime', 'calc', 'spur', 'avoid', 'lna', 'trigger', 'touch', 'release',
+      ],
+      commandResponses: {
+        'rbw ?': 'usage: rbw 5..25|auto',
+        'attenuate ?': 'usage: attenuate 2..12|auto',
+        'sweeptime ?': 'usage: sweeptime 0.01..2',
+        'trace ?': 'usage: trace {dBm|RAW}',
+      },
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(service),
+    ]));
+    const connected = await manager.connect((await manager.discover()).candidates[0]!);
+
+    expect(connected).toMatchObject({
+      rfOutput: 'not-supported',
+      rfOutputQualification: 'not-applicable',
+      provenance: { device: { firmwareQualification: 'custom-unqualified' } },
+      capabilities: {
+        acquisitions: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'swept-spectrum',
+            frequencyHz: { min: 88_000_000, max: 108_000_000 },
+            points: { min: 450, max: 450 },
+            sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.01, max: 2 } },
+            controls: expect.objectContaining({
+              acquisitionFormats: ['text'],
+              resolutionBandwidthKhz: { automatic: true, manual: { min: 5, max: 25 } },
+              attenuationDb: { automatic: true, manual: { min: 2, max: 12 } },
+              triggerModes: ['auto'],
+            }),
+          }),
+          expect.objectContaining({
+            kind: 'detected-power-timeseries',
+            centerFrequencyHz: { min: 88_000_000, max: 108_000_000 },
+            sampleCount: { min: 450, max: 450 },
+            controls: expect.objectContaining({ triggerModes: ['auto'] }),
+          }),
+        ]),
+        features: [{ kind: 'touch', width: 480, height: 320 }],
+      },
+    });
+    const spectrum = connected.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
+    expect(spectrum?.controls).not.toHaveProperty('triggerLevelDbm');
+
+    await manager.executeFeature({ kind: 'touch', action: 'tap', x: 12, y: 34 });
+    expect(bytes.writes.slice(-3)).toEqual(['touch 12 34', 'release 12 34', 'output off']);
+    expect(manager.snapshot()?.rfOutput).toBe('not-supported');
+
+    await expect(manager.configure({
+      kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 450, sweepTimeSeconds: 0.5,
+      controls: {
+        schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+        attenuationDb: 5, detector: 'quasi-peak', spurRejection: 'on', lowNoiseAmplifier: 'on',
+        avoidSpurs: 'off', trigger: { mode: 'auto' },
+      },
+    })).rejects.toThrow(/resolution bandwidth/i);
+    expect(bytes.writes).not.toContain('rbw 30');
+
+    await manager.configure({
+      kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 450, sweepTimeSeconds: 0.5,
+      controls: {
+        schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 20,
+        attenuationDb: 5, detector: 'quasi-peak', spurRejection: 'on', lowNoiseAmplifier: 'on',
+        avoidSpurs: 'off', trigger: { mode: 'auto' },
+      },
+    });
+    const outputOffBeforeAcquire = bytes.writes.filter((command) => command === 'output off').length;
+    const measurement = await manager.acquire();
+
+    expect(measurement).toMatchObject({ kind: 'swept-spectrum', qualification: 'device-observed' });
+    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(outputOffBeforeAcquire + 1);
+    const scan = bytes.writes.lastIndexOf('scan 88000000 108000000 450 3');
+    expect(scan).toBeGreaterThan(-1);
+    expect(bytes.writes.slice(scan + 1)).not.toContain('trace');
+    await manager.disconnect();
+  });
+
+  it('fails closed and cleans up when custom firmware cannot describe any complete acquisition', async () => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
+      helpCommands: [
+        'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+        'sweeptime',
+      ],
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(service),
+    ]));
+    const candidate = (await manager.discover()).candidates[0]!;
+
+    await expect(manager.connect(candidate)).rejects.toThrow(/could not open the selected candidate/i);
+
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+    expect(manager.snapshot()).toBeUndefined();
+    expect(manager.pendingConnectionCleanup()).toBeUndefined();
+  });
+
+  it('rejects custom firmware whose scalar control ranges are not explicitly parseable', async () => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
+      commandResponses: { 'rbw ?': 'usage: rbw implementation-defined' },
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(/did not advertise parseable RBW/i);
+
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected' });
+  });
+
+  it('resets every automatic analyzer control explicitly, including firmware sweeptime zero', async () => {
+    const bytes = new FakeTinySaTransport();
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+
+    await service.configureAnalyzer(analyzer);
+    const automatic = await service.configureAnalyzer({
+      ...analyzer,
+      rbwKhz: 'auto',
+      attenuationDb: 'auto',
+      sweepTimeSeconds: 'auto',
+      spurRejection: 'auto',
+      avoidSpurs: 'auto',
+      trigger: { mode: 'auto' },
+    });
+
+    const manualSweepTime = bytes.writes.lastIndexOf('sweeptime 0.25');
+    const automaticCommands = bytes.writes.slice(manualSweepTime + 1);
+    expect(automaticCommands).toEqual(expect.arrayContaining([
+      'rbw auto', 'attenuate auto', 'sweeptime 0', 'spur auto', 'avoid auto', 'trigger auto',
+    ]));
+    expect(automaticCommands.indexOf('sweeptime 0')).toBeGreaterThan(automaticCommands.indexOf('attenuate auto'));
+    expect(automatic.analyzer).toMatchObject({
+      requested: { rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', spurRejection: 'auto', avoidSpurs: 'auto', trigger: { mode: 'auto' } },
+      readback: { actualRbwHz: expect.any(Number), attenuationDb: expect.any(Number) },
+      verification: 'commanded',
+    });
+    await service.disconnect();
+  });
+
+  it('turns RF off and prepares detected power completely during configuration, before acquisition', async () => {
+    const bytes = new FakeTinySaTransport();
+    const transport = new PhysicalFixtureTransport(bytes);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(new TinySaDeviceService(transport)),
+    ]));
+    await manager.connect((await manager.discover()).candidates[0]!);
+    await manager.executeFeature({
+      kind: 'rf-generator', action: 'configure', frequencyHz: generator.frequencyHz,
+      levelDbm: generator.levelDbm, path: generator.path, modulation: { mode: 'off' },
+    });
+    await manager.executeFeature({ kind: 'rf-generator', action: 'set-output', enabled: true });
+    expect(manager.snapshot()?.rfOutput).toBe('on');
+
+    const outputOn = bytes.writes.lastIndexOf('output on');
+    const configured = await manager.configure(detectedPowerConfiguration());
+    const configurationCommands = bytes.writes.slice(outputOn + 1);
+
+    expect(configured.configuration).toEqual(detectedPowerConfiguration());
+    expect(manager.snapshot()).toMatchObject({ rfOutput: 'off', configuration: configured });
+    expect(configurationCommands.slice(0, 9)).toEqual([
+      'output off', 'mode input', 'trace dBm', 'sweep 100000000 100000000 20',
+      'rbw 100', 'attenuate 9', 'sweeptime 0.02', 'trigger single', 'trigger -71',
+    ]);
+    expect(configurationCommands).not.toContain('scan 100000000 100000000 20 3');
+
+    await manager.acquire();
+    expect(bytes.writes).toContain('scan 100000000 100000000 20 3');
+    await manager.disconnect();
+  });
+
+  it('never publishes a detected-power configuration when a physical preparation command fails', async () => {
+    const bytes = new FakeTinySaTransport({ commandResponses: { 'rbw 100': 'usage: rbw 0.2..850|auto' } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(new TinySaDeviceService(transport)),
+    ]));
+    const events: unknown[] = [];
+    manager.subscribe((event) => events.push(event));
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    await expect(manager.configure(detectedPowerConfiguration())).rejects.toThrow(/configuration failed/i);
+
+    expect(bytes.writes).toContain('output off');
+    expect(bytes.writes).toContain('rbw 100');
+    expect(events.some((event) => (event as { type?: unknown }).type === 'configured')).toBe(false);
+    expect(manager.snapshot()?.configuration).toBeUndefined();
+    expect(manager.snapshot()?.fault).toBeDefined();
+    await manager.disconnect();
   });
 
   it('still rejects firmware that omits a parseable source revision', async () => {
@@ -179,6 +410,22 @@ describe('device fail-loud lifecycle', () => {
     expect(transport.closeCalls).toBe(3);
   });
 });
+
+function detectedPowerConfiguration() {
+  return {
+    kind: 'detected-power-timeseries' as const,
+    centerHz: 100_000_000,
+    sampleCount: 20,
+    sweepTimeSeconds: 0.02,
+    controls: {
+      schemaVersion: 1 as const,
+      model: 'receiver' as const,
+      resolutionBandwidthKhz: 100,
+      attenuationDb: 9,
+      trigger: { mode: 'single' as const, levelDbm: -71 },
+    },
+  };
+}
 
 class PhysicalFixtureTransport implements ByteTransport {
   readonly kind = 'usb-cdc-acm' as const;

@@ -1,13 +1,13 @@
 import type {
-  AnalyzerConfig,
   AttenuationQualification,
   InstrumentMeasurement,
   InstrumentMeasurementIdentity,
   InstrumentSessionSnapshot,
+  SweptSpectrumConfiguration,
+  DetectedPowerTimeseriesConfiguration,
   ResolutionBandwidthQualification,
   Sweep,
   ZeroSpanCapture,
-  ZeroSpanConfig,
 } from '@tinysa/contracts';
 
 type SweptSpectrumMeasurement = Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }>;
@@ -16,7 +16,7 @@ type DetectedPowerTimeseriesMeasurement = Extract<InstrumentMeasurement, { kind:
 export function projectSpectrumMeasurement(
   measurement: SweptSpectrumMeasurement,
   session: InstrumentSessionSnapshot,
-  requested: AnalyzerConfig,
+  requested: SweptSpectrumConfiguration,
 ): Sweep {
   requireMeasurementSession(measurement, session);
   if (measurement.frequencyHz.length !== requested.points) {
@@ -52,12 +52,12 @@ export function projectSpectrumMeasurement(
 export function projectDetectedPowerMeasurement(
   measurement: DetectedPowerTimeseriesMeasurement,
   session: InstrumentSessionSnapshot,
-  requested: ZeroSpanConfig,
+  requested: DetectedPowerTimeseriesConfiguration,
   targetDetectionId?: string,
 ): ZeroSpanCapture {
   requireMeasurementSession(measurement, session);
-  if (measurement.powerDbm.length !== requested.points) {
-    throw new Error(`Instrument returned ${measurement.powerDbm.length} detected-power samples for ${requested.points} requested samples`);
+  if (measurement.powerDbm.length !== requested.sampleCount) {
+    throw new Error(`Instrument returned ${measurement.powerDbm.length} detected-power samples for ${requested.sampleCount} requested samples`);
   }
   const [resolutionBandwidthHz, resolutionBandwidthQualification] = detectedPowerResolution(measurement, session);
   const [attenuationDb, attenuationQualification] = projectedAttenuation(measurement.attenuationDb, session);

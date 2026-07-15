@@ -38,6 +38,8 @@ import {
   type InstrumentCandidate,
   type InstrumentConfiguration,
   type InstrumentConfigurationState,
+  type SweptSpectrumConfiguration,
+  type DetectedPowerTimeseriesConfiguration,
   type InstrumentDiscoveryFailure,
   type InstrumentFeatureRequest,
   type InstrumentFeatureResult,
@@ -114,6 +116,13 @@ import {
   type WorkspaceId,
 } from './ui-contracts.js';
 import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
+import {
+  detectedPowerConfigurationFor,
+  reconcileAnalyzerConfiguration,
+  reconcileDetectedPowerConfiguration,
+  sameSweptSpectrumConfiguration,
+  sweptSpectrumConfigurationFor,
+} from './instrument-configuration.js';
 import { agentDetectionResults } from './agent-detection-results.js';
 import { useAtomAgent } from './useAtomAgent.js';
 import { BoundedRevisionCache, type RevisionCacheLease } from './bounded-revision-cache.js';
@@ -141,8 +150,8 @@ const HISTORY_LIMIT = 128;
 // active mode, zero-span evidence, retune overlap, and admitted async work.
 const CONFIGURATION_REVISION_LIMIT = HISTORY_LIMIT + 32;
 type RendererConfigurationRevision =
-  | { readonly kind: 'swept-spectrum'; readonly requested: AnalyzerConfig }
-  | { readonly kind: 'detected-power-timeseries'; readonly requested: ZeroSpanConfig };
+  | { readonly kind: 'swept-spectrum'; readonly admitted: SweptSpectrumConfiguration }
+  | { readonly kind: 'detected-power-timeseries'; readonly admitted: DetectedPowerTimeseriesConfiguration };
 interface ContinuousStreamOwnership {
   readonly generation: number;
   readonly sessionId: string;
@@ -668,7 +677,16 @@ export function App() {
     const profileId = selectedProfileId ?? profileCapability?.selectedProfileId;
     setSelectedProfile(profileId);
     const selectedProfileEntry = profileCapability?.profiles.find((profile) => profile.profileId === profileId);
-    if (selectedProfileEntry) setZeroConfig((current) => zeroSpanConfigSchema.parse({ ...current, frequencyHz: selectedProfileEntry.centerFrequencyHz }));
+    const detectedPower = next.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
+    if (selectedProfileEntry) setZeroConfig((current) => {
+      const staged = zeroSpanConfigSchema.parse({ ...current, frequencyHz: selectedProfileEntry.centerFrequencyHz });
+      return detectedPower?.kind === 'detected-power-timeseries'
+        ? reconcileDetectedPowerConfiguration(detectedPower, staged)
+        : staged;
+    });
+    else if (detectedPower?.kind === 'detected-power-timeseries') {
+      setZeroConfig((current) => reconcileDetectedPowerConfiguration(detectedPower, current));
+    }
     const spectrum = next.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
     if (!spectrum) {
       invalidateAcquiredEvidence();
@@ -687,7 +705,13 @@ export function App() {
         ? profileStartHz + profileSpanHz
         : Math.max(startHz + 1, Math.min(current.stopHz, spectrum.frequencyHz.max));
       const points = Math.max(spectrum.points.min, Math.min(current.points, spectrum.points.max));
-      const reconciled = analyzerConfigSchema.parse({ ...current, startHz, stopHz, points });
+      const staged = analyzerConfigSchema.parse({
+        ...current,
+        startHz,
+        stopHz,
+        points,
+      });
+      const reconciled = reconcileAnalyzerConfiguration(spectrum, staged);
       if (!sameAnalyzerConfiguration(current, reconciled)) {
         analyzerRef.current = reconciled;
         analyzerRevision.current++;
@@ -715,17 +739,25 @@ export function App() {
   }
 
   async function configureAnalyzer(config: AnalyzerConfig, operation: 'configuring' | 'retuning' = 'configuring'): Promise<InstrumentConfigurationState> {
-    const sessionId = requireConnected().sessionId;
+    const session = requireConnected();
+    const sessionId = session.sessionId;
     const validated = analyzerConfigSchema.parse(config);
+    const capability = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    if (!capability || capability.kind !== 'swept-spectrum') throw new Error('Active instrument does not advertise swept-spectrum acquisition');
+    const requested = sweptSpectrumConfigurationFor(capability, validated);
     const reservation = configurationRevisions.current.reserve();
     setError(undefined);
     setAcquisition(operation);
     try {
-      const next = await configureInstrument({ kind: 'swept-spectrum', startHz: validated.startHz, stopHz: validated.stopHz, points: validated.points });
+      const next = await configureInstrument(requested);
       if (next.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
         throw new Error(`Swept-spectrum configuration response was invalidated with instrument session ${sessionId}`);
       }
-      reservation.commit(next.configurationRevision, { kind: 'swept-spectrum', requested: validated });
+      if (next.configuration.kind !== 'swept-spectrum'
+        || !sameSweptSpectrumConfiguration(next.configuration, requested)) {
+        throw new Error('Instrument host returned a different swept-spectrum configuration than it admitted');
+      }
+      reservation.commit(next.configurationRevision, { kind: 'swept-spectrum', admitted: next.configuration });
       configurationRevisions.current.setActive(next.configurationRevision);
       acceptConfiguration(next);
       return next;
@@ -735,17 +767,17 @@ export function App() {
     }
   }
 
-  function requireConfiguration(revision: string, kind: 'swept-spectrum', context: string): AnalyzerConfig;
-  function requireConfiguration(revision: string, kind: 'detected-power-timeseries', context: string): ZeroSpanConfig;
+  function requireConfiguration(revision: string, kind: 'swept-spectrum', context: string): SweptSpectrumConfiguration;
+  function requireConfiguration(revision: string, kind: 'detected-power-timeseries', context: string): DetectedPowerTimeseriesConfiguration;
   function requireConfiguration(
     revision: string,
     kind: RendererConfigurationRevision['kind'],
     context: string,
-  ): AnalyzerConfig | ZeroSpanConfig {
+  ): SweptSpectrumConfiguration | DetectedPowerTimeseriesConfiguration {
     const retained = configurationRevisions.current.read(revision);
     if (!retained) throw new Error(`${context} referenced unknown configuration ${revision}`);
     if (retained.kind !== kind) throw new Error(`${context} referenced ${retained.kind} configuration ${revision}, expected ${kind}`);
-    return retained.requested;
+    return retained.admitted;
   }
 
   function leaseConfiguration(revision: string, kind: RendererConfigurationRevision['kind']): RevisionCacheLease<RendererConfigurationRevision> {
@@ -853,6 +885,17 @@ export function App() {
     const patch = analyzerConfigPatchSchema.parse(input);
     const previous = analyzerRef.current;
     const next = analyzerConfigSchema.parse({ ...previous, ...patch });
+    const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    if (capability?.kind === 'swept-spectrum') {
+      if (capability.controls.model === 'synthetic-scalar') {
+        const receiverOnly = [
+          'acquisitionFormat', 'rbwKhz', 'attenuationDb', 'detector',
+          'spurRejection', 'lna', 'avoidSpurs', 'trigger',
+        ].find((key) => key in patch);
+        if (receiverOnly) throw new Error(`${receiverOnly} is not applicable to synthetic scalar acquisition`);
+      }
+      sweptSpectrumConfigurationFor(capability, next);
+    }
     if (sameAnalyzerConfiguration(previous, next)) return { configuration: previous, changed: false };
     analyzerRef.current = next;
     analyzerRevision.current++;
@@ -948,7 +991,11 @@ export function App() {
     configurationRevision: string,
     stillCurrent: () => boolean = () => true,
   ): Promise<boolean> {
-    if (!sameAnalyzerConfiguration(next.requested, analyzerRef.current)) {
+    const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    const currentAdmitted = capability?.kind === 'swept-spectrum'
+      ? sweptSpectrumConfigurationFor(capability, analyzerRef.current)
+      : undefined;
+    if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
       console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: analyzerRef.current });
       return false;
     }
@@ -1054,16 +1101,20 @@ export function App() {
       const reservation = configurationRevisions.current.reserve();
       let configuration: InstrumentConfigurationState;
       try {
-        configuration = await configureInstrument({
-          kind: 'detected-power-timeseries',
-          centerHz: validated.frequencyHz,
-          sampleCount: validated.points,
-          sampleIntervalSeconds: validated.sweepTimeSeconds / validated.points,
-        });
+        const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
+        if (!capability || capability.kind !== 'detected-power-timeseries') {
+          throw new Error('Active instrument does not advertise detected-power acquisition');
+        }
+        const requested = detectedPowerConfigurationFor(capability, validated);
+        configuration = await configureInstrument(requested);
         if (configuration.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
           throw new Error(`Detected-power configuration response was invalidated with instrument session ${sessionId}`);
         }
-        reservation.commit(configuration.configurationRevision, { kind: 'detected-power-timeseries', requested: validated });
+        if (configuration.configuration.kind !== 'detected-power-timeseries'
+          || JSON.stringify(configuration.configuration) !== JSON.stringify(requested)) {
+          throw new Error('Instrument host returned a different detected-power configuration than it admitted');
+        }
+        reservation.commit(configuration.configurationRevision, { kind: 'detected-power-timeseries', admitted: configuration.configuration });
         configurationRevisions.current.setActive(configuration.configurationRevision);
       } catch (error) {
         reservation.release();
@@ -1502,6 +1553,80 @@ export function App() {
     } as const;
   }
 
+  function agentStagedConfiguration(
+    stagedAnalyzer: AnalyzerConfig = analyzer,
+    stagedDetectedPower: ZeroSpanConfig = zeroConfig,
+  ) {
+    const acquisitions = instrumentRef.current.session?.capabilities.acquisitions ?? [];
+    const spectrum = acquisitions.find((capability) => capability.kind === 'swept-spectrum');
+    const detectedPower = acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
+    const spectrumModel = spectrum?.kind === 'swept-spectrum' ? spectrum.controls.model : null;
+    const detectedPowerModel = detectedPower?.kind === 'detected-power-timeseries' ? detectedPower.controls.model : null;
+    return {
+      sweptSpectrum: {
+        kind: 'swept-spectrum',
+        applicability: spectrumModel === 'receiver'
+          ? 'staged-receiver-intent'
+          : spectrumModel === 'synthetic-scalar'
+            ? 'staged-synthetic-geometry'
+            : 'not-admitted-no-active-capability',
+        controlModel: spectrumModel,
+        startHz: stagedAnalyzer.startHz,
+        stopHz: stagedAnalyzer.stopHz,
+        points: stagedAnalyzer.points,
+        sweepTimeSeconds: stagedAnalyzer.sweepTimeSeconds,
+        ...(spectrumModel === 'receiver' ? {
+          receiverControls: {
+            applicability: 'staged-not-yet-admitted',
+            acquisitionFormat: stagedAnalyzer.acquisitionFormat,
+            resolutionBandwidthKhz: stagedAnalyzer.rbwKhz,
+            attenuationDb: stagedAnalyzer.attenuationDb,
+            detector: stagedAnalyzer.detector,
+            spurRejection: stagedAnalyzer.spurRejection,
+            lowNoiseAmplifier: stagedAnalyzer.lna,
+            avoidSpurs: stagedAnalyzer.avoidSpurs,
+            trigger: stagedAnalyzer.trigger,
+          },
+        } : { receiverControls: { applicability: 'not-applicable' } }),
+      },
+      detectedPower: {
+        kind: 'detected-power-timeseries',
+        applicability: detectedPowerModel === 'receiver'
+          ? 'staged-receiver-intent'
+          : detectedPowerModel === 'synthetic-scalar'
+            ? 'staged-synthetic-geometry'
+            : 'not-admitted-no-active-capability',
+        controlModel: detectedPowerModel,
+        centerHz: stagedDetectedPower.frequencyHz,
+        sampleCount: stagedDetectedPower.points,
+        sweepTimeSeconds: stagedDetectedPower.sweepTimeSeconds,
+        ...(detectedPowerModel === 'receiver' ? {
+          receiverControls: {
+            applicability: 'staged-not-yet-admitted',
+            resolutionBandwidthKhz: stagedDetectedPower.rbwKhz,
+            attenuationDb: stagedDetectedPower.attenuationDb,
+            trigger: stagedDetectedPower.trigger,
+          },
+        } : { receiverControls: { applicability: 'not-applicable' } }),
+      },
+    } as const;
+  }
+
+  function agentConfigurationContext(
+    stagedAnalyzer: AnalyzerConfig = analyzer,
+    stagedDetectedPower: ZeroSpanConfig = zeroConfig,
+  ) {
+    const active = instrumentRef.current.configuration;
+    return {
+      admitted: active ? {
+        configurationRevision: active.configurationRevision,
+        configuredAt: active.configuredAt,
+        configuration: active.configuration,
+      } : null,
+      staged: agentStagedConfiguration(stagedAnalyzer, stagedDetectedPower),
+    } as const;
+  }
+
   function applicationContext(): string {
     const channelMeasurement = evaluateAnalysis(() => requireChannelMeasurement());
     const envelopeStft = evaluateAnalysis(() => requireEnvelopeStft());
@@ -1515,10 +1640,9 @@ export function App() {
       visibleError: error ?? null,
       instrument,
       generatorOutput,
-      analyzer,
+      scalarConfiguration: agentConfigurationContext(),
       generator,
       detectionConfig,
-      zeroSpanConfig: zeroConfig,
       historyCount: history.length,
       latestSweep: sweep && metrics ? { id: sweep.id, sequence: sweep.sequence, capturedAt: sweep.capturedAt, rangeHz: [sweep.actualStartHz, sweep.actualStopHz], points: sweep.frequencyHz.length, source: sweep.source, elapsedMilliseconds: sweep.elapsedMilliseconds, metrics } : null,
       detections: agentDetectionResults(detections),
@@ -1554,10 +1678,9 @@ export function App() {
         historyCount: history.length,
         topology: systemTopology(),
         connection: instrument.session ? 'connected' : 'disconnected',
-        analyzer,
+        scalarConfiguration: agentConfigurationContext(),
         generator,
         detection: detectionConfig,
-        zeroSpan: zeroConfig,
         measurement: JSON.parse(applicationContext()).measurement,
         latestSweep: JSON.parse(applicationContext()).latestSweep,
         agentSurfaceVersion: ATOM_AGENT_VERSION,
@@ -1571,7 +1694,7 @@ export function App() {
         controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
         apiCoverage: agentApiCoverage,
       };
-      case 'get_instrument_state': return { ...instrument, generatorOutput };
+      case 'get_instrument_state': return { ...instrument, generatorOutput, scalarConfiguration: agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
       case 'get_detection_results': return agentDetectionResults(detections);
       case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
@@ -1630,7 +1753,7 @@ export function App() {
         const patch = analyzerConfigPatchSchema.parse(args);
         const next = await updateAnalyzer(patch);
         applyWorkspace('spectrum');
-        return { patch, configuration: next, continuous: continuousRequested.current };
+        return { patch, scalarConfiguration: agentConfigurationContext(next), continuous: continuousRequested.current };
       }
       case 'acquire_sweep': { assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity }; }
       case 'start_continuous_sweeps': assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
@@ -1748,9 +1871,11 @@ export function App() {
       case 'configure_zero_span': {
         const patch = args as Partial<Pick<ZeroSpanConfig, 'frequencyHz' | 'points' | 'sweepTimeSeconds'>>;
         const next = zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch });
+        const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
+        if (capability?.kind === 'detected-power-timeseries') detectedPowerConfigurationFor(capability, next);
         applyWorkspace('classification');
         setZeroConfig(next);
-        return next;
+        return { scalarConfiguration: agentConfigurationContext(analyzer, next) };
       }
       case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', currentGeneratorOutput()); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); applyWorkspace('generator'); setGenerator(next); return configureGeneratorWith(next); }

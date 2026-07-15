@@ -89,8 +89,8 @@ describe('Atom agent contracts',()=>{
   it('locks Atom prompt behavior for just-in-time tools, patches, provenance, and concise speech',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('startup surface contains only load_atom_tools');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Do not reflexively read topology or all application state');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty driver-neutral patch');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('source-reported RBW and attenuation are never invented');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty staged patch');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic sources carry only their declared exact timing and never receive invented RF controls');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('SignalLab is the factory startup default');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('rolling activity association conditional on admitted local looks');

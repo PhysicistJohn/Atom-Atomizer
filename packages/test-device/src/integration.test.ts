@@ -45,7 +45,7 @@ describe('device service against byte-level simulator', () => {
     expect(connected.generatorOutput).toBe('off');
 
     const configured = await device.configureAnalyzer(analyzer);
-    expect(configured.verification).toBe('verified');
+    expect(configured.verification).toBe('commanded');
     const sweep = await device.acquireSweep();
     expect(sweep.frequencyHz).toHaveLength(64);
     expect(sweep.powerDbm).toHaveLength(64);
@@ -76,7 +76,8 @@ describe('device service against byte-level simulator', () => {
     expect(raw.powerDbm).toHaveLength(64);
     expect(raw.rawSweepOffsetDb).toBe(174);
     expect(Math.max(...raw.powerDbm)).toBeLessThan(0);
-    const capture = await device.acquireZeroSpan(zeroSpan);
+    await device.configureZeroSpan(zeroSpan);
+    const capture = await device.acquireZeroSpan();
     expect(capture.frequencyHz).toBe(433_920_000);
     expect(capture.powerDbm).toHaveLength(64);
     expect(capture.samplePeriodSeconds).toBeGreaterThan(0);

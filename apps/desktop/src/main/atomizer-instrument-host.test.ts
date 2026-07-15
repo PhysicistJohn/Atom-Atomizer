@@ -353,7 +353,8 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
 
     await host.startStreaming();
     await until(() => manager.acquireCalls === 1);
-    const reconfiguration = host.configure({ kind: 'swept-spectrum', startHz: 400, stopHz: 800, points: 5 });
+    const requested = syntheticSpectrumConfiguration(400, 800, 5);
+    const reconfiguration = host.configure(requested);
 
     expect(manager.configureCalls).toHaveLength(0);
     expect(() => host.startStreaming()).toThrow(/configuration transition/);
@@ -362,7 +363,7 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     manager.acquireGate.resolve();
     const configured = await reconfiguration;
 
-    expect(configured.configuration).toEqual({ kind: 'swept-spectrum', startHz: 400, stopHz: 800, points: 5 });
+    expect(configured.configuration).toEqual(requested);
     expect(manager.acquireCalls).toBe(1);
     expect(manager.configureCalls).toHaveLength(1);
     expect(host.state().streaming).toEqual({ status: 'stopped' });
@@ -428,7 +429,7 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(host.shutdown()).toBe(shutdown);
     expect(host.disconnect()).toBe(shutdown);
     expect(() => host.discover()).toThrow(/closed/);
-    expect(() => host.configure({ kind: 'swept-spectrum', startHz: 1, stopHz: 2, points: 2 })).toThrow(/closed/);
+    expect(() => host.configure(syntheticSpectrumConfiguration(1, 2, 2))).toThrow(/closed/);
     expect(manager.disconnectCalls).toBe(0);
 
     manager.acquireGate.resolve();
@@ -478,7 +479,7 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
 
     await host.startStreaming();
     await until(() => manager.acquireCalls === 1);
-    const configuration = { kind: 'swept-spectrum', startHz: 1, stopHz: 2, points: 2 } as const;
+    const configuration = syntheticSpectrumConfiguration(1, 2, 2);
     // The in-flight stream acquisition owns one admission; these transitions
     // reserve the other 63 while all of them await the same run.done.
     const admitted = Array.from({ length: 63 }, () => host.configure(configuration));
@@ -687,7 +688,10 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
       schemaVersion: 1,
       acquisitions: [{
         kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000_000 },
-        points: { min: 2, max: 4_096 }, powerUnit: 'dBm',
+        points: { min: 2, max: 4_096 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+        powerUnit: 'dBm',
       }],
       features: [{
         kind: 'signal-lab-profile-selection',
@@ -705,10 +709,21 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
 }
 
 function configurationFixture(configuration: InstrumentConfiguration = {
-  kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3,
+  ...syntheticSpectrumConfiguration(100, 300, 3),
 }): InstrumentConfigurationState {
   return {
     sessionId: 'session:signal-lab', configurationRevision: 'configuration:1', configuration, configuredAt: NOW,
+  };
+}
+
+function syntheticSpectrumConfiguration(
+  startHz: number,
+  stopHz: number,
+  points: number,
+): Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }> {
+  return {
+    kind: 'swept-spectrum', startHz, stopHz, points, sweepTimeSeconds: 0.05,
+    controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
   };
 }
 

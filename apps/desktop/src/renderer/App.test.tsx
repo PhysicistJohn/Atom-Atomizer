@@ -39,8 +39,8 @@ const ready: InstrumentSessionSnapshot = {
   capabilities: {
     schemaVersion: 1,
     acquisitions: [
-      { kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, powerUnit: 'dBm' },
-      { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 1e-6, max: 10 }, powerUnit: 'dBm', timing: 'uniform' },
+      { kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } }, controls: receiverSpectrumCapability(), powerUnit: 'dBm' },
+      { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } }, controls: receiverDetectedPowerCapability(), powerUnit: 'dBm', timing: 'uniform' },
     ],
     features: [
       { kind: 'rf-generator', paths: [{ path: 'normal', frequencyHz: { min: 1, max: 6_300_000_000 } }, { path: 'mixer', frequencyHz: { min: 1, max: 17_922_600_000 } }], levelDbm: { min: -115, max: -18.5, step: 0.5 }, modulation: { off: true, am: { modulationFrequencyHz: { min: 1, max: 10_000 }, depthPercent: { min: 0, max: 100 } }, fm: { modulationFrequencyHz: { min: 1, max: 3_500 }, deviationHz: { min: 1_000, max: 300_000 } } } },
@@ -81,17 +81,51 @@ const signalLabCandidate: InstrumentCandidate = { schemaVersion: 1, driverId: 's
 const signalLabSession: InstrumentSessionSnapshot = {
   sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
   provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1, contractSha256: HASH, catalogSha256: HASH, generatorSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
-  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sampleIntervalSeconds: { min: 1e-6, max: 10 }, powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
+  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
   rfOutput: 'not-supported',
   rfOutputQualification: 'not-applicable',
 };
 const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 450, acquisitionFormat: 'raw', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
+function receiverSpectrumCapability() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const, acquisitionFormats: ['text', 'raw'] as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850, step: 0.1 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    detectors: ['sample', 'minimum-hold', 'maximum-hold', 'maximum-decay', 'average-4', 'average-16', 'average', 'quasi-peak'] as const,
+    spurRejection: ['off', 'on', 'auto'] as const, lowNoiseAmplifier: ['off', 'on'] as const,
+    avoidSpurs: ['off', 'on', 'auto'] as const, triggerModes: ['auto', 'normal', 'single'] as const,
+    triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+function receiverDetectedPowerCapability() {
+  return {
+    schemaVersion: 1 as const, model: 'receiver' as const,
+    resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850, step: 0.1 } },
+    attenuationDb: { automatic: true, manual: { min: 0, max: 31, step: 1 } },
+    triggerModes: ['auto', 'normal', 'single'] as const, triggerLevelDbm: { min: -174, max: 30 },
+  };
+}
+function syntheticScalarCapability() {
+  return { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const };
+}
+function receiverSpectrumConfiguration(config: AnalyzerConfig): Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }> {
+  return {
+    kind: 'swept-spectrum', startHz: config.startHz, stopHz: config.stopHz, points: config.points,
+    sweepTimeSeconds: config.sweepTimeSeconds,
+    controls: {
+      schemaVersion: 1, model: 'receiver', acquisitionFormat: config.acquisitionFormat,
+      resolutionBandwidthKhz: config.rbwKhz, attenuationDb: config.attenuationDb,
+      detector: config.detector, spurRejection: config.spurRejection,
+      lowNoiseAmplifier: config.lna, avoidSpurs: config.avoidSpurs, trigger: config.trigger,
+    },
+  };
+}
 const powers = Array.from({ length: 450 }, (_, index) => index === 225 ? -50 : -90);
 const frequencies = Array.from({ length: 450 }, (_, index) => 88e6 + index * (20e6 / 449));
 const legacyIdentity = { model: 'test', hardwareVersion: 'test', firmwareVersion: 'test', firmwareQualification: 'protocol-test', port: { id: 'test', path: 'test', usbMatch: 'protocol-test-double', transport: 'protocol-test-double', execution: 'protocol-test-double' }, simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double' } as const;
-const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested, actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity: legacyIdentity };
+const sweep: Sweep = { kind: 'spectrum', id: 's1', sequence: 1, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, frequencyHz: frequencies, powerDbm: powers, requested: receiverSpectrumConfiguration(requested), actualStartHz: frequencies[0]!, actualStopHz: frequencies.at(-1)!, actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity: legacyIdentity };
 let configuredAnalyzer = requested;
-let activeConfiguration: InstrumentConfiguration = { kind: 'swept-spectrum', startHz: requested.startHz, stopHz: requested.stopHz, points: requested.points };
+let activeConfiguration: InstrumentConfiguration = receiverSpectrumConfiguration(requested);
 let configurationRevision = 'configuration-0';
 let revisionSequence = 0;
 let measurementSequence = 0;
@@ -102,14 +136,14 @@ function acquiredMeasurement(config: AnalyzerConfig, id = 'runtime-sweep', revis
 }
 
 function detectedPowerMeasurement(config: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>): Extract<InstrumentMeasurement, { kind: 'detected-power-timeseries' }> {
-  return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sampleIntervalSeconds, timingQualification: 'simulation-exact', powerDbm: Array(config.sampleCount).fill(-90) };
+  return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sweepTimeSeconds / config.sampleCount, timingQualification: 'wall-clock-derived', powerDbm: Array(config.sampleCount).fill(-90) };
 }
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
   configuredAnalyzer = structuredClone(requested);
-  activeConfiguration = { kind: 'swept-spectrum', startHz: requested.startHz, stopHz: requested.stopHz, points: requested.points };
+  activeConfiguration = receiverSpectrumConfiguration(requested);
   configurationRevision = 'configuration-0';
   revisionSequence = 0;
   measurementSequence = 0;
@@ -127,7 +161,18 @@ beforeEach(() => {
     configure: vi.fn().mockImplementation(async (configuration: InstrumentConfiguration) => {
       activeConfiguration = structuredClone(configuration);
       configurationRevision = `configuration-${++revisionSequence}`;
-      if (configuration.kind === 'swept-spectrum') configuredAnalyzer = { ...configuredAnalyzer, startHz: configuration.startHz, stopHz: configuration.stopHz, points: configuration.points };
+      if (configuration.kind === 'swept-spectrum' && configuration.controls.model === 'receiver') configuredAnalyzer = {
+        startHz: configuration.startHz, stopHz: configuration.stopHz, points: configuration.points,
+        acquisitionFormat: configuration.controls.acquisitionFormat,
+        rbwKhz: configuration.controls.resolutionBandwidthKhz,
+        attenuationDb: configuration.controls.attenuationDb,
+        sweepTimeSeconds: configuration.sweepTimeSeconds,
+        detector: configuration.controls.detector,
+        spurRejection: configuration.controls.spurRejection,
+        lna: configuration.controls.lowNoiseAmplifier,
+        avoidSpurs: configuration.controls.avoidSpurs,
+        trigger: configuration.controls.trigger,
+      };
       return { sessionId: ready.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
     }),
     acquire: vi.fn().mockImplementation(async () => activeConfiguration.kind === 'swept-spectrum' ? acquiredMeasurement(configuredAnalyzer) : activeConfiguration.kind === 'detected-power-timeseries' ? detectedPowerMeasurement(activeConfiguration) : Promise.reject(new Error('I/Q not mocked'))),
@@ -245,6 +290,22 @@ describe('operator vertical slice', () => {
   it('renders an already-started SignalLab default without fabricating hardware identity and can select its profile', async () => {
     vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({ schemaVersion: 1, startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' }, preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } }, session: signalLabSession });
     vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
+      const frequencyHz = Array.from({ length: activeConfiguration.points }, (_value, index) => activeConfiguration.startHz + (activeConfiguration.stopHz - activeConfiguration.startHz) * index / (activeConfiguration.points - 1));
+      return {
+        schemaVersion: 1, kind: 'swept-spectrum', measurementId: 'signal-live-1', sessionId: signalLabSession.sessionId,
+        configurationRevision, producerConfigurationEpoch: 'producer-epoch:2', sequence: 1,
+        capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50,
+        resolutionBandwidthHz: null, attenuationDb: null, qualification: 'synthetic-visual-projection', complete: true,
+        frequencyHz, powerDbm: frequencyHz.map((_frequency, index) => index === 225 ? -50 : -100),
+      };
+    });
     render(<App/>);
     expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
     expect(screen.getByRole('button', { name: /SignalLab.*Synthetic measurement bridge/i })).toBeTruthy();
@@ -257,9 +318,50 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' }));
     fireEvent.click(within(navigation).getByRole('button', { name: /Spectrum/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({
-      kind: 'swept-spectrum', startHz: 99_750_000, stopHz: 100_250_000, points: 450,
+    const admitted = {
+      kind: 'swept-spectrum' as const, startHz: 99_750_000, stopHz: 100_250_000, points: 450, sweepTimeSeconds: 0.05,
+      controls: { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const },
+    };
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(admitted));
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
+    await waitFor(() => expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({
+      format: 'json', sweep: expect.objectContaining({ requested: admitted }),
     }));
+  });
+
+  it('shows Atom only qualified synthetic staging and rejects receiver-only SignalLab edits', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } },
+      session: signalLabSession,
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'truth-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'truth-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_application_state","configure_analyzer"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'truth-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'truth-state', name: 'get_application_state', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'truth-2', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'truth-config', name: 'configure_analyzer', arguments: '{"rbwKhz":30}' }] })
+      .mockResolvedValueOnce({ conversationId: 'truth-3', transport: 'realtime-websocket', text: 'Receiver controls are not applicable to SignalLab.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Inspect and then change the RBW.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(4));
+    const stateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
+    expect(stateOutput).toContain('"controlModel":"synthetic-scalar"');
+    expect(stateOutput).toContain('"receiverControls":{"applicability":"not-applicable"}');
+    expect(stateOutput).not.toContain('"rbwKhz"');
+    expect(stateOutput).not.toContain('"attenuationDb"');
+    expect(stateOutput).not.toContain('"trigger"');
+    const rejectedOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[3]?.[0].toolOutputs?.[0]?.output ?? '';
+    expect(rejectedOutput).toContain('not applicable to synthetic scalar acquisition');
+    expect(window.atomizerInstrument.configure).not.toHaveBeenCalled();
   });
 
   it('exposes retained failed-connect cleanup and blocks a new connection until the safe retry succeeds', async () => {
@@ -918,7 +1020,10 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.connect).toHaveBeenCalledWith({ ...candidate, discoveryRevision: 'dynamic-3' }));
     expect(window.atomizerInstrument.discover).toHaveBeenCalledTimes(3);
     await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
-    expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({ kind: 'swept-spectrum', startHz: 93_000_000, stopHz: 95_000_000, points: 450 });
+    expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'swept-spectrum', startHz: 93_000_000, stopHz: 95_000_000, points: 450,
+      controls: expect.objectContaining({ model: 'receiver' }),
+    }));
     expect(await screen.findByText('Sweep complete.')).toBeTruthy();
     expect(await screen.findByText(/TPM 10K\/200K/)).toBeTruthy();
     const candidateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
@@ -943,7 +1048,10 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
     await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
-    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith({ kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 450 }));
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 450,
+      controls: expect.objectContaining({ model: 'receiver' }),
+    })));
     expect(vi.mocked(window.atomizerInstrument.acquire).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(window.atomizerInstrument.configure).mock.invocationCallOrder.at(-1)!);
   });
 

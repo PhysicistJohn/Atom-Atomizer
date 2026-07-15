@@ -31,13 +31,15 @@ import {
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
+import { admittedTinySaDetectedPowerConfiguration, admittedTinySaSpectrumConfiguration } from './scalar-configuration.js';
 import { CommandScheduler } from './scheduler.js';
 import type { ByteTransport, TransportDiscoveryResult, TransportEvent } from './transport.js';
 
 const REQUIRED_COMMANDS = [
-  'version', 'info', 'help', 'status', 'pause', 'resume', 'abort',
-  'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'spur', 'avoid', 'lna', 'trigger', 'calc', 'trace', 'marker',
-  'freq', 'level', 'modulation', 'output', 'vbat', 'deviceid', 'capture', 'touch', 'release',
+  // These commands prove identity, a non-emitting state, teardown, and the
+  // readback needed to describe even a conservative scalar receiver. Every
+  // other command is optional and appears only in derived capabilities.
+  'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
 ] as const;
 const SCREEN_BYTES = ZS407_FIRMWARE_LIMITS.screenWidth * ZS407_FIRMWARE_LIMITS.screenHeight * 2;
 const DETECTOR_COMMAND: Record<AnalyzerConfig['detector'], string> = {
@@ -63,6 +65,7 @@ export class TinySaDeviceService {
   #snapshot: DeviceSnapshot = disconnectedSnapshot();
   #listeners = new Set<(event: DeviceEvent) => void>();
   #analyzer?: AnalyzerConfig;
+  #zeroSpan?: { configuration: ZeroSpanConfig; readback: AnalyzerReadback };
   #versionResponse = '';
   #infoResponse = '';
   #commands: readonly string[] = [];
@@ -106,6 +109,12 @@ export class TinySaDeviceService {
       await this.#command('mode input');
       const readback = await this.#readAnalyzerReadback();
       const telemetry = await this.#readTelemetry(readback.sweepStatus);
+      const capabilities = await buildCapabilities(
+        this.#commands,
+        identity,
+        readback,
+        (command) => this.#ready().execute(command, 10_000),
+      );
       const now = new Date().toISOString();
       this.#set({
         connection: 'ready',
@@ -113,7 +122,7 @@ export class TinySaDeviceService {
         generatorOutput: 'off',
         verification: 'commanded',
         identity,
-        capabilities: buildCapabilities(this.#commands, identity),
+        capabilities,
         sessionId: crypto.randomUUID(),
         connectedAt: now,
         lastOperationAt: now,
@@ -159,6 +168,7 @@ export class TinySaDeviceService {
           this.#rfOffAcknowledged = false;
           this.#teardownRfOffAcknowledged = false;
           this.#analyzer = undefined;
+          this.#zeroSpan = undefined;
           this.#set({
             ...this.#snapshot,
             connection: 'faulted',
@@ -176,6 +186,7 @@ export class TinySaDeviceService {
     catch (value) {
       const error = asDeviceError(value, 'transport', 'Transport close could not be confirmed during disconnect', true);
       this.#analyzer = undefined;
+      this.#zeroSpan = undefined;
       this.#set({
         ...this.#snapshot,
         connection: 'faulted',
@@ -189,6 +200,7 @@ export class TinySaDeviceService {
     this.#scheduler?.dispose();
     this.#scheduler = undefined;
     this.#analyzer = undefined;
+    this.#zeroSpan = undefined;
     this.#rfOffAcknowledged = false;
     this.#teardownRfOffAcknowledged = false;
     this.#set(disconnectedSnapshot());
@@ -216,7 +228,9 @@ export class TinySaDeviceService {
       await this.#command(`sweep ${config.startHz} ${config.stopHz} ${config.points}`);
       await this.#command(`rbw ${config.rbwKhz}`);
       await this.#command(`attenuate ${config.attenuationDb}`);
-      if (config.sweepTimeSeconds !== 'auto') await this.#command(`sweeptime ${formatDecimal(config.sweepTimeSeconds)}`);
+      // Firmware `cmd_sweeptime` accepts numeric seconds and
+      // `set_sweep_time_us(0)` is the documented automatic/minimum reset.
+      await this.#command(`sweeptime ${config.sweepTimeSeconds === 'auto' ? '0' : formatDecimal(config.sweepTimeSeconds)}`);
       await this.#command(`calc ${DETECTOR_COMMAND[config.detector]}`);
       await this.#command(`spur ${config.spurRejection}`);
       await this.#command(`avoid ${config.avoidSpurs}`);
@@ -225,20 +239,25 @@ export class TinySaDeviceService {
       const readback = await this.#readAnalyzerReadback();
       assertAnalyzerReadback(config, readback);
       this.#analyzer = config;
+      this.#zeroSpan = undefined;
       const now = new Date().toISOString();
       this.#set({
         ...this.#snapshot,
         connection: 'ready',
         mode: 'analyzer',
         generatorOutput: 'off',
-        verification: 'verified',
+        // Geometry/RBW/attenuation are observed below; the remaining shell
+        // controls have command acknowledgement but no truthful query API.
+        verification: 'commanded',
         lastOperationAt: now,
-        analyzer: { requested: config, readback, verification: 'verified' },
+        analyzer: { requested: config, readback, verification: 'commanded' },
         generator: undefined,
         fault: undefined,
       });
       return this.snapshot();
     } catch (error) {
+      this.#analyzer = undefined;
+      this.#zeroSpan = undefined;
       throw this.#operationFailure(error, 'Analyzer configuration failed');
     }
   }
@@ -289,7 +308,7 @@ export class TinySaDeviceService {
         elapsedMilliseconds,
         frequencyHz,
         powerDbm,
-        requested: config,
+        requested: admittedTinySaSpectrumConfiguration(config),
         actualStartHz: first,
         actualStopHz: last,
         actualRbwHz: transportEvidence?.actualRbwHz ?? analyzer.readback.actualRbwHz,
@@ -300,7 +319,7 @@ export class TinySaDeviceService {
         complete: true,
         identity,
       };
-      this.#set({ ...this.#snapshot, lastOperationAt: sweep.capturedAt, verification: 'verified' });
+      this.#set({ ...this.#snapshot, lastOperationAt: sweep.capturedAt, verification: 'commanded' });
       this.#emit({ type: 'sweep', sweep });
       return sweep;
     } catch (error) {
@@ -325,13 +344,11 @@ export class TinySaDeviceService {
     await this.#streamTask;
   }
 
-  async acquireZeroSpan(input: ZeroSpanConfig): Promise<ZeroSpanCapture> {
-    this.#assertNotStreaming('Zero-span acquisition');
+  async configureZeroSpan(input: ZeroSpanConfig): Promise<DeviceSnapshot> {
+    this.#assertNotStreaming('Zero-span configuration');
     const config = zeroSpanConfigSchema.parse(input);
     this.#assertFrequency(config.frequencyHz, 'analyzer');
-    const scheduler = this.#ready();
-    const identity = this.#snapshot.identity;
-    if (!identity) throw new TinySaDeviceError('invalid-state', 'Connected device identity is unavailable', false);
+    this.#ready();
     try {
       await this.#command('output off');
       await this.#command('mode input');
@@ -342,9 +359,40 @@ export class TinySaDeviceService {
       await this.#command(`sweeptime ${formatDecimal(config.sweepTimeSeconds)}`);
       await this.#configureTrigger(config.trigger);
       const readback = await this.#readAnalyzerReadback();
-      if (readback.startHz !== config.frequencyHz || readback.stopHz !== config.frequencyHz || readback.points !== config.points) {
-        throw new TinySaDeviceError('protocol', 'Zero-span readback does not match the requested frequency and point count', false);
-      }
+      assertZeroSpanReadback(config, readback);
+      this.#analyzer = undefined;
+      this.#zeroSpan = { configuration: config, readback };
+      const now = new Date().toISOString();
+      this.#set({
+        ...this.#snapshot,
+        connection: 'ready',
+        mode: 'analyzer',
+        generatorOutput: 'off',
+        verification: 'commanded',
+        analyzer: undefined,
+        generator: undefined,
+        lastOperationAt: now,
+        fault: undefined,
+      });
+      return this.snapshot();
+    } catch (error) {
+      this.#analyzer = undefined;
+      this.#zeroSpan = undefined;
+      throw this.#operationFailure(error, 'Zero-span configuration failed');
+    }
+  }
+
+  async acquireZeroSpan(): Promise<ZeroSpanCapture> {
+    this.#assertNotStreaming('Zero-span acquisition');
+    const prepared = this.#zeroSpan;
+    if (!prepared || this.#snapshot.mode !== 'analyzer') {
+      throw new TinySaDeviceError('invalid-state', 'Zero-span must be configured before acquisition', false);
+    }
+    const { configuration: config, readback } = prepared;
+    const scheduler = this.#ready();
+    const identity = this.#snapshot.identity;
+    if (!identity) throw new TinySaDeviceError('invalid-state', 'Connected device identity is unavailable', false);
+    try {
       const started = performance.now();
       const output = await scheduler.execute(`scan ${config.frequencyHz} ${config.frequencyHz} ${config.points} 3`, sweepTimeout(config.sweepTimeSeconds));
       assertFirmwareSuccess(output, 'zero-span scan');
@@ -366,7 +414,7 @@ export class TinySaDeviceService {
         samplePeriodSeconds: elapsedMilliseconds / 1_000 / config.points,
         timingQualification: 'wall-clock-derived',
         powerDbm: rows.powerDbm,
-        requested: config,
+        requested: admittedTinySaDetectedPowerConfiguration(config),
         actualRbwHz: transportEvidence?.actualRbwHz ?? readback.actualRbwHz,
         actualAttenuationDb: transportEvidence?.actualAttenuationDb ?? readback.attenuationDb,
         source: transportEvidence?.source ?? 'scan-text',
@@ -374,7 +422,7 @@ export class TinySaDeviceService {
         identity,
       };
       this.#analyzer = undefined;
-      this.#set({ ...this.#snapshot, mode: 'analyzer', generatorOutput: 'off', verification: 'verified', analyzer: undefined, generator: undefined, lastOperationAt: capturedAt });
+      this.#set({ ...this.#snapshot, mode: 'analyzer', generatorOutput: 'off', verification: 'commanded', analyzer: undefined, generator: undefined, lastOperationAt: capturedAt });
       this.#emit({ type: 'zero-span', capture });
       return capture;
     } catch (error) {
@@ -401,6 +449,7 @@ export class TinySaDeviceService {
       await this.#command(`modulation ${config.modulation}`);
       const now = new Date().toISOString();
       this.#analyzer = undefined;
+      this.#zeroSpan = undefined;
       this.#set({
         ...this.#snapshot,
         connection: 'ready',
@@ -538,6 +587,7 @@ export class TinySaDeviceService {
     capturedAt: string,
     timeoutMs: number,
   ): Promise<readonly FirmwareTraceFrame[]> {
+    if (!this.#snapshot.capabilities?.firmwareTraces) return [];
     const scheduler = this.#ready();
     const metadata = parseFirmwareTraceMetadata(await scheduler.execute('trace', Math.max(10_000, timeoutMs)));
     const frames: FirmwareTraceFrame[] = [];
@@ -622,6 +672,7 @@ export class TinySaDeviceService {
     const capabilities = this.#snapshot.capabilities;
     if (!capabilities) throw new TinySaDeviceError('invalid-state', 'Device capabilities are unavailable', false);
     const range = domain === 'analyzer' ? capabilities.analyzerFrequency : capabilities.generatorFrequency;
+    if (!range) throw new TinySaDeviceError('unsupported', `${domain} frequency control is not advertised by this firmware`, false);
     if (frequencyHz < range.min || frequencyHz > range.max) {
       throw new TinySaDeviceError('invalid-request', `${domain} frequency ${frequencyHz} Hz is outside ${range.min}..${range.max} Hz`, false);
     }
@@ -663,6 +714,7 @@ export class TinySaDeviceService {
     this.#scheduler?.dispose();
     this.#scheduler = undefined;
     this.#analyzer = undefined;
+    this.#zeroSpan = undefined;
     const retainedTeardownOff = this.#teardownRfOffAcknowledged;
     if (!retainedTeardownOff) this.#rfOffAcknowledged = false;
     this.#set({
@@ -698,9 +750,26 @@ function disconnectedSnapshot(): DeviceSnapshot {
   return { connection: 'disconnected', mode: 'idle', generatorOutput: 'unknown', verification: 'stale' };
 }
 
-function buildCapabilities(commands: readonly string[], identity: DeviceIdentity): DeviceCapabilities {
+async function buildCapabilities(
+  commands: readonly string[],
+  identity: DeviceIdentity,
+  readback: AnalyzerReadback,
+  query: (command: string) => Promise<string>,
+): Promise<DeviceCapabilities> {
   const twin = identity.execution === 'firmware-digital-twin';
   const testDouble = identity.execution === 'protocol-test-double';
+  const sourceQualified = identity.firmwareQualification !== 'custom-unqualified';
+  const observed = sourceQualified
+    ? knownReceiverSurface(commands)
+    : await customReceiverSurface(commands, query);
+  const analyzerFrequency = sourceQualified
+    ? { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz, unit: 'Hz' as const }
+    : { min: Math.min(readback.startHz, readback.stopHz), max: Math.max(readback.startHz, readback.stopHz), unit: 'Hz' as const };
+  const sweepPoints = sourceQualified
+    ? { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints, step: 1, unit: 'points' as const }
+    : { min: readback.points, max: readback.points, unit: 'points' as const };
+  const generatorAdvertised = sourceQualified
+    && ['mode', 'output', 'freq', 'level', 'modulation'].every((command) => commands.includes(command));
   return {
     profile: 'tinySA4-zs407',
     protocol: {
@@ -713,29 +782,33 @@ function buildCapabilities(commands: readonly string[], identity: DeviceIdentity
       usbTransactionsModeled: identity.execution === 'physical',
       ...(twin ? { bridgeContractVersion: 1 as const } : {}),
     },
-    analyzerFrequency: { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz, unit: 'Hz' },
-    analyzerNormalMaximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
-    analyzerUltraTransitionHz: ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz,
-    generatorFrequency: { min: 1, max: ZS407_FIRMWARE_LIMITS.generatorMixerMaximumHz, unit: 'Hz' },
-    generatorFundamentalMaximumHz: ZS407_FIRMWARE_LIMITS.generatorFundamentalMaximumHz,
-    generatorLevel: { min: ZS407_FIRMWARE_LIMITS.generatorMinimumDbm, max: ZS407_FIRMWARE_LIMITS.generatorMaximumDbm, unit: 'dBm' },
-    rbwKhz: { min: ZS407_FIRMWARE_LIMITS.minimumRbwKhz, max: ZS407_FIRMWARE_LIMITS.maximumRbwKhz, unit: 'kHz' },
-    attenuationDb: { min: 0, max: 31, step: 1, unit: 'dB' },
-    sweepPoints: { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints, step: 1, unit: 'points' },
-    sweepSeconds: { min: ZS407_FIRMWARE_LIMITS.minimumSweepSeconds, max: ZS407_FIRMWARE_LIMITS.maximumSweepSeconds, unit: 'seconds' },
-    maxSweepPoints: ZS407_FIRMWARE_LIMITS.maximumSweepPoints,
+    analyzerFrequency,
+    ...(sourceQualified ? {
+      analyzerNormalMaximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
+      analyzerUltraTransitionHz: ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz,
+    } : {}),
+    ...(generatorAdvertised ? {
+      generatorFrequency: { min: 1, max: ZS407_FIRMWARE_LIMITS.generatorMixerMaximumHz, unit: 'Hz' as const },
+      generatorFundamentalMaximumHz: ZS407_FIRMWARE_LIMITS.generatorFundamentalMaximumHz,
+      generatorLevel: { min: ZS407_FIRMWARE_LIMITS.generatorMinimumDbm, max: ZS407_FIRMWARE_LIMITS.generatorMaximumDbm, unit: 'dBm' as const },
+    } : {}),
+    rbwKhz: observed.rbwKhz,
+    attenuationDb: observed.attenuationDb,
+    sweepPoints,
+    sweepSeconds: observed.sweepSeconds,
+    scalarReceiver: observed.scalarReceiver,
+    maxSweepPoints: sweepPoints.max,
     screen: { width: 480, height: 320, format: 'rgb565le' },
     screenCapture: commands.includes('capture'),
     remoteTouch: commands.includes('touch') && commands.includes('release'),
-    streaming: commands.includes('scan'),
-    rawSweep: commands.includes('scanraw'),
-    rawSweepOffsetReadback: commands.includes('zero'),
-    markerCount: 8,
-    traceCount: 4,
-    firmwareMarkers: commands.includes('marker'),
-    firmwareTraces: commands.includes('trace'),
+    streaming: observed.scalarReceiver.sweptSpectrum,
+    rawSweep: observed.scalarReceiver.acquisitionFormats.includes('raw'),
+    rawSweepOffsetReadback: observed.rawSweepOffsetReadback,
+    ...(sourceQualified ? { markerCount: 8 as const, traceCount: 4 as const } : {}),
+    firmwareMarkers: sourceQualified && commands.includes('marker'),
+    firmwareTraces: observed.firmwareTraceReadback,
     generatorReadback: false,
-    modulation: ['off', 'am', 'fm'],
+    modulation: generatorAdvertised ? ['off', 'am', 'fm'] : [],
     commands: [...commands],
     evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'device-observed',
     ...(identity.firmwareSourceCommit ? { firmwareSourceCommit: identity.firmwareSourceCommit } : {}),
@@ -748,6 +821,171 @@ function buildCapabilities(commands: readonly string[], identity: DeviceIdentity
           ? 'protocol-test-only'
           : 'device-observed-awaiting-rf-qualification',
   };
+}
+
+interface ObservedReceiverSurface {
+  readonly rbwKhz: DeviceCapabilities['rbwKhz'];
+  readonly attenuationDb: DeviceCapabilities['attenuationDb'];
+  readonly sweepSeconds: DeviceCapabilities['sweepSeconds'];
+  readonly scalarReceiver: DeviceCapabilities['scalarReceiver'];
+  readonly rawSweepOffsetReadback: boolean;
+  readonly firmwareTraceReadback: boolean;
+}
+
+function knownReceiverSurface(commands: readonly string[]): ObservedReceiverSurface {
+  const acquisitionFormats: ('text' | 'raw')[] = [];
+  if (commands.includes('scan')) acquisitionFormats.push('text');
+  if (commands.includes('scanraw') && commands.includes('zero')) acquisitionFormats.push('raw');
+  const spectrumCommands = ['trace', 'sweeptime', 'calc', 'spur', 'avoid', 'lna', 'trigger'];
+  const detectedPowerCommands = ['trace', 'sweeptime', 'trigger', 'scan'];
+  return {
+    rbwKhz: {
+      min: ZS407_FIRMWARE_LIMITS.minimumRbwKhz,
+      max: ZS407_FIRMWARE_LIMITS.maximumRbwKhz,
+      step: 0.1,
+      unit: 'kHz',
+    },
+    attenuationDb: { min: 0, max: 31, step: 1, unit: 'dB' },
+    sweepSeconds: {
+      min: ZS407_FIRMWARE_LIMITS.minimumSweepSeconds,
+      max: ZS407_FIRMWARE_LIMITS.maximumSweepSeconds,
+      step: 0.000_001,
+      unit: 'seconds',
+    },
+    scalarReceiver: {
+      sweptSpectrum: acquisitionFormats.length > 0 && spectrumCommands.every((command) => commands.includes(command)),
+      detectedPower: detectedPowerCommands.every((command) => commands.includes(command)),
+      acquisitionFormats,
+      resolutionBandwidthAutomatic: true,
+      attenuationAutomatic: true,
+      sweepTimeAutomatic: true,
+      detectors: ['sample', 'minimum-hold', 'maximum-hold', 'maximum-decay', 'average-4', 'average-16', 'average', 'quasi-peak'],
+      spurRejection: ['off', 'on', 'auto'],
+      lowNoiseAmplifier: ['off', 'on'],
+      avoidSpurs: ['off', 'on', 'auto'],
+      triggerModes: ['auto', 'normal', 'single'],
+      triggerLevelDbm: { min: -174, max: 30, unit: 'dBm' },
+    },
+    rawSweepOffsetReadback: commands.includes('zero'),
+    firmwareTraceReadback: commands.includes('trace'),
+  };
+}
+
+async function customReceiverSurface(
+  commands: readonly string[],
+  query: (command: string) => Promise<string>,
+): Promise<ObservedReceiverSurface> {
+  const usage = new Map<string, string>();
+  for (const command of [
+    'sweep', 'scan', 'scanraw', 'zero', 'trace', 'rbw', 'attenuate', 'sweeptime',
+    'calc', 'spur', 'avoid', 'lna', 'trigger',
+  ]) {
+    if (!commands.includes(command)) continue;
+    usage.set(command, await query(`${command} ?`));
+  }
+  const rbw = parseAdvertisedRange(usage.get('rbw'), 'rbw', 'kHz');
+  const attenuation = parseAdvertisedRange(usage.get('attenuate'), 'attenuate', 'dB');
+  const sweepSeconds = parseAdvertisedRange(usage.get('sweeptime'), 'sweeptime', 'seconds');
+  if (!rbw || rbw.range.min <= 0
+    || !attenuation || attenuation.range.min < 0
+    || !sweepSeconds || sweepSeconds.range.min <= 0) {
+    throw new TinySaDeviceError(
+      'unsupported',
+      'Custom firmware did not advertise parseable RBW, attenuation, and sweep-time ranges',
+      false,
+    );
+  }
+
+  const traceUsage = usage.get('trace') ?? '';
+  const rawSweepOffsetReadback = hasParseableRawSweepOffset(usage.get('zero'));
+  const sweepSyntax = /sweep\s+\{start\(Hz\)\}[^\r\n]*\[stop\(Hz\)\][^\r\n]*\[points\]/i.test(usage.get('sweep') ?? '');
+  const traceDbm = optionAdvertised(traceUsage, 'dBm');
+  const firmwareTraceReadback = traceDbm && optionAdvertised(traceUsage, 'value');
+  const detectors = advertisedDetectors(usage.get('calc') ?? '');
+  const spurRejection = advertisedOptions(usage.get('spur') ?? '', ['off', 'on', 'auto'] as const);
+  const avoidSpurs = advertisedOptions(usage.get('avoid') ?? '', ['off', 'on', 'auto'] as const);
+  const lowNoiseAmplifier = advertisedOptions(usage.get('lna') ?? '', ['off', 'on'] as const);
+  const advertisedTriggerModes = advertisedOptions(usage.get('trigger') ?? '', ['auto', 'normal', 'single'] as const);
+  // The custom shell advertises trigger mode names but no threshold range.
+  // Preserve only auto; leveled modes require a truthful numeric range.
+  const triggerModes = advertisedTriggerModes.includes('auto') ? ['auto'] as const : [];
+  const acquisitionFormats: ('text' | 'raw')[] = [];
+  if (/scan\s+\{start\(Hz\)\}\s+\{stop\(Hz\)\}[^\r\n]*\[points\]/i.test(usage.get('scan') ?? '')) {
+    acquisitionFormats.push('text');
+  }
+  if (rawSweepOffsetReadback
+    && /scanraw\s+\{start\(Hz\)\}\s+\{stop\(Hz\)\}[^\r\n]*\[points\]/i.test(usage.get('scanraw') ?? '')) {
+    acquisitionFormats.push('raw');
+  }
+  const commonReceiverSyntax = sweepSyntax && traceDbm && triggerModes.length > 0;
+  return {
+    rbwKhz: rbw.range,
+    attenuationDb: attenuation.range,
+    sweepSeconds: sweepSeconds.range,
+    scalarReceiver: {
+      sweptSpectrum: commonReceiverSyntax
+        && acquisitionFormats.length > 0
+        && detectors.length > 0
+        && spurRejection.length > 0
+        && avoidSpurs.length > 0
+        && lowNoiseAmplifier.length > 0,
+      detectedPower: commonReceiverSyntax && acquisitionFormats.includes('text'),
+      acquisitionFormats,
+      resolutionBandwidthAutomatic: rbw.automatic,
+      attenuationAutomatic: attenuation.automatic,
+      // Literal zero has qualified-source semantics; an unqualified custom
+      // build receives only the numeric range it explicitly advertised.
+      sweepTimeAutomatic: false,
+      detectors,
+      spurRejection,
+      lowNoiseAmplifier,
+      avoidSpurs,
+      triggerModes,
+    },
+    rawSweepOffsetReadback,
+    firmwareTraceReadback,
+  };
+}
+
+function hasParseableRawSweepOffset(response: string | undefined): boolean {
+  if (!response) return false;
+  try {
+    parseRawSweepOffset(response);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseAdvertisedRange(
+  response: string | undefined,
+  command: string,
+  unit: DeviceCapabilities['rbwKhz']['unit'],
+): { readonly range: DeviceCapabilities['rbwKhz']; readonly automatic: boolean } | undefined {
+  if (!response) return undefined;
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = response.match(new RegExp(`${escaped}\\s+(-?\\d+(?:\\.\\d+)?)\\.\\.(-?\\d+(?:\\.\\d+)?)(\\|auto)?`, 'i'));
+  const min = Number(match?.[1]);
+  const max = Number(match?.[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return undefined;
+  return { range: { min, max, unit }, automatic: match?.[3] !== undefined };
+}
+
+function advertisedDetectors(response: string): DeviceCapabilities['scalarReceiver']['detectors'] {
+  const values: readonly [string, DeviceCapabilities['scalarReceiver']['detectors'][number]][] = [
+    ['off', 'sample'], ['minh', 'minimum-hold'], ['maxh', 'maximum-hold'], ['maxd', 'maximum-decay'],
+    ['aver4', 'average-4'], ['aver16', 'average-16'], ['aver', 'average'], ['quasi', 'quasi-peak'],
+  ];
+  return values.filter(([wire]) => optionAdvertised(response, wire)).map(([, value]) => value);
+}
+
+function advertisedOptions<const Value extends string>(response: string, values: readonly Value[]): readonly Value[] {
+  return values.filter((value) => optionAdvertised(response, value));
+}
+
+function optionAdvertised(response: string, value: string): boolean {
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9-])${escaped}(?:$|[^a-z0-9-])`, 'i').test(response);
 }
 
 function parseIdentity(versionResponse: string, infoResponse: string, port: PortCandidate): DeviceIdentity {
@@ -858,6 +1096,7 @@ function parseSweepReadback(response: string): Pick<AnalyzerReadback, 'startHz' 
   const stopHz = Number(match[2]);
   const points = Number(match[3]);
   if (![startHz, stopHz, points].every(Number.isSafeInteger)) throw new TinySaDeviceError('protocol', 'Sweep readback exceeds safe integer range', false);
+  if (startHz > stopHz || points < 1) throw new TinySaDeviceError('protocol', `Invalid sweep readback geometry: ${response}`, false);
   return { startHz, stopHz, points };
 }
 
@@ -982,10 +1221,22 @@ function assertAnalyzerReadback(config: AnalyzerConfig, readback: AnalyzerReadba
   }
 }
 
+function assertZeroSpanReadback(config: ZeroSpanConfig, readback: AnalyzerReadback): void {
+  if (readback.startHz !== config.frequencyHz || readback.stopHz !== config.frequencyHz || readback.points !== config.points) {
+    throw new TinySaDeviceError('protocol', 'Zero-span readback does not match the requested frequency and point count', false);
+  }
+  if (config.attenuationDb !== 'auto' && Math.abs(readback.attenuationDb - config.attenuationDb) > 0.01) {
+    throw new TinySaDeviceError('protocol', `Zero-span attenuation readback ${readback.attenuationDb} dB does not match ${config.attenuationDb} dB`, false);
+  }
+}
+
 function assertFirmwareSuccess(response: string, command: string): void {
   const failure = response.match(/(?:Command timeout|frequency range is invalid|sweep points exceeds[^\r\n]*|Key unmatched\.|^usage:[^\r\n]*)/im)?.[0];
   if (failure) throw new TinySaDeviceError('protocol', `${command} failed: ${failure}`, false);
-  if (response.trim() === `${command}?`) throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
+  const operation = command.trim().split(/\s+/, 1)[0];
+  if (response.trim() === `${command}?` || response.trim() === `${operation}?`) {
+    throw new TinySaDeviceError('unsupported', `Firmware rejected command ${command}`, false);
+  }
 }
 
 function formatDecimal(value: number): string {

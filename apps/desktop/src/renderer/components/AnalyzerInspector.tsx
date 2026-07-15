@@ -36,6 +36,8 @@ export function AnalyzerInspector({ config, capability, disabled, onChange }: {
         <button data-agent-control="analyzer.preset.5g" type="button" disabled={!permits(5.15e9, 5.85e9)} onClick={() => onChange({ startHz: 5.15e9, stopHz: 5.85e9 })}>5 GHz</button>
       </div></div>
     </fieldset>
-    <div className="channel-contract-note"><Info size={14}/><p>The driver-neutral v1 contract configures span and point count. RBW and attenuation are source-reported evidence; transfer encoding and firmware-only controls are not inferred.</p></div>
+    <div className="channel-contract-note"><Info size={14}/><p>{capability?.controls.model === 'synthetic-scalar'
+      ? `Synthetic scalar timing is fixed and exact at ${capability.sweepTimeSeconds.manualSeconds.min} s; no receiver RBW, attenuation, detector, gain, or trigger setting is claimed.`
+      : 'The receiver contract sends every displayed control or rejects it. Geometry, actual RBW, and attenuation retain device readback; controls without a query API remain explicitly command-acknowledged.'}</p></div>
   </aside>;
 }

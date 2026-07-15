@@ -33,7 +33,10 @@ describe('Atomizer instrument API v1 contract', () => {
           schemaVersion: 1,
           acquisitions: [{
             kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000 },
-            points: { min: 2, max: 4_096 }, powerUnit: 'dBm',
+            points: { min: 2, max: 4_096 },
+            sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+            controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+            powerUnit: 'dBm',
           }],
           features: [],
         },

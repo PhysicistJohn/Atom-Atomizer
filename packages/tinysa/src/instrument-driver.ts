@@ -38,6 +38,7 @@ export interface InstrumentSession {
   readonly provenance: InstrumentSessionProvenance;
   readonly capabilities: InstrumentCapabilities;
   readonly rfOutput: InstrumentRfOutputState;
+  /** Sends every complete admitted field or rejects it; drivers never normalize/drop fields, and report readback qualification separately. */
   configure(command: InstrumentConfigurationCommand): Promise<void>;
   acquire(): Promise<InstrumentMeasurement>;
   executeFeature(command: InstrumentFeatureCommand): Promise<InstrumentFeatureResult>;
@@ -161,16 +162,13 @@ export function validateInstrumentSession(
   try { provenance = instrumentSessionProvenanceSchema.parse(session.provenance); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session with invalid provenance`, { cause: error }); }
   assertProvenanceBinding(candidate, provenance, driver.driverId);
+  assertCapabilitySourceBinding(candidate, capabilities, driver.driverId);
   let rfOutput: InstrumentRfOutputState;
   try { rfOutput = instrumentRfOutputStateSchema.parse(session.rfOutput); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session without valid RF output state`, { cause: error }); }
   const supportsRf = capabilities.features.some((feature) => feature.kind === 'rf-generator');
   if (supportsRf === (rfOutput === 'not-supported')) {
     throw new InstrumentDriverContractError(`Driver ${driver.driverId} RF output state does not match its advertised capability`);
-  }
-  if (candidate.sourceKind !== 'signal-lab'
-    && capabilities.features.some((feature) => feature.kind === 'signal-lab-profile-selection')) {
-    throw new InstrumentDriverContractError(`Driver ${driver.driverId} advertised SignalLab profile selection for a non-SignalLab candidate`);
   }
   if (typeof session.configure !== 'function'
     || typeof session.acquire !== 'function'
@@ -192,6 +190,30 @@ export function validateInstrumentSession(
     disconnect: () => session.disconnect(),
     subscribe: (listener: (event: InstrumentSessionEvent) => void) => session.subscribe(listener),
   });
+}
+
+function assertCapabilitySourceBinding(
+  candidate: InstrumentCandidate,
+  capabilities: InstrumentCapabilities,
+  driverId: InstrumentDriverId,
+): void {
+  const scalarCapabilities = capabilities.acquisitions.filter((capability) => capability.kind !== 'complex-iq');
+  if (candidate.sourceKind === 'signal-lab') {
+    if (capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')
+      || scalarCapabilities.some((capability) => capability.controls.model !== 'synthetic-scalar')) {
+      throw new InstrumentDriverContractError(`Driver ${driverId} SignalLab session must expose only synthetic scalar acquisitions`);
+    }
+    if (capabilities.features.some((feature) => feature.kind !== 'signal-lab-profile-selection')) {
+      throw new InstrumentDriverContractError(`Driver ${driverId} SignalLab session advertised a capability outside its closed profile-selection feature boundary`);
+    }
+    return;
+  }
+  if (scalarCapabilities.some((capability) => capability.controls.model !== 'receiver')) {
+    throw new InstrumentDriverContractError(`Driver ${driverId} ${candidate.sourceKind} session must expose receiver controls for every scalar acquisition`);
+  }
+  if (capabilities.features.some((feature) => feature.kind === 'signal-lab-profile-selection')) {
+    throw new InstrumentDriverContractError(`Driver ${driverId} advertised SignalLab profile selection for a non-SignalLab candidate`);
+  }
 }
 
 function assertProvenanceBinding(

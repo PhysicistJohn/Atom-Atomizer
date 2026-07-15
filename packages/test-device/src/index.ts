@@ -19,6 +19,10 @@ export interface FakeOptions {
   infoResponse?: string;
   screenCaptureByteOrder?: 'big-endian' | 'little-endian';
   firmwareTraceIds?: readonly (1 | 2 | 3 | 4)[];
+  /** Exact command names exposed by `help`; omitted names are not advertised. */
+  helpCommands?: readonly string[];
+  /** Exact command responses used by fail-closed protocol boundary tests. */
+  commandResponses?: Readonly<Record<string, string>>;
 }
 
 const encoder = new TextEncoder();
@@ -93,7 +97,7 @@ export class FakeTinySaTransport implements ByteTransport {
     const command = wire.slice(0, -1);
     if (!command || command.length > 47 || !/^[\x20-\x7e]+$/.test(command)) throw new Error('Fake ZS407 received a malformed command');
     this.writes.push(command);
-    const payload = this.#response(command);
+    const payload = this.options.commandResponses?.[command] ?? this.#response(command);
     const boot = this.#bootPending ? encoder.encode('\r\ntinySA Shell\r\nch> ') : new Uint8Array();
     this.#bootPending = false;
     const echo = encoder.encode(`${command}\r\n`);
@@ -124,7 +128,10 @@ export class FakeTinySaTransport implements ByteTransport {
     switch (name) {
       case 'version': return this.options.versionResponse ?? 'tinySA4_v1.4-224-gc979386\r\nHW Version:V0.5.4 + ZS407 max2871';
       case 'info': return this.options.infoResponse ?? 'tinySA4 + ZS407\r\nVersion: tinySA4_v1.4-224-gc979386\r\nPlatform: STM32F303';
-      case 'help': return `commands: ${HELP_COMMANDS.slice(0, 40).join(' ')}\r\nOther commands: ${HELP_COMMANDS.slice(40).join(' ')}`;
+      case 'help': {
+        const commands = this.options.helpCommands ?? HELP_COMMANDS;
+        return `commands: ${commands.slice(0, 40).join(' ')}\r\nOther commands: ${commands.slice(40).join(' ')}`;
+      }
       case 'output': return this.#outputCommand(args);
       case 'mode': return this.#modeCommand(args);
       case 'sweep': return this.#sweepCommand(args);
@@ -144,14 +151,14 @@ export class FakeTinySaTransport implements ByteTransport {
         this.options.screenCaptureByteOrder ?? 'little-endian',
       );
       case 'trace': return this.#traceCommand(args);
+      case 'calc': return args[0] === '?' ? 'usage: calc [{trace#}] off|minh|maxh|maxd|aver4|aver16|aver|quasi|log|lin' : '';
+      case 'spur': return args[0] === '?' ? 'usage: spur off|on|auto' : '';
+      case 'avoid': return args[0] === '?' ? 'usage: avoid auto|off|on|dump' : '';
+      case 'lna': return args[0] === '?' ? 'usage: lna off|on' : '';
+      case 'trigger': return args[0] === '?' ? 'trigger {value}\r\ntrigger {auto|normal|single}' : '';
       case 'freq':
       case 'level':
       case 'modulation':
-      case 'calc':
-      case 'spur':
-      case 'avoid':
-      case 'lna':
-      case 'trigger':
       case 'pause':
       case 'resume':
       case 'abort':
@@ -171,6 +178,9 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #traceCommand(args: string[]): string {
+    if (args.length === 1 && args[0] === '?') {
+      return 'trace {dBm|dBmV|dBuV|RAW|V|Vpp|W}\r\ntrace [{trace#}] value';
+    }
     if (args.length === 1 && args[0] === 'dBm') return '';
     const enabled = this.options.firmwareTraceIds ?? [1];
     if (!args.length) return enabled.map((traceId) => `${traceId}: dBm 0.000000 10.000000${traceId === 2 ? ' , frozen' : ''}`).join('\r\n');
@@ -242,7 +252,7 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #attenuationCommand(args: string[]): string {
-    if (!args.length) return `usage: attenuate 0..31|auto\r\n${this.#actualAttenuationDb().toFixed(2)}`;
+    if (!args.length || args[0] === '?') return `usage: attenuate 0..31|auto\r\n${this.#actualAttenuationDb().toFixed(2)}`;
     if (args[0] === 'auto') this.#attenuationDb = 'auto';
     else {
       const value = strictInteger(args[0], 'attenuation');

@@ -28,6 +28,7 @@ export function serializeSweep(sweep: Sweep, format: 'csv' | 'json'): string {
     'rbw_qualification',
     'actual_attenuation_db',
     'attenuation_qualification',
+    'requested_configuration_json',
     'identity_json',
   ];
   const identity = exportIdentity(admitted);
@@ -46,6 +47,7 @@ export function serializeSweep(sweep: Sweep, format: 'csv' | 'json'): string {
     admitted.resolutionBandwidthQualification ?? 'legacy-unspecified',
     admitted.actualAttenuationDb,
     admitted.attenuationQualification ?? 'legacy-unspecified',
+    JSON.stringify(admitted.requested),
     JSON.stringify(admitted.identity),
   ];
   const lines = [header.map(csvCell).join(',')];

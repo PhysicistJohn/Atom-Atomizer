@@ -15,7 +15,13 @@ const sweep = {
   actualStopHz: 100,
   frequencyHz: [0, 25, 50, 75, 100],
   powerDbm: [-100, -90, -40, -90, -100],
-  requested: { startHz: 0, stopHz: 100, points: 5, acquisitionFormat: 'text', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } },
+  requested: {
+    kind: 'swept-spectrum', startHz: 0, stopHz: 100, points: 5, sweepTimeSeconds: 'auto',
+    controls: {
+      schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 'auto', attenuationDb: 'auto',
+      detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' },
+    },
+  },
   actualRbwHz: 10,
   actualAttenuationDb: 0,
   source: 'scan-text',
