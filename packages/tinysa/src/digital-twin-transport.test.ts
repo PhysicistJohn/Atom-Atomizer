@@ -89,6 +89,141 @@ describe('physical and executable-twin discovery', () => {
 });
 
 describe('Renode bridge process admission and protocol containment', () => {
+  it('keeps discovery boot-proof-free across connect, close, and rediscovery', async () => {
+    const repository = await bridgeRepository(`
+printf '%s\\n' '${READY}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"method":"shutdown"'*)
+      printf '%s\\n' '{"id":"twin-1","ok":true,"contractVersion":1,"result":{}}'
+      exit 0
+      ;;
+  esac
+done
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const before = (await transport.list()).candidates[0]!;
+    expect(before.digitalTwin?.bootEvidence).toBeUndefined();
+
+    const admitted = structuredClone(before);
+    await transport.open(admitted);
+    expect(admitted.digitalTwin?.bootEvidence).toBe('ZS407_TWIN_BOOT=PASS test-fixture');
+    await transport.close();
+
+    const after = (await transport.list()).candidates[0]!;
+    expect(after.digitalTwin?.bootEvidence).toBeUndefined();
+    expect(after).toEqual(before);
+    await expect(transport.open(structuredClone(after))).resolves.toBeUndefined();
+    await transport.close();
+  });
+
+  it('isolates throwing event and byte observers from lifecycle and downstream consumers', async () => {
+    const repository = await bridgeRepository(`
+printf '%s\n' '${READY}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"method":"shutdown"'*)
+      printf '%s\n' '{"id":"twin-1","ok":true,"contractVersion":1,"result":{}}'
+      exit 0
+      ;;
+  esac
+done
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const events: TransportEvent['type'][] = [];
+    const payloads: string[] = [];
+    transport.onEvent(() => { throw new Error('event observer failed'); });
+    transport.onEvent((event) => events.push(event.type));
+    transport.onBytes((bytes) => { bytes.fill(0); throw new Error('byte observer failed'); });
+    transport.onBytes((bytes) => payloads.push(new TextDecoder().decode(bytes)));
+
+    await transport.open(structuredClone(transport.port));
+    await transport.write(new TextEncoder().encode('version\r'));
+    await transport.close();
+    await transport.open(structuredClone(transport.port));
+    await transport.close();
+
+    expect(events).toEqual(['opened', 'closed', 'opened', 'closed']);
+    expect(payloads).toEqual([expect.stringContaining('tinySA4_v0.2.0_protocol-v2')]);
+  });
+
+  it('reserves startup before admission so concurrent opens launch exactly one bridge', async () => {
+    const repository = await bridgeRepository(`
+printf '%s\n' "$$" >> "$(dirname "$0")/launches"
+printf '%s\n' '${READY}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"method":"shutdown"'*)
+      printf '%s\n' '{"id":"twin-1","ok":true,"contractVersion":1,"result":{}}'
+      exit 0
+      ;;
+  esac
+done
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+
+    const first = transport.open(structuredClone(transport.port));
+    const second = transport.open(structuredClone(transport.port));
+    const outcomes = await Promise.allSettled([first, second]);
+
+    expect(outcomes[0]).toMatchObject({ status: 'fulfilled' });
+    expect(outcomes[1]).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ message: expect.stringMatching(/already open or transitioning/i) }),
+    });
+    const launches = (await readFile(join(repository, 'tools/launches'), 'utf8')).trim().split(/\s+/);
+    expect(launches).toHaveLength(1);
+
+    await transport.close();
+    await expectProcessGroupGone(Number(launches[0]));
+  });
+
+  it('cancels and reaps a booting bridge when close overtakes open', async () => {
+    const repository = await bridgeRepository('/bin/sleep 60\n');
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const opening = transport.open(structuredClone(transport.port)).then(
+      () => ({ status: 'fulfilled' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+
+    await expect(transport.close()).resolves.toBeUndefined();
+    await expect(opening).resolves.toMatchObject({
+      status: 'rejected',
+      error: expect.objectContaining({ message: expect.stringMatching(/closed during startup/i) }),
+    });
+
+    await writeFile(
+      join(repository, 'tools/run-atomizer-twin-bridge.sh'),
+      `#!/bin/sh\nset -eu\nprintf '%s\\n' '${READY}'\nwhile IFS= read -r request; do\n  case "$request" in\n    *'"method":"shutdown"'*) printf '%s\\n' '{"id":"twin-1","ok":true,"contractVersion":1,"result":{}}'; exit 0 ;;\n  esac\ndone\n`,
+      { mode: 0o700 },
+    );
+    await expect(transport.open(structuredClone(transport.port))).resolves.toBeUndefined();
+    await transport.close();
+  });
+
+  it('coalesces concurrent close calls into one terminal transport event', async () => {
+    const repository = await bridgeRepository(`
+printf '%s\n' '${READY}'
+while IFS= read -r request; do
+  case "$request" in
+    *'"method":"shutdown"'*)
+      /bin/sleep 0.05
+      printf '%s\n' '{"id":"twin-1","ok":true,"contractVersion":1,"result":{}}'
+      exit 0
+      ;;
+  esac
+done
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const events: TransportEvent['type'][] = [];
+    transport.onEvent((event) => events.push(event.type));
+    await transport.open(structuredClone(transport.port));
+
+    await Promise.all([transport.close(), transport.close()]);
+
+    expect(events).toEqual(['opened', 'closed']);
+  });
+
   it('launches from the admitted descriptor with an allowlisted environment', async () => {
     const repository = await bridgeRepository(`
 if [ "\${OPENAI_API_KEY+x}" = x ]; then
@@ -139,13 +274,17 @@ while IFS= read -r request; do
 done
 `);
     const transport = new RenodeDigitalTwinTransport(repository);
+    const closed: TransportEvent[] = [];
+    transport.onEvent((event) => { if (event.type === 'closed') closed.push(event); });
     await transport.open(structuredClone(transport.port));
 
     await expect(transport.close()).rejects.toThrow(/process.group/i);
+    expect(closed).toEqual([]);
 
     const pid = Number((await readFile(join(repository, 'tools/bridge.pid'), 'utf8')).trim());
     await expectProcessGroupGone(pid);
     await expect(transport.close()).resolves.toBeUndefined();
+    expect(closed).toHaveLength(1);
   });
 
   it('treats clean stdout EOF before acknowledged shutdown as terminal and reaps the bridge', async () => {

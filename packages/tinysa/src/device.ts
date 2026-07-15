@@ -1,7 +1,8 @@
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
-  SUPPORTED_ZS407_FIRMWARE_REVISIONS,
+  extractZs407FirmwareReportedRevision,
+  resolveSupportedZs407FirmwareSourceCommit,
   TINYSA_SHELL_PROMPT,
   TINYSA_USB_PRODUCT_ID,
   TINYSA_USB_VENDOR_ID,
@@ -26,7 +27,6 @@ import {
   type PortCandidate,
   type ScreenFrame,
   type ScreenPoint,
-  type SupportedZs407FirmwareRevision,
   type Sweep,
   type SweepStatus,
   type ZeroSpanCapture,
@@ -94,6 +94,7 @@ export class TinySaDeviceService {
   #closing = false;
   #rfOffAcknowledged = false;
   #teardownRfOffAcknowledged = false;
+  #pendingPort?: PortCandidate;
   #unsubscribeTransport: () => void;
 
   constructor(private readonly transport: ByteTransport) {
@@ -108,11 +109,14 @@ export class TinySaDeviceService {
   async connect(input: PortCandidate): Promise<DeviceSnapshot> {
     const port = portCandidateSchema.parse(input);
     if (this.#snapshot.connection !== 'disconnected') throw new TinySaDeviceError('invalid-state', 'Device is already active', false);
+    this.#pendingPort = structuredClone(port);
     this.#rfOffAcknowledged = false;
     this.#teardownRfOffAcknowledged = false;
-    this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown', pendingPort: port });
+    this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown', pendingPort: structuredClone(this.#pendingPort) });
+    let transportOpened = false;
     try {
       await this.transport.open(port);
+      transportOpened = true;
       this.#scheduler = new CommandScheduler(this.transport, { onFault: (error) => this.#handleSchedulerFault(error) });
       this.#set({ ...this.#snapshot, connection: 'identifying' });
 
@@ -177,6 +181,7 @@ export class TinySaDeviceService {
       const now = new Date().toISOString();
       this.#set({
         connection: 'ready',
+        pendingPort: structuredClone(this.#pendingPort),
         mode: 'idle',
         generatorOutput: 'off',
         verification: 'commanded',
@@ -191,21 +196,32 @@ export class TinySaDeviceService {
     } catch (error) {
       const primary = asDeviceError(error, 'protocol', 'Device identification failed', false);
       const cleanupFailures: unknown[] = [];
-      this.#closing = true;
-      try { await this.transport.close(); } catch (cleanupError) { cleanupFailures.push(cleanupError); }
-      finally { this.#closing = false; }
-      if (!cleanupFailures.length) {
+      // A battery-powered analyzer does not become RF-safe merely because its
+      // host transport closes. Once open completed, release ownership only
+      // after a current output-off acknowledgement; otherwise keep the
+      // scheduler/port as an explicit failed-connect teardown lease.
+      const safeToClose = !transportOpened || this.#rfOffAcknowledged;
+      if (safeToClose) {
+        this.#closing = true;
+        try { await this.transport.close(); } catch (cleanupError) { cleanupFailures.push(cleanupError); }
+        finally { this.#closing = false; }
+      }
+      const retained = !safeToClose || cleanupFailures.length > 0;
+      if (!retained) {
         this.#scheduler?.dispose();
         this.#scheduler = undefined;
+        this.#pendingPort = undefined;
         this.#rfOffAcknowledged = false;
         this.#teardownRfOffAcknowledged = false;
       }
       this.#analyzer = undefined;
+      this.#zeroSpan = undefined;
       this.#set({
-        ...(cleanupFailures.length ? this.#snapshot : disconnectedSnapshot()),
-        connection: cleanupFailures.length ? 'faulted' : 'disconnected',
-        generatorOutput: cleanupFailures.length && this.#rfOffAcknowledged ? 'off' : 'unknown',
-        verification: cleanupFailures.length && this.#rfOffAcknowledged ? 'commanded' : 'stale',
+        ...(retained ? this.#snapshot : disconnectedSnapshot()),
+        connection: retained ? 'faulted' : 'disconnected',
+        ...(retained && this.#pendingPort ? { pendingPort: structuredClone(this.#pendingPort) } : {}),
+        generatorOutput: retained && this.#rfOffAcknowledged ? 'off' : 'unknown',
+        verification: retained && this.#rfOffAcknowledged ? 'commanded' : retained ? 'unknown' : 'stale',
         fault: faultFrom(primary),
       });
       if (cleanupFailures.length) throw new AggregateError([primary, ...cleanupFailures], 'Device connection failed and transport cleanup also failed');
@@ -221,7 +237,10 @@ export class TinySaDeviceService {
     if (this.#streamTask) await this.#streamTask;
     if (!this.#teardownRfOffAcknowledged) {
       if (!this.#rfOffAcknowledged) {
-        try { await this.#command('output off'); }
+        try {
+          await this.#ensureTeardownCommandChannel();
+          await this.#command('output off');
+        }
         catch (value) {
           const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged during disconnect', true);
           this.#rfOffAcknowledged = false;
@@ -258,6 +277,7 @@ export class TinySaDeviceService {
     finally { this.#closing = false; }
     this.#scheduler?.dispose();
     this.#scheduler = undefined;
+    this.#pendingPort = undefined;
     this.#analyzer = undefined;
     this.#zeroSpan = undefined;
     this.#rfOffAcknowledged = false;
@@ -280,6 +300,7 @@ export class TinySaDeviceService {
     const config = analyzerConfigSchema.parse(input);
     this.#assertFrequency(config.stopHz, 'analyzer');
     this.#ready();
+    this.#beginConfigurationTransition();
     try {
       await this.#command('output off');
       await this.#command('mode input');
@@ -315,9 +336,7 @@ export class TinySaDeviceService {
       });
       return this.snapshot();
     } catch (error) {
-      this.#analyzer = undefined;
-      this.#zeroSpan = undefined;
-      throw this.#operationFailure(error, 'Analyzer configuration failed');
+      throw this.#configurationFailure(error, 'Analyzer configuration failed');
     }
   }
 
@@ -408,6 +427,7 @@ export class TinySaDeviceService {
     const config = zeroSpanConfigSchema.parse(input);
     this.#assertFrequency(config.frequencyHz, 'analyzer');
     this.#ready();
+    this.#beginConfigurationTransition();
     try {
       await this.#command('output off');
       await this.#command('mode input');
@@ -435,9 +455,7 @@ export class TinySaDeviceService {
       });
       return this.snapshot();
     } catch (error) {
-      this.#analyzer = undefined;
-      this.#zeroSpan = undefined;
-      throw this.#operationFailure(error, 'Zero-span configuration failed');
+      throw this.#configurationFailure(error, 'Zero-span configuration failed');
     }
   }
 
@@ -494,6 +512,7 @@ export class TinySaDeviceService {
     const config = generatorConfigSchema.parse(input);
     this.#assertFrequency(config.frequencyHz, 'generator');
     this.#ready();
+    this.#beginConfigurationTransition();
     try {
       await this.#command('output off');
       await this.#command('mode output');
@@ -522,7 +541,7 @@ export class TinySaDeviceService {
       });
       return this.snapshot();
     } catch (error) {
-      throw this.#operationFailure(error, 'Generator configuration failed');
+      throw this.#configurationFailure(error, 'Generator configuration failed');
     }
   }
 
@@ -769,6 +788,56 @@ export class TinySaDeviceService {
     return error;
   }
 
+  #beginConfigurationTransition(): void {
+    this.#analyzer = undefined;
+    this.#zeroSpan = undefined;
+    this.#set({
+      ...this.#snapshot,
+      mode: 'idle',
+      generatorOutput: 'unknown',
+      verification: 'unknown',
+      analyzer: undefined,
+      generator: undefined,
+      fault: undefined,
+    });
+  }
+
+  #configurationFailure(value: unknown, context: string): Error {
+    this.#analyzer = undefined;
+    this.#zeroSpan = undefined;
+    const error = asDeviceError(value, value instanceof TinySaDeviceError ? value.code : 'protocol', context, true);
+    this.#set({
+      ...this.#snapshot,
+      connection: this.#scheduler?.fault ? 'faulted' : this.#snapshot.connection,
+      mode: 'idle',
+      generatorOutput: this.#rfOffAcknowledged ? 'off' : 'unknown',
+      verification: this.#rfOffAcknowledged ? 'commanded' : 'unknown',
+      analyzer: undefined,
+      generator: undefined,
+      fault: faultFrom(error),
+    });
+    return error;
+  }
+
+  async #ensureTeardownCommandChannel(): Promise<void> {
+    if (this.#scheduler && !this.#scheduler.fault) return;
+    const port = this.#pendingPort;
+    if (!port) throw new TinySaDeviceError('not-connected', 'Device cleanup has no retained port', false);
+    this.#scheduler?.dispose();
+    this.#scheduler = undefined;
+    this.#closing = true;
+    try {
+      // A faulted protocol stream cannot be resynchronized by assumption.
+      // Reopen the same admitted endpoint, then issue the idempotent safety
+      // command on a fresh parser/scheduler before allowing final close.
+      await this.transport.close();
+      await this.transport.open(structuredClone(port));
+      this.#scheduler = new CommandScheduler(this.transport, { onFault: (error) => this.#handleSchedulerFault(error) });
+    } finally {
+      this.#closing = false;
+    }
+  }
+
   #handleSchedulerFault(error: Error): void {
     if (this.#snapshot.connection === 'disconnected') return;
     this.#rfOffAcknowledged = false;
@@ -811,7 +880,12 @@ export class TinySaDeviceService {
     this.#emit({ type: 'snapshot', snapshot: this.snapshot() });
   }
 
-  #emit(event: DeviceEvent): void { for (const listener of this.#listeners) listener(event); }
+  #emit(event: DeviceEvent): void {
+    for (const listener of [...this.#listeners]) {
+      try { listener(structuredClone(event)); }
+      catch { /* Device observers cannot corrupt transport or RF lifecycle state. */ }
+    }
+  }
 }
 
 function rgb565BigEndianToLittleEndian(wirePixels: Uint8Array): Uint8Array {
@@ -1284,9 +1358,9 @@ function resolveFirmwareProvenance(
     }
     return { firmwareSourceCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT, firmwareQualification: 'executable-twin' };
   }
-  const revision = firmwareVersion.match(/-g([0-9a-f]{7,40})(?:\b|$)/i)?.[1]?.toLowerCase();
+  const revision = extractZs407FirmwareReportedRevision(firmwareVersion);
   if (!revision) throw new TinySaDeviceError('unsupported', `Firmware ${firmwareVersion} did not report a source revision`, false);
-  const firmwareSourceCommit = SUPPORTED_ZS407_FIRMWARE_REVISIONS[revision as SupportedZs407FirmwareRevision];
+  const firmwareSourceCommit = resolveSupportedZs407FirmwareSourceCommit(firmwareVersion, revision);
   if (firmwareSourceCommit) {
     return {
       firmwareReportedRevision: revision,

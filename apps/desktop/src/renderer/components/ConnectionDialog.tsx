@@ -6,6 +6,7 @@ import type {
   InstrumentDiscoveryFailure,
 } from '@tinysa/contracts';
 import { instrumentCandidateUiKey } from '../ui-contracts.js';
+import { instrumentCandidateMatchesPreference } from '../instrument-preference.js';
 
 export function ConnectionDialog({ candidates, selectedId, busy, error, failures, preference, connectionCleanup, onSelect, onRefresh, onConnect, onDisconnect, onMakeDefault, connected, onClose }: {
   candidates: readonly InstrumentCandidate[];
@@ -24,9 +25,7 @@ export function ConnectionDialog({ candidates, selectedId, busy, error, failures
   onClose(): void;
 }) {
   const selected = candidates.find((candidate) => instrumentCandidateUiKey(candidate) === selectedId);
-  const isPreferred = selected !== undefined
-    && preference?.preference.driverId === selected.driverId
-    && (preference.preference.candidateKind === undefined || preference.preference.candidateKind === selected.sourceKind);
+  const isPreferred = selected !== undefined && instrumentCandidateMatchesPreference(selected, preference);
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="connection-dialog" role="dialog" aria-modal="true" aria-labelledby="connection-title">
     <div className="dialog-head"><h2 id="connection-title">Connect</h2><button data-agent-control="connection.close" className="icon-button" onClick={onClose} aria-label="Close"><X size={17}/></button></div>
     {connected ? <div className="connected-state"><div className="connected-glyph"><Check size={24}/></div><h3>Connected</h3><button data-agent-control="connection.disconnect" className="danger-outline" disabled={busy} onClick={onDisconnect}>Disconnect</button></div> : <>
@@ -37,8 +36,7 @@ export function ConnectionDialog({ candidates, selectedId, busy, error, failures
       </div>}
       <div className="dialog-toolbar"><p>Available instrument sources</p><button data-agent-control="connection.refresh" className="text-button" onClick={onRefresh} disabled={busy}><RefreshCw size={13}/>Refresh</button></div>
       <div className="port-list">{candidates.length === 0 ? <div className="no-ports"><Usb size={22}/><strong>No instrument source found</strong><span>SignalLab, TinySA USB, and executable firmware-twin discovery are independent. Inspect the failures below.</span></div> : candidates.map((candidate, index) => {
-        const preferred = preference?.preference.driverId === candidate.driverId
-          && (preference.preference.candidateKind === undefined || preference.preference.candidateKind === candidate.sourceKind);
+        const preferred = instrumentCandidateMatchesPreference(candidate, preference);
         const candidateKey = instrumentCandidateUiKey(candidate);
         return <button key={candidateKey} data-agent-control={`connection.candidate.${index + 1}.select`} className={`port-option ${selectedId === candidateKey ? 'selected' : ''}`} onClick={() => onSelect(candidateKey)}>
           <span className="port-icon">{sourceIcon(candidate.sourceKind)}</span>

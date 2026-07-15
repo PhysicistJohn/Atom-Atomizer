@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
+  ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
   instrumentCandidateSchema,
   type AnalyzerConfig,
   type DeviceCapabilities,
@@ -9,6 +10,7 @@ import {
   type DeviceEvent,
   type DeviceSnapshot,
   type GeneratorConfig,
+  type InstrumentSessionEvent,
   type PortCandidate,
   type ScreenFrame,
   type ScreenPoint,
@@ -86,6 +88,146 @@ describe('TinySaZs407InstrumentDriver', () => {
     expect(device.cleanupPendingInstrumentConnection).toHaveBeenCalledOnce();
   });
 
+  it('rejects invented supported-OEM revision and commit pairs from the device boundary', async () => {
+    const mutations = [
+      { revision: 'deadbee', sourceCommit: `deadbee${'0'.repeat(33)}` },
+      { revision: 'c5dd31f', sourceCommit: FIRMWARE_SOURCE_COMMIT },
+    ];
+    for (const mutation of mutations) {
+      const device = new FakeTinySaDevice();
+      const connect = device.connect.bind(device);
+      vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+        const snapshot = await connect(candidate);
+        return {
+          ...snapshot,
+          identity: {
+            ...snapshot.identity!,
+            firmwareVersion: `tinySA4_injected-g${mutation.revision}`,
+            firmwareReportedRevision: mutation.revision,
+            firmwareSourceCommit: mutation.sourceCommit,
+            firmwareQualification: 'supported-oem',
+            firmwareWarning: undefined,
+          } as NonNullable<DeviceSnapshot['identity']>,
+        };
+      });
+      const driver = new TinySaZs407InstrumentDriver(device);
+      const descriptor = (await driver.discover()).candidates[0]!;
+      const candidate = instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:injected' });
+      await expect(driver.connect(candidate)).rejects.toThrow(/contradictory (?:device identity|firmware provenance)/);
+    }
+  });
+
+  it('rejects a known supported-OEM pair when the version reports a different revision', async () => {
+    const device = new FakeTinySaDevice();
+    const connect = device.connect.bind(device);
+    vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+      const snapshot = await connect(candidate);
+      return {
+        ...snapshot,
+        identity: {
+          ...snapshot.identity!,
+          firmwareVersion: 'custom-lab-v99-gdeadbee',
+          firmwareReportedRevision: 'c5dd31f',
+          firmwareSourceCommit: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+          firmwareQualification: 'supported-oem',
+          firmwareWarning: undefined,
+        } as NonNullable<DeviceSnapshot['identity']>,
+      };
+    });
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const candidate = instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:mismatched-version' });
+    await expect(driver.connect(candidate)).rejects.toThrow(/contradictory (?:device identity|firmware version and reported revision)/);
+  });
+
+  it('rejects physical identity port evidence that contradicts the admitted candidate', async () => {
+    const mutations: readonly Partial<PortCandidate>[] = [
+      { path: '/dev/tty.other' },
+      { vendorId: 'ffff' },
+      { productId: 'ffff' },
+      { serialNumber: 'OTHER407' },
+    ];
+    for (const mutation of mutations) {
+      const device = new FakeTinySaDevice();
+      const connect = device.connect.bind(device);
+      vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+        const snapshot = await connect(candidate);
+        return {
+          ...snapshot,
+          identity: {
+            ...snapshot.identity!,
+            port: { ...snapshot.identity!.port, ...mutation },
+          },
+        };
+      });
+      const driver = new TinySaZs407InstrumentDriver(device);
+      const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+      const candidate = instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:contradictory-port' });
+      await expect(driver.connect(candidate)).rejects.toThrow(/contradictory device identity|invalid port provenance|does not match the admitted serial candidate/);
+    }
+  });
+
+  it('rejects firmware-twin identity evidence that contradicts the admitted executable', async () => {
+    const mutations = [
+      { repositoryCommit: 'f'.repeat(40) },
+      { firmwareBinarySha256: 'f'.repeat(64) },
+    ];
+    for (const mutation of mutations) {
+      const device = new FakeTinySaDevice();
+      const connect = device.connect.bind(device);
+      vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+        const snapshot = await connect(candidate);
+        const mutatedTwin = { ...snapshot.identity!.digitalTwin!, ...mutation };
+        return {
+          ...snapshot,
+          identity: {
+            ...snapshot.identity!,
+            digitalTwin: mutatedTwin,
+            port: { ...snapshot.identity!.port, digitalTwin: mutatedTwin },
+          } as NonNullable<DeviceSnapshot['identity']>,
+        };
+      });
+      const driver = new TinySaZs407InstrumentDriver(device);
+      const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'tinysa-firmware-twin')!;
+      const candidate = instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:contradictory-twin' });
+      await expect(driver.connect(candidate)).rejects.toThrow(/contradictory device identity|invalid port provenance|does not match the admitted firmware-twin candidate/);
+    }
+  });
+
+  it('rejects top-level physical and twin identity labels that contradict execution provenance', async () => {
+    {
+      const device = new FakeTinySaDevice();
+      const connect = device.connect.bind(device);
+      vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+        const snapshot = await connect(candidate);
+        return { ...snapshot, identity: { ...snapshot.identity!, simulated: true } };
+      });
+      const driver = new TinySaZs407InstrumentDriver(device);
+      const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+      await expect(driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:physical-label' })))
+        .rejects.toThrow('contradictory device identity');
+    }
+    for (const mutation of [
+      { simulated: false },
+      { usbIdentityVerified: true },
+      { firmwareQualification: 'protocol-test' as const },
+    ]) {
+      const device = new FakeTinySaDevice();
+      const connect = device.connect.bind(device);
+      vi.spyOn(device, 'connect').mockImplementation(async (candidate) => {
+        const snapshot = await connect(candidate);
+        return {
+          ...snapshot,
+          identity: { ...snapshot.identity!, ...mutation } as NonNullable<DeviceSnapshot['identity']>,
+        };
+      });
+      const driver = new TinySaZs407InstrumentDriver(device);
+      const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'tinysa-firmware-twin')!;
+      await expect(driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:twin-label' })))
+        .rejects.toThrow('contradictory device identity');
+    }
+  });
+
   it('maps high-level spectrum and detected-power operations without leaking shell transport', async () => {
     const device = new FakeTinySaDevice();
     const driver = new TinySaZs407InstrumentDriver(device);
@@ -94,8 +236,14 @@ describe('TinySaZs407InstrumentDriver', () => {
     const session = await driver.connect(candidate);
     expect(session.provenance).toMatchObject({
       sourceKind: 'serial-port', qualification: 'device-observed',
-      device: { usbIdentityVerified: true },
+      device: {
+        firmwareReportedRevision: 'fffffff',
+        firmwareQualification: 'custom-unqualified',
+        firmwareWarning: 'Custom firmware revision fffffff is admitted without source qualification.',
+        usbIdentityVerified: true,
+      },
     });
+    expect(session.provenance).not.toHaveProperty('device.firmwareSourceCommit');
     expect(session.capabilities.acquisitions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'swept-spectrum', sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } },
@@ -135,7 +283,7 @@ describe('TinySaZs407InstrumentDriver', () => {
     });
     await expect(session.acquire()).resolves.toMatchObject({
       kind: 'swept-spectrum', sessionId: session.sessionId, configurationRevision: 'configuration:1',
-      elapsedMilliseconds: 1, resolutionBandwidthHz: 10_000, attenuationDb: 0,
+      elapsedMilliseconds: 1, resolutionBandwidthHz: 30_000, attenuationDb: 7,
       qualification: 'device-observed',
     });
 
@@ -152,6 +300,150 @@ describe('TinySaZs407InstrumentDriver', () => {
     expect(detected).toMatchObject({ kind: 'detected-power-timeseries', centerHz: 98_000_000 });
     if (detected.kind !== 'detected-power-timeseries') throw new Error('Expected detected-power fixture');
     expect(detected.powerDbm).toHaveLength(20);
+  });
+
+  it('rejects incomplete device acquisitions instead of laundering them as complete', async () => {
+    const device = new FakeTinySaDevice();
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:incomplete' }));
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:spectrum',
+      configuration: {
+        kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off',
+          avoidSpurs: 'auto', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    const acquireSweep = device.acquireSweep.bind(device);
+    const sweepSpy = vi.spyOn(device, 'acquireSweep').mockImplementation(async () => ({
+      ...await acquireSweep(), complete: false,
+    }) as unknown as Sweep);
+    await expect(session.acquire()).rejects.toThrow('incomplete swept-spectrum acquisition');
+    sweepSpy.mockRestore();
+
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:detected',
+      configuration: {
+        kind: 'detected-power-timeseries', centerHz: 98_000_000, sampleCount: 20, sweepTimeSeconds: 0.02,
+        controls: { schemaVersion: 1, model: 'receiver', resolutionBandwidthKhz: 100, attenuationDb: 9, trigger: { mode: 'auto' } },
+      },
+    });
+    const acquireZeroSpan = device.acquireZeroSpan.bind(device);
+    vi.spyOn(device, 'acquireZeroSpan').mockImplementation(async () => ({
+      ...await acquireZeroSpan(), complete: false,
+    }) as unknown as ZeroSpanCapture);
+    await expect(session.acquire()).rejects.toThrow('incomplete detected-power acquisition');
+  });
+
+  it('rejects measurements carrying an identity other than the connected device', async () => {
+    const device = new FakeTinySaDevice();
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:wrong-device' }));
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:spectrum',
+      configuration: {
+        kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off',
+          avoidSpurs: 'auto', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    const acquireSweep = device.acquireSweep.bind(device);
+    const sweepSpy = vi.spyOn(device, 'acquireSweep').mockImplementation(async () => {
+      const sweep = await acquireSweep();
+      return {
+        ...sweep,
+        identity: { ...sweep.identity, firmwareVersion: 'tinySA4_v1.4.6-gdeadbee' },
+      } as Sweep;
+    });
+    await expect(session.acquire()).rejects.toThrow('identity does not match the admitted device session');
+    sweepSpy.mockRestore();
+
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:detected',
+      configuration: {
+        kind: 'detected-power-timeseries', centerHz: 98_000_000, sampleCount: 20, sweepTimeSeconds: 0.02,
+        controls: { schemaVersion: 1, model: 'receiver', resolutionBandwidthKhz: 100, attenuationDb: 9, trigger: { mode: 'auto' } },
+      },
+    });
+    const acquireZeroSpan = device.acquireZeroSpan.bind(device);
+    vi.spyOn(device, 'acquireZeroSpan').mockImplementation(async () => {
+      const capture = await acquireZeroSpan();
+      return {
+        ...capture,
+        identity: {
+          ...capture.identity,
+          port: { ...('kind' in capture.identity ? physical : capture.identity.port), path: '/dev/tty.other' },
+        },
+      } as ZeroSpanCapture;
+    });
+    await expect(session.acquire()).rejects.toThrow('identity does not match the admitted device session');
+  });
+
+  it('rejects acquisition controls or geometry that differ from the admitted configuration', async () => {
+    const device = new FakeTinySaDevice();
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates.find((item) => item.sourceKind === 'serial-port')!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:stale-controls' }));
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:spectrum',
+      configuration: {
+        kind: 'swept-spectrum', startHz: 88_000_000, stopHz: 108_000_000, points: 20, sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'sample', spurRejection: 'auto', lowNoiseAmplifier: 'off',
+          avoidSpurs: 'auto', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    const acquireSweep = device.acquireSweep.bind(device);
+    const sweepSpy = vi.spyOn(device, 'acquireSweep').mockImplementation(async () => {
+      const sweep = await acquireSweep();
+      if (sweep.requested.controls.model !== 'receiver') throw new Error('Expected receiver fixture');
+      return {
+        ...sweep,
+        requested: {
+          ...sweep.requested,
+          controls: { ...sweep.requested.controls, detector: 'average' },
+        },
+      };
+    });
+    await expect(session.acquire()).rejects.toThrow('requested controls do not match the admitted configuration');
+    sweepSpy.mockRestore();
+
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:detected',
+      configuration: {
+        kind: 'detected-power-timeseries', centerHz: 98_000_000, sampleCount: 20, sweepTimeSeconds: 0.02,
+        controls: { schemaVersion: 1, model: 'receiver', resolutionBandwidthKhz: 100, attenuationDb: 9, trigger: { mode: 'auto' } },
+      },
+    });
+    const acquireZeroSpan = device.acquireZeroSpan.bind(device);
+    vi.spyOn(device, 'acquireZeroSpan').mockImplementation(async () => {
+      const capture = await acquireZeroSpan();
+      if (capture.requested.controls.model !== 'receiver') throw new Error('Expected receiver fixture');
+      return {
+        ...capture,
+        requested: {
+          ...capture.requested,
+          controls: { ...capture.requested.controls, attenuationDb: 8 },
+        },
+      };
+    });
+    await expect(session.acquire()).rejects.toThrow('requested controls do not match the admitted configuration');
   });
 
   it('routes generator, screen, touch, diagnostics, and safe disconnect through the driver', async () => {
@@ -190,11 +482,19 @@ describe('TinySaZs407InstrumentDriver', () => {
     const driver = new TinySaZs407InstrumentDriver(device);
     const descriptor = (await driver.discover()).candidates[0]!;
     const session = await driver.connect(instrumentCandidateSchema.parse({ ...descriptor, discoveryRevision: 'discovery:1' }));
-    const events: unknown[] = [];
+    const events: InstrumentSessionEvent[] = [];
 
     session.subscribe((event) => events.push(event));
 
     expect(events).toEqual([{
+      type: 'error', sessionId: session.sessionId,
+      error: { code: 'session-fault', message: 'device vanished during session handoff', recoverable: false },
+    }]);
+    if (events[0]?.type !== 'error') throw new Error('Expected terminal error replay');
+    events[0].error.message = 'MUTATED BY FIRST CONSUMER';
+    const laterEvents: InstrumentSessionEvent[] = [];
+    session.subscribe((event) => laterEvents.push(event));
+    expect(laterEvents).toEqual([{
       type: 'error', sessionId: session.sessionId,
       error: { code: 'session-fault', message: 'device vanished during session handoff', recoverable: false },
     }]);
@@ -223,12 +523,14 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
     const identity: NonNullable<DeviceSnapshot['identity']> = candidate.execution === 'firmware-digital-twin'
       ? {
         model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'fixture-twin',
+        firmwareSourceCommit: DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
         firmwareQualification: 'executable-twin', port: candidate, simulated: true,
         usbIdentityVerified: false, execution: 'firmware-digital-twin', digitalTwin: candidate.digitalTwin,
       }
       : {
-        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'v1.4.6-gfffffff',
+        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_v1.4.6-gfffffff',
         firmwareReportedRevision: 'fffffff', firmwareQualification: 'custom-unqualified', port: candidate,
+        firmwareWarning: 'Custom firmware revision fffffff is admitted without source qualification.',
         simulated: false, usbIdentityVerified: true, execution: 'physical',
       };
     this.#snapshot = {
@@ -248,8 +550,10 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
       kind: 'spectrum', id: 'sweep:1', sequence: 1, capturedAt: '2026-07-14T12:00:00.000Z', elapsedMilliseconds: 1,
       frequencyHz: Array.from({ length: configuration.points }, (_, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1)),
       powerDbm: Array.from({ length: configuration.points }, () => -80), requested: admittedTinySaSpectrumConfiguration(configuration),
-      actualStartHz: configuration.startHz, actualStopHz: configuration.stopHz, actualRbwHz: 10_000, actualAttenuationDb: 0,
-      source: 'scanraw-binary', complete: true, identity: {} as Sweep['identity'],
+      actualStartHz: configuration.startHz, actualStopHz: configuration.stopHz,
+      actualRbwHz: typeof configuration.rbwKhz === 'number' ? configuration.rbwKhz * 1_000 : 10_000,
+      actualAttenuationDb: typeof configuration.attenuationDb === 'number' ? configuration.attenuationDb : 0,
+      source: 'scanraw-binary', complete: true, identity: structuredClone(this.#snapshot.identity!),
     };
   }
   async acquireZeroSpan(): Promise<ZeroSpanCapture> {
@@ -258,7 +562,10 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
       kind: 'zero-span', id: 'zero:1', sequence: 2, capturedAt: '2026-07-14T12:00:01.000Z', elapsedMilliseconds: 1,
       frequencyHz: configuration.frequencyHz, samplePeriodSeconds: configuration.sweepTimeSeconds / configuration.points,
       powerDbm: Array.from({ length: configuration.points }, () => -70), requested: admittedTinySaDetectedPowerConfiguration(configuration),
-      actualRbwHz: 10_000, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity: {} as ZeroSpanCapture['identity'],
+      actualRbwHz: typeof configuration.rbwKhz === 'number' ? configuration.rbwKhz * 1_000 : 10_000,
+      actualAttenuationDb: typeof configuration.attenuationDb === 'number' ? configuration.attenuationDb : 0,
+      source: 'scan-text', complete: true,
+      identity: structuredClone(this.#snapshot.identity!),
     };
   }
   async configureGenerator(configuration: GeneratorConfig): Promise<DeviceSnapshot> {

@@ -10,6 +10,7 @@ import {
   MAX_SCREEN_DIMENSION_V1,
   MAX_SIGNAL_LAB_PROFILES_V1,
   MAX_SWEPT_SPECTRUM_POINTS_V1,
+  SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
   instrumentCandidateDescriptorSchema,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
@@ -20,11 +21,30 @@ import {
   instrumentFeatureRequestSchema,
   instrumentFeatureResultSchema,
   instrumentMeasurementSchema,
+  projectDetectedPowerTuneHz,
   instrumentSessionProvenanceSchema,
   instrumentSessionSnapshotSchema,
 } from './instrument.js';
 
 describe('instrument boundary contracts', () => {
+  it('projects a fractional detector centroid onto the admitted integer-Hz detected-power tune', () => {
+    const projected = projectDetectedPowerTuneHz(100_000_000.49, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1);
+    expect(projected).toBe(100_000_000);
+    expect(instrumentConfigurationSchema.safeParse({
+      kind: 'detected-power-timeseries',
+      centerHz: projected,
+      sampleCount: 450,
+      sweepTimeSeconds: 0.05,
+      controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+    }).success).toBe(true);
+    expect(projectDetectedPowerTuneHz(100_000_000.5, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1))
+      .toBe(100_000_001);
+    expect(projectDetectedPowerTuneHz(105, { min: 90, max: 110, step: 10 })).toBe(110);
+    expect(projectDetectedPowerTuneHz(104.999, { min: 90, max: 110, step: 10 })).toBe(100);
+    expect(() => projectDetectedPowerTuneHz(Number.NaN, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1)).toThrow(/finite/);
+    expect(() => projectDetectedPowerTuneHz(0.9, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1)).toThrow(/outside/);
+  });
+
   it('keeps serial and SignalLab candidates as strict source-specific variants', () => {
     const serial = serialCandidate();
     const signalLab = signalLabCandidate();
@@ -359,6 +379,89 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
   });
 
+  it('makes physical firmware provenance a closed qualification-dependent union', () => {
+    const base = {
+      sourceKind: 'serial-port' as const,
+      execution: 'physical' as const,
+      transport: 'usb-cdc-acm' as const,
+      qualification: 'device-observed' as const,
+      verifiedAt: '2026-07-14T18:00:00.000Z',
+      serialPort: { path: '/dev/tty.fixture', vendorId: '0483', productId: '5740' },
+    };
+    const custom = {
+      ...base,
+      device: {
+        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_custom-gdeadbee',
+        firmwareReportedRevision: 'deadbee',
+        firmwareQualification: 'custom-unqualified' as const,
+        firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+        usbIdentityVerified: true as const,
+      },
+    };
+    expect(instrumentSessionProvenanceSchema.parse(custom)).toEqual(custom);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...custom,
+      device: { ...custom.device, firmwareSourceCommit: 'deadbee0000000000000000000000000000000000' },
+    }).success).toBe(false);
+    for (const omitted of ['firmwareReportedRevision', 'firmwareWarning'] as const) {
+      const device: Partial<typeof custom.device> = { ...custom.device };
+      delete device[omitted];
+      expect(instrumentSessionProvenanceSchema.safeParse({ ...custom, device }).success).toBe(false);
+    }
+
+    const supported = {
+      ...base,
+      device: {
+        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_v1.4-217-gc5dd31f',
+        firmwareReportedRevision: 'c5dd31f',
+        firmwareSourceCommit: 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c',
+        firmwareQualification: 'supported-oem' as const,
+        usbIdentityVerified: true as const,
+      },
+    };
+    expect(instrumentSessionProvenanceSchema.parse(supported)).toEqual(supported);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: { ...supported.device, firmwareSourceCommit: 'c97938697b6c7485e7cab50bca9af76996b7d671' },
+    }).success).toBe(false);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: { ...supported.device, firmwareVersion: 'custom-lab-v99-gdeadbee' },
+    }).success).toBe(false);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: { ...supported.device, firmwareVersion: 'tinySA4_v1-gc5dd31f-extra-gc5dd31f' },
+    }).success).toBe(false);
+    for (const firmwareVersion of [
+      'tinySA4_v1.4-217-gc5dd31f-dirty',
+      'tinySA4_custom-gc5dd31f',
+      'tinySA4_v1.4-217-gc5dd31f HACKED',
+    ]) {
+      expect(instrumentSessionProvenanceSchema.safeParse({
+        ...supported,
+        device: { ...supported.device, firmwareVersion },
+      }).success).toBe(false);
+    }
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: {
+        ...supported.device,
+        firmwareVersion: 'tinySA4_custom-injected-gdeadbee',
+        firmwareReportedRevision: 'deadbee',
+        firmwareSourceCommit: `deadbee${'0'.repeat(33)}`,
+      },
+    }).success).toBe(false);
+    const { firmwareSourceCommit: _omittedCommit, ...supportedWithoutCommit } = supported.device;
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: supportedWithoutCommit,
+    }).success).toBe(false);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...supported,
+      device: { ...supported.device, firmwareWarning: 'contradictory warning' },
+    }).success).toBe(false);
+  });
+
   it('binds public session snapshots to their driver, candidate, and discovery provenance', () => {
     const candidate = { ...serialCandidate(), discoveryRevision: 'discovery:serial' };
     const snapshot = {
@@ -373,8 +476,11 @@ describe('instrument boundary contracts', () => {
         verifiedAt: '2026-07-14T18:00:00.000Z',
         serialPort: candidate.serialPort,
         device: {
-          model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'custom',
-          firmwareQualification: 'custom-unqualified' as const, usbIdentityVerified: true,
+          model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'tinySA4_custom-gdeadbee',
+          firmwareReportedRevision: 'deadbee',
+          firmwareQualification: 'custom-unqualified' as const,
+          firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+          usbIdentityVerified: true,
         },
       },
       capabilities: {
@@ -411,6 +517,99 @@ describe('instrument boundary contracts', () => {
           sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
           controls: syntheticScalarControls(),
         })),
+      },
+    }).success).toBe(false);
+  });
+
+  it('binds authoritative snapshot configuration to its session and advertised capabilities', () => {
+    const candidate = { ...serialCandidate(), discoveryRevision: 'discovery:configured' };
+    const snapshot = {
+      sessionId: 'session:configured',
+      driverId: candidate.driverId,
+      candidate,
+      provenance: {
+        sourceKind: 'serial-port' as const,
+        execution: 'physical' as const,
+        transport: 'usb-cdc-acm' as const,
+        qualification: 'device-observed' as const,
+        verifiedAt: '2026-07-14T18:00:00.000Z',
+        serialPort: candidate.serialPort,
+        device: {
+          model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_custom-gdeadbee',
+          firmwareReportedRevision: 'deadbee',
+          firmwareQualification: 'custom-unqualified' as const,
+          firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+          usbIdentityVerified: true,
+        },
+      },
+      capabilities: {
+        schemaVersion: 1 as const,
+        acquisitions: [{
+          kind: 'swept-spectrum' as const,
+          frequencyHz: { min: 100, max: 1_000, step: 100 },
+          points: { min: 2, max: 5, step: 1 },
+          sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.01, max: 1 } },
+          controls: receiverSpectrumCapability(),
+          powerUnit: 'dBm' as const,
+        }],
+        features: [],
+      },
+      rfOutput: 'not-supported' as const,
+      rfOutputQualification: 'not-applicable' as const,
+      configuration: {
+        sessionId: 'session:configured',
+        configurationRevision: 'configuration:configured',
+        configuredAt: '2026-07-14T18:00:00.000Z',
+        configuration: {
+          kind: 'swept-spectrum' as const,
+          startHz: 100,
+          stopHz: 1_000,
+          points: 5,
+          sweepTimeSeconds: 'auto' as const,
+          controls: receiverSpectrumControls(),
+        },
+      },
+    };
+
+    expect(instrumentSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      configuration: { ...snapshot.configuration, sessionId: 'session:other' },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      configuration: {
+        ...snapshot.configuration,
+        configuration: { ...snapshot.configuration.configuration, stopHz: 950 },
+      },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      configuration: {
+        ...snapshot.configuration,
+        configuration: {
+          ...snapshot.configuration.configuration,
+          controls: { ...snapshot.configuration.configuration.controls, detector: 'average' as const },
+        },
+      },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      configuration: {
+        ...snapshot.configuration,
+        configuration: {
+          kind: 'detected-power-timeseries' as const,
+          centerHz: 100,
+          sampleCount: 5,
+          sweepTimeSeconds: 0.05,
+          controls: {
+            schemaVersion: 1 as const,
+            model: 'receiver' as const,
+            resolutionBandwidthKhz: 'auto' as const,
+            attenuationDb: 'auto' as const,
+            trigger: { mode: 'auto' as const },
+          },
+        },
       },
     }).success).toBe(false);
   });
@@ -754,6 +953,61 @@ describe('instrument boundary contracts', () => {
       powerDbm: timeseriesPowerDbm,
     }).success).toBe(false);
     expect(timeseriesElementReads).toBe(0);
+  });
+
+  it('rejects oversized nested receiver capability enums before reading their elements', () => {
+    const cases = [
+      ['acquisitionFormats', 2, 'text'],
+      ['detectors', 8, 'sample'],
+      ['spurRejection', 3, 'off'],
+      ['lowNoiseAmplifier', 2, 'off'],
+      ['avoidSpurs', 3, 'off'],
+      ['triggerModes', 3, 'auto'],
+    ] as const;
+    for (const [key, maximum, value] of cases) {
+      let elementReads = 0;
+      const oversized = new Proxy(Array.from({ length: maximum + 1 }, () => value), {
+        get(target, property, receiver) {
+          if (/^\d+$/.test(String(property))) elementReads++;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      expect(instrumentCapabilitiesSchema.safeParse({
+        schemaVersion: 1,
+        acquisitions: [{
+          kind: 'swept-spectrum',
+          frequencyHz: { min: 100, max: 1_000 },
+          points: { min: 2, max: 5 },
+          sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.01, max: 1 } },
+          controls: { ...receiverSpectrumCapability(), [key]: oversized },
+          powerUnit: 'dBm',
+        }],
+        features: [],
+      }).success).toBe(false);
+      expect(elementReads, key).toBe(0);
+    }
+
+    let detectedPowerTriggerReads = 0;
+    const oversizedTriggerModes = new Proxy(['auto', 'normal', 'single', 'auto'], {
+      get(target, property, receiver) {
+        if (/^\d+$/.test(String(property))) detectedPowerTriggerReads++;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(instrumentCapabilitiesSchema.safeParse({
+      schemaVersion: 1,
+      acquisitions: [{
+        kind: 'detected-power-timeseries',
+        centerFrequencyHz: { min: 100, max: 1_000 },
+        sampleCount: { min: 1, max: 5 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.01, max: 1 } },
+        controls: { ...receiverDetectedPowerCapability(), triggerModes: oversizedTriggerModes },
+        powerUnit: 'dBm',
+        timing: 'uniform',
+      }],
+      features: [],
+    }).success).toBe(false);
+    expect(detectedPowerTriggerReads).toBe(0);
   });
 });
 

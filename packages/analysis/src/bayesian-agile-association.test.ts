@@ -98,6 +98,18 @@ describe('Bayesian frequency-agile activity evidence', () => {
     expect(() => bayesianFrequencyAgileActivityEvidence([
       { ...observation(0, 2_402_000_000), rbwHz: 0 },
     ], 1)).toThrow(/invalid local-look provenance/i);
+    const weak = observation(0, 2_402_000_000);
+    expect(() => bayesianFrequencyAgileActivityEvidence([{
+      ...weak,
+      localBayesianEvidence: { ...weak.localBayesianEvidence, posteriorSignalProbability: 0.98 },
+    }], 1)).toThrow(/invalid local-look provenance/i);
+    expect(() => bayesianFrequencyAgileActivityEvidence([{
+      ...weak,
+      localBayesianEvidence: {
+        ...weak.localBayesianEvidence,
+        posteriorPredictiveNullProbability: weak.localBayesianEvidence.targetPosteriorPredictiveNullProbability * 2,
+      },
+    }], 1)).toThrow(/invalid local-look provenance/i);
   });
 });
 
@@ -121,7 +133,7 @@ function observation(index: number, centerHz: number): ActivityAssociationObserv
       effectiveReferenceCells: 24,
       noiseShape: 1,
       posteriorPredictiveNullProbability: 1e-6,
-      targetPosteriorPredictiveNullProbability: 1e-4,
+      targetPosteriorPredictiveNullProbability: 1e-5,
       targetSweepFalseAlarmProbability: 0.001,
       multiplicityAdjustedTests: 100,
       testedRegionStartHz: centerHz - 250_000,

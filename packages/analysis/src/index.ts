@@ -12,6 +12,8 @@ import type {
   MarkerReading,
   MarkerSearchAction,
   MarkerSearchConfiguration,
+  MulticomponentSweptRegionAssociationObservation,
+  RegularSpectralComponentAssociationObservation,
   SignalDetectionConfig,
   SpectrumDisplayConfiguration,
   Sweep,
@@ -34,7 +36,12 @@ import {
 export { isInstrumentMeasurementIdentity, measurementIdentityKey, sameMeasurementIdentity } from './measurement-provenance.js';
 export { RADIO_OPERATING_BAND_CONTEXT, compatibleRadioDuplexModes } from './radio-operating-band-context.js';
 export type { RadioAirInterface, RadioDuplexMode, RadioLinkDirection, RadioOperatingBand, RadioOperatingBandRange } from './radio-operating-band-context.js';
-import { logGamma, regularizedIncompleteBeta } from './bayesian-predictive.js';
+import {
+  BAYESIAN_DETECTOR_MODEL,
+  analyzeBayesianSweep,
+  compactBayesianEvidenceSweep,
+} from './bayesian-signal-detector.js';
+export { BAYESIAN_DETECTOR_MODEL } from './bayesian-signal-detector.js';
 import {
   BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL,
   bayesianFrequencyAgileActivityEvidence,
@@ -50,6 +57,14 @@ import {
   frequencyAgileSweepEligible,
   frequencyAgileSweepGeometryCompatible,
 } from './frequency-agile-geometry.js';
+import {
+  MULTICOMPONENT_SWEPT_REGION_MODEL_ID,
+  multicomponentAssociationRegionsOverlap,
+  multicomponentSweepBinWidthHz,
+  multicomponentSweepGeometryId,
+  multicomponentSweptRegionAssociations,
+  type MulticomponentSweptRegionAssociation,
+} from './multicomponent-swept-region.js';
 
 export const analysisModes: readonly AnalysisModeDefinition[] = [
   { id: 'signal-detection', name: 'Signal Detection', description: 'Detect and persist emissions above an absolute threshold or a lower-tail adaptive candidate baseline.', status: 'available', requiredCapabilities: ['scan'] },
@@ -64,25 +79,11 @@ const DEFAULT_DETECTION_CONFIG: SignalDetectionConfig = {
   releaseAfterMissedSweeps: 2,
 };
 
-export const BAYESIAN_DETECTOR_MODEL = {
-  id: 'bayesian-exponential-multiscale-cfar-v3',
-  priorSignalProbability: 0.01,
-  minimumPosteriorSignalProbability: 0.99,
-  targetSweepFalseAlarmProbability: 0.001,
-  uncalibratedNoiseShape: 1,
-  referenceCellsPerSide: 12,
-  signalGainPriorScaleDb: 18,
-  maximumSignalGainDb: 60,
-  signalGainGridStepDb: 1,
-} as const;
-
 export const BAYESIAN_TRACK_MODEL = {
   id: 'bayesian-two-state-track-filter-v1',
   probabilitySignalPersists: 0.92,
   probabilitySignalAppears: 0.01,
 } as const;
-
-interface SpectralGroup { start: number; end: number; }
 
 export class SignalDetector {
   static readonly id = BAYESIAN_DETECTOR_MODEL.id;
@@ -91,217 +92,8 @@ export class SignalDetector {
   get configuration(): SignalDetectionConfig { return structuredClone(this.config); }
 
   analyze(sweep: Sweep): readonly DetectedSignal[] {
-    validateSweep(sweep);
-    const noiseFloorDbm = robustNoiseFloor(sweep.powerDbm);
-    const thresholdDbm = this.config.threshold.strategy === 'absolute'
-      ? this.config.threshold.levelDbm
-      : noiseFloorDbm + this.config.threshold.marginDb;
-    const aboveThreshold = sweep.powerDbm.map((power) => power >= thresholdDbm);
-    bridgeShortGaps(aboveThreshold, 2);
-    const groups: SpectralGroup[] = [];
-    let start: number | undefined;
-    for (let index = 0; index < sweep.powerDbm.length; index++) {
-      if (aboveThreshold[index] && start === undefined) start = index;
-      if ((!aboveThreshold[index] || index === sweep.powerDbm.length - 1) && start !== undefined) {
-        const end = aboveThreshold[index] ? index : index - 1;
-        groups.push({ start, end });
-        start = undefined;
-      }
-    }
-    const testedWidths = bayesianRegionWidths(sweep);
-    const multiplicityAdjustedTests = Math.max(1, sweep.powerDbm.length * testedWidths.length);
-    return groups.flatMap(({ start: first, end: last }, index) => {
-      let peak = first;
-      for (let cursor = first + 1; cursor <= last; cursor++) if (sweep.powerDbm[cursor]! > sweep.powerDbm[peak]!) peak = cursor;
-      const shoulders = localShoulderStatistics(sweep.powerDbm, first, last, noiseFloorDbm);
-      const prominenceDb = sweep.powerDbm[peak]! - shoulders.levelDbm;
-      const prominenceThresholdDb = Math.max(this.config.minimumProminenceDb, shoulders.robustSigmaDb * 4);
-      const startHz = sweep.frequencyHz[first]!;
-      const stopHz = sweep.frequencyHz[last]!;
-      const passingEvidence = testedWidths
-        .map((width) => centeredRegion(sweep.powerDbm.length, peak, width))
-        .map((region) => bayesianPresenceEvidence(sweep, region.first, region.last, multiplicityAdjustedTests))
-        .filter((evidence) => evidence.posteriorSignalProbability >= BAYESIAN_DETECTOR_MODEL.minimumPosteriorSignalProbability
-          && evidence.posteriorPredictiveNullProbability <= evidence.targetPosteriorPredictiveNullProbability)
-        .sort((left, right) => left.posteriorPredictiveNullProbability - right.posteriorPredictiveNullProbability);
-      const bayesianEvidence = passingEvidence[0];
-      if (!bayesianEvidence) return [];
-      const qualityFlags: DetectedSignal['qualityFlags'][number][] = [];
-      // Censoring describes observed emission support, not the wider
-      // multiscale region used to test presence. A statistically selected test
-      // window may reach a scan edge while its threshold-connected candidate
-      // remains fully inside the acquisition (common for flat wideband OFDM).
-      if (first === 0) qualityFlags.push('touches-lower-boundary');
-      if (last === sweep.frequencyHz.length - 1) qualityFlags.push('touches-upper-boundary');
-      if (first === last) qualityFlags.push('single-bin');
-      return [{
-        id: `${sweep.id}:candidate-${index}`,
-        startHz,
-        stopHz,
-        peakHz: sweep.frequencyHz[peak]!,
-        peakDbm: sweep.powerDbm[peak]!,
-        prominenceDb,
-        prominenceThresholdDb,
-        bandwidthHz: Math.max(0, stopHz - startHz),
-        thresholdDbm,
-        noiseFloorDbm,
-        firstSeenAt: sweep.capturedAt,
-        lastSeenAt: sweep.capturedAt,
-        sweepIds: [sweep.id],
-        persistenceSweeps: 1,
-        missedSweeps: 0,
-        state: this.config.minimumConsecutiveSweeps <= 1 ? 'active' : 'candidate',
-        detectorId: SignalDetector.id,
-        detectorConfig: structuredClone(this.config),
-        bayesianEvidence,
-        classificationRegionStartHz: Math.min(startHz, bayesianEvidence.testedRegionStartHz),
-        classificationRegionStopHz: Math.max(stopHz, bayesianEvidence.testedRegionStopHz),
-        classificationRegionSweepIds: [sweep.id],
-        associationMode: 'frequency-local',
-        qualityFlags,
-      } satisfies DetectedSignal];
-    }).filter((signal) => signal.bandwidthHz >= this.config.minimumBandwidthHz
-      && signal.prominenceDb >= signal.prominenceThresholdDb);
+    return analyzeBayesianSweep(sweep, this.config);
   }
-}
-
-function bridgeShortGaps(mask: boolean[], maximumGapBins: number): void {
-  let index = 0;
-  while (index < mask.length) {
-    if (mask[index]) { index++; continue; }
-    const start = index;
-    while (index < mask.length && !mask[index]) index++;
-    const bounded = start > 0 && index < mask.length;
-    if (bounded && index - start <= maximumGapBins) for (let cursor = start; cursor < index; cursor++) mask[cursor] = true;
-  }
-}
-
-interface LocalShoulderStatistics { levelDbm: number; robustSigmaDb: number; referencePowerDbm: readonly number[]; }
-
-function localShoulderStatistics(powerDbm: readonly number[], first: number, last: number, noiseFloorDbm: number): LocalShoulderStatistics {
-  const width = last - first + 1;
-  const shoulderBins = Math.min(12, Math.max(3, width));
-  const shoulders = [
-    ...powerDbm.slice(Math.max(0, first - shoulderBins), first),
-    ...powerDbm.slice(last + 1, Math.min(powerDbm.length, last + 1 + shoulderBins)),
-  ];
-  if (!shoulders.length) return { levelDbm: noiseFloorDbm, robustSigmaDb: 0, referencePowerDbm: [noiseFloorDbm] };
-  const ordered = shoulders.slice().sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  const median = ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
-  const deviations = ordered.map((value) => Math.abs(value - median)).sort((left, right) => left - right);
-  const deviationMiddle = Math.floor(deviations.length / 2);
-  const medianAbsoluteDeviation = deviations.length % 2 ? deviations[deviationMiddle]! : (deviations[deviationMiddle - 1]! + deviations[deviationMiddle]!) / 2;
-  return { levelDbm: Math.max(noiseFloorDbm, median), robustSigmaDb: medianAbsoluteDeviation * 1.4826, referencePowerDbm: shoulders };
-}
-
-function bayesianPresenceEvidence(
-  sweep: Sweep,
-  first: number,
-  last: number,
-  multiplicityAdjustedTests: number,
-): DetectedSignal['bayesianEvidence'] {
-  const binWidthHz = sweep.frequencyHz.length > 1
-    ? median(sweep.frequencyHz.slice(1).map((frequency, index) => frequency - sweep.frequencyHz[index]!))
-    : sweep.actualRbwHz;
-  const rbwBins = Math.max(1, sweep.actualRbwHz / Math.max(Number.MIN_VALUE, binWidthHz));
-  const measuredWidthHz = Math.max(binWidthHz, sweep.frequencyHz[last]! - sweep.frequencyHz[first]! + binWidthHz);
-  const effectiveIndependentBins = Math.max(1, Math.min(last - first + 1, measuredWidthHz / Math.max(binWidthHz, sweep.actualRbwHz)));
-  const availableOutsideBins = sweep.powerDbm.length - (last - first + 1);
-  const guardBins = Math.min(
-    Math.max(0, Math.ceil(rbwBins)),
-    Math.max(0, Math.floor((availableOutsideBins - 2) / 2)),
-  );
-  const referenceBinsPerSide = Math.max(1, Math.ceil(BAYESIAN_DETECTOR_MODEL.referenceCellsPerSide * rbwBins));
-  const leftStop = Math.max(0, first - guardBins);
-  const rightStart = Math.min(sweep.powerDbm.length, last + 1 + guardBins);
-  const referencePowerDbm = [
-    ...sweep.powerDbm.slice(Math.max(0, leftStop - referenceBinsPerSide), leftStop),
-    ...sweep.powerDbm.slice(rightStart, Math.min(sweep.powerDbm.length, rightStart + referenceBinsPerSide)),
-  ];
-  if (referencePowerDbm.length < 2) throw new Error('Bayesian multiscale CFAR region has too few reference bins');
-  const referenceMilliwatts = referencePowerDbm.map(dbmToMilliwatts);
-  const referenceMeanMilliwatts = referenceMilliwatts.reduce((total, value) => total + value, 0) / referenceMilliwatts.length;
-  // Until a receiver/configuration-specific detector shape has been calibrated,
-  // use the conservative single-look exponential power model.  Estimating shape
-  // from a selected candidate's shoulders is selection-biased and can make pure
-  // noise look orders of magnitude more certain than it is.
-  const noiseShape = BAYESIAN_DETECTOR_MODEL.uncalibratedNoiseShape;
-  const effectiveReferenceCells = Math.max(1, Math.min(referencePowerDbm.length, referencePowerDbm.length / rbwBins));
-  const groupMilliwatts = sweep.powerDbm.slice(first, last + 1).map(dbmToMilliwatts);
-  const normalizedTargetMean = (groupMilliwatts.reduce((total, value) => total + value, 0) / groupMilliwatts.length) / referenceMeanMilliwatts;
-  const observedMeanShiftDb = 10 * Math.log10(Math.max(Number.MIN_VALUE, normalizedTargetMean));
-  const referenceShape = effectiveReferenceCells * noiseShape;
-  const referenceSum = effectiveReferenceCells;
-  const targetShape = effectiveIndependentBins * noiseShape;
-  const targetSum = Math.max(Number.MIN_VALUE, effectiveIndependentBins * normalizedTargetMean);
-  const posteriorPredictiveNullProbability = clampFinite(
-    regularizedIncompleteBeta(referenceSum / (referenceSum + targetSum), referenceShape, targetShape),
-    0,
-    1,
-  );
-  const targetPosteriorPredictiveNullProbability = BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability / multiplicityAdjustedTests;
-  let logBayesFactor = -700;
-  if (posteriorPredictiveNullProbability <= targetPosteriorPredictiveNullProbability) {
-    const noiseLogLikelihood = betaPrimeLogDensity(targetSum, targetShape, referenceShape, referenceSum);
-    const signalComponents: number[] = [];
-    const signalPriorComponents: number[] = [];
-    for (let gainDb = BAYESIAN_DETECTOR_MODEL.signalGainGridStepDb / 2;
-      gainDb <= BAYESIAN_DETECTOR_MODEL.maximumSignalGainDb;
-      gainDb += BAYESIAN_DETECTOR_MODEL.signalGainGridStepDb) {
-      const gain = 10 ** (gainDb / 10);
-      const prior = -0.5 * (gainDb / BAYESIAN_DETECTOR_MODEL.signalGainPriorScaleDb) ** 2;
-      signalPriorComponents.push(prior);
-      signalComponents.push(prior + betaPrimeLogDensity(targetSum / gain, targetShape, referenceShape, referenceSum) - Math.log(gain));
-    }
-    const signalLogLikelihood = logSumExp(signalComponents) - logSumExp(signalPriorComponents);
-    logBayesFactor = clampFinite(signalLogLikelihood - noiseLogLikelihood, -700, 700);
-  }
-  const referenceMedian = median(referencePowerDbm);
-  const referenceDeviations = referencePowerDbm.map((value) => Math.abs(value - referenceMedian));
-  return {
-    modelId: BAYESIAN_DETECTOR_MODEL.id,
-    posteriorScope: 'selected-local-region',
-    priorSignalProbability: BAYESIAN_DETECTOR_MODEL.priorSignalProbability,
-    posteriorSignalProbability: posteriorFromLogBayesFactor(logBayesFactor),
-    logBayesFactor,
-    effectiveIndependentBins,
-    effectiveReferenceCells,
-    noiseShape,
-    posteriorPredictiveNullProbability,
-    targetPosteriorPredictiveNullProbability,
-    targetSweepFalseAlarmProbability: BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability,
-    multiplicityAdjustedTests,
-    testedRegionStartHz: sweep.frequencyHz[first]!,
-    testedRegionStopHz: sweep.frequencyHz[last]!,
-    qualification: 'ideal-exponential-not-physically-calibrated',
-    noiseSigmaDb: median(referenceDeviations) * 1.4826,
-    observedMeanShiftDb,
-    looks: 1,
-  };
-}
-
-function bayesianRegionWidths(sweep: Sweep): readonly number[] {
-  const length = sweep.powerDbm.length;
-  if (length <= 2) return [1];
-  const binWidthHz = sweep.frequencyHz.length > 1
-    ? median(sweep.frequencyHz.slice(1).map((frequency, index) => frequency - sweep.frequencyHz[index]!))
-    : sweep.actualRbwHz;
-  const rbwBins = Math.max(1, sweep.actualRbwHz / Math.max(Number.MIN_VALUE, binWidthHz));
-  const maximumWidth = Math.max(1, length - 2);
-  const widths = new Set<number>([1]);
-  for (let scale = 1; scale * rbwBins <= maximumWidth; scale *= 2) widths.add(Math.max(1, Math.min(maximumWidth, Math.round(scale * rbwBins))));
-  for (const fraction of [0.25, 0.5, 0.75, 0.9]) widths.add(Math.max(1, Math.min(maximumWidth, Math.round(length * fraction))));
-  return [...widths].sort((left, right) => left - right);
-}
-
-function centeredRegion(length: number, center: number, width: number): { first: number; last: number } {
-  const boundedWidth = Math.max(1, Math.min(length, width));
-  let first = center - Math.floor((boundedWidth - 1) / 2);
-  let last = first + boundedWidth - 1;
-  if (first < 0) { last -= first; first = 0; }
-  if (last >= length) { first -= last - length + 1; last = length - 1; }
-  return { first: Math.max(0, first), last };
 }
 
 interface Track { signal: DetectedSignal; released: boolean; consecutiveDetectionSweeps: number; }
@@ -412,7 +204,18 @@ export class SignalTracker {
     // increase persistence, or merge emitter identities. Repeated same-sweep
     // co-occurrence is recorded separately and the classifier still requires
     // its exact eight admitted association sweeps.
-    const refreshedRegularAssociationTrackIds = new Set<string>();
+    const refreshedStaticRegionAssociationTrackIds = new Set<string>();
+    const priorMulticomponentLineages = new Map<string, DetectedSignal>();
+    for (const { signal } of this.#tracks.values()) {
+      if (signal.associationMode !== 'multicomponent-swept-region-activity'
+        || signal.associationMissedSweeps !== 0
+        || !signal.associationId) continue;
+      const previous = priorMulticomponentLineages.get(signal.associationId);
+      if (!previous || (signal.multicomponentAssociationObservations?.length ?? 0)
+        > (previous.multicomponentAssociationObservations?.length ?? 0)) {
+        priorMulticomponentLineages.set(signal.associationId, signal);
+      }
+    }
     for (const association of regularSpectralComponentAssociations(candidates, sweep)) {
       const memberTrackIds = association.candidateIndices
         .map((candidateIndex) => candidateTrackIds.get(candidateIndex))
@@ -421,10 +224,18 @@ export class SignalTracker {
       if (memberTrackIds.length !== association.candidateIndices.length) continue;
       const memberTracks = memberTrackIds.map((trackId) => this.#tracks.get(trackId));
       if (memberTracks.some((track) => !track)) continue;
+      const associationObservation = regularComponentAssociationObservation(
+        association,
+        candidates,
+        candidateTrackIds,
+        sweep,
+      );
+      if (!associationObservation) continue;
       const regularMembers = memberTracks.filter((track) => track!.signal.associationMode === 'regular-spectral-component-activity');
       // Association updates are atomic. A partially changed member set cannot
       // leave a mixture of old and new provenance on otherwise local tracks.
       if (regularMembers.length !== 0 && regularMembers.length !== memberTracks.length) continue;
+      if (regularMembers.length === 0 && memberTracks.some((track) => track!.signal.associationMode !== 'frequency-local')) continue;
       const alreadyAssociated = regularMembers.length === memberTracks.length;
       const resolutionToleranceHz = Math.max(
         sweep.actualRbwHz * 2,
@@ -437,6 +248,19 @@ export class SignalTracker {
           || Math.abs(signal.associationRegionStartHz! - association.startHz) > resolutionToleranceHz
           || Math.abs(signal.associationRegionStopHz! - association.stopHz) > resolutionToleranceHz;
       })) continue;
+      const priorObservations = alreadyAssociated
+        ? memberTracks[0]!.signal.regularComponentAssociationObservations ?? []
+        : [];
+      const priorSourceSweep = priorObservations.at(-1)?.sourceSweep;
+      if (priorObservations.some((observation) => observation.sourceSweep.id === sweep.id)
+        || (priorSourceSweep && sweep.sequence <= priorSourceSweep.sequence)) continue;
+      const regularComponentAssociationObservations = [
+        ...priorObservations,
+        associationObservation,
+      ].slice(-64);
+      const associationRegionSweepIds = regularComponentAssociationObservations.map(
+        (observation) => observation.sourceSweep.id,
+      );
       for (const track of memberTracks) {
         const signal = track!.signal;
         track!.signal = {
@@ -444,16 +268,78 @@ export class SignalTracker {
           associationMode: 'regular-spectral-component-activity',
           associationRegionStartHz: alreadyAssociated ? signal.associationRegionStartHz : association.startHz,
           associationRegionStopHz: alreadyAssociated ? signal.associationRegionStopHz : association.stopHz,
-          associationRegionSweepIds: [...new Set([
-            ...(alreadyAssociated ? signal.associationRegionSweepIds ?? [] : []),
-            sweep.id,
-          ])].slice(-64),
+          associationRegionSweepIds,
           associationId: alreadyAssociated ? signal.associationId : `regular-lines:${memberTrackIds.join(',')}`,
           associationModelId: 'simultaneous-regular-components-v1',
           associationMemberTrackIds: memberTrackIds,
+          regularComponentAssociationObservations,
           associationMissedSweeps: 0,
         };
-        refreshedRegularAssociationTrackIds.add(signal.id);
+        refreshedStaticRegionAssociationTrackIds.add(signal.id);
+      }
+    }
+
+    // A swept receiver can turn periodic on/off activity into a run of narrow,
+    // approximately equally spaced threshold components across frequency.
+    // Preserve every local detection, but bind the current complete observed
+    // region into a bounded-overlap lineage for one classifier hypothesis. The
+    // public region always follows the latest admitted hull. This is neither an
+    // emitter identity nor a claim that components are simultaneous/common.
+    for (const association of multicomponentSweptRegionAssociations(candidates, sweep)) {
+      const memberTrackIds = association.candidateIndices
+        .map((candidateIndex) => candidateTrackIds.get(candidateIndex))
+        .filter((trackId): trackId is string => trackId !== undefined)
+        .sort();
+      if (memberTrackIds.length !== association.candidateIndices.length) continue;
+      const memberTracks = memberTrackIds.map((trackId) => this.#tracks.get(trackId));
+      if (memberTracks.some((track) => !track)) continue;
+      const associationObservation = multicomponentAssociationObservation(
+        association,
+        candidates,
+        candidateTrackIds,
+        sweep,
+      );
+      if (!associationObservation) continue;
+      if (memberTracks.some((track) => track!.signal.associationMode === 'regular-spectral-component-activity')) continue;
+      const compatibleExisting = [...priorMulticomponentLineages.values()]
+        .filter((signal) => multicomponentAssociationRegionCompatible(signal, association, sweep))
+        .sort((left, right) => (right.associationRegionSweepIds?.length ?? 0)
+          - (left.associationRegionSweepIds?.length ?? 0));
+      const existing = compatibleExisting[0];
+      const associationId = existing?.associationId
+        ?? `multicomponent-swept-region-${String(this.#nextAssociationId++).padStart(4, '0')}`;
+      const retainedAssociationObservations = (existing?.multicomponentAssociationObservations ?? [])
+        .filter((observation) => observation.geometryId === associationObservation.geometryId
+          && multicomponentAssociationRegionsOverlap(
+            observation.observedRegionStartHz,
+            observation.observedRegionStopHz,
+            associationObservation.observedRegionStartHz,
+            associationObservation.observedRegionStopHz,
+            associationObservation.rbwHz,
+            associationObservation.binWidthHz,
+          ));
+      const multicomponentAssociationObservations = [
+        ...retainedAssociationObservations,
+        associationObservation,
+      ].slice(-64);
+      const associationRegionSweepIds = multicomponentAssociationObservations.map(
+        (observation) => observation.sweepId,
+      );
+      for (const track of memberTracks) {
+        const signal = track!.signal;
+        track!.signal = {
+          ...signal,
+          associationMode: 'multicomponent-swept-region-activity',
+          associationRegionStartHz: association.startHz,
+          associationRegionStopHz: association.stopHz,
+          associationRegionSweepIds,
+          associationId,
+          associationModelId: MULTICOMPONENT_SWEPT_REGION_MODEL_ID,
+          associationMemberTrackIds: memberTrackIds,
+          multicomponentAssociationObservations,
+          associationMissedSweeps: 0,
+        };
+        refreshedStaticRegionAssociationTrackIds.add(signal.id);
       }
     }
 
@@ -461,11 +347,11 @@ export class SignalTracker {
     // only the classification provenance; the independently detected local
     // track and its ordinary persistence remain untouched.
     for (const [trackId, track] of this.#tracks) {
-      if (track.signal.associationMode !== 'regular-spectral-component-activity'
-        || refreshedRegularAssociationTrackIds.has(trackId)) continue;
+      if (!isStaticRegionAssociation(track.signal.associationMode)
+        || refreshedStaticRegionAssociationTrackIds.has(trackId)) continue;
       const associationMissedSweeps = (track.signal.associationMissedSweeps ?? 0) + 1;
       track.signal = associationMissedSweeps > this.config.releaseAfterMissedSweeps
-        ? clearRegularSpectralAssociation(track.signal)
+        ? clearStaticRegionAssociation(track.signal)
         : { ...track.signal, associationMissedSweeps };
     }
 
@@ -641,14 +527,31 @@ export function classificationRepresentatives(
 }
 
 function betterAssociationRepresentative(candidate: DetectedSignal, current: DetectedSignal, preferredDetectionId?: string): boolean {
+  const candidateIsCurrentMember = currentStaticAssociationMember(candidate);
+  const currentIsCurrentMember = currentStaticAssociationMember(current);
+  // A selected zero-span target may leave a changing regional association while
+  // tracker hysteresis keeps its old lineage visible. Selection is not evidence:
+  // a departed member must never displace a member in the latest admitted hull.
+  if (candidateIsCurrentMember !== currentIsCurrentMember) return candidateIsCurrentMember;
   if (candidate.id === preferredDetectionId) return true;
   if (current.id === preferredDetectionId) return false;
+  if (candidate.missedSweeps !== current.missedSweeps) return candidate.missedSweeps < current.missedSweeps;
+  if ((candidate.associationMissedSweeps ?? 0) !== (current.associationMissedSweeps ?? 0)) {
+    return (candidate.associationMissedSweeps ?? 0) < (current.associationMissedSweeps ?? 0);
+  }
   const regionCenterHz = ((candidate.associationRegionStartHz ?? candidate.startHz)
     + (candidate.associationRegionStopHz ?? candidate.stopHz)) / 2;
   const candidateDistanceHz = Math.abs((candidate.startHz + candidate.stopHz) / 2 - regionCenterHz);
   const currentDistanceHz = Math.abs((current.startHz + current.stopHz) / 2 - regionCenterHz);
   return candidateDistanceHz < currentDistanceHz
     || (candidateDistanceHz === currentDistanceHz && candidate.id < current.id);
+}
+
+function currentStaticAssociationMember(signal: DetectedSignal): boolean {
+  if (!isStaticRegionAssociation(signal.associationMode)) return true;
+  return signal.missedSweeps === 0
+    && signal.associationMissedSweeps === 0
+    && signal.associationMemberTrackIds?.includes(signal.id) === true;
 }
 
 export interface SweepMetrics {
@@ -1159,7 +1062,9 @@ function mergeSignal(
   const predictedPosterior = predictTrackPosterior(previous.bayesianEvidence.posteriorSignalProbability);
   const posteriorSignalProbability = posteriorFromPriorAndLogBayesFactor(predictedPosterior, candidate.bayesianEvidence.logBayesFactor);
   const logBayesFactor = equivalentLogBayesFactor(posteriorSignalProbability);
-  const regularSpectralAssociation = previous.associationMode === 'regular-spectral-component-activity';
+  const staticRegionAssociation = isStaticRegionAssociation(previous.associationMode)
+    ? previous.associationMode
+    : undefined;
   const classificationRegionStartHz = previous.classificationRegionStartHz ?? previous.bayesianEvidence.testedRegionStartHz;
   const classificationRegionStopHz = previous.classificationRegionStopHz ?? previous.bayesianEvidence.testedRegionStopHz;
   return {
@@ -1178,15 +1083,19 @@ function mergeSignal(
     classificationRegionStartHz,
     classificationRegionStopHz,
     classificationRegionSweepIds: previous.classificationRegionSweepIds ?? [previous.sweepIds[0]!],
+    classificationRegionObservation: previous.classificationRegionObservation
+      ?? candidate.classificationRegionObservation,
     qualityFlags: previous.qualityFlags,
-    associationMode: regularSpectralAssociation ? 'regular-spectral-component-activity' : 'frequency-local',
-    ...(regularSpectralAssociation ? {
+    associationMode: staticRegionAssociation ?? 'frequency-local',
+    ...(staticRegionAssociation ? {
       associationRegionStartHz: previous.associationRegionStartHz,
       associationRegionStopHz: previous.associationRegionStopHz,
       associationRegionSweepIds: previous.associationRegionSweepIds,
       associationId: previous.associationId,
       associationModelId: previous.associationModelId,
       associationMemberTrackIds: previous.associationMemberTrackIds,
+      multicomponentAssociationObservations: previous.multicomponentAssociationObservations,
+      regularComponentAssociationObservations: previous.regularComponentAssociationObservations,
       associationMissedSweeps: previous.associationMissedSweeps,
     } : {}),
     bayesianEvidence: {
@@ -1213,6 +1122,107 @@ interface RegularSpectralComponentAssociation {
   candidateIndices: readonly number[];
   startHz: number;
   stopHz: number;
+}
+
+function regularComponentAssociationObservation(
+  association: RegularSpectralComponentAssociation,
+  candidates: readonly DetectedSignal[],
+  candidateTrackIds: ReadonlyMap<number, string>,
+  sweep: Sweep,
+): RegularSpectralComponentAssociationObservation | undefined {
+  const members = association.candidateIndices.map((candidateIndex) => {
+    const candidate = candidates[candidateIndex];
+    const trackId = candidateTrackIds.get(candidateIndex);
+    if (!candidate || !trackId) return undefined;
+    return {
+      trackId,
+      startHz: candidate.startHz,
+      stopHz: candidate.stopHz,
+      peakHz: candidate.peakHz,
+      detectorId: candidate.detectorId,
+      localBayesianEvidence: structuredClone(candidate.bayesianEvidence),
+    };
+  });
+  if (members.some((member) => member === undefined)) return undefined;
+  return {
+    sourceSweep: compactBayesianEvidenceSweep(sweep),
+    observedRegionStartHz: association.startHz,
+    observedRegionStopHz: association.stopHz,
+    members: members
+      .filter((member): member is NonNullable<typeof member> => member !== undefined)
+      .sort((left, right) => left.trackId.localeCompare(right.trackId)),
+  };
+}
+
+function multicomponentAssociationObservation(
+  association: MulticomponentSweptRegionAssociation,
+  candidates: readonly DetectedSignal[],
+  candidateTrackIds: ReadonlyMap<number, string>,
+  sweep: Sweep,
+): MulticomponentSweptRegionAssociationObservation | undefined {
+  const members = association.candidateIndices.map((candidateIndex) => {
+    const candidate = candidates[candidateIndex];
+    const trackId = candidateTrackIds.get(candidateIndex);
+    if (!candidate || !trackId) return undefined;
+    return {
+      trackId,
+      startHz: candidate.startHz,
+      stopHz: candidate.stopHz,
+      peakHz: candidate.peakHz,
+      detectorId: candidate.detectorId,
+      localBayesianEvidence: structuredClone(candidate.bayesianEvidence),
+    };
+  });
+  if (members.some((member) => member === undefined)) return undefined;
+  const sortedMembers = members
+    .filter((member): member is NonNullable<typeof member> => member !== undefined)
+    .sort((left, right) => left.trackId.localeCompare(right.trackId));
+  const anchorTrackId = association.anchorCandidateIndex === undefined
+    ? undefined
+    : candidateTrackIds.get(association.anchorCandidateIndex);
+  if (association.anchorCandidateIndex !== undefined && !anchorTrackId) return undefined;
+  return {
+    sweepId: sweep.id,
+    sweepSequence: sweep.sequence,
+    geometryId: multicomponentSweepGeometryId(sweep),
+    sweepStartHz: sweep.actualStartHz,
+    sweepStopHz: sweep.actualStopHz,
+    rbwHz: sweep.actualRbwHz,
+    binWidthHz: multicomponentSweepBinWidthHz(sweep),
+    observedRegionStartHz: association.startHz,
+    observedRegionStopHz: association.stopHz,
+    containmentToleranceHz: association.containmentToleranceHz,
+    qualification: association.qualification,
+    ...(anchorTrackId === undefined ? {} : { anchorTrackId }),
+    members: sortedMembers,
+  };
+}
+
+function multicomponentAssociationRegionCompatible(
+  signal: DetectedSignal,
+  association: MulticomponentSweptRegionAssociation,
+  sweep: Sweep,
+): boolean {
+  if (signal.associationMode !== 'multicomponent-swept-region-activity'
+    || signal.associationModelId !== MULTICOMPONENT_SWEPT_REGION_MODEL_ID
+    || signal.associationRegionStartHz === undefined
+    || signal.associationRegionStopHz === undefined
+    || !signal.associationId
+    || !signal.associationRegionSweepIds?.length
+    || signal.associationMissedSweeps !== 0) return false;
+  const latestObservation = signal.multicomponentAssociationObservations?.at(-1);
+  if (!latestObservation
+    || signal.associationRegionStartHz !== latestObservation.observedRegionStartHz
+    || signal.associationRegionStopHz !== latestObservation.observedRegionStopHz
+    || latestObservation.geometryId !== multicomponentSweepGeometryId(sweep)) return false;
+  return multicomponentAssociationRegionsOverlap(
+    latestObservation.observedRegionStartHz,
+    latestObservation.observedRegionStopHz,
+    association.startHz,
+    association.stopHz,
+    sweep.actualRbwHz,
+    multicomponentSweepBinWidthHz(sweep),
+  );
 }
 
 function regularSpectralComponentAssociations(
@@ -1313,7 +1323,13 @@ function regularSpectralComponentAssociations(
   });
 }
 
-function clearRegularSpectralAssociation(signal: DetectedSignal): DetectedSignal {
+function isStaticRegionAssociation(
+  mode: DetectedSignal['associationMode'],
+): mode is 'regular-spectral-component-activity' | 'multicomponent-swept-region-activity' {
+  return mode === 'regular-spectral-component-activity' || mode === 'multicomponent-swept-region-activity';
+}
+
+function clearStaticRegionAssociation(signal: DetectedSignal): DetectedSignal {
   const next: DetectedSignal = { ...signal, associationMode: 'frequency-local' };
   delete next.associationRegionStartHz;
   delete next.associationRegionStopHz;
@@ -1322,6 +1338,11 @@ function clearRegularSpectralAssociation(signal: DetectedSignal): DetectedSignal
   delete next.associationModelId;
   delete next.associationMemberTrackIds;
   delete next.associationObservations;
+  delete next.multicomponentAssociationObservations;
+  delete next.regularComponentAssociationObservations;
+  delete next.associationOpportunities;
+  delete next.associationBayesianEvidence;
+  delete next.associationGeometryId;
   delete next.associationMissedSweeps;
   return next;
 }
@@ -1375,25 +1396,6 @@ function validateSweep(sweep: Sweep): void {
   const geometryToleranceHz = Math.max(sweep.actualRbwHz, (sweep.actualStopHz - sweep.actualStartHz) * 1e-9);
   if (sweep.frequencyHz[0]! < sweep.actualStartHz - geometryToleranceHz
     || sweep.frequencyHz.at(-1)! > sweep.actualStopHz + geometryToleranceHz) throw new Error('Sweep frequency grid lies outside its actual bounds');
-}
-
-function betaPrimeLogDensity(value: number, targetShape: number, referenceShape: number, referenceSum: number): number {
-  if (![value, targetShape, referenceShape, referenceSum].every(Number.isFinite) || value <= 0 || targetShape <= 0 || referenceShape <= 0 || referenceSum <= 0) throw new Error('Bayesian predictive density requires finite positive inputs');
-  return logGamma(referenceShape + targetShape)
-    - logGamma(referenceShape)
-    - logGamma(targetShape)
-    + referenceShape * Math.log(referenceSum)
-    + (targetShape - 1) * Math.log(value)
-    - (referenceShape + targetShape) * Math.log(referenceSum + value);
-}
-
-function logSumExp(values: readonly number[]): number {
-  const maximum = Math.max(...values);
-  return maximum + Math.log(values.reduce((total, value) => total + Math.exp(value - maximum), 0));
-}
-
-function posteriorFromLogBayesFactor(logBayesFactor: number): number {
-  return posteriorFromPriorAndLogBayesFactor(BAYESIAN_DETECTOR_MODEL.priorSignalProbability, logBayesFactor);
 }
 
 function posteriorFromPriorAndLogBayesFactor(prior: number, logBayesFactor: number): number {
@@ -1605,9 +1607,19 @@ function median(values: readonly number[]): number {
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-export { SIGNAL_LAB_EMSO_MODEL, SignalLabBayesianClassifier, signalLabWaveformHypotheses } from './signal-lab-classifier.js';
-export type { SignalLabWaveformHypothesis, WaveformEvidence } from './signal-lab-classifier.js';
+export { SIGNAL_LAB_EMSO_MODEL, SignalLabBayesianClassifier } from './signal-lab-classifier.js';
+export type { WaveformEvidence } from './signal-lab-classifier.js';
 export { BAYESIAN_WAVEFORM_MODEL, BayesianWaveformClassifier, empiricalSyntheticSupportRank, inferPosterior, knownModelSupportRank, observableClassDefinitions, selectObservableDecision } from './bayesian-waveform-classifier.js';
-export { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, extractObservableFeatures } from './observable-features.js';
+export {
+  BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
+  extractObservableFeatures,
+  observableAssociationEvidenceIsCurrentlyQualified,
+} from './observable-features.js';
+export {
+  OBSERVABLE_HYPOTHESIS_DOMAIN_POLICY_ID,
+  observableHypothesisHasRequiredEvidence,
+  observableRepresentativeIsInClassDomain,
+} from './observable-hypothesis-domain.js';
+export type { ObservableHypothesisDomainObservation } from './observable-hypothesis-domain.js';
 export { logGamma, logSumExp, mixtureLogLikelihood, posteriorCandidates, regularizedIncompleteBeta, studentTLogDensity, studentTModelTailProbability } from './bayesian-predictive.js';
 export type { ObservableDecisionClass, ObservableLeafClass } from './observable-classifier-model.js';

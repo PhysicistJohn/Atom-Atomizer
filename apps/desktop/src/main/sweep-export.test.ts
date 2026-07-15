@@ -5,6 +5,7 @@ import {
   MAX_SWEEP_EXPORT_BYTES_V1,
   MAX_SWEEP_EXPORT_POINTS_V1,
   sweepExportRequestSchema,
+  type DeviceIdentity,
   type Sweep,
 } from '@tinysa/contracts';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
@@ -40,6 +41,47 @@ describe('sweep export', () => {
     expect(JSON.parse(serializeSweep(sweep, 'json'))).toMatchObject({
       kind: 'spectrum', id: 'sweep-1', identity: { simulated: true }, requested: sweep.requested,
     });
+  });
+
+  it('preserves exact custom-firmware warning provenance and rejects invented commits', () => {
+    const physical: Sweep = {
+      ...sweep,
+      source: 'instrument-driver-scalar',
+      resolutionBandwidthQualification: 'device-observed',
+      attenuationQualification: 'device-observed',
+      identity: serialSessionIdentity(),
+    };
+    const serialized = JSON.parse(serializeSweep(physical, 'json')) as Sweep;
+    if (!('kind' in serialized.identity) || serialized.identity.provenance.sourceKind !== 'serial-port') {
+      throw new Error('Expected serial instrument-session export identity');
+    }
+    expect(serialized.identity.provenance.device).toMatchObject({
+      firmwareReportedRevision: 'deadbee',
+      firmwareQualification: 'custom-unqualified',
+      firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+    });
+    expect(serialized.identity.provenance.device).not.toHaveProperty('firmwareSourceCommit');
+    expect(serializeSweep(physical, 'csv')).toContain('Custom firmware revision deadbee is admitted without source qualification.');
+
+    const legacy = physicalLegacyIdentity();
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json',
+      sweep: {
+        ...sweep,
+        identity: { ...legacy, firmwareSourceCommit: FIRMWARE_SOURCE_COMMIT },
+      },
+    }).success).toBe(false);
+    const { firmwareWarning: _warning, ...missingWarning } = legacy;
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...sweep, identity: missingWarning },
+    }).success).toBe(false);
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json',
+      sweep: {
+        ...sweep,
+        identity: { ...legacy, firmwareVersion: 'custom-lab-v99-gc5dd31f' },
+      },
+    }).success).toBe(false);
   });
 
   it('preserves unavailable attenuation as null in JSON and an empty CSV field', () => {
@@ -256,6 +298,25 @@ describe('sweep export', () => {
     expect(JSON.parse(serializeSweep(future, 'json')).actualStopHz).toBe(stopHz);
   });
 
+  it('derives instrument-session simulation status from execution provenance', () => {
+    const physical = serializeSweep({
+      ...sweep,
+      source: 'instrument-driver-scalar',
+      resolutionBandwidthQualification: 'device-observed',
+      attenuationQualification: 'device-observed',
+      identity: serialSessionIdentity(),
+    }, 'csv');
+    const executableTwin = serializeSweep({
+      ...sweep,
+      source: 'renode-executable-state',
+      resolutionBandwidthQualification: 'firmware-executed-twin',
+      attenuationQualification: 'firmware-executed-twin',
+      identity: twinSessionIdentity(),
+    }, 'csv');
+    expect(firstCsvValue(physical, 'simulated')).toBe('false');
+    expect(firstCsvValue(executableTwin, 'simulated')).toBe('true');
+  });
+
   it('rejects an oversized text artifact before returning output', () => {
     const traceFrequencyHz = Array.from(
       { length: MAX_SWEEP_EXPORT_POINTS_V1 },
@@ -336,8 +397,10 @@ function serialSessionIdentity(): Sweep['identity'] {
       verifiedAt: '2026-07-10T12:34:56.000Z',
       serialPort: { path: '/dev/tty.usbmodem407', vendorId: '0483', productId: '5740' },
       device: {
-        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'custom',
-        firmwareQualification: 'custom-unqualified', usbIdentityVerified: true,
+        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'tinySA4_custom-gdeadbee',
+        firmwareReportedRevision: 'deadbee', firmwareQualification: 'custom-unqualified',
+        firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+        usbIdentityVerified: true,
       },
     },
   };
@@ -364,10 +427,12 @@ function twinSessionIdentity(): Sweep['identity'] {
   };
 }
 
-function physicalLegacyIdentity(): Sweep['identity'] {
+function physicalLegacyIdentity(): DeviceIdentity {
   return {
-    model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'custom',
+    model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'tinySA4_custom-gdeadbee',
+    firmwareReportedRevision: 'deadbee',
     firmwareQualification: 'custom-unqualified',
+    firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
     port: {
       id: 'serial:physical', path: '/dev/tty.usbmodem407', vendorId: '0483', productId: '5740',
       usbMatch: 'exact-zs407-cdc', transport: 'usb-cdc-acm', execution: 'physical',
@@ -396,4 +461,10 @@ function twinLegacyIdentity(): Sweep['identity'] {
     },
     simulated: true, usbIdentityVerified: false, execution: 'firmware-digital-twin', digitalTwin,
   };
+}
+
+function firstCsvValue(csv: string, column: string): string {
+  const [header, row] = csv.trimEnd().split('\n');
+  const columns = header!.split(',');
+  return row!.split(',')[columns.indexOf(column)]!;
 }

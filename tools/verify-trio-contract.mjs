@@ -31,13 +31,31 @@ assertDeepEqual(trio.parties.atomizer.registeredDrivers, [
 assertEqual(trio.parties.signalLab.measurementBridgeContractVersion, 1, 'SignalLab measurement contract');
 assertEqual(trio.parties.signalLab.measurementBridgeStatus, 'active', 'SignalLab measurement edge status');
 assertEqual(trio.parties.signalLab.stimulusContractVersion, 1, 'SignalLab stimulus contract');
-assertEqual(trio.parties.signalLab.closedProfileCount, 79, 'SignalLab profile count');
+assertEqual(trio.parties.signalLab.closedProfileCount, 34, 'SignalLab profile count');
 assertEqual(trio.parties.signalLab.firmwareStimulusSinkStatus, 'reserved-not-connected', 'SignalLab Firmware sink');
 assertEqual(trio.parties.firmware.bridgeContractVersion, 1, 'firmware bridge contract');
-assertExactObject(trio.parties.atomizer.physicalFirmwareCompatibility.revisions, {
-  c5dd31f: 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c',
-  c979386: 'c97938697b6c7485e7cab50bca9af76996b7d671',
-}, 'Atomizer operational firmware revisions');
+assertDeepEqual(trio.parties.atomizer.physicalFirmwareCompatibility.identities, [
+  {
+    firmwareVersion: 'tinySA4_v1.4-217-gc5dd31f',
+    reportedRevision: 'c5dd31f',
+    sourceCommit: 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c',
+  },
+  {
+    firmwareVersion: 'tinySA4_v1.4-224-gc979386',
+    reportedRevision: 'c979386',
+    sourceCommit: 'c97938697b6c7485e7cab50bca9af76996b7d671',
+  },
+], 'Atomizer operational firmware identities');
+assertEqual(
+  trio.parties.atomizer.physicalFirmwareCompatibility.identityEvidence,
+  'reported-shell-version-not-binary-attestation',
+  'physical firmware identity evidence',
+);
+assertEqual(
+  trio.parties.atomizer.physicalFirmwareCompatibility.alternateVersionPolicy,
+  'decorated-or-alternate-known-revision-is-custom-unqualified',
+  'alternate physical firmware version policy',
+);
 if ('physicalFirmwareSupport' in trio.parties.atomizer) throw new Error('Atomizer must not retain firmware-update release ownership');
 
 const activeEdges = trio.edges.filter((edge) => edge.status === 'active').map(edgeKey).sort();
@@ -145,10 +163,15 @@ requireSource(agentSource, 'export const ATOM_AGENT_VERSION = 9', 'Atom surface 
 requireSource(agentSource, "export const ATOM_TOOL_LOADER_NAME = 'load_atom_tools'", 'compact Atom tool loader');
 requireSource(agentSource, 'export const realtimeToolDefinitions: readonly AtomRealtimeToolDefinition[] = Object.freeze([atomToolLoaderDefinition])', 'compact persistent Realtime tool surface');
 
-const physicalContractSource = await readFile(resolve(root, 'packages/contracts/src/index.ts'), 'utf8');
+const physicalContractSource = [
+  await readFile(resolve(root, 'packages/contracts/src/index.ts'), 'utf8'),
+  await readFile(resolve(root, 'packages/contracts/src/firmware-provenance.ts'), 'utf8'),
+].join('\n');
 requireSource(physicalContractSource, 'export const TINYSA_PROTOCOL_CONTRACT_VERSION = 3 as const', 'TinySA protocol contract version');
-for (const [revision, sourceCommit] of Object.entries(trio.parties.atomizer.physicalFirmwareCompatibility.revisions)) {
-  requireSource(physicalContractSource, sourceCommit, `${revision} operational firmware source`);
+for (const identity of trio.parties.atomizer.physicalFirmwareCompatibility.identities) {
+  requireSource(physicalContractSource, identity.firmwareVersion, `${identity.reportedRevision} operational firmware version`);
+  requireSource(physicalContractSource, identity.reportedRevision, `${identity.reportedRevision} operational reported revision`);
+  requireSource(physicalContractSource, identity.sourceCommit, `${identity.reportedRevision} operational firmware source`);
 }
 const instrumentContractSource = await readFile(resolve(root, 'packages/contracts/src/instrument.ts'), 'utf8');
 const instrumentApiSource = await readFile(resolve(root, 'packages/contracts/src/atomizer-instrument-api.ts'), 'utf8');
@@ -169,7 +192,7 @@ for (const needle of [
 ]) {
   requireSource(registrySource, needle, 'static instrument registry');
 }
-requireSource(preferenceSource, "export const SIGNAL_LAB_DRIVER_ID = 'signal-lab' as const", 'SignalLab factory preference');
+requireSource(preferenceSource, 'export const SIGNAL_LAB_DRIVER_ID = SIGNAL_LAB_INSTRUMENT_DRIVER_ID', 'SignalLab factory preference');
 requireSource(preferenceSource, "source: 'factory-default'", 'explicit factory-default provenance');
 for (const forbidden of ['window.tinySA', "'tinysa:", '"tinysa:']) {
   if (registrySource.includes(forbidden) || preloadSource.includes(forbidden)) throw new Error(`Legacy Electron device boundary remains: ${forbidden}`);
@@ -183,10 +206,17 @@ assertEqual(signalLabContract.contractVersion, trio.parties.signalLab.measuremen
 assertEqual(signalLabContract.status, 'active', 'SignalLab bridge publication status');
 assertExactObject(signalLabContract.claims, { usbEmulated: false, firmwareExecuted: false, rfEmitted: false }, 'SignalLab negative identity claims');
 assertEqual(signalLabContract.semantics?.selectedProfileVisibility, 'status-only-never-copied-into-measurement-results', 'SignalLab selected-profile isolation');
+assertEqual(
+  signalLabContract.semantics?.detectedPowerTuning,
+  'required-safe-integer-center-hz-returned-exactly-and-receiver-filtered-at-that-tune',
+  'SignalLab detected-power tuning guarantee',
+);
 assertEqual(signalLabContract.semantics?.retry, 'none', 'SignalLab retry policy');
 const measurementSource = await readFile(resolve(parent, 'TinySA_SignalLab/src/measurement-contract.ts'), 'utf8');
 requireSource(measurementSource, 'export const ATOMIZER_MEASUREMENT_CONTRACT_VERSION = 1 as const', 'SignalLab measurement source contract version');
 requireSource(measurementSource, "status: z.literal('active')", 'SignalLab active contract status');
+requireSource(measurementSource, 'centerFrequencyHz: z.number().safe().int()', 'SignalLab required safe-integer detected-power tune');
+requireSource(measurementSource, 'frequencyStepHz: z.literal(MEASUREMENT_FREQUENCY_STEP_HZ)', 'SignalLab advertised detected-power tuning lattice');
 const stimulusSource = await readFile(resolve(parent, 'TinySA_SignalLab/src/contracts.ts'), 'utf8');
 requireSource(stimulusSource, 'export const SIGNAL_LAB_CONTRACT_VERSION = 1', 'SignalLab stimulus source contract version');
 requireSource(stimulusSource, 'SignalLabStimulusIntent', 'reserved SignalLab stimulus intent');

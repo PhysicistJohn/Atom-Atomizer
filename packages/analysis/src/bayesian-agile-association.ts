@@ -1,5 +1,6 @@
 import type { ActivityAssociationObservation, BayesianActivityAssociationEvidence } from '@tinysa/contracts';
 import { logGamma } from './bayesian-predictive.js';
+import { BAYESIAN_DETECTOR_MODEL } from './bayesian-signal-detector.js';
 
 export const BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL = {
   id: 'bayesian-frequency-agile-transition-v3',
@@ -121,11 +122,27 @@ function validateObservation(observation: ActivityAssociationObservation): void 
     || observation.binWidthHz <= 0
     || !observation.detectorId
     || !local
-    || local.modelId !== observation.detectorId
+    || observation.detectorId !== BAYESIAN_DETECTOR_MODEL.id
+    || local.modelId !== BAYESIAN_DETECTOR_MODEL.id
     || local.posteriorScope !== 'selected-local-region'
     || local.looks !== 1
-    || ![local.posteriorSignalProbability, local.logBayesFactor, local.posteriorPredictiveNullProbability,
-      local.testedRegionStartHz, local.testedRegionStopHz].every(Number.isFinite)
+    || local.priorSignalProbability !== BAYESIAN_DETECTOR_MODEL.priorSignalProbability
+    || local.posteriorSignalProbability < BAYESIAN_DETECTOR_MODEL.minimumPosteriorSignalProbability
+    || local.targetSweepFalseAlarmProbability !== BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability
+    || !Number.isInteger(local.multiplicityAdjustedTests)
+    || local.multiplicityAdjustedTests < 1
+    || local.targetPosteriorPredictiveNullProbability
+      !== BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability / local.multiplicityAdjustedTests
+    || local.posteriorPredictiveNullProbability > local.targetPosteriorPredictiveNullProbability
+    || local.qualification !== 'ideal-exponential-not-physically-calibrated'
+    || ![local.priorSignalProbability, local.posteriorSignalProbability, local.logBayesFactor,
+      local.effectiveIndependentBins, local.effectiveReferenceCells, local.noiseShape,
+      local.posteriorPredictiveNullProbability, local.targetPosteriorPredictiveNullProbability,
+      local.targetSweepFalseAlarmProbability, local.testedRegionStartHz, local.testedRegionStopHz,
+      local.noiseSigmaDb, local.observedMeanShiftDb].every(Number.isFinite)
+    || local.effectiveIndependentBins <= 0
+    || local.effectiveReferenceCells <= 0
+    || local.noiseShape <= 0
     // A one-bin Bayesian test has identical center coordinates at its start
     // and stop; the observation support above still carries positive bin width.
     || local.testedRegionStopHz < local.testedRegionStartHz) {

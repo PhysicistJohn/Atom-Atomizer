@@ -3,6 +3,7 @@ import {
   MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1,
   MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1,
   MAX_INSTRUMENT_FREQUENCY_HZ_V1,
+  MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1,
   MAX_INSTRUMENT_METADATA_CHARACTERS_V1,
   MAX_INSTRUMENT_POWER_ABS_DB_V1,
   MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1,
@@ -17,25 +18,22 @@ import {
   type DetectedPowerTimeseriesConfiguration,
   type InstrumentSessionProvenance,
 } from './instrument.js';
+import {
+  DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
+  FIRMWARE_SOURCE_COMMIT,
+  ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+  isSupportedZs407FirmwareIdentity,
+  isZs407FirmwareVersionRevisionPair,
+  type FirmwareQualification,
+  type FirmwareSourceCommit,
+} from './firmware-provenance.js';
 
 export * from './instrument.js';
+export * from './firmware-provenance.js';
 export * from './atomizer-instrument-api.js';
 
 /** Version of the internal TinySA ZS407 shell/protocol contract, not the public renderer API. */
 export const TINYSA_PROTOCOL_CONTRACT_VERSION = 3 as const;
-export const FIRMWARE_SOURCE_COMMIT = 'c97938697b6c7485e7cab50bca9af76996b7d671' as const;
-export const ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT = 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c' as const;
-export const DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT = 'd12bd826555eee51505542a55fd184ade5817d58' as const;
-export const SUPPORTED_ZS407_FIRMWARE_REVISIONS = Object.freeze({
-  c5dd31f: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
-  c979386: FIRMWARE_SOURCE_COMMIT,
-} as const);
-export type SupportedZs407FirmwareRevision = keyof typeof SUPPORTED_ZS407_FIRMWARE_REVISIONS;
-export type FirmwareSourceCommit =
-  | typeof FIRMWARE_SOURCE_COMMIT
-  | typeof ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT
-  | typeof DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT;
-export type FirmwareQualification = 'supported-oem' | 'custom-unqualified' | 'executable-twin' | 'protocol-test';
 export const TINYSA_USB_VENDOR_ID = '0483' as const;
 export const TINYSA_USB_PRODUCT_ID = '5740' as const;
 export const TINYSA_SHELL_PROMPT = 'ch> ' as const;
@@ -137,6 +135,75 @@ export interface DeviceIdentity {
   execution: ExecutionEnvironment;
   digitalTwin?: DigitalTwinProvenance;
 }
+
+/** Runtime boundary for legacy device-service identity before a driver may
+ * project it into a generic instrument session. */
+export const deviceIdentitySchema = z.object({
+  model: z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1),
+  hardwareVersion: z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1),
+  firmwareVersion: z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1),
+  firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i).optional(),
+  firmwareSourceCommit: z.union([
+    z.literal(FIRMWARE_SOURCE_COMMIT),
+    z.literal(ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT),
+    z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
+  ]).optional(),
+  firmwareQualification: z.enum(['supported-oem', 'custom-unqualified', 'executable-twin', 'protocol-test']),
+  firmwareWarning: z.string().min(1).max(MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1).optional(),
+  port: portCandidateSchema,
+  simulated: z.boolean(),
+  usbIdentityVerified: z.boolean(),
+  execution: executionEnvironmentSchema,
+  digitalTwin: digitalTwinProvenanceSchema.optional(),
+}).strict().superRefine((identity, context) => {
+  if (identity.execution !== identity.port.execution) {
+    context.addIssue({ code: 'custom', path: ['execution'], message: 'Device identity execution must match its port provenance' });
+  }
+  if (identity.simulated !== (identity.execution !== 'physical')) {
+    context.addIssue({ code: 'custom', path: ['simulated'], message: 'Device identity simulation label must match execution' });
+  }
+  const expectedUsbVerification = identity.execution === 'physical'
+    && identity.port.usbMatch === 'exact-zs407-cdc';
+  if (identity.usbIdentityVerified !== expectedUsbVerification) {
+    context.addIssue({ code: 'custom', path: ['usbIdentityVerified'], message: 'USB verification must match exact physical ZS407 evidence' });
+  }
+  const executableTwin = identity.execution === 'firmware-digital-twin';
+  if (Boolean(identity.digitalTwin) !== executableTwin
+    || Boolean(identity.port.digitalTwin) !== executableTwin
+    || (identity.digitalTwin && identity.port.digitalTwin
+      && JSON.stringify(identity.digitalTwin) !== JSON.stringify(identity.port.digitalTwin))) {
+    context.addIssue({ code: 'custom', path: ['digitalTwin'], message: 'Device and port executable-twin provenance must agree exactly' });
+  }
+  if (identity.execution === 'physical') {
+    if (identity.firmwareQualification !== 'supported-oem'
+      && identity.firmwareQualification !== 'custom-unqualified') {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Physical identity requires supported or explicitly unqualified firmware' });
+    }
+    if (!identity.firmwareReportedRevision
+      || !isZs407FirmwareVersionRevisionPair(identity.firmwareVersion, identity.firmwareReportedRevision)) {
+      context.addIssue({ code: 'custom', path: ['firmwareReportedRevision'], message: 'Physical identity revision must equal its single tinySA4 version token' });
+    } else if (identity.firmwareQualification === 'supported-oem') {
+      if (!identity.firmwareSourceCommit
+        || !isSupportedZs407FirmwareIdentity(identity.firmwareVersion, identity.firmwareReportedRevision, identity.firmwareSourceCommit)
+        || identity.firmwareWarning !== undefined) {
+        context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Supported physical firmware must match the closed revision registry without a warning' });
+      }
+    } else if (identity.firmwareQualification === 'custom-unqualified'
+      && (identity.firmwareSourceCommit !== undefined
+        || !identity.firmwareWarning?.toLowerCase().includes(identity.firmwareReportedRevision.toLowerCase()))) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Custom physical firmware requires an exact unresolved-revision warning and no invented commit' });
+    }
+  } else if (identity.execution === 'firmware-digital-twin') {
+    if (identity.firmwareQualification !== 'executable-twin'
+      || identity.firmwareSourceCommit !== DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT
+      || identity.firmwareReportedRevision !== undefined
+      || identity.firmwareWarning !== undefined) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Executable-twin firmware identity is contradictory' });
+    }
+  } else if (identity.firmwareQualification !== 'protocol-test') {
+    context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Protocol-test execution requires protocol-test firmware qualification' });
+  }
+});
 
 export interface NumericRange {
   min: number;
@@ -647,6 +714,16 @@ export interface BayesianDetectionEvidence {
   observedMeanShiftDb: number;
   looks: number;
 }
+export interface LocalClassificationRegionObservation {
+  /** Complete immutable detector input for the one look that froze this local ROI. */
+  sourceSweep: Sweep;
+  startHz: number;
+  stopHz: number;
+  peakHz: number;
+  detectorId: string;
+  /** Immutable one-look evidence; never the later track-state posterior. */
+  localBayesianEvidence: BayesianDetectionEvidence;
+}
 export interface ActivityAssociationObservation {
   /** Complete sweep containing an independently admitted CFAR-local look. */
   sweepId: string;
@@ -661,6 +738,46 @@ export interface ActivityAssociationObservation {
   /** Immutable local detector model and score that admitted this look. */
   detectorId: string;
   localBayesianEvidence: BayesianDetectionEvidence;
+}
+export interface MulticomponentSweptRegionMemberObservation {
+  /** Frequency-local tracker identity in this sweep; never an emitter identity. */
+  trackId: string;
+  startHz: number;
+  stopHz: number;
+  peakHz: number;
+  detectorId: string;
+  /** Immutable one-look detector evidence, before the tracker posterior is applied. */
+  localBayesianEvidence: BayesianDetectionEvidence;
+}
+export interface MulticomponentSweptRegionAssociationObservation {
+  /** Complete sweep in which every listed member was independently detected. */
+  sweepId: string;
+  sweepSequence: number;
+  /** Stable acquisition/source/configuration identity, not a signal identity. */
+  geometryId: string;
+  sweepStartHz: number;
+  sweepStopHz: number;
+  rbwHz: number;
+  binWidthHz: number;
+  observedRegionStartHz: number;
+  observedRegionStopHz: number;
+  containmentToleranceHz: number;
+  /** Observation-only eligibility path; neither path claims a common emitter or process. */
+  qualification:
+    | 'selected-multiscale-region-containment-not-emitter-identity'
+    | 'resolved-component-raster-not-emitter-identity';
+  /** Present only when a member's selected multiscale region contains the observed hull. */
+  anchorTrackId?: string;
+  /** Exact current-sweep members, sorted by track ID. */
+  members: readonly MulticomponentSweptRegionMemberObservation[];
+}
+export interface RegularSpectralComponentAssociationObservation {
+  /** Complete immutable detector input for this simultaneous regular-line look. */
+  sourceSweep: Sweep;
+  observedRegionStartHz: number;
+  observedRegionStopHz: number;
+  /** Exact independently admitted members, sorted by frequency-local track ID. */
+  members: readonly MulticomponentSweptRegionMemberObservation[];
 }
 export interface ActivityAssociationOpportunity {
   /** Complete, stable-geometry wide sweep considered by the association model. */
@@ -714,17 +831,25 @@ export interface DetectedSignal {
   classificationRegionStartHz?: number;
   classificationRegionStopHz?: number;
   classificationRegionSweepIds?: readonly string[];
+  /** Self-contained one-look provenance used to recompute the frozen local ROI. */
+  classificationRegionObservation?: LocalClassificationRegionObservation;
   /** Whether the track is local or carries a separately disclosed, non-emitter-identity association. */
-  associationMode?: 'frequency-local' | 'frequency-agile-2g4-activity' | 'regular-spectral-component-activity';
-  /** Separately declared region used only for the disclosed activity association. */
+  associationMode?: 'frequency-local' | 'frequency-agile-2g4-activity' | 'regular-spectral-component-activity' | 'multicomponent-swept-region-activity';
+  /** Latest independently qualified region in the disclosed non-identity activity lineage. */
   associationRegionStartHz?: number;
   associationRegionStopHz?: number;
+  /** Retained same-geometry observations with bounded overlap to the latest public region. */
   associationRegionSweepIds?: readonly string[];
+  /** Association-lineage identifier; never an emitter or common-process identity. */
   associationId?: string;
   associationModelId?: string;
   associationMemberTrackIds?: readonly string[];
   /** Ordered local-look provenance for a disclosed, non-identity activity association. */
   associationObservations?: readonly ActivityAssociationObservation[];
+  /** Ordered, bounded-overlap same-sweep member provenance ending at the current public region. */
+  multicomponentAssociationObservations?: readonly MulticomponentSweptRegionAssociationObservation[];
+  /** Ordered, bounded regular-line looks with the detector inputs needed for recomputation. */
+  regularComponentAssociationObservations?: readonly RegularSpectralComponentAssociationObservation[];
   /** Every stable-geometry opportunity in the rolling association window. */
   associationOpportunities?: readonly ActivityAssociationOpportunity[];
   /** Bayesian activity evidence, separate from every local detector posterior. */
@@ -755,7 +880,7 @@ export interface WaveformClassification {
   modelProvenance?: {
     producer: 'tinysa-signal-lab';
     sourceCommit: string;
-    /** Hash of the canonical training-corpus source admitted by the trainer. */
+    /** SHA-256 of the canonical JSON manifest of every admitted training-source artifact. */
     corpusSha256: string;
     preprocessing: string;
     modelAssetSha256?: string;
@@ -902,6 +1027,36 @@ const exportDeviceIdentitySchema = z.object({
   if (identity.usbIdentityVerified && identity.port.usbMatch !== 'exact-zs407-cdc') {
     context.addIssue({ code: 'custom', path: ['usbIdentityVerified'], message: 'Verified USB identity requires an exact ZS407 match' });
   }
+  if (identity.firmwareQualification === 'supported-oem') {
+    if (identity.execution !== 'physical') {
+      context.addIssue({ code: 'custom', path: ['execution'], message: 'Supported OEM export identity must be physical' });
+    }
+    if (!identity.firmwareReportedRevision || !identity.firmwareSourceCommit) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Supported OEM export identity requires reported revision and exact source commit' });
+    } else if (!isZs407FirmwareVersionRevisionPair(identity.firmwareVersion, identity.firmwareReportedRevision)) {
+      context.addIssue({ code: 'custom', path: ['firmwareReportedRevision'], message: 'Supported OEM export revision must equal the single revision token in the firmware version' });
+    } else if (!isSupportedZs407FirmwareIdentity(identity.firmwareVersion, identity.firmwareReportedRevision, identity.firmwareSourceCommit)) {
+      context.addIssue({ code: 'custom', path: ['firmwareSourceCommit'], message: 'Supported OEM export revision and source commit must match the closed qualification registry' });
+    }
+    if (identity.firmwareWarning !== undefined) {
+      context.addIssue({ code: 'custom', path: ['firmwareWarning'], message: 'Supported OEM export identity cannot carry a custom-firmware warning' });
+    }
+  }
+  if (identity.firmwareQualification === 'custom-unqualified') {
+    if (identity.execution !== 'physical') {
+      context.addIssue({ code: 'custom', path: ['execution'], message: 'Custom export identity must be physical' });
+    }
+    if (!identity.firmwareReportedRevision || !identity.firmwareWarning) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Custom export identity requires reported revision and exact warning' });
+    } else if (!isZs407FirmwareVersionRevisionPair(identity.firmwareVersion, identity.firmwareReportedRevision)) {
+      context.addIssue({ code: 'custom', path: ['firmwareReportedRevision'], message: 'Custom export revision must equal the single revision token in the firmware version' });
+    } else if (!identity.firmwareWarning.toLowerCase().includes(identity.firmwareReportedRevision.toLowerCase())) {
+      context.addIssue({ code: 'custom', path: ['firmwareWarning'], message: 'Custom export warning must identify the unresolved reported revision' });
+    }
+    if (identity.firmwareSourceCommit !== undefined) {
+      context.addIssue({ code: 'custom', path: ['firmwareSourceCommit'], message: 'Custom export identity cannot invent a source commit' });
+    }
+  }
 });
 const exportInstrumentMeasurementIdentitySchema = z.object({
   kind: z.literal('instrument-session'),
@@ -1043,7 +1198,7 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
       requireSource(['renode-executable-state'], 'Executable-twin instrument-session provenance');
       requireResolutionQualification('firmware-executed-twin', true, 'Executable-twin instrument-session provenance');
       requireAttenuation('firmware-executed-twin', 'observed', true, 'Executable-twin instrument-session provenance');
-    } else {
+    } else if (provenance.sourceKind === 'signal-lab') {
       requireExportControlModel(sweep, context, 'synthetic-scalar', 'SignalLab instrument-session provenance');
       requireSource(['signal-lab-synthetic'], 'SignalLab instrument-session provenance');
       requireResolutionQualification('synthetic-grid-equivalent', true, 'SignalLab instrument-session provenance');
@@ -1054,6 +1209,9 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
       if (!Number.isFinite(minimumGridSpacing) || minimumGridSpacing <= 0 || sweep.actualRbwHz !== minimumGridSpacing) {
         context.addIssue({ code: 'custom', path: ['actualRbwHz'], message: 'SignalLab synthetic-grid resolution must equal the minimum exported frequency spacing' });
       }
+    } else {
+      const unhandledProvenance: never = provenance;
+      throw new Error(`Sweep export validation is undefined for ${JSON.stringify(unhandledProvenance)}`);
     }
   } else if (sweep.identity.execution === 'physical') {
     requireExportControlModel(sweep, context, 'receiver', 'Physical legacy device provenance');

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ATOMIZER_INSTRUMENT_API_VERSION,
   atomizerInstrumentEventSchema,
+  atomizerInstrumentPreferenceSchema,
   atomizerInstrumentPreferenceSelectionSchema,
   atomizerInstrumentStateSchema,
 } from './atomizer-instrument-api.js';
@@ -31,14 +32,27 @@ describe('Atomizer instrument API v1 contract', () => {
         },
         capabilities: {
           schemaVersion: 1,
-          acquisitions: [{
-            kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000 },
-            points: { min: 2, max: 4_096 },
-            sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
-            controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
-            powerUnit: 'dBm',
+          acquisitions: [
+            {
+              kind: 'swept-spectrum', frequencyHz: { min: 1, max: 1_000_000 },
+              points: { min: 2, max: 4_096 },
+              sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+              controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+              powerUnit: 'dBm',
+            },
+            {
+              kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 1_000_000 },
+              sampleCount: { min: 1, max: 4_096 },
+              sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+              controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+              powerUnit: 'dBm', timing: 'uniform',
+            },
+          ],
+          features: [{
+            kind: 'signal-lab-profile-selection',
+            profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000, recommendedSpanHz: 20_000 }],
+            selectedProfileId: 'cw',
           }],
-          features: [],
         },
         rfOutput: 'not-supported',
         rfOutputQualification: 'not-applicable',
@@ -71,12 +85,28 @@ describe('Atomizer instrument API v1 contract', () => {
     }).success).toBe(false);
   });
 
-  it('admits only static source-kind names and no executable composition data in preferences', () => {
+  it('requires every new preference selection to bind an exact static candidate tuple', () => {
     expect(atomizerInstrumentPreferenceSelectionSchema.parse({
-      driverId: 'tinysa-zs407', candidateKind: 'serial-port',
-    })).toEqual({ driverId: 'tinysa-zs407', candidateKind: 'serial-port' });
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: 'serial:/dev/tty.fixture',
+    })).toEqual({
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: 'serial:/dev/tty.fixture',
+    });
     expect(atomizerInstrumentPreferenceSelectionSchema.safeParse({
-      driverId: 'signal-lab', candidateKind: 'external-command', executablePath: '/tmp/bridge',
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port',
+    }).success).toBe(false);
+    expect(atomizerInstrumentPreferenceSelectionSchema.safeParse({
+      driverId: 'signal-lab', candidateKind: 'external-command', candidateId: 'bridge', executablePath: '/tmp/bridge',
+    }).success).toBe(false);
+  });
+
+  it('reads legacy v1 preferences without weakening exact candidate validation', () => {
+    const legacy = {
+      schemaVersion: 1, driverId: 'tinysa-zs407', candidateKind: 'serial-port',
+      updatedAt: '2026-07-14T20:00:00.000Z',
+    };
+    expect(atomizerInstrumentPreferenceSchema.parse(legacy)).toEqual(legacy);
+    expect(atomizerInstrumentPreferenceSchema.safeParse({
+      ...legacy, candidateKind: undefined, candidateId: 'serial:/dev/tty.fixture',
     }).success).toBe(false);
   });
 });

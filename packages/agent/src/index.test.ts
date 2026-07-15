@@ -100,8 +100,8 @@ describe('Atom agent contracts',()=>{
   it('describes detection results as separated local evidence and non-identity activity associations',()=>{
     const description=agentToolDefinitions.find(tool=>tool.name==='get_detection_results')?.description??'';
     expect(description).toContain('frequency-local detections');
-    expect(description).toContain('frequency-agile activity associations');
-    expect(description).toContain('neither physical emissions nor emitter or protocol identity');
+    expect(description).toContain('2.4 GHz frequency-agile activity');
+    expect(description).toContain('neither physical emissions nor common-process, simultaneity, emitter, or protocol identity');
   });
   it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);

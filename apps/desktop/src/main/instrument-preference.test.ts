@@ -31,17 +31,20 @@ describe('InstrumentPreferenceStore', () => {
       preference: {
         schemaVersion: 1,
         driverId: SIGNAL_LAB_DRIVER_ID,
+        candidateKind: 'signal-lab',
+        candidateId: 'signal-lab:default',
         updatedAt: '1970-01-01T00:00:00.000Z',
       },
     });
   });
 
-  it('durably round-trips an operator-selected driver without exposing a device path', async () => {
+  it('durably round-trips the exact operator-selected candidate without adding transport fields', async () => {
     const fixture = await store();
-    await expect(fixture.store.save('tinysa-zs407', 'serial-port')).resolves.toEqual({
+    await expect(fixture.store.save('tinysa-zs407', 'serial-port', 'serial:/dev/tty.fixture')).resolves.toEqual({
       schemaVersion: 1,
       driverId: 'tinysa-zs407',
       candidateKind: 'serial-port',
+      candidateId: 'serial:/dev/tty.fixture',
       updatedAt: '2026-07-14T12:00:00.000Z',
     });
     await expect(fixture.store.load()).resolves.toEqual({
@@ -50,10 +53,24 @@ describe('InstrumentPreferenceStore', () => {
         schemaVersion: 1,
         driverId: 'tinysa-zs407',
         candidateKind: 'serial-port',
+        candidateId: 'serial:/dev/tty.fixture',
         updatedAt: '2026-07-14T12:00:00.000Z',
       },
     });
     expect(JSON.parse(await readFile(join(fixture.directory, INSTRUMENT_PREFERENCE_FILENAME), 'utf8'))).not.toHaveProperty('path');
+  });
+
+  it('loads a legacy v1 preference without silently manufacturing a candidate ID', async () => {
+    const fixture = await store();
+    await mkdir(fixture.directory);
+    const legacy = {
+      schemaVersion: 1,
+      driverId: 'tinysa-zs407',
+      candidateKind: 'serial-port',
+      updatedAt: '2026-07-14T12:00:00.000Z',
+    };
+    await writeFile(join(fixture.directory, INSTRUMENT_PREFERENCE_FILENAME), JSON.stringify(legacy), { mode: 0o600 });
+    await expect(fixture.store.load()).resolves.toEqual({ source: 'persisted', preference: legacy });
   });
 
   it.each([
@@ -78,21 +95,21 @@ describe('InstrumentPreferenceStore', () => {
 
   it('replaces the preference with owner-only permissions', async () => {
     const fixture = await store();
-    await fixture.store.save('signal-lab');
+    await fixture.store.save('signal-lab', 'signal-lab', 'signal-lab:default');
     const path = join(fixture.directory, INSTRUMENT_PREFERENCE_FILENAME);
     await chmod(path, 0o600);
-    await fixture.store.save('tinysa-zs407');
+    await fixture.store.save('tinysa-zs407', 'serial-port', 'serial:/dev/tty.fixture');
     await expect(fixture.store.load()).resolves.toMatchObject({ preference: { driverId: 'tinysa-zs407' } });
   });
 
   it('rejects group-readable files and multiply-linked preference inodes', async () => {
     const permissions = await store();
-    await permissions.store.save('signal-lab');
+    await permissions.store.save('signal-lab', 'signal-lab', 'signal-lab:default');
     await chmod(permissions.store.path, 0o640);
     await expect(permissions.store.load()).rejects.toThrow(/owner-only/);
 
     const linked = await store();
-    await linked.store.save('signal-lab');
+    await linked.store.save('signal-lab', 'signal-lab', 'signal-lab:default');
     await link(linked.store.path, join(linked.root, 'second-link.json'));
     await expect(linked.store.load()).rejects.toThrow(/exactly one filesystem link/);
   });

@@ -1,15 +1,10 @@
-import type { DetectedSignal } from '@tinysa/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  OBSERVABLE_HYPOTHESIS_DOMAIN_POLICY_ID,
   observableHypothesisHasRequiredEvidence,
-  observableRepresentativeIsEligibleForModelFit,
+  observableRepresentativeIsInClassDomain,
   type ObservableHypothesisDomainObservation,
 } from './observable-hypothesis-domain.js';
-
-const localDetection = { associationMode: 'frequency-local' } satisfies Pick<
-  DetectedSignal,
-  'associationMode' | 'associationBayesianEvidence'
->;
 
 describe('observable hypothesis domain', () => {
   it('keeps narrow detector fragments out of both an LTE-TDD fit and runtime support', () => {
@@ -26,10 +21,8 @@ describe('observable hypothesis domain', () => {
     } satisfies ObservableHypothesisDomainObservation;
 
     expect(observableHypothesisHasRequiredEvidence('lte-tdd-like', narrowFragment)).toBe(false);
-    expect(observableRepresentativeIsEligibleForModelFit(
+    expect(observableRepresentativeIsInClassDomain(
       'lte-tdd-like',
-      10_000_000,
-      localDetection,
       narrowFragment,
     )).toBe(false);
 
@@ -40,10 +33,8 @@ describe('observable hypothesis domain', () => {
       occupiedStopHz: 2_354_000_000,
     };
     expect(observableHypothesisHasRequiredEvidence('lte-tdd-like', resolvedChannel)).toBe(true);
-    expect(observableRepresentativeIsEligibleForModelFit(
+    expect(observableRepresentativeIsInClassDomain(
       'lte-tdd-like',
-      10_000_000,
-      localDetection,
       resolvedChannel,
     )).toBe(true);
   });
@@ -57,10 +48,8 @@ describe('observable hypothesis domain', () => {
       values: {},
     } satisfies ObservableHypothesisDomainObservation;
     expect(observableHypothesisHasRequiredEvidence('lte-tdd-like', outOfBand)).toBe(false);
-    expect(observableRepresentativeIsEligibleForModelFit(
+    expect(observableRepresentativeIsInClassDomain(
       'lte-tdd-like',
-      10_000_000,
-      localDetection,
       outOfBand,
     )).toBe(false);
   });
@@ -114,7 +103,7 @@ describe('observable hypothesis domain', () => {
     expect(observableHypothesisHasRequiredEvidence('wifi-ofdm-like', sixGhz320MhzChannel)).toBe(false);
   });
 
-  it('retains the stricter analog fragment rule after runtime-domain qualification', () => {
+  it('uses the identical observation-only AM domain in fit, calibration, and runtime', () => {
     const resolvedAmEvidence = {
       centerHz: 98_000_000,
       bandwidthHz: 4_000,
@@ -124,17 +113,68 @@ describe('observable hypothesis domain', () => {
       },
     } satisfies ObservableHypothesisDomainObservation;
     expect(observableHypothesisHasRequiredEvidence('am-dsb-full-carrier-like', resolvedAmEvidence)).toBe(true);
-    expect(observableRepresentativeIsEligibleForModelFit(
+    expect(observableRepresentativeIsInClassDomain(
       'am-dsb-full-carrier-like',
-      50_000,
-      localDetection,
-      resolvedAmEvidence,
-    )).toBe(false);
-    expect(observableRepresentativeIsEligibleForModelFit(
-      'am-dsb-full-carrier-like',
-      50_000,
-      { associationMode: 'regular-spectral-component-activity' },
       resolvedAmEvidence,
     )).toBe(true);
+  });
+
+  it('requires observable modulation before admitting the FM leaf', () => {
+    const unresolvedLine = {
+      centerHz: 98_000_000,
+      bandwidthHz: 20_000,
+      values: {
+        'spectrum.sidebandScore': 0,
+        'envelope.rangeDb': 0.2,
+        'envelope.standardDeviationDb': 0.05,
+      },
+    } satisfies ObservableHypothesisDomainObservation;
+    expect(observableRepresentativeIsInClassDomain('fm-angle-modulated-like', unresolvedLine)).toBe(false);
+    expect(observableRepresentativeIsInClassDomain('cw-like', unresolvedLine)).toBe(true);
+    expect(observableRepresentativeIsInClassDomain('fm-angle-modulated-like', {
+      ...unresolvedLine,
+      values: { ...unresolvedLine.values, 'spectrum.sidebandScore': 0.7 },
+    })).toBe(true);
+    expect(observableRepresentativeIsInClassDomain('fm-angle-modulated-like', {
+      ...unresolvedLine,
+      values: {
+        ...unresolvedLine.values,
+        'envelope.rangeDb': 4,
+        'envelope.standardDeviationDb': 1,
+      },
+    })).toBe(true);
+  });
+
+  it('pins one observation-only domain policy across every hypothesis and evidence view', () => {
+    expect(OBSERVABLE_HYPOTHESIS_DOMAIN_POLICY_ID).toBe('observation-only-hypothesis-domain-v5');
+    const hypotheses = [
+      'cw-like', 'am-dsb-full-carrier-like', 'fm-angle-modulated-like', 'gsm-like',
+      'lte-fdd-like', 'lte-tdd-like', 'nr-fdd-like', 'nr-tdd-like',
+      'wifi-hr-dsss-like', 'wifi-ofdm-like', 'bluetooth-like', 'unknown-signal',
+    ] as const;
+    const base: ObservableHypothesisDomainObservation = {
+      centerHz: 2_450_000_000,
+      bandwidthHz: 20_000_000,
+      occupiedStartHz: 2_440_000_000,
+      occupiedStopHz: 2_460_000_000,
+      limitations: ['frequency-agile-band-activity-association'],
+      associationEvidenceQualification: 'provenance-bound-current-promotion',
+      values: {
+        'association.logBayesFactor': 20,
+        'spectrum.centerFraction': 0.8,
+        'spectrum.sidebandScore': 0.7,
+      },
+    };
+    for (const id of hypotheses) {
+      for (const values of [
+        base.values,
+        { ...base.values, 'envelope.rangeDb': 4, 'envelope.standardDeviationDb': 1 },
+        { ...base.values, 'envelope.rangeDb': 4, 'envelope.standardDeviationDb': 1, 'envelope.logTransitionRateHz': 2 },
+      ]) {
+        const observation = { ...base, values };
+        expect(observableRepresentativeIsInClassDomain(id, observation))
+          .toBe(observableHypothesisHasRequiredEvidence(id, observation));
+      }
+    }
   });
 });

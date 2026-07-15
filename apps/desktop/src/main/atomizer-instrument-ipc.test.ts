@@ -24,7 +24,17 @@ describe('Atomizer instrument IPC v1', () => {
 
     await ipc.invoke(channels.connect, candidate());
     expect(host.connect).toHaveBeenCalledWith(candidate());
-    expect(() => ipc.invoke(channels.writePreference, { driverId: 'signal-lab', candidateKind: 'usb' }))
+    await ipc.invoke(channels.writePreference, {
+      driverId: 'signal-lab', candidateKind: 'signal-lab', candidateId: 'signal-lab:default',
+    });
+    expect(host.value.writePreference).toHaveBeenCalledWith({
+      driverId: 'signal-lab', candidateKind: 'signal-lab', candidateId: 'signal-lab:default',
+    });
+    expect(() => ipc.invoke(channels.writePreference, { driverId: 'signal-lab', candidateKind: 'signal-lab' }))
+      .toThrow();
+    expect(() => ipc.invoke(channels.writePreference, {
+      driverId: 'signal-lab', candidateKind: 'usb', candidateId: 'signal-lab:default',
+    }))
       .toThrow();
 
     unregister();

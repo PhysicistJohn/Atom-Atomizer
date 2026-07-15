@@ -206,6 +206,26 @@ describe('InstrumentManager discovery and selection', () => {
     expect(session?.disconnectCalls).toBe(1);
   });
 
+  it('isolates retained discovery evidence from caller mutation before connect', async () => {
+    const driver = new StubDriver('tinysa-zs407', ['serial-port'], async () => [serialDescriptor()]);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const returned = (await manager.discover()).candidates[0]!;
+    const authentic = structuredClone(returned);
+    if (returned.sourceKind !== 'serial-port') throw new Error('Expected serial fixture');
+
+    returned.serialPort.path = '/dev/tty.forged-after-discovery';
+    await expect(manager.connect(returned)).rejects.toMatchObject({ code: 'stale-candidate' });
+    expect(driver.connectCalls).toHaveLength(0);
+
+    await expect(manager.connect(authentic)).resolves.toMatchObject({ candidate: authentic });
+    expect(driver.connectCalls).toHaveLength(1);
+    expect(driver.connectCalls[0]).not.toBe(authentic);
+    expect(Object.isFrozen(driver.connectCalls[0])).toBe(true);
+    expect(driver.connectCalls[0]?.sourceKind === 'serial-port'
+      && Object.isFrozen(driver.connectCalls[0].serialPort)).toBe(true);
+    await manager.disconnect();
+  });
+
   it('never falls back to a different driver when the selected driver fails', async () => {
     const selected = new StubDriver(
       'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
@@ -292,11 +312,94 @@ describe('InstrumentManager discovery and selection', () => {
     manager.subscribe((event) => events.push(event));
 
     await expect(manager.connect((await manager.discover()).candidates[0]!))
-      .rejects.toMatchObject({ code: 'driver-failure' });
+      .rejects.toMatchObject({ code: 'driver-contract' });
 
     expect(session!.disconnectCalls).toBe(1);
     expect(manager.snapshot()).toBeUndefined();
     expect(events.map((event) => event.type)).toEqual(['discovery']);
+  });
+
+  it('does not lose a terminal session event emitted reentrantly from a connected observer', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, analyzerCapabilities())),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const firstObserverEvents: InstrumentManagerEvent[] = [];
+    const secondObserverEvents: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => {
+      firstObserverEvents.push(event);
+      if (event.type === 'connected') {
+        session.emit({
+          type: 'status', sessionId: session.sessionId,
+          status: 'faulted', message: 'fault emitted from connected observer',
+        });
+      }
+    });
+    manager.subscribe((event) => secondObserverEvents.push(event));
+
+    const connected = await manager.connect((await manager.discover()).candidates[0]!);
+
+    expect(connected.fault).toMatchObject({ code: 'session-fault', recoverable: false });
+    expect(manager.snapshot()?.fault).toMatchObject({ code: 'session-fault', recoverable: false });
+    expect(firstObserverEvents.map((event) => event.type)).toEqual([
+      'discovery', 'connected', 'status', 'session-state',
+    ]);
+    expect(secondObserverEvents.map((event) => event.type)).toEqual([
+      'discovery', 'connected', 'status', 'session-state',
+    ]);
+    await expect(manager.configure(sweepConfiguration())).rejects.toMatchObject({ code: 'driver-failure' });
+    await manager.disconnect();
+  });
+
+  it('does not dispatch configuration after a caller accessor terminal-faults the session', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, analyzerCapabilities())),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+    const configuration = sweepConfiguration();
+    Object.defineProperty(configuration, 'startHz', {
+      enumerable: true,
+      get() {
+        session.emit({
+          type: 'status', sessionId: session.sessionId,
+          status: 'faulted', message: 'fault from configuration getter',
+        });
+        return 100;
+      },
+    });
+
+    await expect(manager.configure(configuration)).rejects.toMatchObject({ code: 'driver-failure' });
+    expect(session!.configureCalls).toHaveLength(0);
+    expect(manager.snapshot()?.fault).toMatchObject({ code: 'session-fault', recoverable: false });
+    await manager.disconnect();
+  });
+
+  it('isolates manager event objects and listener membership for each dispatch cycle', async () => {
+    const driver = new StubDriver('tinysa-zs407', ['serial-port'], async () => [serialDescriptor()]);
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    let downstreamDisplayName: string | undefined;
+    let lateListenerCalls = 0;
+    manager.subscribe((event) => {
+      if (event.type !== 'connected') return;
+      event.session.candidate.displayName = 'MUTATED BY FIRST CONSUMER';
+      manager.subscribe(() => { lateListenerCalls++; });
+    });
+    manager.subscribe((event) => {
+      if (event.type === 'connected') downstreamDisplayName = event.session.candidate.displayName;
+    });
+
+    const connected = await manager.connect((await manager.discover()).candidates[0]!);
+
+    expect(downstreamDisplayName).toBe('tinySA Ultra+ ZS407');
+    expect(connected.candidate.displayName).toBe('tinySA Ultra+ ZS407');
+    expect(manager.snapshot()?.candidate.displayName).toBe('tinySA Ultra+ ZS407');
+    expect(lateListenerCalls).toBe(0);
+    await manager.disconnect();
   });
 
   it('retains a rejected session as faulted and teardown-only when cleanup cannot disconnect it', async () => {
@@ -393,7 +496,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     const configuring = manager.configure(sweepConfiguration());
     await turn();
     expect(order).toEqual(['configure:start']);
-    const acquisitionFailure = expect(manager.acquire()).rejects.toMatchObject({ code: 'no-session' });
+    const acquisitionFailure = expect(manager.acquire()).rejects.toMatchObject({ code: 'operation-canceled' });
     const disconnecting = manager.disconnect();
 
     configureGate.resolve();
@@ -403,6 +506,46 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     await disconnecting;
     await acquisitionFailure;
     expect(order).toEqual(['configure:start', 'configure:end', 'disconnect']);
+  });
+
+  it('cancels a queued reconnect when RF-safe disconnect overtakes it', async () => {
+    const acquisitionGate = deferred<void>();
+    const order: string[] = [];
+    let connectionIndex = 0;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        connectionIndex++;
+        const session = new StubSession(candidate, analyzerCapabilities());
+        session.onAcquire = async () => {
+          order.push('acquire:start');
+          await acquisitionGate.promise;
+          order.push('acquire:end');
+          return sweptMeasurement(session, session.configureCalls[0]!.configurationRevision, 1);
+        };
+        session.onDisconnect = async () => { order.push(`disconnect:${connectionIndex}`); };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+    await manager.configure(sweepConfiguration());
+
+    const acquisition = manager.acquire();
+    await turn();
+    expect(order).toEqual(['acquire:start']);
+    const staleReconnect = manager.connect(candidate);
+    const disconnecting = manager.disconnect();
+
+    acquisitionGate.resolve();
+    await expect(acquisition).resolves.toMatchObject({ sequence: 1 });
+    await expect(disconnecting).resolves.toBeUndefined();
+    await expect(staleReconnect).rejects.toMatchObject({ code: 'operation-canceled' });
+
+    expect(order).toEqual(['acquire:start', 'acquire:end', 'disconnect:1']);
+    expect(driver.connectCalls).toHaveLength(1);
+    expect(manager.snapshot()).toBeUndefined();
   });
 
   it('bounds its internal queue while reserving one coalesced RF-safe teardown admission', async () => {
@@ -462,6 +605,45 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       rfOutput: 'unknown', rfOutputQualification: 'unverified', fault: { recoverable: false },
     });
     expect(manager.snapshot()?.configuration).toBeUndefined();
+    await manager.disconnect();
+  });
+
+  it('requires an explicit output-off acknowledgement after RF-capable receive configuration', async () => {
+    let session: StubSession;
+    let returnDishonestOffResult = true;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, analyzerCapabilities([generatorCapability()]));
+        const normal = session.onFeature;
+        session.onFeature = async (command) => {
+          if (returnDishonestOffResult
+            && command.kind === 'rf-generator'
+            && command.action === 'set-output'
+            && !command.enabled) {
+            return { ...command, enabled: true };
+          }
+          return normal(command);
+        };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    await expect(manager.configure(sweepConfiguration())).rejects.toMatchObject({ code: 'driver-contract' });
+    expect(session!.configureCalls).toHaveLength(1);
+    expect(session!.featureCalls).toEqual([
+      expect.objectContaining({ kind: 'rf-generator', action: 'set-output', enabled: false }),
+    ]);
+    expect(manager.snapshot()).toMatchObject({
+      rfOutput: 'unknown',
+      rfOutputQualification: 'unverified',
+      fault: { code: 'driver-contract', recoverable: false },
+    });
+    expect(manager.snapshot()?.configuration).toBeUndefined();
+
+    returnDishonestOffResult = false;
     await manager.disconnect();
   });
 
@@ -833,10 +1015,10 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       async (candidate) => {
         session = new StubSession(candidate, analyzerCapabilities([generatorCapability()]));
         const normal = session.onFeature;
-        let faultOnNextOff = true;
+        let outputOffCalls = 0;
         session.onFeature = async (command) => {
-          if (faultOnNextOff && command.kind === 'rf-generator' && command.action === 'set-output' && !command.enabled) {
-            faultOnNextOff = false;
+          if (command.kind === 'rf-generator' && command.action === 'set-output' && !command.enabled
+            && ++outputOffCalls === 2) {
             session.emit({ type: 'status', sessionId: session.sessionId, status: 'faulted', message: 'transport failed during RF-off reassertion' });
           }
           return normal(command);
@@ -1013,6 +1195,45 @@ describe('InstrumentManager feature boundary', () => {
     expect(session!.featureCalls.at(-1)).toMatchObject({ kind: 'rf-generator', action: 'set-output', enabled: false });
     expect(session!.disconnectCalls).toBe(1);
     expect(events.filter((event) => event.type === 'feature-result')).toHaveLength(8);
+  });
+
+  it('does not treat generator configuration as RF-off evidence without a separate output acknowledgement', async () => {
+    let session: StubSession;
+    let rejectOff = true;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, analyzerCapabilities([generatorCapability()]));
+        const normal = session.onFeature;
+        session.onFeature = async (command) => {
+          if (rejectOff
+            && command.kind === 'rf-generator'
+            && command.action === 'set-output'
+            && !command.enabled) {
+            throw new Error('generator configure completed but output-off was not acknowledged');
+          }
+          return normal(command);
+        };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    await expect(manager.executeFeature({
+      kind: 'rf-generator', action: 'configure', frequencyHz: 100_000_000, levelDbm: -30,
+      path: 'normal', modulation: { mode: 'off' },
+    })).rejects.toMatchObject({ code: 'driver-failure' });
+    expect(session!.featureCalls).toEqual([
+      expect.objectContaining({ kind: 'rf-generator', action: 'configure' }),
+      expect.objectContaining({ kind: 'rf-generator', action: 'set-output', enabled: false }),
+    ]);
+    expect(manager.snapshot()).toMatchObject({
+      rfOutput: 'unknown', rfOutputQualification: 'unverified', fault: { code: 'driver-failure' },
+    });
+
+    rejectOff = false;
+    await manager.disconnect();
   });
 
   it('retains the active session when RF-off cannot be proven', async () => {
@@ -1204,7 +1425,7 @@ describe('InstrumentManager feature boundary', () => {
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'not-configured' });
     await expect(manager.configure({
       ...syntheticDetectedPowerConfiguration(100_000_000, 20),
-    })).rejects.toMatchObject({ code: 'unsupported-capability' });
+    })).resolves.toMatchObject({ configuration: { centerHz: 100_000_000 } });
     await expect(manager.configure({
       ...syntheticDetectedPowerConfiguration(101_000_000, 20),
     })).resolves.toMatchObject({ configuration: { centerHz: 101_000_000 } });
@@ -1848,8 +2069,10 @@ function provenanceFor(candidate: InstrumentCandidate): InstrumentSessionProvena
       sourceKind: 'serial-port', execution: 'physical', transport: 'usb-cdc-acm',
       qualification: 'device-observed', verifiedAt: CAPTURED_AT, serialPort: candidate.serialPort,
       device: {
-        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'v1.4.6-gc5dd31f',
-        firmwareReportedRevision: 'c5dd31f', firmwareQualification: 'supported-oem', usbIdentityVerified: true,
+        model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_v1.4-217-gc5dd31f',
+        firmwareReportedRevision: 'c5dd31f',
+        firmwareSourceCommit: 'c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c',
+        firmwareQualification: 'supported-oem', usbIdentityVerified: true,
       },
     };
   }

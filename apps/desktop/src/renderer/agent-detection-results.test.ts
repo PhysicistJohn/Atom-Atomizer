@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { DetectedSignal } from '@tinysa/contracts';
-import { agentDetectionResults } from './agent-detection-results.js';
+import type { DetectedSignal, WaveformClassification } from '@tinysa/contracts';
+import { agentClassificationResults, agentDetectionResults } from './agent-detection-results.js';
 
 describe('Atom detection-result projection', () => {
   it('separates rolling activity associations from frequency-local detections', () => {
@@ -125,5 +125,89 @@ describe('Atom detection-result projection', () => {
       memberLocalTrackIds: ['line-1', 'line-2', 'line-3'],
       representsEmitterIdentity: false,
     });
+  });
+
+  it('publishes complete multicomponent lineage without identity or simultaneity claims', () => {
+    const observation = {
+      sweepId: 'sweep-8',
+      sweepSequence: 8,
+      geometryId: 'multicomponent-geometry:test',
+      sweepStartHz: 90_000_000,
+      sweepStopHz: 110_000_000,
+      rbwHz: 50_000,
+      binWidthHz: 50_000,
+      observedRegionStartHz: 96_000_000,
+      observedRegionStopHz: 104_000_000,
+      containmentToleranceHz: 55_000,
+      qualification: 'resolved-component-raster-not-emitter-identity' as const,
+      members: ['line-1', 'line-2', 'line-3', 'line-4'].map((trackId, index) => ({
+        trackId,
+        startHz: 96_000_000 + index * 2_000_000,
+        stopHz: 96_100_000 + index * 2_000_000,
+        peakHz: 96_050_000 + index * 2_000_000,
+        detectorId: 'bayesian-exponential-multiscale-cfar-v3',
+        localBayesianEvidence: { modelId: 'bayesian-exponential-multiscale-cfar-v3' },
+      })),
+    };
+    const multicomponent = {
+      id: 'line-2',
+      state: 'active',
+      startHz: 98_000_000,
+      stopHz: 98_100_000,
+      peakHz: 98_050_000,
+      peakDbm: -51,
+      bandwidthHz: 100_000,
+      prominenceDb: 18,
+      prominenceThresholdDb: 6,
+      persistenceSweeps: 8,
+      missedSweeps: 0,
+      detectorId: 'bayesian-exponential-multiscale-cfar-v3',
+      sweepIds: ['sweep-8'],
+      bayesianEvidence: { modelId: 'bayesian-exponential-multiscale-cfar-v3' },
+      associationMode: 'multicomponent-swept-region-activity',
+      associationId: 'multicomponent-swept-region-0001',
+      associationModelId: 'multicomponent-swept-region-v1',
+      associationRegionStartHz: 96_000_000,
+      associationRegionStopHz: 104_000_000,
+      associationRegionSweepIds: ['sweep-8'],
+      associationMemberTrackIds: ['line-1', 'line-2', 'line-3', 'line-4'],
+      associationMissedSweeps: 0,
+      multicomponentAssociationObservations: [observation],
+    } as unknown as DetectedSignal;
+    const classification = {
+      detectionId: multicomponent.id,
+      label: 'observable:fm-angle-modulated-like',
+      confidence: 0.91,
+      candidates: [{ label: 'observable:fm-angle-modulated-like', confidence: 0.91, family: 'analog' }],
+      modelId: 'bayesian-observable-equivalence-v5',
+      qualification: 'bayesian-observable-equivalence',
+      scoreKind: 'model-posterior',
+      decisionLevel: 'equivalence-class',
+      classifiedAt: '2026-07-15T00:00:00.000Z',
+      evidence: { centerHz: 100_000_000, bandwidthHz: 8_000_000, peakDbm: -51, sweepIds: ['sweep-8'] },
+    } satisfies WaveformClassification;
+
+    const detections = agentDetectionResults([multicomponent]);
+    const association = detections.localDetections[0]?.classificationAssociation;
+    expect(association).toMatchObject({
+      mode: 'multicomponent-swept-region-activity',
+      associationId: 'multicomponent-swept-region-0001',
+      associationModelId: 'multicomponent-swept-region-v1',
+      memberLocalTrackIds: ['line-1', 'line-2', 'line-3', 'line-4'],
+      currentLocalMember: true,
+      representsPhysicalEmission: false,
+      representsEmitterIdentity: false,
+      representsCommonProcess: false,
+      representsSimultaneity: false,
+      representsProtocolIdentity: false,
+      multicomponentLineage: {
+        observations: [observation],
+        latestObservation: observation,
+      },
+    });
+    const results = agentClassificationResults([multicomponent], [classification]);
+    expect(results[0]?.classificationAssociation).toEqual(association);
+    expect(results[0]?.classificationAssociation?.multicomponentLineage?.observations)
+      .toEqual([observation]);
   });
 });

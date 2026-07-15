@@ -25,10 +25,12 @@ export function selectPreferredInstrument(
     );
   }
   const matches = discovery.candidates.filter((candidate) => candidate.driverId === preference.driverId
-    && (preference.candidateKind === undefined || candidate.sourceKind === preference.candidateKind));
+    && (preference.candidateKind === undefined || candidate.sourceKind === preference.candidateKind)
+    && (preference.candidateId === undefined || candidate.candidateId === preference.candidateId));
   if (matches.length === 0) {
     const kind = preference.candidateKind ? ` (${preference.candidateKind})` : '';
-    throw new PreferredInstrumentAdmissionError(`Preferred instrument ${preference.driverId}${kind} is unavailable`);
+    const candidate = preference.candidateId ? ` candidate ${preference.candidateId}` : '';
+    throw new PreferredInstrumentAdmissionError(`Preferred instrument ${preference.driverId}${kind}${candidate} is unavailable`);
   }
   if (matches.length > 1) {
     throw new PreferredInstrumentAdmissionError(

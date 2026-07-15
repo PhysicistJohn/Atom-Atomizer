@@ -26,6 +26,16 @@ export interface ObservableClassifierModelAsset {
   id: string;
   corpusVersion: string;
   sourceCommit: string;
+  corpusSourceManifest: {
+    schemaVersion: 1;
+    hashAlgorithm: 'sha256';
+    artifacts: readonly {
+      /** Path relative to the SignalLab repository root. */
+      path: string;
+      sha256: string;
+    }[];
+  };
+  /** SHA-256 of the canonical JSON serialization of corpusSourceManifest. */
   corpusSha256: string;
   preprocessing: string;
   priorId: string;
@@ -36,6 +46,49 @@ export interface ObservableClassifierModelAsset {
     snrDb: readonly number[];
     rbwDivisors: readonly number[];
     seeds: readonly number[];
+    /** Complete fitted acquisition cells, including named production regimes that are not honest global RBW divisors. */
+    fittingAcquisitionRegimeIds?: readonly string[];
+    /**
+     * The production SignalLab sweep geometry and session-sequence phase
+     * schedules included in both component fitting and independent-seed tail
+     * calibration. This is explicit because its effective occupied-bandwidth
+     * divisor varies by scenario and must not be serialized as a fake scalar.
+     */
+    signalLabProductionAcquisitionRegime?: {
+      id: 'signal-lab-recommended-span-grid-with-session-sequence-nuisance-v1';
+      geometry: {
+        id: 'signal-lab-recommended-span-450-point-grid-v1';
+        sourceKind: 'signal-lab';
+        kind: 'recommended-span-inclusive-grid';
+        sweepPoints: 450;
+        spanPolicy: 'canonical-recommended-span-v1';
+        resolutionScalePolicy: 'recommended-span-divided-by-points-minus-one-v1';
+      };
+      temporalSchedules: readonly {
+        id: string;
+        sourceLookIndexOffset: number;
+        skipAfterSpectrumOpportunities: number | null;
+        skippedSourceOpportunities: number;
+      }[];
+      componentFitIncluded: true;
+      tailCalibrationIncluded: true;
+    };
+    /**
+     * Generator-only detected-power filter geometry used by the synthetic
+     * reference matrix. It is never projected as measured RBW evidence.
+     */
+    detectedPowerSynthesisFilterPolicy?: {
+      id: 'explicit-generator-filter-width-by-acquisition-regime-v1';
+      divisorAcquisitionRegimes: 'match-swept-spectrum-actual-rbw-nuisance-v1';
+      signalLabProductionAcquisitionRegimes: 'fixed-generator-internal-width-v1';
+      signalLabProductionSynthesisFilterWidthHz: 100_000;
+      measurementActualRbwQualification: 'unavailable';
+    };
+    productionAcquisitionRegimeHighSnrSeedCoveragePolicy?: {
+      id: 'detector-conditioned-production-regime-presence-v1';
+      minimumDistinctSeedsPerHighSnrCell: number;
+      globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1';
+    };
     classificationSweeps?: number;
     observationOpportunityHorizons?: {
       standard: number;
@@ -47,15 +100,22 @@ export interface ObservableClassifierModelAsset {
     sweepsPerExample?: number;
     tailCalibrationSeeds?: readonly number[];
     tailCalibrationRbwDivisors?: readonly number[];
-    /** Each score represents one distinct fit-eligible acquisition cell; this does not assert statistical independence. */
-    tailCalibrationScoreUnit?: 'one-score-per-fit-eligible-acquisition-attempt-v1';
+    /** Complete independent-seed calibration cells, including named production regimes. */
+    tailCalibrationAcquisitionRegimeIds?: readonly string[];
+    /** Each score represents one distinct observation-domain-eligible acquisition cell; this does not assert statistical independence. */
+    tailCalibrationScoreUnit?: 'one-score-per-fit-eligible-acquisition-attempt-v1'
+      | 'one-score-per-observation-domain-eligible-acquisition-attempt-v2';
+    /** Every ready representative at every online opportunity enters the conservative attempt minimum. */
+    tailCalibrationRepresentativeSelectionPolicy?: 'online-all-ready-representatives-v1';
     /** Multiple correlated representatives within an attempt collapse to its least-supported representative. */
-    tailCalibrationRepresentativeAggregationPolicy?: 'minimum-support-across-fit-eligible-first-ready-representatives-v1';
+    tailCalibrationRepresentativeAggregationPolicy?: 'minimum-support-across-fit-eligible-first-ready-representatives-v1'
+      | 'minimum-support-across-fit-eligible-online-representatives-v2'
+      | 'minimum-support-across-observation-domain-eligible-online-representatives-v3';
     /** A member representative's monotone rank cannot be smaller than its attempt-minimum rank. */
     tailCalibrationRuntimeInterpretationPolicy?: 'single-representative-rank-dominates-attempt-min-rank-v1';
     /** Fixed synthetic nuisance grids are reference data, not exchangeable operational calibration samples. */
     tailCalibrationStatisticalInterpretation?: 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1';
-    /** Fit-eligible acquisition attempts contributing one score each, by canonical scenario. */
+    /** Observation-domain-eligible acquisition attempts contributing one score each, by canonical scenario. */
     tailCalibrationAttemptCountsByScenario?: Readonly<Record<string, number>>;
     detectorConditionedFitMisses?: readonly string[];
     detectorConditionedCalibrationMisses?: readonly string[];
@@ -70,12 +130,14 @@ export interface ObservableClassifierModelAsset {
     exactObservableEquivalenceNullScenarioIds?: readonly string[];
     /** Known-class scenarios retained only to test/report acquisition non-admission. */
     knownAcquisitionValidationOnlyScenarioIds?: readonly string[];
-    /** Older policies remain readable only so the trainer can replace a checked-in asset; runtime asserts v3. */
+    /** Older policies remain readable only so the trainer can replace a checked-in asset; runtime asserts v5. */
     selectionPolicy?: 'endpoint-active-representative-v1' | 'endpoint-active-all-representatives-v2' | 'online-first-ready-all-representatives-v3';
     representativeWeightingPolicy?: 'equal-weight-per-endpoint-production-representative-v1' | 'equal-weight-per-first-ready-production-representative-v2';
     representativeEligibilityPolicy?: 'bluetooth-components-require-qualified-agile-association-v1'
       | 'observation-qualified-known-representatives-v2'
-      | 'runtime-domain-qualified-known-representatives-v3';
+      | 'runtime-domain-qualified-known-representatives-v3'
+      | 'observation-only-hypothesis-domain-v4'
+      | 'observation-only-hypothesis-domain-v5';
   };
   classModels: readonly (ClassLikelihoodModel & { id: ObservableLeafClass })[];
 }

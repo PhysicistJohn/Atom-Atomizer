@@ -28,10 +28,20 @@
         "fallback": "none"
       },
       "physicalFirmwareCompatibility": {
-        "revisions": {
-          "c5dd31f": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c",
-          "c979386": "c97938697b6c7485e7cab50bca9af76996b7d671"
-        },
+        "identities": [
+          {
+            "firmwareVersion": "tinySA4_v1.4-217-gc5dd31f",
+            "reportedRevision": "c5dd31f",
+            "sourceCommit": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c"
+          },
+          {
+            "firmwareVersion": "tinySA4_v1.4-224-gc979386",
+            "reportedRevision": "c979386",
+            "sourceCommit": "c97938697b6c7485e7cab50bca9af76996b7d671"
+          }
+        ],
+        "identityEvidence": "reported-shell-version-not-binary-attestation",
+        "alternateVersionPolicy": "decorated-or-alternate-known-revision-is-custom-unqualified",
         "unknownRevisionPolicy": "warning-admit-as-custom-unqualified-without-source-provenance"
       }
     },
@@ -51,7 +61,7 @@
       "measurementBridgeStatus": "active",
       "measurementBridge": "signal-lab-measurement-bridge",
       "stimulusContractVersion": 1,
-      "closedProfileCount": 79,
+      "closedProfileCount": 34,
       "firmwareStimulusSinkStatus": "reserved-not-connected"
     }
   },

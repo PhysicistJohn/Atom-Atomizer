@@ -11,6 +11,8 @@
     "validate-signal-lab-classifier.ts",
     "../packages/analysis/src/**/*.ts",
     "../packages/contracts/src/index.ts",
-    "../../TinySA_SignalLab/src/classification-corpus.ts"
+    "../../TinySA_SignalLab/src/classification-corpus.ts",
+    "../../TinySA_SignalLab/src/source-provenance.ts",
+    "../../TinySA_SignalLab/src/waveforms.ts"
   ]
 }

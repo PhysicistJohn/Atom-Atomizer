@@ -22,7 +22,7 @@ export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, o
     <div className="topbar-actions">
       {synthetic && <span className="environment-badge">SIGNALLAB SIMULATION</span>}
       {twin && <span className="environment-badge">FIRMWARE TWIN</span>}
-      {customFirmware && <span className="environment-badge custom-firmware" title="Firmware source is custom and is not assigned OEM qualification">CUSTOM FW · UNQUALIFIED</span>}
+      {customFirmware && <span className="environment-badge custom-firmware" title={session.provenance.sourceKind === 'serial-port' ? session.provenance.device.firmwareWarning : undefined}>CUSTOM FW · UNQUALIFIED</span>}
       {rfStatus && <span className={`top-rf-state ${rfStatus.state}`} title={rfStatus.title} aria-label={rfStatus.ariaLabel}>
         <span>RF {rfStatus.state.toUpperCase()}</span><small>{rfStatus.qualification}</small>
       </span>}

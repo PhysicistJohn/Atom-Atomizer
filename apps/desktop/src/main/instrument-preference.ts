@@ -8,8 +8,12 @@ import {
   type InstrumentDriverId,
   type InstrumentSourceKind,
 } from '@tinysa/contracts';
+import {
+  SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
+  SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
+} from '@tinysa/signal-lab-driver';
 
-export const SIGNAL_LAB_DRIVER_ID = 'signal-lab' as const;
+export const SIGNAL_LAB_DRIVER_ID = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
 export const INSTRUMENT_PREFERENCE_FILENAME = 'instrument-preference-v1.json' as const;
 
 const MAX_PREFERENCE_BYTES = 16 * 1024;
@@ -62,6 +66,8 @@ export class InstrumentPreferenceStore {
           preference: instrumentPreferenceSchema.parse({
             schemaVersion: 1,
             driverId: SIGNAL_LAB_DRIVER_ID,
+            candidateKind: 'signal-lab',
+            candidateId: SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
             updatedAt: new Date(0).toISOString(),
           }),
         };
@@ -89,11 +95,16 @@ export class InstrumentPreferenceStore {
     }
   }
 
-  async save(driverIdValue: InstrumentDriverId, candidateKind?: InstrumentSourceKind): Promise<InstrumentPreference> {
+  async save(
+    driverIdValue: InstrumentDriverId,
+    candidateKind: InstrumentSourceKind,
+    candidateId: string,
+  ): Promise<InstrumentPreference> {
     const preference = instrumentPreferenceSchema.parse({
       schemaVersion: 1,
       driverId: driverIdValue,
-      ...(candidateKind ? { candidateKind } : {}),
+      candidateKind,
+      candidateId,
       updatedAt: this.runtime.now().toISOString(),
     });
     const bytes = Buffer.from(`${JSON.stringify(preference, null, 2)}\n`, 'utf8');

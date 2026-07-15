@@ -8,7 +8,14 @@ import {
 } from './observable-classifier-model.js';
 import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable-v5.generated.js';
 import { BAYESIAN_OBSERVABLE_MODEL_SHA256 } from './models/bayesian-observable-v5.manifest.generated.js';
-import { observableHypothesisHasRequiredEvidence } from './observable-hypothesis-domain.js';
+import { observableRepresentativeIsInClassDomain } from './observable-hypothesis-domain.js';
+import {
+  OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE,
+  OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY,
+  SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY,
+  SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA,
+  SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES,
+} from './observable-training-acquisition-geometry.js';
 
 export const BAYESIAN_WAVEFORM_MODEL = {
   id: BAYESIAN_OBSERVABLE_MODEL.id,
@@ -117,7 +124,7 @@ export function inferPosterior(observation: ObservableFeatureObservation): reado
   assertGeneratedModel();
   const values = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => {
     const logLikelihood = mixtureLogLikelihood(observation.values, model.components);
-    const context = observableHypothesisHasRequiredEvidence(model.id, observation)
+    const context = observableRepresentativeIsInClassDomain(model.id, observation)
       ? frequencyContextLogEvidence(model.id, observation)
       : Number.NEGATIVE_INFINITY;
     return { id: model.id, logLikelihood, logJoint: model.logPrior + context + logLikelihood };
@@ -159,7 +166,7 @@ export function knownModelSupportRank(
     // this maximum defeats open-set rejection even though its posterior is
     // structurally zero (notably a stationary 2.4 GHz hard negative versus
     // the frequency-agile Bluetooth activity hypothesis).
-    .filter((model) => model.id !== 'unknown-signal' && observableHypothesisHasRequiredEvidence(model.id, observation))
+    .filter((model) => model.id !== 'unknown-signal' && observableRepresentativeIsInClassDomain(model.id, observation))
     .map((model) => {
       const rawTailScore = Math.max(...model.components.map((component) => studentTModelTailProbability(observation.values, component)));
       const calibration = model.tailCalibrationScoresByView?.[view];
@@ -206,7 +213,7 @@ function selectDecision(
 
   const topKnown = candidates.find((candidate) => candidate.id !== 'unknown-signal');
   if (!topKnown) return unknownDecision(unknownPosterior, 'low-confidence');
-  if (!observableHypothesisHasRequiredEvidence(topKnown.id as ObservableLeafClass, observation ?? {})) {
+  if (!observableRepresentativeIsInClassDomain(topKnown.id as ObservableLeafClass, observation ?? {})) {
     return unknownDecision(unknownPosterior, 'insufficient-evidence');
   }
   const lte = aggregate(candidates, ['lte-fdd-like', 'lte-tdd-like']);
@@ -335,17 +342,51 @@ export type { WaveformEvidence } from './observable-features.js';
 export { observableClassDefinitions } from './observable-classifier-model.js';
 
 function assertGeneratedModel(): void {
+  const expectedAcquisitionRegimeIds = [
+    ...[12, 20, 35, 55, 80, 120].map((rbwDivisor) =>
+      `occupied-bandwidth-rbw-divisor:${rbwDivisor}/${OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE.id}`),
+    ...SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES.map((temporalSchedule) =>
+      `${SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY.id}/${temporalSchedule.id}`),
+  ];
   if (BAYESIAN_OBSERVABLE_MODEL.id !== 'bayesian-observable-equivalence-v5'
-    || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v5'
-    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7'
+    || BAYESIAN_OBSERVABLE_MODEL.sourceCommit !== 'c036e063bce6c6cc1515750a4d5614f1c2ab5df8'
+    || BAYESIAN_OBSERVABLE_MODEL.corpusSha256 !== '38288f0e0437dbb687674308afecb4f30adadc9e93ea7abad3b8bf13d80ec918'
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.corpusSourceManifest?.artifacts.map((artifact) => artifact.path)) !== JSON.stringify([
+      'package-lock.json',
+      'package.json',
+      'src/canonical-timing.ts',
+      'src/catalog.ts',
+      'src/classification-corpus.ts',
+      'src/contracts.ts',
+      'src/source-provenance.ts',
+      'src/waveforms.ts',
+    ])
+    || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v6'
+    || BAYESIAN_OBSERVABLE_MODEL.priorId !== 'engineering-design-class-weights-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-stratified-online-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v10'
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.signalLabProductionAcquisitionRegime)
+      !== JSON.stringify(SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA)
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerSynthesisFilterPolicy)
+      !== JSON.stringify(OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY)
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.productionAcquisitionRegimeHighSnrSeedCoveragePolicy)
+      !== JSON.stringify({
+        id: 'detector-conditioned-production-regime-presence-v1',
+        minimumDistinctSeedsPerHighSnrCell: 1,
+        globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1',
+      })
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.fittingAcquisitionRegimeIds)
+      !== JSON.stringify(expectedAcquisitionRegimeIds)
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAcquisitionRegimeIds)
+      !== JSON.stringify(expectedAcquisitionRegimeIds)
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.classificationSweeps !== 8
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons?.standard !== 24
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons.fullBand2g4 !== 96
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.selectionPolicy !== 'online-first-ready-all-representatives-v3'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy !== 'equal-weight-per-first-ready-production-representative-v2'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'runtime-domain-qualified-known-representatives-v3'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit !== 'one-score-per-fit-eligible-acquisition-attempt-v1'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-fit-eligible-first-ready-representatives-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'observation-only-hypothesis-domain-v5'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit !== 'one-score-per-observation-domain-eligible-acquisition-attempt-v2'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy !== 'online-all-ready-representatives-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-observation-domain-eligible-online-representatives-v3'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy !== 'single-representative-rank-dominates-attempt-min-rank-v1'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation !== 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1') {
     throw new Error('Observable model asset does not match the v5 production admission contract');

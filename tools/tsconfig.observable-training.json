@@ -12,6 +12,8 @@
     "../packages/analysis/src/observable-classifier-model.ts",
     "../packages/analysis/src/observable-features.ts",
     "../packages/contracts/src/index.ts",
-    "../../TinySA_SignalLab/src/classification-corpus.ts"
+    "../../TinySA_SignalLab/src/classification-corpus.ts",
+    "../../TinySA_SignalLab/src/source-provenance.ts",
+    "../../TinySA_SignalLab/src/waveforms.ts"
   ]
 }

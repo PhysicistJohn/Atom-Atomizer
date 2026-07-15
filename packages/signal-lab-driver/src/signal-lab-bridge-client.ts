@@ -25,7 +25,24 @@ const MAX_DIAGNOSTIC_LINE_CHARACTERS = 4_096;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const PROFILE_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+/** Exact SignalLab measurement-contract v1 profile registry, in producer order. */
+export const SIGNAL_LAB_PROFILE_IDS = Object.freeze([
+  'cw', 'am', 'fm',
+  'gsm-900-loaded-bcch',
+  'gsm-normal-burst', 'gsm-qpsk-higher-symbol-rate-burst', 'gsm-aqpsk-normal-burst',
+  'gsm-8psk-normal-burst', 'gsm-16qam-higher-symbol-rate-burst', 'gsm-32qam-higher-symbol-rate-burst',
+  'lte-band3-fdd-20m', 'lte-band38-tdd-10m',
+  'lte-etm1.1', 'lte-etm3.1', 'lte-etm3.1a', 'lte-etm3.1b',
+  'lte-ntm', 'lte-nbiot-guard-isolated-component', 'lte-nbiot-inband-isolated-component',
+  'nr-n3-fdd-20m', 'nr-n78-tdd-100m',
+  'nr-fr1-tm1.1', 'nr-fr1-tm3.1', 'nr-fr1-tm3.1a', 'nr-fr1-tm3.1b',
+  'nr-nbiot-inband-isolated-component',
+  'wifi-hr-dsss-11m', 'wifi-ofdm-20m',
+  'wifi6-he-su', 'wifi6-he-er-su', 'wifi6-he-mu', 'wifi6-he-tb',
+  'bluetooth-classic-connected', 'bluetooth-le-advertising',
+] as const);
+export type SignalLabProfileId = (typeof SIGNAL_LAB_PROFILE_IDS)[number];
 
 export interface SignalLabBridgeLocation {
   readonly executablePath: string;
@@ -66,6 +83,10 @@ export type SignalLabBridgeCapability =
   }>
   | Readonly<{
     kind: 'detected-power-timeseries';
+    minimumFrequencyHz: 1;
+    maximumFrequencyHz: typeof MAX_FREQUENCY_HZ;
+    frequencyStepHz: 1;
+    frequencyUnit: 'Hz';
     minimumPoints: 1;
     maximumPoints: typeof MAX_DETECTED_POWER_POINTS;
     minimumSamplePeriodSeconds: typeof MIN_SAMPLE_PERIOD_SECONDS;
@@ -101,27 +122,30 @@ export interface SignalLabChannelConfiguration {
 }
 
 export interface SignalLabWaveformDescriptor {
-  readonly id: string;
+  readonly id: SignalLabProfileId;
   readonly label: string;
-  readonly family: 'tone' | 'analog' | 'geran' | 'e-utra' | 'nr' | 'wlan';
+  readonly family: 'tone' | 'analog' | 'geran' | 'e-utra' | 'nr' | 'wlan' | 'bluetooth';
   readonly model: string;
   readonly qualification: 'visual' | 'standards-derived' | 'conformance-validated';
   readonly centerHz: number;
   readonly occupiedBandwidthHz: number;
   readonly recommendedSpanHz: number;
   readonly projection: Readonly<{
-    allocation: 'carrier' | 'sidebands' | 'full' | 'boosted' | 'single-prb' | 'narrowband' | 'multi-ru' | 'resource-unit';
-    modulation: 'unmodulated' | 'am' | 'fm' | 'gmsk' | 'qpsk' | 'aqpsk' | '8psk' | '16qam' | '32qam' | '64qam' | '256qam' | '1024qam' | 'ofdm-mixed' | 'he-ofdm';
-    timing: 'continuous' | 'burst' | 'frame' | 'subslot' | 'slot' | 'sbfd-du' | 'sbfd-ud' | 'sbfd-dud';
+    allocation: 'carrier' | 'sidebands' | 'full' | 'narrowband' | 'multi-ru' | 'resource-unit' | 'frequency-hopping' | 'advertising-channels';
+    modulation: 'unmodulated' | 'am' | 'fm' | 'gmsk' | 'qpsk' | 'aqpsk' | '8psk' | '16qam' | '32qam' | '64qam' | '256qam' | '1024qam' | 'ofdm-mixed' | 'he-ofdm' | 'hr-dsss' | 'br-edr' | 'ble-1m';
+    timing: 'continuous' | 'burst' | 'frame' | 'tdd-frame' | 'classic-slots' | 'advertising-events';
+    duplex?: 'fdd' | 'tdd';
     subcarrierSpacingHz?: number;
     nominalResourceBlocks?: number;
   }>;
-  readonly standard: Readonly<{
-    organization: 'TinySA SignalLab' | '3GPP' | 'IEEE';
-    specification: string;
-    clause: string;
-    revision: string;
-    url: string;
+  readonly source: Readonly<{
+    organization: 'TinySA SignalLab' | '3GPP' | 'IEEE' | 'Bluetooth SIG';
+    references: readonly Readonly<{
+      specification: string;
+      clause: string;
+      revision: string;
+      url: string;
+    }>[];
   }>;
   readonly disclosure: string;
   readonly assetSha256?: string;
@@ -134,8 +158,8 @@ export interface SignalLabBridgeStatus {
   readonly updatedAt: string;
   readonly available: true;
   readonly active: true;
-  readonly profile: string;
-  readonly profiles: readonly string[];
+  readonly profile: SignalLabProfileId;
+  readonly profiles: readonly SignalLabProfileId[];
   readonly waveform: SignalLabWaveformDescriptor;
   readonly catalog: readonly SignalLabWaveformDescriptor[];
   readonly channel: SignalLabChannelConfiguration;
@@ -207,7 +231,7 @@ export interface SignalLabBridgeContinuation {
   readonly sessionId: string;
   readonly configurationRevision: string;
   readonly updatedAt: string;
-  readonly profile: string;
+  readonly profile: SignalLabProfileId;
   readonly channel: SignalLabChannelConfiguration;
   readonly sequence: number;
 }
@@ -339,8 +363,8 @@ export class SignalLabBridgeClient {
   }
 
   async selectProfile(profile: string): Promise<SignalLabBridgeStatus> {
-    profileId(profile, 'SignalLab profile');
-    return this.#request('select_profile', { profile });
+    const admittedProfile = profileId(profile, 'SignalLab profile');
+    return this.#request('select_profile', { profile: admittedProfile });
   }
 
   async configureChannel(channel: SignalLabChannelConfiguration): Promise<SignalLabBridgeStatus> {
@@ -356,7 +380,8 @@ export class SignalLabBridgeClient {
     return this.#request('acquire_spectrum', params);
   }
 
-  async acquireDetectedPower(params: Readonly<{ points: number; samplePeriodSeconds: number }>): Promise<SignalLabDetectedPowerMeasurement> {
+  async acquireDetectedPower(params: Readonly<{ centerFrequencyHz: number; points: number; samplePeriodSeconds: number }>): Promise<SignalLabDetectedPowerMeasurement> {
+    integer(params.centerFrequencyHz, 1, MAX_FREQUENCY_HZ, 'detected-power center frequency');
     integer(params.points, 1, MAX_DETECTED_POWER_POINTS, 'detected-power points');
     finite(params.samplePeriodSeconds, MIN_SAMPLE_PERIOD_SECONDS, MAX_SAMPLE_PERIOD_SECONDS, 'detected-power sample period');
     return this.#request('acquire_detected_power', params);
@@ -582,10 +607,10 @@ export class SignalLabBridgeClient {
 type BridgeMethod = 'status' | 'select_profile' | 'configure_channel' | 'acquire_spectrum' | 'acquire_detected_power' | 'shutdown';
 interface BridgeParams {
   status: Record<string, never>;
-  select_profile: { profile: string };
+  select_profile: { profile: SignalLabProfileId };
   configure_channel: { channel: SignalLabChannelConfiguration };
   acquire_spectrum: { startHz: number; stopHz: number; points: number };
-  acquire_detected_power: { points: number; samplePeriodSeconds: number };
+  acquire_detected_power: { centerFrequencyHz: number; points: number; samplePeriodSeconds: number };
   shutdown: Record<string, never>;
 }
 interface BridgeResult {
@@ -826,8 +851,15 @@ function parseStatus(value: unknown, ready: SignalLabBridgeReady): SignalLabBrid
   literal(status.available, true, 'SignalLab availability');
   literal(status.active, true, 'SignalLab activity');
   const profile = profileId(status.profile, 'SignalLab selected profile');
-  const profiles = array(status.profiles, 1, 256, 'SignalLab profiles').map((item) => profileId(item, 'SignalLab profile'));
-  if (new Set(profiles).size !== profiles.length) throw new SignalLabBridgeProtocolError('SignalLab profiles are not unique');
+  const profiles = array(
+    status.profiles,
+    SIGNAL_LAB_PROFILE_IDS.length,
+    SIGNAL_LAB_PROFILE_IDS.length,
+    'SignalLab profiles',
+  ).map((item) => profileId(item, 'SignalLab profile'));
+  if (!isDeepStrictEqual(profiles, SIGNAL_LAB_PROFILE_IDS)) {
+    throw new SignalLabBridgeProtocolError('SignalLab profile registry does not exactly match measurement-contract v1');
+  }
   if (!profiles.includes(profile)) throw new SignalLabBridgeProtocolError('SignalLab selected profile is not advertised');
   const catalog = array(status.catalog, profiles.length, profiles.length, 'SignalLab catalog').map((item) => parseWaveform(item));
   if (catalog.some((item, index) => item.id !== profiles[index])) throw new SignalLabBridgeProtocolError('SignalLab catalog does not exactly match profile ordering');
@@ -950,10 +982,14 @@ function parseCapabilities(value: unknown): readonly SignalLabBridgeCapability[]
   literal(spectrum.powerUnit, 'dBm', 'SignalLab spectrum power unit');
   literal(spectrum.qualification, 'synthetic-visual-projection', 'SignalLab spectrum qualification');
   const detected = exactRecord(values[1], [
-    'kind', 'minimumPoints', 'maximumPoints', 'minimumSamplePeriodSeconds', 'maximumSamplePeriodSeconds',
-    'powerUnit', 'qualification',
+    'kind', 'minimumFrequencyHz', 'maximumFrequencyHz', 'frequencyStepHz', 'frequencyUnit',
+    'minimumPoints', 'maximumPoints', 'minimumSamplePeriodSeconds', 'maximumSamplePeriodSeconds', 'powerUnit', 'qualification',
   ], [], 'SignalLab detected-power capability');
   literal(detected.kind, 'detected-power-timeseries', 'SignalLab detected-power capability kind');
+  literal(detected.minimumFrequencyHz, 1, 'SignalLab minimum detected-power frequency');
+  literal(detected.maximumFrequencyHz, MAX_FREQUENCY_HZ, 'SignalLab maximum detected-power frequency');
+  literal(detected.frequencyStepHz, 1, 'SignalLab detected-power frequency step');
+  literal(detected.frequencyUnit, 'Hz', 'SignalLab detected-power frequency unit');
   literal(detected.minimumPoints, 1, 'SignalLab minimum detected-power points');
   literal(detected.maximumPoints, MAX_DETECTED_POWER_POINTS, 'SignalLab maximum detected-power points');
   literal(detected.minimumSamplePeriodSeconds, MIN_SAMPLE_PERIOD_SECONDS, 'SignalLab minimum sample period');
@@ -967,7 +1003,9 @@ function parseCapabilities(value: unknown): readonly SignalLabBridgeCapability[]
       powerUnit: 'dBm' as const, qualification: 'synthetic-visual-projection' as const,
     }),
     Object.freeze({
-      kind: 'detected-power-timeseries' as const, minimumPoints: 1 as const, maximumPoints: MAX_DETECTED_POWER_POINTS,
+      kind: 'detected-power-timeseries' as const,
+      minimumFrequencyHz: 1 as const, maximumFrequencyHz: MAX_FREQUENCY_HZ, frequencyStepHz: 1 as const,
+      frequencyUnit: 'Hz' as const, minimumPoints: 1 as const, maximumPoints: MAX_DETECTED_POWER_POINTS,
       minimumSamplePeriodSeconds: MIN_SAMPLE_PERIOD_SECONDS, maximumSamplePeriodSeconds: MAX_SAMPLE_PERIOD_SECONDS,
       powerUnit: 'dBm' as const, qualification: 'synthetic-visual-projection' as const,
     }),
@@ -986,38 +1024,53 @@ function parseChannel(value: unknown): SignalLabChannelConfiguration {
 function parseWaveform(value: unknown): SignalLabWaveformDescriptor {
   const waveform = exactRecord(value, [
     'id', 'label', 'family', 'model', 'qualification', 'centerHz', 'occupiedBandwidthHz',
-    'recommendedSpanHz', 'projection', 'standard', 'disclosure',
+    'recommendedSpanHz', 'projection', 'source', 'disclosure',
   ], ['assetSha256'], 'SignalLab waveform');
   const id = profileId(waveform.id, 'SignalLab waveform ID');
   const label = boundedString(waveform.label, 1, 512, 'SignalLab waveform label');
-  const family = oneOf(waveform.family, ['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan'] as const, 'SignalLab waveform family');
+  const family = oneOf(waveform.family, ['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan', 'bluetooth'] as const, 'SignalLab waveform family');
   const model = boundedString(waveform.model, 1, 1_024, 'SignalLab waveform model');
   const qualification = oneOf(waveform.qualification, ['visual', 'standards-derived', 'conformance-validated'] as const, 'SignalLab waveform qualification');
   const centerHz = integer(waveform.centerHz, 1, MAX_FREQUENCY_HZ, 'SignalLab waveform center');
   const occupiedBandwidthHz = integer(waveform.occupiedBandwidthHz, 1, MAX_FREQUENCY_HZ, 'SignalLab occupied bandwidth');
   const recommendedSpanHz = integer(waveform.recommendedSpanHz, occupiedBandwidthHz, MAX_FREQUENCY_HZ, 'SignalLab recommended span');
-  const projectionRecord = exactRecord(waveform.projection, ['allocation', 'modulation', 'timing'], ['subcarrierSpacingHz', 'nominalResourceBlocks'], 'SignalLab waveform projection');
+  const projectionRecord = exactRecord(waveform.projection, ['allocation', 'modulation', 'timing'], ['duplex', 'subcarrierSpacingHz', 'nominalResourceBlocks'], 'SignalLab waveform projection');
   const projection: SignalLabWaveformDescriptor['projection'] = Object.freeze({
-    allocation: oneOf(projectionRecord.allocation, ['carrier', 'sidebands', 'full', 'boosted', 'single-prb', 'narrowband', 'multi-ru', 'resource-unit'] as const, 'SignalLab projection allocation'),
-    modulation: oneOf(projectionRecord.modulation, ['unmodulated', 'am', 'fm', 'gmsk', 'qpsk', 'aqpsk', '8psk', '16qam', '32qam', '64qam', '256qam', '1024qam', 'ofdm-mixed', 'he-ofdm'] as const, 'SignalLab projection modulation'),
-    timing: oneOf(projectionRecord.timing, ['continuous', 'burst', 'frame', 'subslot', 'slot', 'sbfd-du', 'sbfd-ud', 'sbfd-dud'] as const, 'SignalLab projection timing'),
+    allocation: oneOf(projectionRecord.allocation, ['carrier', 'sidebands', 'full', 'narrowband', 'multi-ru', 'resource-unit', 'frequency-hopping', 'advertising-channels'] as const, 'SignalLab projection allocation'),
+    modulation: oneOf(projectionRecord.modulation, ['unmodulated', 'am', 'fm', 'gmsk', 'qpsk', 'aqpsk', '8psk', '16qam', '32qam', '64qam', '256qam', '1024qam', 'ofdm-mixed', 'he-ofdm', 'hr-dsss', 'br-edr', 'ble-1m'] as const, 'SignalLab projection modulation'),
+    timing: oneOf(projectionRecord.timing, ['continuous', 'burst', 'frame', 'tdd-frame', 'classic-slots', 'advertising-events'] as const, 'SignalLab projection timing'),
+    ...(projectionRecord.duplex === undefined ? {} : { duplex: oneOf(projectionRecord.duplex, ['fdd', 'tdd'] as const, 'SignalLab duplex mode') }),
     ...(projectionRecord.subcarrierSpacingHz === undefined ? {} : { subcarrierSpacingHz: integer(projectionRecord.subcarrierSpacingHz, 1, MAX_FREQUENCY_HZ, 'SignalLab subcarrier spacing') }),
     ...(projectionRecord.nominalResourceBlocks === undefined ? {} : { nominalResourceBlocks: integer(projectionRecord.nominalResourceBlocks, 1, 100_000, 'SignalLab resource blocks') }),
   });
-  const standardRecord = exactRecord(waveform.standard, ['organization', 'specification', 'clause', 'revision', 'url'], [], 'SignalLab waveform standard');
-  const standard: SignalLabWaveformDescriptor['standard'] = Object.freeze({
-    organization: oneOf(standardRecord.organization, ['TinySA SignalLab', '3GPP', 'IEEE'] as const, 'SignalLab standards organization'),
-    specification: boundedString(standardRecord.specification, 1, 512, 'SignalLab specification'),
-    clause: boundedString(standardRecord.clause, 1, 512, 'SignalLab specification clause'),
-    revision: boundedString(standardRecord.revision, 1, 512, 'SignalLab specification revision'),
-    url: webUrl(standardRecord.url, 'SignalLab specification URL'),
-  });
+  const sourceRecord = exactRecord(waveform.source, ['organization', 'references'], [], 'SignalLab waveform source');
+  const organization = oneOf(sourceRecord.organization, ['TinySA SignalLab', '3GPP', 'IEEE', 'Bluetooth SIG'] as const, 'SignalLab source organization');
+  const references: SignalLabWaveformDescriptor['source']['references'] = Object.freeze(
+    array(sourceRecord.references, 1, 8, 'SignalLab source references').map((value, index) => {
+      const reference = exactRecord(value, ['specification', 'clause', 'revision', 'url'], [], `SignalLab source reference ${index}`);
+      return Object.freeze({
+        specification: trimmedBoundedString(reference.specification, 1, MAX_RESPONSE_LINE_BYTES, `SignalLab source reference ${index} specification`),
+        clause: trimmedBoundedString(reference.clause, 1, MAX_RESPONSE_LINE_BYTES, `SignalLab source reference ${index} clause`),
+        revision: trimmedBoundedString(reference.revision, 1, MAX_RESPONSE_LINE_BYTES, `SignalLab source reference ${index} revision`),
+        url: httpsUrl(reference.url, `SignalLab source reference ${index} URL`),
+      });
+    }),
+  );
+  const documentKeys = references.map((reference) => `${reference.specification}\u0000${reference.revision}\u0000${reference.url}`);
+  if (new Set(documentKeys).size !== documentKeys.length) throw new SignalLabBridgeProtocolError('SignalLab source contains a duplicate document reference');
+  if (new Set(references.map((reference) => reference.url)).size !== references.length) {
+    throw new SignalLabBridgeProtocolError('SignalLab source reference URLs must be unique');
+  }
+  if ((qualification === 'visual') !== (organization === 'TinySA SignalLab')) {
+    throw new SignalLabBridgeProtocolError('SignalLab waveform qualification does not match its source organization');
+  }
+  const source: SignalLabWaveformDescriptor['source'] = Object.freeze({ organization, references });
   const disclosure = boundedString(waveform.disclosure, 1, 4_096, 'SignalLab waveform disclosure');
   const assetSha256 = waveform.assetSha256 === undefined ? undefined : sha256(waveform.assetSha256, 'SignalLab waveform asset hash');
   if (qualification === 'conformance-validated' && !assetSha256) throw new SignalLabBridgeProtocolError('Conformance-validated SignalLab waveform is missing its asset hash');
   return Object.freeze({
     id, label, family, model, qualification, centerHz, occupiedBandwidthHz, recommendedSpanHz,
-    projection, standard, disclosure, ...(assetSha256 ? { assetSha256 } : {}),
+    projection, source, disclosure, ...(assetSha256 ? { assetSha256 } : {}),
   });
 }
 
@@ -1128,10 +1181,14 @@ function boundedString(value: unknown, minimum: number, maximum: number, label: 
   return value;
 }
 
-function profileId(value: unknown, label: string): string {
-  const result = boundedString(value, 1, 256, label);
-  if (!PROFILE_PATTERN.test(result)) throw new SignalLabBridgeProtocolError(`${label} is not a canonical profile ID`);
+function trimmedBoundedString(value: unknown, minimum: number, maximum: number, label: string): string {
+  const result = boundedString(value, minimum, maximum, label);
+  if (result.trim() !== result) throw new SignalLabBridgeProtocolError(`${label} must not have surrounding whitespace`);
   return result;
+}
+
+function profileId(value: unknown, label: string): SignalLabProfileId {
+  return oneOf(value, SIGNAL_LAB_PROFILE_IDS, label);
 }
 
 function uuid(value: unknown, label: string): asserts value is string {
@@ -1165,12 +1222,12 @@ function oneOf<const T extends readonly (string | number)[]>(value: unknown, adm
   return value as T[number];
 }
 
-function webUrl(value: unknown, label: string): string {
+function httpsUrl(value: unknown, label: string): string {
   const result = boundedString(value, 1, 2_048, label);
   let parsed: URL;
   try { parsed = new URL(result); }
   catch (cause) { throw new SignalLabBridgeProtocolError(`${label} is invalid`, { cause }); }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new SignalLabBridgeProtocolError(`${label} must use HTTP(S)`);
+  if (parsed.protocol !== 'https:' || !result.startsWith('https://')) throw new SignalLabBridgeProtocolError(`${label} must use HTTPS`);
   return result;
 }
 

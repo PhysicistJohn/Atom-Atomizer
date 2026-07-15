@@ -36,12 +36,51 @@ describe('synthetic support rank contract', () => {
 
   it('pins the non-conformal statistical interpretation in the generated asset', () => {
     expect(BAYESIAN_OBSERVABLE_MODEL.calibrationId).toBe(
-      'synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7',
+      'synthetic-view-matched-stratified-online-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v10',
     );
     expect(BAYESIAN_OBSERVABLE_MODEL.calibrationId).not.toContain('conformal');
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy)
+      .toBe('online-all-ready-representatives-v1');
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit)
+      .toBe('one-score-per-observation-domain-eligible-acquisition-attempt-v2');
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy)
+      .toBe('minimum-support-across-observation-domain-eligible-online-representatives-v3');
     expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy)
       .toBe('single-representative-rank-dominates-attempt-min-rank-v1');
     expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation)
       .toBe('empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1');
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy)
+      .toBe('observation-only-hypothesis-domain-v5');
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.signalLabProductionAcquisitionRegime).toEqual({
+      id: 'signal-lab-recommended-span-grid-with-session-sequence-nuisance-v1',
+      geometry: {
+        id: 'signal-lab-recommended-span-450-point-grid-v1',
+        sourceKind: 'signal-lab',
+        kind: 'recommended-span-inclusive-grid',
+        sweepPoints: 450,
+        spanPolicy: 'canonical-recommended-span-v1',
+        resolutionScalePolicy: 'recommended-span-divided-by-points-minus-one-v1',
+      },
+      temporalSchedules: [
+        { id: 'contiguous-from-zero-v1', sourceLookIndexOffset: 0, skipAfterSpectrumOpportunities: null, skippedSourceOpportunities: 0 },
+        { id: 'post-eight-spectrum-single-capture-skip-v1', sourceLookIndexOffset: 0, skipAfterSpectrumOpportunities: 8, skippedSourceOpportunities: 1 },
+        { id: 'profile-sequence-offset-225-post-eight-spectrum-single-capture-skip-v1', sourceLookIndexOffset: 225, skipAfterSpectrumOpportunities: 8, skippedSourceOpportunities: 1 },
+      ],
+      componentFitIncluded: true,
+      tailCalibrationIncluded: true,
+    });
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerSynthesisFilterPolicy).toEqual({
+      id: 'explicit-generator-filter-width-by-acquisition-regime-v1',
+      divisorAcquisitionRegimes: 'match-swept-spectrum-actual-rbw-nuisance-v1',
+      signalLabProductionAcquisitionRegimes: 'fixed-generator-internal-width-v1',
+      signalLabProductionSynthesisFilterWidthHz: 100_000,
+      measurementActualRbwQualification: 'unavailable',
+    });
+    expect(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.productionAcquisitionRegimeHighSnrSeedCoveragePolicy)
+      .toEqual({
+        id: 'detector-conditioned-production-regime-presence-v1',
+        minimumDistinctSeedsPerHighSnrCell: 1,
+        globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1',
+      });
   });
 });

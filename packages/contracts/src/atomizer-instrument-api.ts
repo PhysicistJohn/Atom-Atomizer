@@ -9,6 +9,7 @@ import {
   instrumentFeatureResultSchema,
   instrumentManagerEventSchema,
   instrumentMeasurementSchema,
+  instrumentOpaqueIdSchema,
   instrumentSessionSnapshotSchema,
   instrumentSourceKindSchema,
   instrumentTimestampSchema,
@@ -26,20 +27,32 @@ export const ATOMIZER_INSTRUMENT_API_VERSION = 1 as const;
 
 /**
  * Main-process-owned startup preference. It selects an already registered
- * driver and never contains an executable path, transport identity, or other
- * renderer-controlled composition data.
+ * driver/candidate tuple and never contains an executable path, transport
+ * configuration, or other renderer-controlled composition data. `candidateId`
+ * remains optional only so already-persisted v1 preferences can be read and
+ * fail safely on ambiguity; every new selection must include it.
  */
 export const atomizerInstrumentPreferenceSchema = z.object({
   schemaVersion: z.literal(ATOMIZER_INSTRUMENT_API_VERSION),
   driverId: instrumentDriverIdSchema,
   candidateKind: instrumentSourceKindSchema.optional(),
+  candidateId: instrumentOpaqueIdSchema.optional(),
   updatedAt: instrumentTimestampSchema,
-}).strict();
+}).strict().superRefine((preference, context) => {
+  if (preference.candidateId !== undefined && preference.candidateKind === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['candidateKind'],
+      message: 'An exact startup candidate ID requires its source kind',
+    });
+  }
+});
 export type AtomizerInstrumentPreference = z.infer<typeof atomizerInstrumentPreferenceSchema>;
 
 export const atomizerInstrumentPreferenceSelectionSchema = z.object({
   driverId: instrumentDriverIdSchema,
-  candidateKind: instrumentSourceKindSchema.optional(),
+  candidateKind: instrumentSourceKindSchema,
+  candidateId: instrumentOpaqueIdSchema,
 }).strict();
 export type AtomizerInstrumentPreferenceSelection = z.infer<typeof atomizerInstrumentPreferenceSelectionSchema>;
 

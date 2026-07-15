@@ -77,7 +77,7 @@ function exportIdentity(sweep: Sweep): {
     return {
       deviceModel: provenance.sourceKind === 'signal-lab' ? '' : provenance.device.model,
       firmwareVersion: provenance.sourceKind === 'signal-lab' ? '' : provenance.device.firmwareVersion,
-      simulated: provenance.sourceKind !== 'serial-port',
+      simulated: provenance.execution !== 'physical',
       driverId: genericIdentity.driverId,
       candidateId: genericIdentity.candidateId,
       sessionId: genericIdentity.sessionId,

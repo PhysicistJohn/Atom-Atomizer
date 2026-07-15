@@ -9,6 +9,7 @@ const { dirname, isAbsolute, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { inspect } = require('node:util');
 const { appendBoundedLogSync } = require('./bounded-log.cjs');
+const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
 
 const APP_NAME = 'TinySA Atomizer Dev';
 const LAUNCHER_CONTRACT_VERSION = 3;
@@ -95,9 +96,10 @@ function loadContract() {
   }
 
   const signalLabRepository = resolve(repoRoot, runtime.signalLabRepository);
+  const environmentFile = join(repoRoot, '.env');
+  requirePrivateEnvironmentFile(environmentFile);
   const requiredPaths = [
     'package.json',
-    '.env',
     'node_modules/electron/package.json',
     'node_modules/tsup/dist/cli-default.js',
     'node_modules/vite/bin/vite.js',
@@ -137,6 +139,7 @@ function loadContract() {
 
   return Object.freeze({
     repoRoot,
+    environmentFile,
     instrumentPolicy: runtime.instrumentPolicy,
     signalLabRepository,
     signalLabBuildScript: join(signalLabRepository, 'scripts', 'build-atomizer-bridge.mjs'),
@@ -258,9 +261,11 @@ function buildAndValidateSignalLabBridge(contract) {
 function buildDevelopmentEntries(contract) {
   const packageBuilds = [
     ['contracts', []],
+    ['instrument-runtime', []],
+    ['signal-lab-driver', ['--external', '@tinysa/instrument-runtime']],
     ['analysis', []],
     ['agent', []],
-    ['tinysa', ['--external', 'serialport']],
+    ['tinysa', ['--external', 'serialport', '--external', '@tinysa/instrument-runtime']],
     ['test-device', []],
   ];
   for (const [packageDirectory, extraArgs] of packageBuilds) {
@@ -352,7 +357,7 @@ async function launch() {
   process.chdir(contract.repoRoot);
   process.env.NODE_ENV = 'development';
   process.env.VITE_DEV_SERVER_URL = contract.devServerUrl;
-  process.env.TINYSA_ENV_FILE = join(contract.repoRoot, '.env');
+  process.env.TINYSA_ENV_FILE = contract.environmentFile;
   process.env.ATOMIZER_REPOSITORY_ROOT = contract.repoRoot;
   process.env.ATOMIZER_SIGNAL_LAB_BRIDGE = contract.signalLabBridge;
   delete process.env.TINYSA_FIRMWARE_REPO;
@@ -373,6 +378,9 @@ async function launch() {
   app.dock.setIcon(icon);
 
   const mainEntry = join(contract.repoRoot, 'apps', 'desktop', 'dist', 'main', 'main.js');
+  // Builds can take long enough for local metadata to change. Revalidate the
+  // exact path consumed by Electron main immediately before importing it.
+  requirePrivateEnvironmentFile(contract.environmentFile);
   log('ELECTRON', `Importing ${mainEntry} with ${contract.instrumentPolicy} via ${contract.signalLabBridge}`);
   await import(pathToFileURL(mainEntry).href);
 }

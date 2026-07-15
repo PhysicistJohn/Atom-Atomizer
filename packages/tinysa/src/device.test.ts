@@ -7,9 +7,8 @@ import {
   type PortCandidate,
 } from '@tinysa/contracts';
 import { FakeTinySaTransport } from '@tinysa/test-device';
+import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
 import { TinySaDeviceService } from './device.js';
-import { InstrumentDriverRegistry } from './instrument-driver-registry.js';
-import { InstrumentManager } from './instrument-manager.js';
 import { TinySaZs407InstrumentDriver } from './tinysa-instrument-driver.js';
 import type { ByteTransport, TransportDiscoveryResult, TransportEvent } from './transport.js';
 
@@ -101,6 +100,45 @@ describe('device fail-loud lifecycle', () => {
     await service.disconnect();
   });
 
+  it('isolates throwing device observers from connection and RF lifecycle state', async () => {
+    const transport = new PhysicalFixtureTransport(new FakeTinySaTransport());
+    const service = new TinySaDeviceService(transport);
+    let downstreamEvents = 0;
+    service.subscribe(() => { throw new Error('host observer failed'); });
+    service.subscribe(() => { downstreamEvents += 1; });
+
+    await expect(service.connect(transport.port)).resolves.toMatchObject({ connection: 'ready' });
+    expect(service.snapshot()).toMatchObject({ connection: 'ready', generatorOutput: 'off' });
+    expect(downstreamEvents).toBeGreaterThan(0);
+    await expect(service.disconnect()).resolves.toBeUndefined();
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected' });
+  });
+
+  it.each([
+    'tinySA4_v1.4-224-gc979386-dirty',
+    'tinySA4_custom-gc979386',
+    'tinySA4_v1.4-224-gc979386 HACKED',
+  ])('warning-admits decorated known-revision shell identity %j as custom firmware', async (firmwareVersion) => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: `${firmwareVersion}\r\nHW Version:V0.5.4 max2871`,
+      infoResponse: `tinySA ULTRA+ ZS407\r\nVersion: ${firmwareVersion}\r\nPlatform: STM32F303`,
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    const connected = await service.connect(transport.port);
+
+    expect(connected.identity).toMatchObject({
+      firmwareVersion,
+      firmwareReportedRevision: 'c979386',
+      firmwareQualification: 'custom-unqualified',
+      usbIdentityVerified: true,
+      execution: 'physical',
+    });
+    expect(connected.identity?.firmwareSourceCommit).toBeUndefined();
+    expect(connected.identity?.firmwareWarning).toMatch(/c979386.*without source qualification/i);
+    await service.disconnect();
+  });
+
   it('normalizes physical ZS407 RGB565 panel bytes to the little-endian screen contract', async () => {
     const bytes = new FakeTinySaTransport({ screenCaptureByteOrder: 'big-endian' });
     const transport = new PhysicalFixtureTransport(bytes);
@@ -127,24 +165,33 @@ describe('device fail-loud lifecycle', () => {
   });
 
   it('does not treat an operation-only unknown response as acknowledgement of mandatory output-off', async () => {
-    const bytes = new FakeTinySaTransport({ commandResponses: { 'output off': 'output?' } });
+    const bytes = new FakeTinySaTransport({ commandResponseSequences: { 'output off': ['output?', ''] } });
     const transport = new PhysicalFixtureTransport(bytes);
     const service = new TinySaDeviceService(transport);
 
     await expect(service.connect(transport.port)).rejects.toThrow(/rejected command output off/i);
 
+    expect(service.snapshot()).toMatchObject({
+      connection: 'faulted', generatorOutput: 'unknown', verification: 'unknown',
+      pendingPort: transport.port,
+    });
+    await expect(service.cleanupPendingInstrumentConnection()).resolves.toBeUndefined();
+    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(2);
     expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
   });
 
   it.each(['error', 'unknown command', 'invalid request', 'no such command', 'ok', 'command accepted'])(
     'requires the closed empty-reply acknowledgement for mutating command response %j',
     async (reply) => {
-      const bytes = new FakeTinySaTransport({ commandResponses: { 'output off': reply } });
+      const bytes = new FakeTinySaTransport({ commandResponseSequences: { 'output off': [reply, ''] } });
       const transport = new PhysicalFixtureTransport(bytes);
       const service = new TinySaDeviceService(transport);
 
       await expect(service.connect(transport.port)).rejects.toThrow(/rejected command output off.*require an empty reply/i);
 
+      expect(service.snapshot()).toMatchObject({ connection: 'faulted', generatorOutput: 'unknown' });
+      await expect(service.cleanupPendingInstrumentConnection()).resolves.toBeUndefined();
+      expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(2);
       expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
     },
   );
@@ -189,6 +236,38 @@ describe('device fail-loud lifecycle', () => {
 
     expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(4);
     expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+  });
+
+  it('invalidates an admitted analyzer configuration after a partial generator transition fails', async () => {
+    const bytes = new FakeTinySaTransport({ commandResponses: { 'freq 100000000': 'usage: freq {frequency}' } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+    await service.configureAnalyzer(analyzer);
+
+    await expect(service.configureGenerator(generator)).rejects.toThrow(/rejected command freq/i);
+    expect(service.snapshot()).toMatchObject({
+      connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded',
+      analyzer: undefined, generator: undefined,
+    });
+    await expect(service.acquireSweep()).rejects.toThrow(/Analyzer is not configured/);
+    await service.disconnect();
+  });
+
+  it('removes stale published analyzer state when a healthy-protocol reconfiguration fails', async () => {
+    const bytes = new FakeTinySaTransport({ commandResponseSequences: { 'rbw 30': ['', 'usage: rbw 0.2..850|auto'] } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+    await service.configureAnalyzer(analyzer);
+
+    await expect(service.configureAnalyzer(analyzer)).rejects.toThrow(/rejected command rbw/i);
+    expect(service.snapshot()).toMatchObject({
+      connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded',
+      analyzer: undefined, generator: undefined,
+    });
+    await expect(service.acquireSweep()).rejects.toThrow(/Analyzer is not configured/);
+    await service.disconnect();
   });
 
   it('admits an otherwise valid ZS407 custom revision with explicit unqualified provenance', async () => {

@@ -1,13 +1,17 @@
-import type { DetectedSignal } from '@tinysa/contracts';
 import { BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL } from './bayesian-agile-association.js';
 import type { ObservableFeatureObservation } from './observable-features.js';
 import type { ObservableLeafClass } from './observable-classifier-model.js';
 import { compatibleRadioDuplexModes, type RadioAirInterface } from './radio-operating-band-context.js';
 
-const FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ = {
+// Only the 2.4 GHz Wi-Fi centers are fitted corpus centers. The 5/6 GHz OFDM
+// windows are standards-context extrapolations that still require physical
+// validation; they are hard exclusion masks, not evidence of band-wide fit.
+const SUPPORTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ = {
   wifiHrDsss: [[2_400, 2_500]],
   wifiOfdm: [[2_400, 2_500], [4_900, 5_925], [5_925, 7_125]],
 } as const;
+
+export const OBSERVABLE_HYPOTHESIS_DOMAIN_POLICY_ID = 'observation-only-hypothesis-domain-v5' as const;
 
 export type ObservableHypothesisDomainObservation = Partial<Pick<
   ObservableFeatureObservation,
@@ -33,7 +37,7 @@ export function observableHypothesisHasRequiredEvidence(
   observation: ObservableHypothesisDomainObservation,
 ): boolean {
   if (id === 'wifi-hr-dsss-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiHrDsss);
+    const inFittedBand = fittedObservedIntervalInAnyBand(observation, SUPPORTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiHrDsss);
     // The fitted 11 Mcps HR-DSSS projection is about 22 MHz wide. Ten MHz is
     // a conservative lower observation boundary, not a universal 802.11 rule.
     const inFittedWidth = observation.bandwidthHz === undefined
@@ -41,7 +45,7 @@ export function observableHypothesisHasRequiredEvidence(
     return inFittedBand && inFittedWidth;
   }
   if (id === 'wifi-ofdm-like') {
-    const inFittedBand = fittedObservedIntervalInAnyBand(observation, FITTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiOfdm);
+    const inFittedBand = fittedObservedIntervalInAnyBand(observation, SUPPORTED_NON_CELLULAR_CONTEXT_WINDOWS_MHZ.wifiOfdm);
     const inFittedWidth = observation.bandwidthHz === undefined
       || (observation.bandwidthHz >= 8_000_000 && observation.bandwidthHz <= 110_000_000);
     return inFittedBand && inFittedWidth;
@@ -78,14 +82,17 @@ export function observableHypothesisHasRequiredEvidence(
   if (id === 'am-dsb-full-carrier-like') {
     const carrierFraction = observation.values?.['spectrum.centerFraction'];
     if (carrierFraction === undefined || carrierFraction < 0.5) return false;
-    const resolvedSidebands = (observation.values?.['spectrum.sidebandScore'] ?? 0) >= 0.2;
-    const envelopeRangeDb = observation.values?.['envelope.rangeDb'];
-    const envelopeStandardDeviationDb = observation.values?.['envelope.standardDeviationDb'];
-    const amplitudeEnvelopeObserved = envelopeRangeDb !== undefined
-      && envelopeStandardDeviationDb !== undefined
-      && envelopeRangeDb >= 2
-      && envelopeStandardDeviationDb >= 0.5;
-    return resolvedSidebands || amplitudeEnvelopeObserved;
+    return resolvedSidebandsOrModulatedEnvelope(observation);
+  }
+  if (id === 'fm-angle-modulated-like') {
+    // A locally tracked stationary line is observationally CW-like even when
+    // an unconstrained likelihood happens to resemble a coarse-RBW FM
+    // component.  Require directly observed symmetric sidebands or a
+    // receiver-filtered power envelope with material modulation before the FM
+    // leaf participates in fitting, calibration, support, or inference.
+    // This does not claim that every standards-valid FM signal will satisfy
+    // the finite scalar view; unresolved FM correctly remains CW-like/unknown.
+    return resolvedSidebandsOrModulatedEnvelope(observation);
   }
   if (id !== 'bluetooth-like') return true;
   // With only scalar swept spectra and a fixed-tune power envelope, a local
@@ -104,34 +111,31 @@ export function observableHypothesisHasRequiredEvidence(
     && fittedObservedIntervalInAnyBand(observation, [[2_402, 2_480]]);
 }
 
-/**
- * Determines whether one production-pipeline representative may enter a
- * likelihood fit or its tail calibration. Runtime structural support is a
- * necessary condition; the analog and Bluetooth clauses add conservative
- * provenance constraints that prevent fragment/association selection bias.
- */
-export function observableRepresentativeIsEligibleForModelFit(
-  id: ObservableLeafClass,
-  nominalOccupiedBandwidthHz: number,
-  detection: Pick<DetectedSignal, 'associationMode' | 'associationBayesianEvidence'>,
+function resolvedSidebandsOrModulatedEnvelope(
   observation: ObservableHypothesisDomainObservation,
 ): boolean {
-  if (!observableHypothesisHasRequiredEvidence(id, observation)) return false;
-  if (id === 'bluetooth-like') {
-    return detection.associationMode === 'frequency-agile-2g4-activity'
-      && detection.associationBayesianEvidence?.qualification
-        === 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity';
-  }
-  if (id === 'am-dsb-full-carrier-like' || id === 'fm-angle-modulated-like') {
-    // A resolved sideband by itself is an RBW-limited line, not an analog
-    // modulation training observation. Require either a separately disclosed
-    // regular-component association or one connected region spanning a
-    // material fraction of the nominal occupied morphology.
-    return detection.associationMode === 'regular-spectral-component-activity'
-      || (observation.bandwidthHz !== undefined
-        && observation.bandwidthHz >= nominalOccupiedBandwidthHz * 0.3);
-  }
-  return true;
+  const resolvedSidebands = (observation.values?.['spectrum.sidebandScore'] ?? 0) >= 0.2;
+  const envelopeRangeDb = observation.values?.['envelope.rangeDb'];
+  const envelopeStandardDeviationDb = observation.values?.['envelope.standardDeviationDb'];
+  const modulatedEnvelopeObserved = envelopeRangeDb !== undefined
+    && envelopeStandardDeviationDb !== undefined
+    && envelopeRangeDb >= 2
+    && envelopeStandardDeviationDb >= 0.5;
+  return resolvedSidebands || modulatedEnvelopeObserved;
+}
+
+/**
+ * The single observation-only domain mask used by fitting, calibration, and
+ * runtime inference. It intentionally accepts no nominal generator bandwidth,
+ * corpus label metadata, or tracker-only facts. A representative admitted by
+ * this mask at runtime is admitted by the same mask when its class likelihood
+ * and support reference are constructed.
+ */
+export function observableRepresentativeIsInClassDomain(
+  id: ObservableLeafClass,
+  observation: ObservableHypothesisDomainObservation,
+): boolean {
+  return observableHypothesisHasRequiredEvidence(id, observation);
 }
 
 function fittedObservedIntervalInAnyBand(
@@ -164,6 +168,9 @@ function observedIntervalSupportsDuplex(
   duplexMode: 'fdd' | 'tdd',
 ): boolean {
   if (observation.centerHz === undefined) return true;
+  // The standards table spans more operating bands than the corpus's fitted
+  // Band 3/Band 38/n3/n78 centers. Compatibility is structural context only;
+  // it does not claim that likelihoods were fitted throughout those bands.
   const { observedStartHz, observedStopHz, edgeToleranceHz } = observedInterval(observation);
   return compatibleRadioDuplexModes(airInterface, observedStartHz, observedStopHz, edgeToleranceHz).has(duplexMode);
 }

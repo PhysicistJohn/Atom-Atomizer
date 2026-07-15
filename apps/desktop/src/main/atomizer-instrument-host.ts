@@ -37,7 +37,7 @@ import {
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
 } from '@tinysa/contracts';
-import { fingerprintInstrumentMeasurement, type InstrumentManager } from '@tinysa/device';
+import { fingerprintInstrumentMeasurement, type InstrumentManager } from '@tinysa/instrument-runtime';
 import type {
   InstrumentPreference,
   LoadedInstrumentPreference,
@@ -50,7 +50,7 @@ const CONTINUOUS_ACQUISITION_INTERVAL_MS = 100;
 
 export interface AtomizerInstrumentPreferencePort {
   load(): Promise<LoadedInstrumentPreference>;
-  save(driverId: InstrumentDriverId, candidateKind?: InstrumentSourceKind): Promise<InstrumentPreference>;
+  save(driverId: InstrumentDriverId, candidateKind: InstrumentSourceKind, candidateId: string): Promise<InstrumentPreference>;
 }
 
 export interface AtomizerInstrumentHostRuntime {
@@ -120,6 +120,7 @@ export class AtomizerInstrumentHost {
   #streamBlockers = 0;
   #disconnectPromise: Promise<void> | undefined;
   #shutdownPromise: Promise<void> | undefined;
+  #connectionEpoch: object = Object.freeze({});
   #pendingAcquisition: { eventFingerprint?: string } | undefined;
   #lifecycle: HostLifecycle = 'open';
 
@@ -180,7 +181,7 @@ export class AtomizerInstrumentHost {
 
   acquire(): Promise<InstrumentMeasurement> {
     this.#requireSessionWorkAvailable('Manual acquisition');
-    return this.#serializeOpen(async () => {
+    return this.#serializeSessionOpen(async () => {
       if (this.#streamRun) throw new Error('Manual acquisition is unavailable while continuous acquisition is running');
       return this.#acquireAndPublish();
     });
@@ -196,7 +197,7 @@ export class AtomizerInstrumentHost {
         return this.#executeFeatureAndSnapshot(request);
       });
     }
-    return this.#serializeOpen(async () => {
+    return this.#serializeSessionOpen(async () => {
       return this.#executeFeatureAndSnapshot(request);
     });
   }
@@ -219,6 +220,10 @@ export class AtomizerInstrumentHost {
     // Reserve the operation before stopping a faulted stream can emit an
     // event and synchronously re-enter this method through an observer.
     this.#disconnectPromise = tracked;
+    // Teardown overtakes ordinary host work. Invalidate every session mutation
+    // admitted before this point so none can run after teardown and reopen or
+    // mutate a connection the caller has just closed.
+    this.#connectionEpoch = Object.freeze({});
     this.#streamBlockers++;
     const run = this.#requestStreamingStop();
     void (async () => {
@@ -273,10 +278,29 @@ export class AtomizerInstrumentHost {
   }
 
   writePreference(selectionValue: AtomizerInstrumentPreferenceSelection): Promise<AtomizerInstrumentPreferenceState> {
+    this.#requirePreferenceMutationSafe();
     return this.#serializeOpen(async () => {
+      // Recheck after queue admission: a connect scheduled immediately before
+      // this operation may have established a session while the preference
+      // write was waiting in the serialized host tail.
+      this.#requirePreferenceMutationSafe();
       const selection = atomizerInstrumentPreferenceSelectionSchema.parse(selectionValue);
       this.#requireRegisteredPreference(selection.driverId, selection.candidateKind);
-      const preference = await this.preferences.save(selection.driverId, selection.candidateKind);
+      const discovery = instrumentDiscoveryResultSchema.parse(await this.manager.discover());
+      this.selectPreference(discovery, {
+        schemaVersion: 1,
+        ...selection,
+        updatedAt: this.#timestamp(),
+      });
+      // Discovery is source-owned and may itself surface a retained cleanup
+      // lease. Never persist a candidate until that lifecycle remains clean.
+      this.#syncConnectionCleanup();
+      this.#requirePreferenceMutationSafe();
+      const preference = await this.preferences.save(
+        selection.driverId,
+        selection.candidateKind,
+        selection.candidateId,
+      );
       return this.#acceptPreference({ source: 'persisted', preference });
     });
   }
@@ -328,6 +352,7 @@ export class AtomizerInstrumentHost {
     // re-enter shutdown from a renderer observer.
     this.#shutdownPromise = tracked;
     this.#lifecycle = 'closing';
+    this.#connectionEpoch = Object.freeze({});
     const run = this.#requestStreamingStop();
     const admittedDisconnect = this.#disconnectPromise;
     void (async () => {
@@ -510,8 +535,8 @@ export class AtomizerInstrumentHost {
 
   #emit(value: AtomizerInstrumentEvent): void {
     const event = atomizerInstrumentEventSchema.parse(value);
-    for (const listener of this.#listeners) {
-      try { listener(event); } catch { /* Renderer observers cannot break lifecycle state. */ }
+    for (const listener of [...this.#listeners]) {
+      try { listener(structuredClone(event)); } catch { /* Renderer observers cannot break lifecycle state. */ }
     }
   }
 
@@ -528,6 +553,7 @@ export class AtomizerInstrumentHost {
   async #withStreamingStopped<T>(operation: () => Promise<T> | T): Promise<T> {
     this.#requireOpen();
     if (this.#disconnectPromise) throw new Error('Instrument connection is disconnecting');
+    const admittedEpoch = this.#connectionEpoch;
     // Reserve bounded tail ownership before waiting for the current stream to
     // finish. Otherwise an arbitrary number of connect/configure/feature
     // callers can all retain closures while awaiting the same `run.done`, and
@@ -540,6 +566,7 @@ export class AtomizerInstrumentHost {
       await run?.done;
       const result = this.#enqueueAdmitted(() => {
         this.#requireOpen();
+        this.#requireConnectionEpoch(admittedEpoch);
         return operation();
       }, releaseAdmission, 'normal');
       handedToTail = true;
@@ -554,6 +581,17 @@ export class AtomizerInstrumentHost {
     this.#requireOpen();
     return this.#enqueue(() => {
       this.#requireOpen();
+      return operation();
+    });
+  }
+
+  #serializeSessionOpen<T>(operation: () => Promise<T> | T): Promise<T> {
+    this.#requireOpen();
+    if (this.#disconnectPromise) return Promise.reject(new Error('Instrument connection is disconnecting'));
+    const admittedEpoch = this.#connectionEpoch;
+    return this.#enqueue(() => {
+      this.#requireOpen();
+      this.#requireConnectionEpoch(admittedEpoch);
       return operation();
     });
   }
@@ -634,8 +672,23 @@ export class AtomizerInstrumentHost {
     if (this.#streamBlockers > 0) throw new Error(`${operation} is unavailable during an instrument connection or configuration transition`);
   }
 
+  #requirePreferenceMutationSafe(): void {
+    this.#requireOpen();
+    if (this.manager.snapshot() || this.#streamRun || this.#disconnectPromise
+      || this.#connectionCleanup.status === 'required'
+      || this.manager.pendingConnectionCleanup()) {
+      throw new Error('Disconnect the active instrument and complete connection cleanup before changing the startup default');
+    }
+  }
+
   #requireOpen(): void {
     if (this.#lifecycle !== 'open') throw new Error('Atomizer instrument host is closed');
+  }
+
+  #requireConnectionEpoch(admittedEpoch: object): void {
+    if (this.#connectionEpoch !== admittedEpoch) {
+      throw new Error('Instrument session operation was canceled by disconnect');
+    }
   }
   #timestamp(): string { return instrumentTimestampSchema.parse(this.runtime.now().toISOString()); }
 }

@@ -115,7 +115,7 @@ function spectrumResolution(
   if (measurement.resolutionBandwidthHz === null) {
     throw new Error(`${session.provenance.sourceKind} spectrum omitted device/twin resolution bandwidth`);
   }
-  return [measurement.resolutionBandwidthHz, session.provenance.sourceKind === 'serial-port' ? 'device-observed' : 'firmware-executed-twin'];
+  return [measurement.resolutionBandwidthHz, receiverMeasurementQualification(session)];
 }
 
 function detectedPowerResolution(
@@ -130,7 +130,7 @@ function detectedPowerResolution(
   if (measurement.resolutionBandwidthHz === null) {
     throw new Error(`${session.provenance.sourceKind} detected-power capture omitted device/twin resolution bandwidth`);
   }
-  return [measurement.resolutionBandwidthHz, session.provenance.sourceKind === 'serial-port' ? 'device-observed' : 'firmware-executed-twin'];
+  return [measurement.resolutionBandwidthHz, receiverMeasurementQualification(session)];
 }
 
 function projectedAttenuation(
@@ -143,7 +143,21 @@ function projectedAttenuation(
     return [null, 'not-applicable'];
   }
   if (attenuationDb === null) throw new Error(`${session.provenance.sourceKind} measurement omitted device/twin attenuation`);
-  return [attenuationDb, session.provenance.sourceKind === 'serial-port' ? 'device-observed' : 'firmware-executed-twin'];
+  return [attenuationDb, receiverMeasurementQualification(session)];
+}
+
+function receiverMeasurementQualification(
+  session: InstrumentSessionSnapshot,
+): 'device-observed' | 'firmware-executed-twin' {
+  switch (session.provenance.execution) {
+    case 'physical': return 'device-observed';
+    case 'firmware-executed-twin': return 'firmware-executed-twin';
+    case 'signal-lab-simulation': throw new Error('SignalLab has no receiver measurement qualification');
+    default: {
+      const unhandledExecution: never = session.provenance;
+      throw new Error(`Instrument execution has no receiver measurement qualification: ${JSON.stringify(unhandledExecution)}`);
+    }
+  }
 }
 
 function requireMeasurementSession(

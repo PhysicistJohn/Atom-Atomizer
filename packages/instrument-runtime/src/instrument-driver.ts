@@ -210,20 +210,35 @@ function assertProvenanceBinding(
   if (provenance.sourceKind !== candidate.sourceKind) {
     throw new InstrumentDriverContractError(`Driver ${driverId} session provenance does not match candidate source kind`);
   }
-  if (candidate.sourceKind === 'serial-port' && provenance.sourceKind === 'serial-port') {
-    if (!isDeepStrictEqual(candidate.serialPort, provenance.serialPort)) {
-      throw new InstrumentDriverContractError(`Driver ${driverId} session serial provenance does not match the admitted endpoint`);
+  switch (candidate.sourceKind) {
+    case 'serial-port': {
+      if (provenance.sourceKind !== 'serial-port') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
+      if (!isDeepStrictEqual(candidate.serialPort, provenance.serialPort)) {
+        throw new InstrumentDriverContractError(`Driver ${driverId} session serial provenance does not match the admitted endpoint`);
+      }
+      break;
     }
-  } else if (candidate.sourceKind === 'tinysa-firmware-twin' && provenance.sourceKind === 'tinysa-firmware-twin') {
-    if (candidate.firmwareTwin.bridge !== provenance.bridge
-      || candidate.firmwareTwin.repositoryCommit !== provenance.repositoryCommit
-      || candidate.firmwareTwin.firmwareBinarySha256 !== provenance.firmwareBinarySha256
-      || candidate.firmwareTwin.usbTransactionsModeled !== provenance.usbTransactionsModeled) {
-      throw new InstrumentDriverContractError(`Driver ${driverId} session firmware-twin provenance does not match discovery evidence`);
+    case 'tinysa-firmware-twin': {
+      if (provenance.sourceKind !== 'tinysa-firmware-twin') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
+      if (candidate.firmwareTwin.bridge !== provenance.bridge
+        || candidate.firmwareTwin.repositoryCommit !== provenance.repositoryCommit
+        || candidate.firmwareTwin.firmwareBinarySha256 !== provenance.firmwareBinarySha256
+        || candidate.firmwareTwin.usbTransactionsModeled !== provenance.usbTransactionsModeled) {
+        throw new InstrumentDriverContractError(`Driver ${driverId} session firmware-twin provenance does not match discovery evidence`);
+      }
+      break;
     }
-  } else if (candidate.sourceKind === 'signal-lab' && provenance.sourceKind === 'signal-lab'
-    && candidate.signalLab.sourceId !== provenance.sourceId) {
-    throw new InstrumentDriverContractError(`Driver ${driverId} session SignalLab provenance does not match the admitted source`);
+    case 'signal-lab': {
+      if (provenance.sourceKind !== 'signal-lab') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
+      if (candidate.signalLab.sourceId !== provenance.sourceId) {
+        throw new InstrumentDriverContractError(`Driver ${driverId} session SignalLab provenance does not match the admitted source`);
+      }
+      break;
+    }
+    default: {
+      const unhandledCandidate: never = candidate;
+      throw new InstrumentDriverContractError(`Driver ${driverId} has no provenance binding for ${JSON.stringify(unhandledCandidate)}`);
+    }
   }
 }
 

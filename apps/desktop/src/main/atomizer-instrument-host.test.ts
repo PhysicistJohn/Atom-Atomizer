@@ -24,8 +24,39 @@ const signalLabCandidate: InstrumentCandidate = {
   signalLab: { sourceId: 'default' },
   discoveryRevision: 'discovery:1',
 };
+const physicalTinySaCandidate = {
+  schemaVersion: 1,
+  driverId: 'tinysa-zs407',
+  candidateId: 'serial:/dev/tty.fixture',
+  displayName: 'tinySA Ultra+ ZS407 fixture',
+  sourceKind: 'serial-port',
+  serialPort: { path: '/dev/tty.fixture', vendorId: '0483', productId: '5740' },
+  discoveryRevision: 'discovery:1',
+} satisfies InstrumentCandidate;
 
 describe('AtomizerInstrumentHost startup', () => {
+  it('isolates each host event consumer and snapshots listener membership per dispatch', async () => {
+    const manager = new FakeManager();
+    const host = createHost(manager, new FakePreferences());
+    let downstreamCandidateId: string | undefined;
+    let lateCalls = 0;
+    host.subscribe((event) => {
+      if (event.type !== 'preference') return;
+      (event.preference.preference as { candidateId: string }).candidateId = 'mutated-by-observer';
+      host.subscribe(() => { lateCalls += 1; });
+      throw new Error('renderer observer failed');
+    });
+    host.subscribe((event) => {
+      if (event.type === 'preference') downstreamCandidateId = event.preference.preference.candidateId;
+    });
+
+    await host.readPreference();
+
+    expect(downstreamCandidateId).toBe(signalLabCandidate.candidateId);
+    expect(host.state().preference?.preference.candidateId).toBe(signalLabCandidate.candidateId);
+    expect(lateCalls).toBe(0);
+  });
+
   it('loads the explicit SignalLab default and admits it through InstrumentManager exactly once', async () => {
     const manager = new FakeManager();
     const preferences = new FakePreferences();
@@ -72,10 +103,62 @@ describe('AtomizerInstrumentHost startup', () => {
     const preferences = new FakePreferences();
     const host = createHost(manager, preferences);
 
-    await expect(host.writePreference({ driverId: 'unregistered-driver' })).rejects.toThrow(/not statically registered/);
-    await expect(host.writePreference({ driverId: 'signal-lab', candidateKind: 'serial-port' }))
+    await expect(host.writePreference({
+      driverId: 'unregistered-driver', candidateKind: 'signal-lab', candidateId: 'candidate:unknown',
+    })).rejects.toThrow(/not statically registered/);
+    await expect(host.writePreference({
+      driverId: 'signal-lab', candidateKind: 'serial-port', candidateId: 'serial:/dev/tty.fixture',
+    }))
       .rejects.toThrow(/does not own source kind/);
     expect(preferences.saved).toHaveLength(0);
+  });
+
+  it('persists only an exact candidate tuple from a fresh main-owned discovery', async () => {
+    const manager = new FakeManager();
+    const preferences = new FakePreferences();
+    const host = createHost(manager, preferences);
+
+    await expect(host.writePreference({
+      driverId: 'signal-lab', candidateKind: 'signal-lab', candidateId: 'ghost:never-discovered',
+    })).rejects.toThrow(/unavailable/);
+    await expect(host.writePreference({
+      driverId: 'signal-lab', candidateKind: 'signal-lab', candidateId: physicalTinySaCandidate.candidateId,
+    })).rejects.toThrow(/unavailable/);
+
+    expect(manager.discoverCalls).toBe(2);
+    expect(preferences.saved).toHaveLength(0);
+  });
+
+  it('changes the startup default only after the session and retained cleanup are safely disconnected', async () => {
+    const manager = new FakeManager();
+    manager.session = sessionFixture();
+    const preferences = new FakePreferences();
+    const host = createHost(manager, preferences);
+
+    expect(() => host.writePreference({
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: physicalTinySaCandidate.candidateId,
+    }))
+      .toThrow(/disconnect the active instrument/i);
+    expect(preferences.saved).toHaveLength(0);
+
+    await host.disconnect();
+    await expect(host.writePreference({
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: physicalTinySaCandidate.candidateId,
+    })).resolves.toMatchObject({
+      preference: {
+        driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: physicalTinySaCandidate.candidateId,
+      },
+    });
+    expect(preferences.saved).toEqual([{
+      driverId: 'tinysa-zs407', candidateKind: 'serial-port', candidateId: physicalTinySaCandidate.candidateId,
+    }]);
+
+    manager.cleanupRequirement = { driverId: 'signal-lab', phase: 'driver-pending' };
+    expect(() => host.writePreference({
+      driverId: 'signal-lab', candidateKind: 'signal-lab', candidateId: signalLabCandidate.candidateId,
+    }))
+      .toThrow(/complete connection cleanup/i);
+    expect(preferences.saved).toHaveLength(1);
   });
 
   it('propagates retained failed-connect cleanup and clears it after an explicit human retry', async () => {
@@ -371,14 +454,8 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
 
   it('stops and drains streaming before a touch that can invalidate device mode', async () => {
     const manager = new FakeManager();
-    const base = sessionFixture(configurationFixture());
-    manager.session = {
-      ...base,
-      capabilities: {
-        ...base.capabilities,
-        features: [...base.capabilities.features, { kind: 'touch', width: 480, height: 320 }],
-      },
-    };
+    manager.session = physicalTouchSessionFixture();
+    manager.measurementQueue.push(physicalMeasurementFixture(1));
     manager.acquireGate = deferred<void>();
     const host = createHost(manager, new FakePreferences());
 
@@ -471,6 +548,28 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(new Set(manager.operationOrder.slice(2))).toEqual(new Set(['discover']));
   });
 
+  it('cancels a queued reconnect when ordinary disconnect overtakes the host tail', async () => {
+    const manager = new FakeManager();
+    manager.session = sessionFixture(configurationFixture());
+    manager.acquireGate = deferred<void>();
+    const host = createHost(manager, new FakePreferences());
+
+    const acquisition = host.acquire();
+    await until(() => manager.acquireCalls === 1);
+    const staleReconnect = host.connect(signalLabCandidate);
+    const disconnecting = host.disconnect();
+
+    manager.acquireGate.resolve();
+    await expect(acquisition).resolves.toMatchObject({ measurementId: 'measurement:1' });
+    await expect(disconnecting).resolves.toBeUndefined();
+    await expect(staleReconnect).rejects.toThrow(/canceled by disconnect/);
+
+    expect(manager.operationOrder).toEqual(['acquire', 'disconnect']);
+    expect(manager.connectCalls).toHaveLength(0);
+    expect(manager.session).toBeUndefined();
+    expect(host.state().session).toBeUndefined();
+  });
+
   it('reserves transition admission before callers wait for a running stream to stop', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
@@ -517,18 +616,25 @@ class FakePreferences {
   loadError: Error | undefined;
   loaded: LoadedInstrumentPreference = {
     source: 'factory-default',
-    preference: { schemaVersion: 1, driverId: 'signal-lab', updatedAt: new Date(0).toISOString() },
+    preference: {
+      schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab',
+      candidateId: signalLabCandidate.candidateId, updatedAt: new Date(0).toISOString(),
+    },
   };
-  readonly saved: Array<{ driverId: string; candidateKind?: string }> = [];
+  readonly saved: Array<{ driverId: string; candidateKind: string; candidateId: string }> = [];
 
   async load(): Promise<LoadedInstrumentPreference> {
     if (this.loadError) throw this.loadError;
     return structuredClone(this.loaded);
   }
 
-  async save(driverId: string, candidateKind?: InstrumentCandidate['sourceKind']): Promise<InstrumentPreference> {
-    this.saved.push({ driverId, ...(candidateKind ? { candidateKind } : {}) });
-    return { schemaVersion: 1, driverId, ...(candidateKind ? { candidateKind } : {}), updatedAt: NOW };
+  async save(
+    driverId: string,
+    candidateKind: InstrumentCandidate['sourceKind'],
+    candidateId: string,
+  ): Promise<InstrumentPreference> {
+    this.saved.push({ driverId, candidateKind, candidateId });
+    return { schemaVersion: 1, driverId, candidateKind, candidateId, updatedAt: NOW };
   }
 }
 
@@ -561,6 +667,7 @@ class FakeManager {
   acquireGate: Deferred<void> | undefined;
   session: InstrumentSessionSnapshot | undefined;
   cleanupRequirement: { driverId: 'signal-lab' | 'tinysa-zs407'; phase: 'driver-pending' | 'rejected-session' } | undefined = undefined;
+  discoveryCandidates: readonly InstrumentCandidate[] = [signalLabCandidate, physicalTinySaCandidate];
 
   subscribe(listener: (event: InstrumentManagerEvent) => void): () => void {
     this.listeners.add(listener);
@@ -574,7 +681,7 @@ class FakeManager {
     this.operationOrder.push('discover');
     this.discoverCalls++;
     const result: InstrumentDiscoveryResult = {
-      discoveryRevision: 'discovery:1', discoveredAt: NOW, candidates: [signalLabCandidate], failures: [],
+      discoveryRevision: 'discovery:1', discoveredAt: NOW, candidates: this.discoveryCandidates, failures: [],
     };
     this.emit({ type: 'discovery', result });
     return result;
@@ -692,6 +799,12 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
         sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
         controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
         powerUnit: 'dBm',
+      }, {
+        kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 1_000_000_000 },
+        sampleCount: { min: 1, max: 4_096 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+        powerUnit: 'dBm', timing: 'uniform',
       }],
       features: [{
         kind: 'signal-lab-profile-selection',
@@ -705,6 +818,84 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
     rfOutput: 'not-supported',
     rfOutputQualification: 'not-applicable',
     ...(configuration ? { configuration } : {}),
+  };
+}
+
+function physicalTouchSessionFixture(): InstrumentSessionSnapshot {
+  return {
+    sessionId: 'session:physical',
+    driverId: 'tinysa-zs407',
+    candidate: physicalTinySaCandidate,
+    provenance: {
+      sourceKind: 'serial-port',
+      execution: 'physical',
+      transport: 'usb-cdc-acm',
+      qualification: 'device-observed',
+      verifiedAt: NOW,
+      serialPort: physicalTinySaCandidate.serialPort,
+      device: {
+        model: 'tinySA Ultra+ ZS407',
+        hardwareVersion: 'ZS407',
+        firmwareVersion: 'tinySA4_fixture-custom-gdeadbee',
+        firmwareReportedRevision: 'deadbee',
+        firmwareQualification: 'custom-unqualified',
+        firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+        usbIdentityVerified: true,
+      },
+    },
+    capabilities: {
+      schemaVersion: 1,
+      acquisitions: [{
+        kind: 'swept-spectrum',
+        frequencyHz: { min: 1, max: 1_000_000_000 },
+        points: { min: 2, max: 4_096 },
+        sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+        controls: {
+          schemaVersion: 1,
+          model: 'receiver',
+          acquisitionFormats: ['text', 'raw'],
+          resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850 } },
+          attenuationDb: { automatic: true, manual: { min: 0, max: 31 } },
+          detectors: ['sample', 'quasi-peak'],
+          spurRejection: ['off', 'on', 'auto'],
+          lowNoiseAmplifier: ['off', 'on'],
+          avoidSpurs: ['off', 'on', 'auto'],
+          triggerModes: ['auto', 'normal', 'single'],
+          triggerLevelDbm: { min: -174, max: 30 },
+        },
+        powerUnit: 'dBm',
+      }],
+      features: [{ kind: 'touch', width: 480, height: 320 }],
+    },
+    rfOutput: 'not-supported',
+    rfOutputQualification: 'not-applicable',
+    configuration: receiverConfigurationFixture(),
+  };
+}
+
+function receiverConfigurationFixture(): InstrumentConfigurationState {
+  return {
+    sessionId: 'session:physical',
+    configurationRevision: 'configuration:1',
+    configuredAt: NOW,
+    configuration: {
+      kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3, sweepTimeSeconds: 'auto',
+      controls: {
+        schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text',
+        resolutionBandwidthKhz: 'auto', attenuationDb: 'auto', detector: 'sample',
+        spurRejection: 'auto', lowNoiseAmplifier: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' },
+      },
+    },
+  };
+}
+
+function physicalMeasurementFixture(sequence: number): InstrumentMeasurement {
+  return {
+    schemaVersion: 1, kind: 'swept-spectrum', measurementId: `measurement:physical:${sequence}`,
+    sessionId: 'session:physical', configurationRevision: 'configuration:1', sequence, capturedAt: NOW,
+    elapsedMilliseconds: 1, resolutionBandwidthHz: 10_000, attenuationDb: 0,
+    qualification: 'device-observed', complete: true,
+    frequencyHz: [100, 200, 300], powerDbm: [-90, -70, -90],
   };
 }
 

@@ -40,7 +40,7 @@ const ready: InstrumentSessionSnapshot = {
     schemaVersion: 1,
     acquisitions: [
       { kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } }, controls: receiverSpectrumCapability(), powerUnit: 'dBm' },
-      { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } }, controls: receiverDetectedPowerCapability(), powerUnit: 'dBm', timing: 'uniform' },
+      { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.003, max: 60, step: 0.000_001 } }, controls: receiverDetectedPowerCapability(), powerUnit: 'dBm', timing: 'uniform' },
     ],
     features: [
       { kind: 'rf-generator', paths: [{ path: 'normal', frequencyHz: { min: 1, max: 6_300_000_000 } }, { path: 'mixer', frequencyHz: { min: 1, max: 17_922_600_000 } }], levelDbm: { min: -115, max: -18.5, step: 0.5 }, modulation: { off: true, am: { modulationFrequencyHz: { min: 1, max: 10_000 }, depthPercent: { min: 0, max: 100 } }, fm: { modulationFrequencyHz: { min: 1, max: 3_500 }, deviationHz: { min: 1_000, max: 300_000 } } } },
@@ -70,8 +70,10 @@ const physicalSession: InstrumentSessionSnapshot = {
     verifiedAt: '2026-07-10T00:00:00.000Z',
     serialPort: physicalCandidate.serialPort,
     device: {
-      model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'custom-test',
-      firmwareQualification: 'custom-unqualified', usbIdentityVerified: true,
+      model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 + ZS407', firmwareVersion: 'tinySA4_custom-test-gdeadbee',
+      firmwareReportedRevision: 'deadbee', firmwareQualification: 'custom-unqualified',
+      firmwareWarning: 'Custom firmware revision deadbee is admitted without source qualification.',
+      usbIdentityVerified: true,
     },
   },
   rfOutput: 'off',
@@ -81,7 +83,7 @@ const signalLabCandidate: InstrumentCandidate = { schemaVersion: 1, driverId: 's
 const signalLabSession: InstrumentSessionSnapshot = {
   sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
   provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1, contractSha256: HASH, catalogSha256: HASH, generatorSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
-  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 17_922_600_000 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
+  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
   rfOutput: 'not-supported',
   rfOutputQualification: 'not-applicable',
 };
@@ -287,6 +289,40 @@ describe('operator vertical slice', () => {
     expect(classificationRepresentatives(signals, 'right').map((signal) => signal.id)).toEqual(['right', 'local']);
   });
 
+  it('stages the selected detection on the admitted tuning lattice and captures at that exact center', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      preference: { source: 'persisted', preference: { schemaVersion: 1, driverId: ready.driverId, candidateKind: ready.candidate.sourceKind, updatedAt: '2026-07-10T00:00:00.000Z' } },
+      session: ready,
+    });
+
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+
+    const expectedCenterHz = Math.round(88_000_000 + Math.floor(requested.points / 2)
+      * ((108_000_000 - 88_000_000) / (requested.points - 1)));
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Classify$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Capture envelope/i }));
+
+    await waitFor(() => {
+      const detectedPowerConfigurations = vi.mocked(window.atomizerInstrument.configure).mock.calls
+        .map(([configuration]) => configuration)
+        .filter((configuration): configuration is Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }> =>
+          configuration.kind === 'detected-power-timeseries');
+      expect(detectedPowerConfigurations).toContainEqual(expect.objectContaining({
+        kind: 'detected-power-timeseries',
+        centerHz: expectedCenterHz,
+      }));
+    });
+    expect(expectedCenterHz).not.toBe(frequencies[Math.floor(requested.points / 2)]);
+  });
+
   it('renders an already-started SignalLab default without fabricating hardware identity and can select its profile', async () => {
     vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({ schemaVersion: 1, startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' }, preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } }, session: signalLabSession });
     vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
@@ -296,8 +332,9 @@ describe('operator vertical slice', () => {
       return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
     });
     vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
-      if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
-      const frequencyHz = Array.from({ length: activeConfiguration.points }, (_value, index) => activeConfiguration.startHz + (activeConfiguration.stopHz - activeConfiguration.startHz) * index / (activeConfiguration.points - 1));
+      const configuration = activeConfiguration;
+      if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
+      const frequencyHz = Array.from({ length: configuration.points }, (_value, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
       return {
         schemaVersion: 1, kind: 'swept-spectrum', measurementId: 'signal-live-1', sessionId: signalLabSession.sessionId,
         configurationRevision, producerConfigurationEpoch: 'producer-epoch:2', sequence: 1,
@@ -386,6 +423,60 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull());
   });
 
+  it('persists the exact selected candidate when two physical TinySAs share one driver and source kind', async () => {
+    const discoveryRevision = 'physical-preference-discovery';
+    const first = {
+      ...physicalCandidate,
+      candidateId: 'serial:/dev/tty.usbmodem407',
+      displayName: 'TinySA physical A',
+      discoveryRevision,
+      serialPort: { ...physicalCandidate.serialPort, path: '/dev/tty.usbmodem407', serialNumber: 'A' },
+    } satisfies InstrumentCandidate;
+    const second = {
+      ...physicalCandidate,
+      candidateId: 'serial:/dev/tty.usbmodem408',
+      displayName: 'TinySA physical B',
+      discoveryRevision,
+      serialPort: { ...physicalCandidate.serialPort, path: '/dev/tty.usbmodem408', serialNumber: 'B' },
+    } satisfies InstrumentCandidate;
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
+      schemaVersion: 1,
+      startup: { status: 'not-started' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      preference: {
+        source: 'persisted',
+        preference: {
+          schemaVersion: 1,
+          driverId: first.driverId,
+          candidateKind: first.sourceKind,
+          candidateId: first.candidateId,
+          updatedAt: '2026-07-10T00:00:00.000Z',
+        },
+      },
+    });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValueOnce({
+      discoveryRevision,
+      discoveredAt: '2026-07-10T00:00:00.000Z',
+      candidates: [first, second],
+      failures: [],
+    });
+
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    expect(within(dialog).getByRole('button', { name: /TinySA physical A.*STARTUP DEFAULT/i })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: /TinySA physical B/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use at startup' }));
+
+    await waitFor(() => expect(window.atomizerInstrument.writePreference).toHaveBeenCalledWith({
+      driverId: second.driverId,
+      candidateKind: second.sourceKind,
+      candidateId: second.candidateId,
+    }));
+  });
+
   it('does not let an in-flight startup snapshot overwrite a newer subscribed connection event', async () => {
     let releaseState: ((state: AtomizerInstrumentState) => void) | undefined;
     vi.mocked(window.atomizerInstrument.getState).mockImplementationOnce(() => new Promise((resolve) => { releaseState = resolve; }));
@@ -452,6 +543,12 @@ describe('operator vertical slice', () => {
     expect(await screen.findByText('RF OFF')).toBeTruthy();
     expect(screen.getByText('COMMAND ACKNOWLEDGED')).toBeTruthy();
     expect(screen.getByLabelText('RF output off, command acknowledged').title).toMatch(/not independently measured/);
+    expect(screen.getByText('CUSTOM FW · UNQUALIFIED').title)
+      .toBe('Custom firmware revision deadbee is admitted without source qualification.');
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /Device/i }));
+    expect(await screen.findByText('Custom firmware revision deadbee is admitted without source qualification.'))
+      .toBeTruthy();
   });
 
   it('invalidates displayed evidence and marks RF state unknown when the active session faults', async () => {
@@ -1028,6 +1125,7 @@ describe('operator vertical slice', () => {
     expect(await screen.findByText(/TPM 10K\/200K/)).toBeTruthy();
     const candidateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
     expect(candidateOutput).toContain('candidate-1');
+    expect(candidateOutput).toContain('"simulated":true');
     expect(candidateOutput).not.toContain('repositoryCommit');
     expect(candidateOutput).not.toContain(COMMIT);
   });

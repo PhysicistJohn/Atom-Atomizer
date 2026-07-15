@@ -13,7 +13,10 @@ describe('preferred driver admission', () => {
   const tinySa = driverCandidate('tinysa-zs407', 'serial-port', '/dev/tty.usbmodem407');
 
   it('selects only the configured SignalLab driver', () => {
-    expect(selectPreferredInstrument(driverDiscovery([signalLab, tinySa]), preference('signal-lab'))).toEqual(signalLab);
+    expect(selectPreferredInstrument(
+      driverDiscovery([signalLab, tinySa]),
+      exactPreference('signal-lab', 'signal-lab', signalLab.candidateId),
+    )).toEqual(signalLab);
   });
 
   it('does not fall back when the preferred driver is unavailable', () => {
@@ -54,6 +57,22 @@ describe('preferred driver admission', () => {
     )).toThrow(/matched 2 candidates/);
   });
 
+  it('selects the exact persisted candidate among two physical TinySAs', () => {
+    const secondTinySa = driverCandidate('tinysa-zs407', 'serial-port', '/dev/tty.usbmodem408');
+    expect(selectPreferredInstrument(
+      driverDiscovery([tinySa, secondTinySa]),
+      exactPreference('tinysa-zs407', 'serial-port', secondTinySa.candidateId),
+    )).toEqual(secondTinySa);
+  });
+
+  it('fails closed when an exact candidate ID is stale instead of selecting another physical TinySA', () => {
+    const secondTinySa = driverCandidate('tinysa-zs407', 'serial-port', '/dev/tty.usbmodem408');
+    expect(() => selectPreferredInstrument(
+      driverDiscovery([tinySa, secondTinySa]),
+      exactPreference('tinysa-zs407', 'serial-port', '/dev/tty.usbmodem-stale'),
+    )).toThrow(/candidate \/dev\/tty\.usbmodem-stale is unavailable/);
+  });
+
   it('honors the optional source-kind discriminator', () => {
     expect(selectPreferredInstrument(driverDiscovery([signalLab, tinySa]), {
       ...preference('tinysa-zs407'),
@@ -84,4 +103,8 @@ function driverDiscovery(candidates: readonly InstrumentCandidate[]): Instrument
 
 function preference(driverId: string) {
   return { schemaVersion: 1 as const, driverId, updatedAt: '2026-07-14T12:00:00.000Z' };
+}
+
+function exactPreference(driverId: string, candidateKind: InstrumentCandidate['sourceKind'], candidateId: string) {
+  return { ...preference(driverId), candidateKind, candidateId };
 }

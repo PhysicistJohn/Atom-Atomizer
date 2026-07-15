@@ -14,6 +14,30 @@ afterEach(() => {
 });
 
 describe('NodeSerialTransport bounded native operations', () => {
+  it('isolates throwing/mutating transport observers and snapshots listener membership', async () => {
+    const port = new FakeSerialPort({ open: 'immediate', close: 'immediate' });
+    const transport = new NodeSerialTransport({ runtime: runtime(async () => [], port) });
+    const eventTypes: string[] = [];
+    let downstreamBytes: number[] | undefined;
+    let lateByteCalls = 0;
+    transport.onEvent(() => { throw new Error('event observer failed'); });
+    transport.onEvent((event) => { eventTypes.push(event.type); });
+    transport.onBytes((bytes) => {
+      bytes[0] = 255;
+      transport.onBytes(() => { lateByteCalls += 1; });
+      throw new Error('byte observer failed');
+    });
+    transport.onBytes((bytes) => { downstreamBytes = [...bytes]; });
+
+    await expect(transport.open(exactCandidate('/dev/tty.observer-isolation'))).resolves.toBeUndefined();
+    port.emit('data', Buffer.from([1, 2, 3]));
+
+    expect(downstreamBytes).toEqual([1, 2, 3]);
+    expect(lateByteCalls).toBe(0);
+    await expect(transport.close()).resolves.toBeUndefined();
+    expect(eventTypes).toEqual(['opened', 'closed']);
+  });
+
   it('settles a hung enumeration as a recoverable typed failure', async () => {
     vi.useFakeTimers();
     const transport = new NodeSerialTransport({

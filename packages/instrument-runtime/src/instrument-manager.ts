@@ -4,6 +4,7 @@ import {
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
+  instrumentConfigurationCapabilityBindingIssues,
   instrumentConfigurationSchema,
   instrumentConfigurationStateSchema,
   instrumentDiscoveryResultSchema,
@@ -46,6 +47,7 @@ import { fingerprintInstrumentMeasurement } from './measurement-fingerprint.js';
 
 export type InstrumentManagerErrorCode =
   | 'admission-limit'
+  | 'operation-canceled'
   | 'stale-candidate'
   | 'session-active'
   | 'no-session'
@@ -119,6 +121,7 @@ export class InstrumentManager {
   #pendingOperations = 0;
   #pendingTeardownOperations = 0;
   #disconnectOperation: Promise<void> | undefined;
+  #connectionEpoch: object = Object.freeze({});
   #latestDiscoveryRevision: string | undefined;
   #latestCandidates = new Map<string, InstrumentCandidate>();
   #active: ActiveSession | undefined;
@@ -157,23 +160,28 @@ export class InstrumentManager {
   }
 
   connect(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
-    return this.#serialize(() => this.#connect(candidate));
+    return this.#serializeSessionOperation(() => this.#connect(candidate));
   }
 
   configure(configuration: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
-    return this.#serialize(() => this.#configure(configuration));
+    return this.#serializeSessionOperation(() => this.#configure(configuration));
   }
 
   acquire(): Promise<InstrumentMeasurement> {
-    return this.#serialize(() => this.#acquire());
+    return this.#serializeSessionOperation(() => this.#acquire());
   }
 
   executeFeature(request: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
-    return this.#serialize(() => this.#executeFeature(request));
+    return this.#serializeSessionOperation(() => this.#executeFeature(request));
   }
 
   disconnect(): Promise<void> {
     if (this.#disconnectOperation) return this.#disconnectOperation;
+    // RF-safe teardown is allowed to overtake the bounded normal queue. Make
+    // that priority a cancellation barrier as well: a connect/configure/
+    // acquire/feature call admitted against the old session epoch must never
+    // execute after teardown and silently create or mutate a new session.
+    this.#connectionEpoch = Object.freeze({});
     const operation = this.#serialize(async () => {
       // Admitted-session ownership is always released first. If that fails,
       // do not let a driver's pre-session cleanup hook bypass the active
@@ -226,7 +234,13 @@ export class InstrumentManager {
     // admitted. An oversized multi-driver result must not replace or retain
     // the last usable candidate map.
     this.#latestDiscoveryRevision = discoveryRevision;
-    this.#latestCandidates = new Map(result.candidates.map((candidate) => [candidateKey(candidate), candidate]));
+    this.#latestCandidates = new Map(result.candidates.map((candidate) => {
+      // Discovery results are public mutable objects. Retain an isolated,
+      // immutable copy so a caller cannot rewrite the evidence later used for
+      // stale-candidate admission.
+      const evidence = deepFreeze(instrumentCandidateSchema.parse(structuredClone(candidate)));
+      return [candidateKey(evidence), evidence] as const;
+    }));
     this.#emit({ type: 'discovery', result });
     return result;
   }
@@ -253,9 +267,12 @@ export class InstrumentManager {
       || !isDeepStrictEqual(current, candidate)) {
       throw new InstrumentManagerError('stale-candidate', 'Instrument candidate is stale or was not produced by the latest completed discovery');
     }
-    const driver = this.registry.require(candidate.driverId);
-    if (!driver.sourceKinds.includes(candidate.sourceKind)) {
-      throw new InstrumentManagerError('driver-contract', `Driver ${driver.driverId} does not declare source kind ${candidate.sourceKind}`);
+    // Dispatch an immutable clone of the retained evidence, not the caller's
+    // object, so the driver cannot mutate the candidate after admission.
+    const admittedCandidate = deepFreeze(instrumentCandidateSchema.parse(structuredClone(current)));
+    const driver = this.registry.require(admittedCandidate.driverId);
+    if (!driver.sourceKinds.includes(admittedCandidate.sourceKind)) {
+      throw new InstrumentManagerError('driver-contract', `Driver ${driver.driverId} does not declare source kind ${admittedCandidate.sourceKind}`);
     }
 
     let session: InstrumentSession | undefined;
@@ -264,9 +281,9 @@ export class InstrumentManager {
     let active: ActiveSession | undefined;
     let eventMode: 'buffering' | 'forwarding' | 'discarding' = 'buffering';
     try {
-      returnedSession = await driver.connect(candidate);
+      returnedSession = await driver.connect(admittedCandidate);
       driverConnectReturned = true;
-      session = validateInstrumentSession(driver, candidate, returnedSession);
+      session = validateInstrumentSession(driver, admittedCandidate, returnedSession);
       active = {
         driver,
         session,
@@ -286,11 +303,13 @@ export class InstrumentManager {
       this.#active = active;
       const eventOwner = active;
       const pendingEvents: InstrumentSessionEvent[] = [];
+      let synchronousEventLimitExceeded = false;
       const unsubscribe = session.subscribe((event) => {
         if (eventMode === 'forwarding') this.#forward(eventOwner, event);
         else if (eventMode === 'buffering') {
           if (pendingEvents.length >= MAX_SYNCHRONOUS_SESSION_EVENTS) {
             eventMode = 'discarding';
+            synchronousEventLimitExceeded = true;
             this.#faultActive(eventOwner, new InstrumentDriverContractError(
               `Driver ${driver.driverId} exceeded ${MAX_SYNCHRONOUS_SESSION_EVENTS} synchronous subscription events`,
             ), false);
@@ -300,7 +319,8 @@ export class InstrumentManager {
       });
       if (typeof unsubscribe !== 'function') throw new InstrumentDriverContractError(`Driver ${driver.driverId} session subscribe did not return an unsubscribe function`);
       active.unsubscribe = unsubscribe;
-      const admittedPendingEvents = pendingEvents
+      const initialPendingEvents = pendingEvents.splice(0);
+      const admittedPendingEvents = initialPendingEvents
         .map((event) => this.#forward(eventOwner, event, false))
         .filter((event): event is InstrumentSessionEvent => event !== undefined);
       if (active.fault) throw faultedSessionError(active);
@@ -310,9 +330,41 @@ export class InstrumentManager {
       // ordering without being applied twice.
       active.announced = true;
       this.#emit({ type: 'connected', session: snapshot });
+      const publicationQueue = [...admittedPendingEvents];
+      let publicationIndex = 0;
+      let admissionEventCount = initialPendingEvents.length;
+      // Manager listeners may synchronously provoke a driver event while the
+      // connected notification is being delivered. Keep buffering until the
+      // connected event and every causally queued session event have been
+      // published in FIFO order to every listener; otherwise a late append can
+      // disappear after the original subscription buffer snapshot.
+      while (!synchronousEventLimitExceeded
+        && (publicationIndex < publicationQueue.length || pendingEvents.length > 0)) {
+        if (pendingEvents.length > 0) {
+          const reentrantEvents = pendingEvents.splice(0);
+          admissionEventCount += reentrantEvents.length;
+          if (admissionEventCount > MAX_SYNCHRONOUS_SESSION_EVENTS) {
+            synchronousEventLimitExceeded = true;
+            eventMode = 'discarding';
+            this.#faultActive(eventOwner, new InstrumentDriverContractError(
+              `Driver ${driver.driverId} exceeded ${MAX_SYNCHRONOUS_SESSION_EVENTS} synchronous admission events`,
+            ), false);
+            break;
+          }
+          for (const reentrantEvent of reentrantEvents) {
+            const admitted = this.#forward(eventOwner, reentrantEvent, false);
+            if (admitted) publicationQueue.push(admitted);
+          }
+        }
+        const event = publicationQueue[publicationIndex++];
+        if (event) this.#publishForwardedEvent(eventOwner, event);
+      }
       eventMode = 'forwarding';
-      for (const event of admittedPendingEvents) this.#emit(event);
-      return snapshot;
+      if (synchronousEventLimitExceeded) {
+        pendingEvents.length = 0;
+        this.#emit({ type: 'session-state', reason: 'session-faulted', session: this.#snapshot(active) });
+      }
+      return this.#snapshot(active);
     } catch (value) {
       // Once admission has failed, never retain further driver events in the
       // synchronous-admission buffer. A session whose teardown also fails may
@@ -417,7 +469,12 @@ export class InstrumentManager {
 
   async #configure(configurationValue: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
     const active = this.#requireOperationalActive();
+    const admissionFaultRevision = active.faultRevision;
     const configuration = instrumentConfigurationSchema.parse(configurationValue);
+    // Schema parsing crosses an untrusted caller boundary and can invoke
+    // accessors. A getter may synchronously deliver a terminal driver event;
+    // never dispatch a command after that causal fault/ownership change.
+    this.#assertPostAwaitState(active, admissionFaultRevision);
     requireCapability(active, configuration);
     const configurationRevision = this.#opaqueId('configuration');
     const command = deepFreeze(instrumentConfigurationCommandSchema.parse({
@@ -425,6 +482,7 @@ export class InstrumentManager {
       configurationRevision,
       configuration,
     }));
+    this.#assertPostAwaitState(active, admissionFaultRevision);
     // A failed reconfiguration leaves the acquisition state unknown. Never
     // continue acquiring against the prior revision by assumption.
     this.#invalidateConfiguration(active);
@@ -438,6 +496,12 @@ export class InstrumentManager {
       const dispatch = instrumentConfigurationCommandSchema.parse(structuredClone(command));
       await active.session.configure(dispatch);
       this.#assertPostAwaitState(active, faultRevision);
+      if (changesRfMode) {
+        await this.#acknowledgeRfOutputOff(
+          active,
+          `Driver ${active.driver.driverId} did not acknowledge RF output-off after configuration`,
+        );
+      }
     }
     catch (value) {
       const failure = asManagerError(value, 'driver-failure', `Driver ${active.driver.driverId} configuration failed`);
@@ -449,7 +513,6 @@ export class InstrumentManager {
     const state = deepFreeze(instrumentConfigurationStateSchema.parse({ ...admittedCommand, configuredAt: this.#timestamp() }));
     active.configuration = state;
     this.#resetMeasurementState(active);
-    if (changesRfMode) this.#setRfOutput(active, 'off');
     this.#emit({ type: 'configured', configuration: state });
     if (changesRfMode) {
       this.#emit({ type: 'session-state', reason: 'rf-output-changed', session: this.#snapshot(active) });
@@ -554,7 +617,14 @@ export class InstrumentManager {
         active.producerConfigurationEpoch = result.producerConfigurationEpoch;
         active.capabilities = withSelectedSignalLabProfile(active.capabilities, request.profileId);
       } else if (request.kind === 'rf-generator') {
-        this.#setRfOutput(active, request.action === 'configure' ? 'off' : request.enabled ? 'on' : 'off');
+        if (request.action === 'configure') {
+          await this.#acknowledgeRfOutputOff(
+            active,
+            `Driver ${active.driver.driverId} did not acknowledge RF output-off after generator configuration`,
+          );
+        } else {
+          this.#setRfOutput(active, request.enabled ? 'on' : 'off');
+        }
       }
     } catch (error) {
       const failure = asManagerError(error, 'driver-contract', `Driver ${active.driver.driverId} returned an invalid feature result`);
@@ -719,17 +789,21 @@ export class InstrumentManager {
         this.#faultActive(active, event.error, false);
       }
       if (publish) {
-        this.#emit(event);
-        if ((event.type === 'status' && event.status === 'faulted')
-          || (event.type === 'error' && !event.error.recoverable)) {
-          this.#emit({ type: 'session-state', reason: 'session-faulted', session: this.#snapshot(active) });
-        }
+        this.#publishForwardedEvent(active, event);
       }
       return event;
     } catch (value) {
       const error = { code: 'driver-contract' as const, message: message(value), recoverable: false };
       this.#faultActive(active, error, publish);
       return undefined;
+    }
+  }
+
+  #publishForwardedEvent(active: ActiveSession, event: InstrumentSessionEvent): void {
+    this.#emit(event);
+    if ((event.type === 'status' && event.status === 'faulted')
+      || (event.type === 'error' && !event.error.recoverable)) {
+      this.#emit({ type: 'session-state', reason: 'session-faulted', session: this.#snapshot(active) });
     }
   }
 
@@ -780,6 +854,8 @@ export class InstrumentManager {
     const admitted: InstrumentError = error instanceof InstrumentManagerError
       && (error.code === 'driver-contract' || error.code === 'driver-failure')
       ? { code: error.code, message: message(error.message), recoverable: false }
+      : error instanceof InstrumentDriverContractError
+        ? { code: 'driver-contract', message: message(error.message), recoverable: false }
       : 'code' in error
         && (error.code === 'driver-contract' || error.code === 'driver-failure' || error.code === 'session-fault')
         && 'recoverable' in error
@@ -797,21 +873,41 @@ export class InstrumentManager {
     active.rfOutputQualification = rfOutputQualification(active.session.provenance.sourceKind, state);
   }
 
-  async #reassertRfOff(active: ActiveSession): Promise<void> {
-    if (active.rfOutput === 'not-supported') return;
+  async #acknowledgeRfOutputOff(active: ActiveSession, context: string): Promise<void> {
     const request = { kind: 'rf-generator', action: 'set-output', enabled: false } as const;
     const command = instrumentFeatureCommandSchema.parse({ ...request, sessionId: active.session.sessionId });
+    const faultRevision = active.faultRevision;
+    let value: unknown;
+    try {
+      value = await active.session.executeFeature(command);
+      this.#assertPostAwaitState(active, faultRevision);
+    } catch (error) {
+      throw asManagerError(error, 'driver-failure', context);
+    }
+    try {
+      const result = instrumentFeatureResultSchema.parse(value);
+      assertFeatureResult(result, request, active);
+      // Parsing untrusted driver output can invoke accessors. Recheck session
+      // ownership/fault state before the acknowledgement becomes RF truth.
+      this.#assertPostAwaitState(active, faultRevision);
+    } catch (error) {
+      throw asManagerError(error, 'driver-contract', `${context}: invalid output-off result`);
+    }
+    this.#setRfOutput(active, 'off');
+  }
+
+  async #reassertRfOff(active: ActiveSession): Promise<void> {
+    if (active.rfOutput === 'not-supported') return;
     this.#setRfOutput(active, 'unknown');
     this.#emit({ type: 'session-state', reason: 'rf-output-changed', session: this.#snapshot(active) });
-    const faultRevision = active.faultRevision;
     try {
-      const result = instrumentFeatureResultSchema.parse(await active.session.executeFeature(command));
-      assertFeatureResult(result, request, active);
-      this.#assertPostAwaitState(active, faultRevision);
-      this.#setRfOutput(active, 'off');
+      await this.#acknowledgeRfOutputOff(
+        active,
+        `Driver ${active.driver.driverId} could not reassert RF output-off before acquisition`,
+      );
       this.#emit({ type: 'session-state', reason: 'rf-output-changed', session: this.#snapshot(active) });
     } catch (error) {
-      const failure = asManagerError(error, error instanceof InstrumentManagerError ? error.code : 'driver-failure', `Driver ${active.driver.driverId} could not reassert RF output-off before acquisition`);
+      const failure = asManagerError(error, 'driver-failure', `Driver ${active.driver.driverId} could not reassert RF output-off before acquisition`);
       this.#faultActive(active, failure);
       throw failure;
     }
@@ -828,10 +924,29 @@ export class InstrumentManager {
 
   #emit(value: InstrumentManagerEvent): void {
     const event = instrumentManagerEventSchema.parse(value);
-    for (const listener of this.#listeners) {
-      try { listener(event); }
+    for (const listener of [...this.#listeners]) {
+      try { listener(structuredClone(event)); }
       catch { /* A consumer cannot corrupt manager or driver lifecycle. */ }
     }
+  }
+
+  #serializeSessionOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#disconnectOperation) {
+      return Promise.reject(new InstrumentManagerError(
+        'operation-canceled',
+        'Instrument session operation is unavailable while disconnect is pending',
+      ));
+    }
+    const admittedEpoch = this.#connectionEpoch;
+    return this.#serialize(async () => {
+      if (this.#connectionEpoch !== admittedEpoch) {
+        throw new InstrumentManagerError(
+          'operation-canceled',
+          'Instrument session operation was canceled by disconnect',
+        );
+      }
+      return operation();
+    });
   }
 
   #serialize<T>(operation: () => Promise<T>, admission: 'normal' | 'teardown' = 'normal'): Promise<T> {
@@ -893,106 +1008,12 @@ export class InstrumentManager {
 }
 
 function requireCapability(active: ActiveSession, configuration: InstrumentConfiguration): void {
-  const capability = active.capabilities.acquisitions.find((candidate) => candidate.kind === configuration.kind);
-  if (!capability) throw new InstrumentManagerError('unsupported-capability', `Instrument does not support ${configuration.kind}`);
-  if (capability.kind === 'swept-spectrum' && configuration.kind === 'swept-spectrum') {
-    requireRange(configuration.startHz, capability.frequencyHz, 'sweep start');
-    requireRange(configuration.stopHz, capability.frequencyHz, 'sweep stop');
-    requireRange(configuration.points, capability.points, 'sweep points');
-    requireScalarSweepTime(configuration.sweepTimeSeconds, capability.sweepTimeSeconds, 'sweep time');
-    requireSweptSpectrumControls(configuration.controls, capability.controls);
-  } else if (capability.kind === 'detected-power-timeseries' && configuration.kind === 'detected-power-timeseries') {
-    requireRange(configuration.centerHz, capability.centerFrequencyHz, 'detected-power center');
-    requireRange(configuration.sampleCount, capability.sampleCount, 'detected-power sample count');
-    requireScalarSweepTime(configuration.sweepTimeSeconds, capability.sweepTimeSeconds, 'detected-power sweep time');
-    requireDetectedPowerControls(configuration.controls, capability.controls);
-    if (active.session.candidate.sourceKind === 'signal-lab') {
-      const profileCapability = active.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
-      if (!profileCapability || profileCapability.kind !== 'signal-lab-profile-selection') {
-        throw new InstrumentManagerError('driver-contract', 'SignalLab session omitted its selected profile capability');
-      }
-      const selected = profileCapability.profiles.find((profile) => profile.profileId === profileCapability.selectedProfileId);
-      if (!selected) throw new InstrumentManagerError('driver-contract', 'SignalLab selected profile capability is inconsistent');
-      if (configuration.centerHz !== selected.centerFrequencyHz) {
-        throw new InstrumentManagerError(
-          'unsupported-capability',
-          `Detected-power center ${configuration.centerHz} does not match selected SignalLab profile ${selected.profileId} at ${selected.centerFrequencyHz} Hz`,
-        );
-      }
-    }
-  } else if (capability.kind === 'complex-iq' && configuration.kind === 'complex-iq') {
-    requireRange(configuration.centerHz, capability.centerFrequencyHz, 'I/Q center');
-    requireRange(configuration.sampleRateHz, capability.sampleRateHz, 'I/Q sample rate');
-    requireRange(configuration.bandwidthHz, capability.bandwidthHz, 'I/Q bandwidth');
-    requireRange(configuration.sampleCount, capability.sampleCount, 'I/Q total sample count');
-    if (configuration.sampleFormat !== capability.sampleFormat) throw new InstrumentManagerError('unsupported-capability', 'I/Q sample format is unsupported');
-  }
-}
-
-function requireScalarSweepTime(
-  value: 'auto' | number,
-  capability: { automatic: boolean; manualSeconds: { min: number; max: number; step?: number } },
-  label: string,
-): void {
-  if (value === 'auto') {
-    if (!capability.automatic) throw new InstrumentManagerError('unsupported-capability', `${label} does not support automatic selection`);
-    return;
-  }
-  requireRange(value, capability.manualSeconds, label);
-}
-
-function requireAutomaticOrRange(
-  value: 'auto' | number,
-  capability: { automatic: boolean; manual: { min: number; max: number; step?: number } },
-  label: string,
-): void {
-  if (value === 'auto') {
-    if (!capability.automatic) throw new InstrumentManagerError('unsupported-capability', `${label} does not support automatic selection`);
-    return;
-  }
-  requireRange(value, capability.manual, label);
-}
-
-function requireSweptSpectrumControls(
-  controls: Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>['controls'],
-  capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'swept-spectrum' }>['controls'],
-): void {
-  if (controls.model !== capability.model) {
-    throw new InstrumentManagerError('unsupported-capability', `Sweep control model ${controls.model} is not supported by ${capability.model}`);
-  }
-  if (controls.model === 'synthetic-scalar') return;
-  if (capability.model !== 'receiver') throw new InstrumentManagerError('driver-contract', 'Receiver sweep control capability lookup was inconsistent');
-  if (!capability.acquisitionFormats.includes(controls.acquisitionFormat)) {
-    throw new InstrumentManagerError('unsupported-capability', `Acquisition format ${controls.acquisitionFormat} is unsupported`);
-  }
-  requireAutomaticOrRange(controls.resolutionBandwidthKhz, capability.resolutionBandwidthKhz, 'resolution bandwidth');
-  requireAutomaticOrRange(controls.attenuationDb, capability.attenuationDb, 'attenuation');
-  if (!capability.detectors.includes(controls.detector)) throw new InstrumentManagerError('unsupported-capability', `Detector ${controls.detector} is unsupported`);
-  if (!capability.spurRejection.includes(controls.spurRejection)) throw new InstrumentManagerError('unsupported-capability', `Spur rejection ${controls.spurRejection} is unsupported`);
-  if (!capability.lowNoiseAmplifier.includes(controls.lowNoiseAmplifier)) throw new InstrumentManagerError('unsupported-capability', `LNA ${controls.lowNoiseAmplifier} is unsupported`);
-  if (!capability.avoidSpurs.includes(controls.avoidSpurs)) throw new InstrumentManagerError('unsupported-capability', `Avoid-spurs ${controls.avoidSpurs} is unsupported`);
-  if (!capability.triggerModes.includes(controls.trigger.mode)) throw new InstrumentManagerError('unsupported-capability', `Trigger mode ${controls.trigger.mode} is unsupported`);
-  if (controls.trigger.mode !== 'auto') {
-    if (!capability.triggerLevelDbm) throw new InstrumentManagerError('driver-contract', `Trigger mode ${controls.trigger.mode} has no advertised level range`);
-    requireRange(controls.trigger.levelDbm, capability.triggerLevelDbm, 'trigger level');
-  }
-}
-
-function requireDetectedPowerControls(
-  controls: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>['controls'],
-  capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'detected-power-timeseries' }>['controls'],
-): void {
-  if (controls.model !== capability.model) {
-    throw new InstrumentManagerError('unsupported-capability', `Detected-power control model ${controls.model} is not supported by ${capability.model}`);
-  }
-  if (controls.model === 'synthetic-scalar') return;
-  if (capability.model !== 'receiver') throw new InstrumentManagerError('driver-contract', 'Receiver detected-power control capability lookup was inconsistent');
-  requireAutomaticOrRange(controls.resolutionBandwidthKhz, capability.resolutionBandwidthKhz, 'resolution bandwidth');
-  requireAutomaticOrRange(controls.attenuationDb, capability.attenuationDb, 'attenuation');
-  if (!capability.triggerModes.includes(controls.trigger.mode)) throw new InstrumentManagerError('unsupported-capability', `Trigger mode ${controls.trigger.mode} is unsupported`);
-  if (controls.trigger.mode !== 'auto') {
-    if (!capability.triggerLevelDbm) throw new InstrumentManagerError('driver-contract', `Trigger mode ${controls.trigger.mode} has no advertised level range`);
-    requireRange(controls.trigger.levelDbm, capability.triggerLevelDbm, 'trigger level');
+  const issue = instrumentConfigurationCapabilityBindingIssues(configuration, active.capabilities)[0];
+  if (issue) {
+    throw new InstrumentManagerError(
+      'unsupported-capability',
+      `${issue.path.join('.')} ${issue.message}`,
+    );
   }
 }
 

@@ -2,19 +2,16 @@ import { app, BrowserWindow, dialog, ipcMain, screen, type IpcMainInvokeEvent } 
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { config as loadEnv } from 'dotenv';
 import {
-  InstrumentDriverRegistry,
-  InstrumentManager,
   NodeSerialTransport,
   PhysicalOrTwinTransport,
   RenodeDigitalTwinTransport,
-  SignalLabInstrumentDriver,
   TinySaDeviceService,
   TinySaZs407InstrumentDriver,
 } from '@tinysa/device';
+import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
+import { SignalLabInstrumentDriver } from '@tinysa/signal-lab-driver';
 import { OpenAiGateway } from './ai-gateway.js';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
@@ -24,6 +21,7 @@ import { registerAtomizerAuxiliaryIpc } from './atomizer-auxiliary-ipc.js';
 import { InstrumentPreferenceStore } from './instrument-preference.js';
 import { SafeShutdownGate } from './safe-shutdown-gate.js';
 import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
+import { loadPrivateEnvironmentFromCandidates } from './private-environment.js';
 import {
   assertTrustedRendererEvent,
   developmentRendererTrust,
@@ -35,9 +33,12 @@ import {
 } from './renderer-trust.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-for(const candidate of [process.env.TINYSA_ENV_FILE,resolve(process.cwd(),'.env'),resolve(process.cwd(),'../../.env'),resolve(here,'../../../../.env')]){
-  if(candidate&&existsSync(candidate)){loadEnv({path:candidate,quiet:true});break;}
-}
+const explicitEnvironmentFile = process.env.TINYSA_ENV_FILE?.trim();
+await loadPrivateEnvironmentFromCandidates(explicitEnvironmentFile
+  ? [explicitEnvironmentFile]
+  : [resolve(process.cwd(), '.env'), resolve(process.cwd(), '../../.env'), resolve(here, '../../../../.env')], {
+  explicitFirstCandidate: explicitEnvironmentFile !== undefined,
+});
 const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../TinySA_Firmware'));
 const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() || resolve(here, '../../../..'));
 const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));

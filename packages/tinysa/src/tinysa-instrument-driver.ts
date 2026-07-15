@@ -1,15 +1,22 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
+  deviceIdentitySchema,
+  isSupportedZs407FirmwareIdentity,
+  isZs407FirmwareVersionRevisionPair,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
   instrumentFeatureCommandSchema,
   instrumentMeasurementSchema,
   instrumentSessionEventSchema,
+  portCandidateSchema,
   type AnalyzerConfig,
   type DeviceDiagnostics,
   type DeviceCapabilities,
   type DeviceEvent,
+  type DeviceIdentity,
   type DeviceSnapshot,
+  type DetectedPowerTimeseriesConfiguration,
   type GeneratorConfig,
   type InstrumentCandidate,
   type InstrumentCandidateDescriptor,
@@ -25,10 +32,11 @@ import {
   type ScreenFrame,
   type ScreenPoint,
   type Sweep,
+  type SweptSpectrumConfiguration,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
-import type { InstrumentDriver, InstrumentSession } from './instrument-driver.js';
+import type { InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
 import type { TransportDiscoveryResult } from './transport.js';
 import { tinySaAnalyzerConfiguration, tinySaDetectedPowerConfiguration } from './scalar-configuration.js';
 
@@ -107,7 +115,15 @@ export class TinySaZs407InstrumentDriver implements InstrumentDriver {
     const rfOutput = capabilities.features.some((feature) => feature.kind === 'rf-generator')
       ? snapshot.generatorOutput
       : 'not-supported';
-    return new TinySaInstrumentSession(this.device, candidate, snapshot.sessionId, provenance, capabilities, rfOutput);
+    return new TinySaInstrumentSession(
+      this.device,
+      candidate,
+      snapshot.sessionId,
+      provenance,
+      snapshot.identity,
+      capabilities,
+      rfOutput,
+    );
   }
 }
 
@@ -125,6 +141,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     readonly candidate: InstrumentCandidate,
     readonly sessionId: string,
     readonly provenance: InstrumentSessionProvenance,
+    private readonly admittedDeviceIdentity: DeviceIdentity,
     capabilities: InstrumentCapabilities,
     readonly rfOutput: 'off' | 'on' | 'unknown' | 'not-supported',
   ) {
@@ -136,7 +153,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     if (this.#closed) throw new Error('TinySA instrument session is closed');
     this.#listeners.add(listener);
     if (this.#terminalEvent) {
-      try { listener(this.#terminalEvent); } catch { /* Consumer isolation. */ }
+      try { listener(structuredClone(this.#terminalEvent)); } catch { /* Consumer isolation. */ }
     }
     return () => this.#listeners.delete(listener);
   }
@@ -168,6 +185,13 @@ class TinySaInstrumentSession implements InstrumentSession {
     let measurement: InstrumentMeasurement;
     if (command.configuration.kind === 'swept-spectrum') {
       const sweep = await this.device.acquireSweep();
+      if (sweep.complete !== true) {
+        throw new Error('TinySA device service returned an incomplete swept-spectrum acquisition');
+      }
+      if (!deviceAcquisitionIdentityMatches(this.admittedDeviceIdentity, sweep.identity)) {
+        throw new Error('TinySA swept-spectrum acquisition identity does not match the admitted device session');
+      }
+      assertSweptAcquisitionEvidence(command.configuration, sweep);
       measurement = {
         schemaVersion: 1,
         kind: 'swept-spectrum',
@@ -186,6 +210,13 @@ class TinySaInstrumentSession implements InstrumentSession {
       };
     } else if (command.configuration.kind === 'detected-power-timeseries') {
       const capture = await this.device.acquireZeroSpan();
+      if (capture.complete !== true) {
+        throw new Error('TinySA device service returned an incomplete detected-power acquisition');
+      }
+      if (!deviceAcquisitionIdentityMatches(this.admittedDeviceIdentity, capture.identity)) {
+        throw new Error('TinySA detected-power acquisition identity does not match the admitted device session');
+      }
+      assertDetectedPowerAcquisitionEvidence(command.configuration, capture);
       measurement = {
         schemaVersion: 1,
         kind: 'detected-power-timeseries',
@@ -307,8 +338,8 @@ class TinySaInstrumentSession implements InstrumentSession {
 
   #emit(value: InstrumentSessionEvent): void {
     const event = instrumentSessionEventSchema.parse(value);
-    for (const listener of this.#listeners) {
-      try { listener(event); } catch { /* Consumer isolation. */ }
+    for (const listener of [...this.#listeners]) {
+      try { listener(structuredClone(event)); } catch { /* Consumer isolation. */ }
     }
   }
 }
@@ -318,14 +349,65 @@ function tinySaSessionProvenance(
   identity: NonNullable<DeviceSnapshot['identity']>,
   verifiedAt: string,
 ): InstrumentSessionProvenance {
+  if (!deviceIdentitySchema.safeParse(identity).success) {
+    throw new Error('TinySA device service returned a contradictory device identity');
+  }
+  const identityPortResult = portCandidateSchema.safeParse(identity.port);
+  if (!identityPortResult.success) {
+    throw new Error('TinySA device identity contains invalid port provenance');
+  }
+  const identityPort = identityPortResult.data;
   if (candidate.sourceKind === 'serial-port') {
-    if (identity.execution !== 'physical' || identity.port.id !== candidate.candidateId) {
+    if (identity.execution !== 'physical'
+      || !sameDescriptor(candidate, descriptorFor(identityPort))
+      || identityPort.usbMatch !== 'exact-zs407-cdc'
+      || identityPort.vendorId?.toLowerCase() !== '0483'
+      || identityPort.productId?.toLowerCase() !== '5740') {
       throw new Error('TinySA physical identity does not match the admitted serial candidate');
     }
     if (identity.firmwareQualification !== 'supported-oem'
       && identity.firmwareQualification !== 'custom-unqualified') {
       throw new Error(`TinySA physical identity has invalid firmware qualification ${identity.firmwareQualification}`);
     }
+    if (!identity.usbIdentityVerified) {
+      throw new Error('TinySA physical session requires verified ZS407 USB identity');
+    }
+    if (!identity.firmwareReportedRevision) {
+      throw new Error('TinySA physical identity is missing its reported firmware revision');
+    }
+    if (!isZs407FirmwareVersionRevisionPair(identity.firmwareVersion, identity.firmwareReportedRevision)) {
+      throw new Error('TinySA physical identity has contradictory firmware version and reported revision');
+    }
+    if (identity.firmwareQualification === 'supported-oem') {
+      if (!identity.firmwareSourceCommit
+        || !isSupportedZs407FirmwareIdentity(identity.firmwareVersion, identity.firmwareReportedRevision, identity.firmwareSourceCommit)
+        || identity.firmwareWarning !== undefined) {
+        throw new Error('TinySA supported OEM identity has contradictory firmware provenance');
+      }
+    } else if (identity.firmwareSourceCommit !== undefined
+      || !identity.firmwareWarning
+      || !identity.firmwareWarning.toLowerCase().includes(identity.firmwareReportedRevision.toLowerCase())) {
+      throw new Error('TinySA custom identity has contradictory or incomplete firmware provenance');
+    }
+    const device = identity.firmwareQualification === 'supported-oem'
+      ? {
+        model: identity.model,
+        hardwareVersion: identity.hardwareVersion,
+        firmwareVersion: identity.firmwareVersion,
+        firmwareReportedRevision: identity.firmwareReportedRevision,
+        firmwareSourceCommit: identity.firmwareSourceCommit!,
+        firmwareQualification: 'supported-oem' as const,
+        usbIdentityVerified: true as const,
+      }
+      : {
+        model: identity.model,
+        hardwareVersion: identity.hardwareVersion,
+        firmwareVersion: identity.firmwareVersion,
+        firmwareReportedRevision: identity.firmwareReportedRevision,
+        firmwareQualification: 'custom-unqualified' as const,
+        firmwareWarning: identity.firmwareWarning!,
+        usbIdentityVerified: true as const,
+      };
     return {
       sourceKind: 'serial-port',
       execution: 'physical',
@@ -333,21 +415,15 @@ function tinySaSessionProvenance(
       qualification: 'device-observed',
       verifiedAt,
       serialPort: candidate.serialPort,
-      device: {
-        model: identity.model,
-        hardwareVersion: identity.hardwareVersion,
-        firmwareVersion: identity.firmwareVersion,
-        ...(identity.firmwareReportedRevision ? { firmwareReportedRevision: identity.firmwareReportedRevision } : {}),
-        ...(identity.firmwareSourceCommit ? { firmwareSourceCommit: identity.firmwareSourceCommit } : {}),
-        firmwareQualification: identity.firmwareQualification,
-        usbIdentityVerified: identity.usbIdentityVerified,
-      },
+      device,
     };
   }
   if (candidate.sourceKind === 'tinysa-firmware-twin') {
     if (identity.execution !== 'firmware-digital-twin'
-      || identity.port.id !== candidate.candidateId
-      || !identity.digitalTwin) {
+      || !sameDescriptor(candidate, descriptorFor(identityPort))
+      || !identity.digitalTwin
+      || !identityPort.digitalTwin
+      || !sameDigitalTwinProvenance(identity.digitalTwin, identityPort.digitalTwin)) {
       throw new Error('TinySA executable identity does not match the admitted firmware-twin candidate');
     }
     return {
@@ -410,6 +486,78 @@ function sameDescriptor(candidate: InstrumentCandidate, descriptor: InstrumentCa
   if (!descriptor) return false;
   const { discoveryRevision: _revision, ...withoutRevision } = candidate;
   return JSON.stringify(withoutRevision) === JSON.stringify(descriptor);
+}
+
+function sameDigitalTwinProvenance(
+  left: NonNullable<PortCandidate['digitalTwin']>,
+  right: NonNullable<PortCandidate['digitalTwin']>,
+): boolean {
+  return left.contractVersion === right.contractVersion
+    && left.bridge === right.bridge
+    && left.firmwareRelease === right.firmwareRelease
+    && left.repositoryCommit === right.repositoryCommit
+    && left.firmwareBinarySha256 === right.firmwareBinarySha256
+    && left.usbTransactionsModeled === right.usbTransactionsModeled
+    && left.bootEvidence === right.bootEvidence;
+}
+
+function deviceAcquisitionIdentityMatches(
+  admitted: DeviceIdentity,
+  observed: Sweep['identity'] | ZeroSpanCapture['identity'],
+): boolean {
+  if ('kind' in observed) return false;
+  const admittedResult = deviceIdentitySchema.safeParse(admitted);
+  const observedResult = deviceIdentitySchema.safeParse(observed);
+  if (!admittedResult.success || !observedResult.success) return false;
+  return JSON.stringify(admittedResult.data) === JSON.stringify(observedResult.data);
+}
+
+function assertSweptAcquisitionEvidence(
+  configuration: SweptSpectrumConfiguration,
+  sweep: Sweep,
+): void {
+  if (!isDeepStrictEqual(sweep.requested, configuration)) {
+    throw new Error('TinySA swept-spectrum acquisition requested controls do not match the admitted configuration');
+  }
+  if (sweep.actualStartHz !== configuration.startHz
+    || sweep.actualStopHz !== configuration.stopHz
+    || sweep.frequencyHz.length !== configuration.points
+    || sweep.powerDbm.length !== configuration.points) {
+    throw new Error('TinySA swept-spectrum acquisition geometry does not match the admitted configuration');
+  }
+  if (configuration.controls.model === 'receiver') {
+    if (typeof configuration.controls.resolutionBandwidthKhz === 'number'
+      && sweep.actualRbwHz !== configuration.controls.resolutionBandwidthKhz * 1_000) {
+      throw new Error('TinySA swept-spectrum acquisition RBW does not match the admitted manual control');
+    }
+    if (typeof configuration.controls.attenuationDb === 'number'
+      && sweep.actualAttenuationDb !== configuration.controls.attenuationDb) {
+      throw new Error('TinySA swept-spectrum acquisition attenuation does not match the admitted manual control');
+    }
+  }
+}
+
+function assertDetectedPowerAcquisitionEvidence(
+  configuration: DetectedPowerTimeseriesConfiguration,
+  capture: ZeroSpanCapture,
+): void {
+  if (!isDeepStrictEqual(capture.requested, configuration)) {
+    throw new Error('TinySA detected-power acquisition requested controls do not match the admitted configuration');
+  }
+  if (capture.frequencyHz !== configuration.centerHz
+    || capture.powerDbm.length !== configuration.sampleCount) {
+    throw new Error('TinySA detected-power acquisition geometry does not match the admitted configuration');
+  }
+  if (configuration.controls.model === 'receiver') {
+    if (typeof configuration.controls.resolutionBandwidthKhz === 'number'
+      && capture.actualRbwHz !== configuration.controls.resolutionBandwidthKhz * 1_000) {
+      throw new Error('TinySA detected-power acquisition RBW does not match the admitted manual control');
+    }
+    if (typeof configuration.controls.attenuationDb === 'number'
+      && capture.actualAttenuationDb !== configuration.controls.attenuationDb) {
+      throw new Error('TinySA detected-power acquisition attenuation does not match the admitted manual control');
+    }
+  }
 }
 
 function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities {

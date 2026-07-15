@@ -127,12 +127,11 @@ export class NodeSerialTransport implements ByteTransport {
     const listeners: PortListeners = {
       data: (data) => {
         if (this.#port !== port) return;
-        const copy = Uint8Array.from(data);
-        for (const listener of this.#bytes) listener(copy);
+        this.#emitBytes(Uint8Array.from(data));
       },
       error: (error) => {
         if (this.#port !== port) return;
-        for (const listener of this.#events) listener({ type: 'error', error });
+        this.#emitEvent({ type: 'error', error });
       },
       close: () => this.#finalizeClosedPort(port, listeners),
     };
@@ -156,7 +155,7 @@ export class NodeSerialTransport implements ByteTransport {
       this.#abandonOpeningPort(port, listeners);
       throw error;
     }
-    for (const listener of this.#events) listener({ type: 'opened' });
+    this.#emitEvent({ type: 'opened' });
   }
 
   async close(): Promise<void> {
@@ -171,7 +170,7 @@ export class NodeSerialTransport implements ByteTransport {
       undefined,
       (error) => {
         if (error) {
-          if (this.#port === port) for (const listener of this.#events) listener({ type: 'error', error });
+          if (this.#port === port) this.#emitEvent({ type: 'error', error });
           return;
         }
         this.#finalizeClosedPort(port, listeners);
@@ -205,7 +204,7 @@ export class NodeSerialTransport implements ByteTransport {
       if (this.#port === port && this.#portState === 'open') {
         this.#portState = 'faulted';
         const error = value instanceof Error ? value : new Error(String(value));
-        for (const listener of this.#events) listener({ type: 'error', error });
+        this.#emitEvent({ type: 'error', error });
       }
       throw value;
     }
@@ -270,7 +269,21 @@ export class NodeSerialTransport implements ByteTransport {
     this.#portListeners = undefined;
     this.#portState = undefined;
     this.#detachPortListeners(port, listeners);
-    for (const listener of this.#events) listener({ type: 'closed' });
+    this.#emitEvent({ type: 'closed' });
+  }
+
+  #emitBytes(bytes: Uint8Array): void {
+    for (const listener of [...this.#bytes]) {
+      try { listener(Uint8Array.from(bytes)); }
+      catch { /* Transport byte observers cannot corrupt native-port lifecycle. */ }
+    }
+  }
+
+  #emitEvent(event: TransportEvent): void {
+    for (const listener of [...this.#events]) {
+      try { listener(structuredClone(event)); }
+      catch { /* Transport event observers cannot corrupt native-port lifecycle. */ }
+    }
   }
 }
 

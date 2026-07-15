@@ -1,18 +1,46 @@
-import type { DetectedSignal, Sweep, WaveformClassificationEvidence, ZeroSpanCapture } from '@tinysa/contracts';
-import { sameMeasurementIdentity } from './measurement-provenance.js';
+import type {
+  DetectedSignal,
+  Sweep,
+  SweptSpectrumConfiguration,
+  WaveformClassificationEvidence,
+  ZeroSpanCapture,
+} from '@tinysa/contracts';
+import { instrumentTimestampSchema } from '@tinysa/contracts';
+import { isInstrumentMeasurementIdentity, sameMeasurementIdentity } from './measurement-provenance.js';
+import {
+  BAYESIAN_DETECTOR_MODEL,
+  analyzeBayesianSweep,
+  bayesianDetectionEvidenceMatches,
+} from './bayesian-signal-detector.js';
 import {
   BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL,
   bayesianFrequencyAgileActivityEvidence,
   bayesianFrequencyAgileActivityQualifies,
 } from './bayesian-agile-association.js';
 import {
+  FREQUENCY_AGILE_BAND_START_HZ,
+  FREQUENCY_AGILE_BAND_STOP_HZ,
+  FREQUENCY_AGILE_MAXIMUM_COMPONENT_BANDWIDTH_HZ,
   frequencyAgileGeometryId,
   frequencyAgileSequentialOpportunity,
   frequencyAgileSweepEligible,
   frequencyAgileSweepGeometryCompatible,
 } from './frequency-agile-geometry.js';
+import {
+  MULTICOMPONENT_LOCAL_DETECTOR_MODEL_ID,
+  MULTICOMPONENT_SWEPT_REGION_MODEL_ID,
+  multicomponentAssociationRegionsOverlap,
+  multicomponentSweepBinWidthHz,
+  multicomponentSweepGeometryId,
+  multicomponentSweptRegionAssociations,
+  multicomponentSweptRegionAssociationsForGeometry,
+} from './multicomponent-swept-region.js';
+import { regularSpectralComponentAssociations } from './regular-spectral-component.js';
 
-export type WaveformEvidence = WaveformClassificationEvidence;
+export interface WaveformEvidence extends WaveformClassificationEvidence {
+  /** Exact newest-first eight-sweep scalar window observed when zero span was acquired. */
+  zeroSpanSpectrumSweepIds?: readonly string[];
+}
 
 export const BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY = {
   points: 450,
@@ -27,13 +55,16 @@ export type ObservableEvidenceLimitation =
   | 'zero-span-missing'
   | 'zero-span-tune-mismatch'
   | 'zero-span-provenance-mismatch'
+  | 'zero-span-spectrum-window-mismatch'
   | 'zero-span-timing-unqualified'
   | 'zero-span-rbw-unavailable'
   | 'zero-span-geometry-out-of-domain'
   | 'timing-rate-aliased'
   | 'timing-window-too-short'
   | 'frequency-agile-band-activity-association'
-  | 'regular-spectral-component-activity-association';
+  | 'regular-spectral-component-activity-association'
+  | 'multicomponent-swept-region-activity-association'
+  | 'zero-span-local-member-of-nonidentity-regional-association';
 
 export interface ObservableFeatureObservation {
   values: Readonly<Record<string, number>>;
@@ -120,18 +151,39 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
   }
   if (detection.associationMode === 'frequency-agile-2g4-activity') limitations.add('frequency-agile-band-activity-association');
   if (detection.associationMode === 'regular-spectral-component-activity') limitations.add('regular-spectral-component-activity-association');
+  if (detection.associationMode === 'multicomponent-swept-region-activity') limitations.add('multicomponent-swept-region-activity-association');
   const associationBoundaryCensored = hasCompleteAssociationRegion(detection)
     && (detection.associationRegionStartHz <= sweeps[0]!.actualStartHz || detection.associationRegionStopHz >= sweeps[0]!.actualStopHz);
   if (associationBoundaryCensored || (!hasCompleteAssociationRegion(detection) && detection.qualityFlags.some((flag) => flag.startsWith('touches-')))) {
     limitations.add('partial-span-boundary-censoring');
   }
   if (sweeps.length < 3) limitations.add('insufficient-spectrum-history');
-  const provenanceMatchedZeroSpan = matchingZeroSpan(detection, binWidthHz, sweeps[0]!, evidence.zeroSpan);
+  const zeroSpanProvenanceMatched = !!evidence.zeroSpan
+    && zeroSpanProvenanceMatches(detection, sweeps[0]!, evidence.zeroSpan);
+  const zeroSpanSpectrumWindowMatched = zeroSpanWindowMatches(
+    sweeps,
+    evidence.zeroSpanSpectrumSweepIds,
+    sweeps[0]!,
+  );
+  const provenanceMatchedZeroSpan = zeroSpanSpectrumWindowMatched
+    ? matchingZeroSpan(detection, binWidthHz, sweeps[0]!, evidence.zeroSpan)
+    : undefined;
   const zeroSpan = provenanceMatchedZeroSpan && supportedZeroSpanGeometry(provenanceMatchedZeroSpan) ? provenanceMatchedZeroSpan : undefined;
-  if (evidence.zeroSpan && !provenanceMatchedZeroSpan) limitations.add(zeroSpanProvenanceMatches(detection, sweeps[0]!, evidence.zeroSpan) ? 'zero-span-tune-mismatch' : 'zero-span-provenance-mismatch');
+  if (evidence.zeroSpan && !provenanceMatchedZeroSpan) {
+    limitations.add(!zeroSpanProvenanceMatched
+      ? 'zero-span-provenance-mismatch'
+      : !zeroSpanSpectrumWindowMatched
+        ? 'zero-span-spectrum-window-mismatch'
+        : 'zero-span-tune-mismatch');
+  }
   if (provenanceMatchedZeroSpan && !zeroSpan) limitations.add('zero-span-geometry-out-of-domain');
   if (!zeroSpan) limitations.add('zero-span-missing');
-  if (zeroSpan) observeEnvelope(zeroSpan, detection, values, limitations);
+  if (zeroSpan) {
+    if (detection.associationMode === 'multicomponent-swept-region-activity') {
+      limitations.add('zero-span-local-member-of-nonidentity-regional-association');
+    }
+    observeEnvelope(zeroSpan, detection, values, limitations);
+  }
 
   return {
     values,
@@ -150,38 +202,120 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
   };
 }
 
+/**
+ * A non-local association can remain visible under tracker hysteresis after
+ * its current evidence falls below the classifier's promotion gate. That is
+ * useful operator state, but it is not a currently qualified observation for
+ * fitting, calibration, validation, or runtime classification.
+ */
+export function observableAssociationEvidenceIsCurrentlyQualified(detection: DetectedSignal): boolean {
+  if (detection.missedSweeps !== 0) return false;
+  return detection.associationMode === undefined
+    || detection.associationMode === 'frequency-local'
+    || hasCompleteAssociationRegion(detection);
+}
+
 function coherentSweeps(detection: DetectedSignal, values: readonly Sweep[]): Sweep[] {
+  const localAssociation = detection.associationMode === undefined
+    || detection.associationMode === 'frequency-local';
   const associationRegionComplete = hasCompleteAssociationRegion(detection);
   if (detection.associationMode !== undefined && detection.associationMode !== 'frequency-local' && !associationRegionComplete) return [];
   if (new Set(values.map((sweep) => sweep.id)).size !== values.length) {
     throw new Error('Observable classification rejects duplicate evidence sweep IDs');
   }
+  for (const sweep of values) validateSweep(sweep);
   if (detection.associationMode === 'frequency-agile-2g4-activity'
     && !validateAgileAssociationSweeps(detection, values)) return [];
+  if (detection.associationMode === 'multicomponent-swept-region-activity'
+    && !multicomponentAssociationProvenanceIsValid(detection, values)) return [];
+  if (detection.associationMode === 'regular-spectral-component-activity'
+    && !regularAssociationProvenanceIsValid(detection, values)) return [];
   const sourceSweepIdList = associationRegionComplete ? detection.associationRegionSweepIds : detection.sweepIds;
   if (new Set(sourceSweepIdList).size !== sourceSweepIdList.length) {
     throw new Error('Observable classification rejects duplicate source sweep IDs');
   }
-  const sourceSweepIds = new Set(sourceSweepIdList);
-  const candidates = values.filter((sweep) => {
+  const requiredLocalSweepIds = localAssociation ? detection.sweepIds.slice(-8) : undefined;
+  if (requiredLocalSweepIds?.length === 0) return [];
+  const sourceSweepIds = new Set(requiredLocalSweepIds ?? sourceSweepIdList);
+  const evidenceSweeps = detection.associationMode === 'regular-spectral-component-activity'
+    ? detection.regularComponentAssociationObservations!.map((observation) => observation.sourceSweep)
+    : values;
+  const candidates = evidenceSweeps.filter((sweep) => {
     validateSweep(sweep);
     return sourceSweepIds.has(sweep.id)
       && detection.peakHz >= sweep.actualStartHz
       && detection.peakHz <= sweep.actualStopHz;
   });
   candidates.sort((left, right) => right.sequence - left.sequence);
+  for (let index = 1; index < candidates.length; index++) {
+    const newer = candidates[index - 1]!;
+    const older = candidates[index]!;
+    if (older.sequence >= newer.sequence
+      || Date.parse(older.capturedAt) >= Date.parse(newer.capturedAt)) return [];
+  }
+  if (requiredLocalSweepIds) {
+    const expectedNewestFirst = [...requiredLocalSweepIds].reverse();
+    if (candidates.length !== expectedNewestFirst.length
+      || candidates.some((sweep, index) => sweep.id !== expectedNewestFirst[index])) return [];
+  }
   const reference = candidates[0];
   if (!reference) return [];
-  return candidates.filter((sweep) => sweep.frequencyHz.length === reference.frequencyHz.length
+  const coherentCandidates = candidates.filter((sweep) => sweep.frequencyHz.length === reference.frequencyHz.length
     && sameFrequencyGrid(sweep.frequencyHz, reference.frequencyHz)
     && sweep.actualRbwHz === reference.actualRbwHz
     && sweep.actualAttenuationDb === reference.actualAttenuationDb
     && sweep.resolutionBandwidthQualification === reference.resolutionBandwidthQualification
     && sweep.attenuationQualification === reference.attenuationQualification
-    && sweep.requested.detector === reference.requested.detector
-    && sweep.requested.lna === reference.requested.lna
-    && sweep.requested.spurRejection === reference.requested.spurRejection
+    && sameSweptSpectrumConfiguration(sweep.requested, reference.requested)
     && sameMeasurementIdentity(sweep.identity, reference.identity));
+  if (localAssociation) {
+    if (reference.capturedAt !== detection.lastSeenAt) return [];
+    const originatingSweepId = detection.classificationRegionObservation?.sourceSweep.id;
+    const originatingEvidenceSweep = originatingSweepId === undefined
+      ? undefined
+      : values.find((sweep) => sweep.id === originatingSweepId);
+    if (!localClassificationRegionProvenanceIsValid(
+      detection,
+      reference,
+      originatingEvidenceSweep,
+    ) || !localHistorySweepsReplayUniquely(detection, coherentCandidates.slice(0, 8))) return [];
+  }
+  return coherentCandidates;
+}
+
+function sameSweptSpectrumConfiguration(
+  left: SweptSpectrumConfiguration,
+  right: SweptSpectrumConfiguration,
+): boolean {
+  if (left.kind !== right.kind
+    || left.startHz !== right.startHz
+    || left.stopHz !== right.stopHz
+    || left.points !== right.points
+    || left.sweepTimeSeconds !== right.sweepTimeSeconds
+    || left.controls.model !== right.controls.model) return false;
+  if (left.controls.model === 'synthetic-scalar') {
+    return right.controls.model === 'synthetic-scalar'
+      && left.controls.schemaVersion === right.controls.schemaVersion
+      && left.controls.timingQualification === right.controls.timingQualification;
+  }
+  if (right.controls.model !== 'receiver') return false;
+  return left.controls.schemaVersion === right.controls.schemaVersion
+    && left.controls.acquisitionFormat === right.controls.acquisitionFormat
+    && left.controls.resolutionBandwidthKhz === right.controls.resolutionBandwidthKhz
+    && left.controls.attenuationDb === right.controls.attenuationDb
+    && left.controls.detector === right.controls.detector
+    && left.controls.spurRejection === right.controls.spurRejection
+    && left.controls.lowNoiseAmplifier === right.controls.lowNoiseAmplifier
+    && left.controls.avoidSpurs === right.controls.avoidSpurs
+    && sameScalarTrigger(left.controls.trigger, right.controls.trigger);
+}
+
+function sameScalarTrigger(
+  left: Extract<SweptSpectrumConfiguration['controls'], { model: 'receiver' }>['trigger'],
+  right: Extract<SweptSpectrumConfiguration['controls'], { model: 'receiver' }>['trigger'],
+): boolean {
+  return left.mode === right.mode
+    && (left.mode === 'auto' || (right.mode !== 'auto' && left.levelDbm === right.levelDbm));
 }
 
 function validateAgileAssociationSweeps(detection: DetectedSignal, values: readonly Sweep[]): boolean {
@@ -206,41 +340,79 @@ function validateAgileAssociationSweeps(detection: DetectedSignal, values: reado
     if (index > 0 && !frequencyAgileSequentialOpportunity(opportunitySweeps[index - 1]!, sweep)) return false;
   }
   const observationBySweepId = new Map(observations.map((observation) => [observation.sweepId, observation] as const));
-  for (const observation of observations) {
-    const sweep = sweepById.get(observation.sweepId);
-    if (!sweep
-      || observation.detectorId !== detection.detectorId
-      || observation.localBayesianEvidence.modelId !== observation.detectorId
-      || observation.localBayesianEvidence.posteriorScope !== 'selected-local-region'
-      || observation.localBayesianEvidence.looks !== 1
-      || observation.rbwHz !== sweep.actualRbwHz
-      || observation.binWidthHz !== nominalBinWidth(sweep)
-      || observation.startHz < sweep.actualStartHz
-      || observation.stopHz > sweep.actualStopHz
-      || observation.centerHz < observation.startHz
-      || observation.centerHz > observation.stopHz
-      || observation.localBayesianEvidence.testedRegionStartHz < sweep.actualStartHz
-      || observation.localBayesianEvidence.testedRegionStopHz > sweep.actualStopHz
-      || observation.localBayesianEvidence.testedRegionStopHz < observation.startHz
-      || observation.localBayesianEvidence.testedRegionStartHz > observation.stopHz) return false;
+  try {
+    for (let index = 0; index < opportunities.length; index++) {
+      const opportunity = opportunities[index]!;
+      const sweep = opportunitySweeps[index]!;
+      const detectorCandidates = analyzeBayesianSweep(sweep, detection.detectorConfig);
+      const bandCandidates = detectorCandidates.filter((candidate) =>
+        candidate.stopHz >= FREQUENCY_AGILE_BAND_START_HZ
+        && candidate.startHz <= FREQUENCY_AGILE_BAND_STOP_HZ);
+      const eligible = bandCandidates.filter((candidate) =>
+        candidate.associationMode === 'frequency-local'
+        && candidate.sweepIds.length === 1
+        && candidate.sweepIds[0] === sweep.id
+        && candidate.bandwidthHz <= FREQUENCY_AGILE_MAXIMUM_COMPONENT_BANDWIDTH_HZ);
+      const expectedOutcome = bandCandidates.length === 0
+        ? 'none'
+        : bandCandidates.length === 1 && eligible.length === 1
+          ? 'exactly-one'
+          : 'ambiguous';
+      if (opportunity.outcome !== expectedOutcome) return false;
+      const observation = observationBySweepId.get(sweep.id);
+      if (expectedOutcome !== 'exactly-one') {
+        if (observation) return false;
+        continue;
+      }
+      if (!observation || !agileObservationMatchesCandidate(observation, eligible[0]!, sweep, detection)) {
+        return false;
+      }
+    }
+  } catch {
+    return false;
   }
-  return opportunities.every((opportunity) => opportunity.outcome === 'exactly-one'
-    ? observationBySweepId.has(opportunity.sweepId)
-    : !observationBySweepId.has(opportunity.sweepId));
+  return observations.length === opportunities.filter(
+    (opportunity) => opportunity.outcome === 'exactly-one',
+  ).length;
+}
+
+function agileObservationMatchesCandidate(
+  observation: NonNullable<DetectedSignal['associationObservations']>[number],
+  candidate: DetectedSignal,
+  sweep: Sweep,
+  detection: DetectedSignal,
+): boolean {
+  const binWidthHz = nominalBinWidth(sweep);
+  const centerHz = Math.max(
+    FREQUENCY_AGILE_BAND_START_HZ,
+    Math.min(FREQUENCY_AGILE_BAND_STOP_HZ, (candidate.startHz + candidate.stopHz) / 2),
+  );
+  const startHz = Math.min(centerHz, Math.max(sweep.actualStartHz, candidate.startHz - binWidthHz / 2));
+  const stopHz = Math.max(centerHz, Math.min(sweep.actualStopHz, candidate.stopHz + binWidthHz / 2));
+  return !!observation.trackId
+    && observation.sweepId === sweep.id
+    && observation.detectorId === detection.detectorId
+    && observation.detectorId === candidate.detectorId
+    && observation.centerHz === centerHz
+    && observation.startHz === startHz
+    && observation.stopHz === stopHz
+    && observation.rbwHz === sweep.actualRbwHz
+    && observation.binWidthHz === binWidthHz
+    && bayesianDetectionEvidenceMatches(observation.localBayesianEvidence, candidate.bayesianEvidence);
 }
 
 function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation {
   const binWidthHz = nominalBinWidth(sweep);
   const spanHz = sweep.actualStopHz - sweep.actualStartHz;
   const useAssociationRegion = hasCompleteAssociationRegion(detection);
-  const frozenStartHz = useAssociationRegion ? detection.associationRegionStartHz : detection.classificationRegionStartHz;
-  const frozenStopHz = useAssociationRegion ? detection.associationRegionStopHz : detection.classificationRegionStopHz;
-  const hasFrozenRegion = frozenStartHz !== undefined && frozenStopHz !== undefined && frozenStopHz >= frozenStartHz;
-  const frozenRegionPaddingHz = Math.max(sweep.actualRbwHz * 2, binWidthHz * 2);
+  const selectedStartHz = useAssociationRegion ? detection.associationRegionStartHz : detection.classificationRegionStartHz;
+  const selectedStopHz = useAssociationRegion ? detection.associationRegionStopHz : detection.classificationRegionStopHz;
+  const hasSelectedRegion = selectedStartHz !== undefined && selectedStopHz !== undefined && selectedStopHz >= selectedStartHz;
+  const selectedRegionPaddingHz = Math.max(sweep.actualRbwHz * 2, binWidthHz * 2);
   const halfWidthHz = Math.min(spanHz / 2, Math.max(detection.bandwidthHz * 0.85, sweep.actualRbwHz * 4, binWidthHz * 5));
   const selected = sweep.frequencyHz.map((frequency, index) => ({ frequency, index }))
-    .filter(({ frequency }) => hasFrozenRegion
-      ? frequency >= frozenStartHz - frozenRegionPaddingHz && frequency <= frozenStopHz + frozenRegionPaddingHz
+    .filter(({ frequency }) => hasSelectedRegion
+      ? frequency >= selectedStartHz - selectedRegionPaddingHz && frequency <= selectedStopHz + selectedRegionPaddingHz
       : Math.abs(frequency - detection.peakHz) <= halfWidthHz);
   if (selected.length < 3) throw new Error('Observable classification requires at least three bins around a detection');
   const selectedIndices = selected.map((item) => item.index);
@@ -272,7 +444,18 @@ function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation
   const centerHz = sum(normalized.map((weight, index) => weight * frequencyHz[index]!));
   const lowerHz = weightedQuantile(frequencyHz, normalized, 0.005);
   const upperHz = weightedQuantile(frequencyHz, normalized, 0.995);
-  const bandwidthHz = Math.max(binWidthHz, upperHz - lowerHz);
+  // A multicomponent association is itself the independently qualified
+  // regional observation. Reapplying an energy quantile can silently discard
+  // a weaker but Bayesian-admitted edge member and turn the public current
+  // hull into a narrower, unsupported story. Keep energy quantiles for the
+  // within-region shape statistics below, but publish and model the exact
+  // latest validated regional extent. This still claims neither continuous
+  // occupancy, simultaneity, a common process, nor emitter identity.
+  const useCurrentMulticomponentRegion = detection.associationMode === 'multicomponent-swept-region-activity'
+    && hasSelectedRegion;
+  const occupiedStartHz = useCurrentMulticomponentRegion ? selectedStartHz! : lowerHz;
+  const occupiedStopHz = useCurrentMulticomponentRegion ? selectedStopHz! : upperHz;
+  const bandwidthHz = Math.max(binWidthHz, occupiedStopHz - occupiedStartHz);
   const activeStart = frequencyHz.findIndex((frequency) => frequency >= lowerHz);
   const activeStop = findLastIndex(frequencyHz, (frequency) => frequency <= upperHz);
   const inBandPower = powerDbm.slice(Math.max(0, activeStart), Math.max(activeStart + 1, activeStop + 1));
@@ -291,8 +474,8 @@ function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation
   return {
     id: sweep.id,
     peakHz: frequencyHz[peakIndex]!,
-    occupiedStartHz: lowerHz,
-    occupiedStopHz: upperHz,
+    occupiedStartHz,
+    occupiedStopHz,
     centerHz,
     bandwidthHz,
     binWidthHz,
@@ -309,6 +492,235 @@ function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation
     clusterCount: occupiedClusterCount(inBandPower, floorDbm + 4),
     bleAdvertisingMask: bluetoothAdvertisingMask(activePeakFrequencies),
   };
+}
+
+function localClassificationRegionProvenanceIsValid(
+  detection: DetectedSignal,
+  referenceSweep?: Sweep,
+  originatingEvidenceSweep?: Sweep,
+): boolean {
+  const observation = detection.classificationRegionObservation;
+  const sourceSweepIds = detection.classificationRegionSweepIds;
+  if (!observation
+    || !sourceSweepIds
+    || sourceSweepIds.length !== 1
+    || sourceSweepIds[0] !== observation.sourceSweep.id
+    || observation.sourceSweep.capturedAt !== detection.firstSeenAt
+    || detection.classificationRegionStartHz === undefined
+    || detection.classificationRegionStopHz === undefined
+    || observation.detectorId !== detection.detectorId
+    || observation.detectorId !== BAYESIAN_DETECTOR_MODEL.id) return false;
+  try {
+    validateSweep(observation.sourceSweep);
+    const candidates = analyzeBayesianSweep(observation.sourceSweep, detection.detectorConfig);
+    const matched = candidates.filter((candidate) =>
+      candidate.startHz === observation.startHz
+      && candidate.stopHz === observation.stopHz
+      && candidate.peakHz === observation.peakHz
+      && candidate.detectorId === observation.detectorId
+      && bayesianDetectionEvidenceMatches(
+        candidate.bayesianEvidence,
+        observation.localBayesianEvidence,
+      ));
+    if (matched.length !== 1) return false;
+    const candidate = matched[0]!;
+    if (detection.classificationRegionStartHz
+        !== Math.min(candidate.startHz, candidate.bayesianEvidence.testedRegionStartHz)
+      || detection.classificationRegionStopHz
+        !== Math.max(candidate.stopHz, candidate.bayesianEvidence.testedRegionStopHz)) return false;
+    return (referenceSweep === undefined || observation.sourceSweep.sequence <= referenceSweep.sequence)
+      && (originatingEvidenceSweep === undefined
+        || detectorSweepInputsMatch(observation.sourceSweep, originatingEvidenceSweep))
+      && (referenceSweep === undefined
+        || sweepAcquisitionGeometryMatches(observation.sourceSweep, referenceSweep));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A track's sweepIds are claims that the local detector independently admitted
+ * that event on every cited look. Only the first admission has a compact frozen
+ * observation, so replay every later scalar look before using it as classifier
+ * evidence. The immutable classification ROI is the scope of the scalar
+ * features; a detector result outside it cannot support those features even if
+ * a live tracker could have followed gradual motion through omitted looks.
+ */
+function localHistorySweepsReplayUniquely(
+  detection: DetectedSignal,
+  sweeps: readonly Sweep[],
+): boolean {
+  const frozenStartHz = detection.classificationRegionStartHz;
+  const frozenStopHz = detection.classificationRegionStopHz;
+  const origin = detection.classificationRegionObservation;
+  if (frozenStartHz === undefined
+    || frozenStopHz === undefined
+    || frozenStopHz < frozenStartHz
+    || !origin) return false;
+  try {
+    return sweeps.every((sweep, index) => {
+      const compatible = analyzeBayesianSweep(sweep, detection.detectorConfig).filter((candidate) =>
+        candidate.detectorId === detection.detectorId
+        && candidate.associationMode === 'frequency-local'
+        && candidate.sweepIds.length === 1
+        && candidate.sweepIds[0] === sweep.id
+        && candidate.classificationRegionStartHz !== undefined
+        && candidate.classificationRegionStopHz !== undefined
+        && candidate.classificationRegionStartHz <= frozenStopHz
+        && candidate.classificationRegionStopHz >= frozenStartHz
+        && candidate.startHz <= frozenStopHz
+        && candidate.stopHz >= frozenStartHz
+        && candidate.peakHz >= frozenStartHz
+        && candidate.peakHz <= frozenStopHz
+        && localDetectorCandidateIsTrackCompatible(origin, candidate, sweep));
+      return compatible.length === 1
+        && (index !== 0 || latestLocalCandidateMatchesCurrentTrack(detection, compatible[0]!));
+    });
+  } catch {
+    return false;
+  }
+}
+
+function latestLocalCandidateMatchesCurrentTrack(
+  track: DetectedSignal,
+  candidate: DetectedSignal,
+): boolean {
+  return track.startHz === candidate.startHz
+    && track.stopHz === candidate.stopHz
+    && track.peakHz === candidate.peakHz
+    && track.peakDbm === candidate.peakDbm
+    && track.bandwidthHz === candidate.bandwidthHz
+    && track.thresholdDbm === candidate.thresholdDbm
+    && track.noiseFloorDbm === candidate.noiseFloorDbm
+    && track.detectorId === candidate.detectorId
+    && track.prominenceDb === candidate.prominenceDb
+    && track.bayesianEvidence.priorSignalProbability === candidate.bayesianEvidence.priorSignalProbability
+    && track.bayesianEvidence.effectiveIndependentBins === candidate.bayesianEvidence.effectiveIndependentBins
+    && track.bayesianEvidence.posteriorPredictiveNullProbability === candidate.bayesianEvidence.posteriorPredictiveNullProbability
+    && track.bayesianEvidence.targetPosteriorPredictiveNullProbability === candidate.bayesianEvidence.targetPosteriorPredictiveNullProbability
+    && track.bayesianEvidence.targetSweepFalseAlarmProbability === candidate.bayesianEvidence.targetSweepFalseAlarmProbability
+    && track.bayesianEvidence.multiplicityAdjustedTests === candidate.bayesianEvidence.multiplicityAdjustedTests
+    && track.bayesianEvidence.testedRegionStartHz === candidate.bayesianEvidence.testedRegionStartHz
+    && track.bayesianEvidence.testedRegionStopHz === candidate.bayesianEvidence.testedRegionStopHz
+    && track.bayesianEvidence.qualification === candidate.bayesianEvidence.qualification;
+}
+
+function localDetectorCandidateIsTrackCompatible(
+  origin: NonNullable<DetectedSignal['classificationRegionObservation']>,
+  candidate: DetectedSignal,
+  sweep: Sweep,
+): boolean {
+  const overlapHz = Math.max(0, Math.min(origin.stopHz, candidate.stopHz)
+    - Math.max(origin.startHz, candidate.startHz));
+  // Mirror the live tracker's local-match eligibility scale exactly while
+  // anchoring it to the immutable first admission.
+  const binWidthHz = Math.abs(sweep.frequencyHz[1]! - sweep.frequencyHz[0]!);
+  const centerDistanceHz = Math.abs(origin.peakHz - candidate.peakHz);
+  const toleranceHz = Math.max(
+    binWidthHz * 3,
+    origin.stopHz - origin.startHz,
+    candidate.bandwidthHz,
+    1,
+  );
+  return overlapHz > 0 || centerDistanceHz <= toleranceHz;
+}
+
+function regularAssociationProvenanceIsValid(
+  detection: DetectedSignal,
+  externalSweeps?: readonly Sweep[],
+): boolean {
+  const observations = detection.regularComponentAssociationObservations;
+  const sweepIds = detection.associationRegionSweepIds;
+  const currentMembers = detection.associationMemberTrackIds;
+  if (!observations?.length
+    || observations.length > 64
+    || !sweepIds
+    || sweepIds.length !== observations.length
+    || !currentMembers
+    || currentMembers.length < 3
+    || !currentMembers.includes(detection.id)
+    || new Set(sweepIds).size !== sweepIds.length
+    || observations.some((observation, index) => observation.sourceSweep.id !== sweepIds[index])) return false;
+  const first = observations[0]!;
+  const latest = observations.at(-1)!;
+  if (detection.associationRegionStartHz !== first.observedRegionStartHz
+    || detection.associationRegionStopHz !== first.observedRegionStopHz
+    || !detection.sweepIds.includes(latest.sourceSweep.id)
+    || latest.sourceSweep.capturedAt !== detection.lastSeenAt) return false;
+  const externalById = externalSweeps === undefined
+    ? undefined
+    : new Map(externalSweeps.map((sweep) => [sweep.id, sweep] as const));
+  if (externalById && externalById.size !== externalSweeps!.length) return false;
+  let previousSequence = Number.NEGATIVE_INFINITY;
+  for (const observation of observations) {
+    const sourceSweep = observation.sourceSweep;
+    try {
+      validateSweep(sourceSweep);
+    } catch {
+      return false;
+    }
+    if (sourceSweep.sequence <= previousSequence
+      || !sweepAcquisitionGeometryMatches(first.sourceSweep, sourceSweep)) return false;
+    previousSequence = sourceSweep.sequence;
+    const external = externalById?.get(sourceSweep.id);
+    if (external && !detectorSweepInputsMatch(sourceSweep, external)) return false;
+    const memberIds = observation.members.map((member) => member.trackId);
+    if (memberIds.length !== currentMembers.length
+      || new Set(memberIds).size !== memberIds.length
+      || memberIds.some((memberId, index) => memberId !== currentMembers[index])) return false;
+    let candidates: readonly DetectedSignal[];
+    try {
+      candidates = analyzeBayesianSweep(sourceSweep, detection.detectorConfig);
+    } catch {
+      return false;
+    }
+    const matchedCandidateIndices = observation.members.map((member) => {
+      const matches = candidates.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) =>
+        member.detectorId === detection.detectorId
+        && member.detectorId === candidate.detectorId
+        && member.startHz === candidate.startHz
+        && member.stopHz === candidate.stopHz
+        && member.peakHz === candidate.peakHz
+        && bayesianDetectionEvidenceMatches(member.localBayesianEvidence, candidate.bayesianEvidence));
+      return matches.length === 1 ? matches[0]!.index : undefined;
+    });
+    if (matchedCandidateIndices.some((index) => index === undefined)
+      || new Set(matchedCandidateIndices).size !== matchedCandidateIndices.length) return false;
+    const expectedIndices = matchedCandidateIndices
+      .filter((index): index is number => index !== undefined)
+      .sort((left, right) => left - right);
+    const associations = regularSpectralComponentAssociations(candidates, sourceSweep).filter((association) =>
+      association.startHz === observation.observedRegionStartHz
+      && association.stopHz === observation.observedRegionStopHz
+      && association.candidateIndices.length === expectedIndices.length
+      && association.candidateIndices.every((candidateIndex, index) => candidateIndex === expectedIndices[index]));
+    if (associations.length !== 1) return false;
+  }
+  return true;
+}
+
+function sweepAcquisitionGeometryMatches(left: Sweep, right: Sweep): boolean {
+  return left.frequencyHz.length === right.frequencyHz.length
+    && sameFrequencyGrid(left.frequencyHz, right.frequencyHz)
+    && left.actualStartHz === right.actualStartHz
+    && left.actualStopHz === right.actualStopHz
+    && left.actualRbwHz === right.actualRbwHz
+    && left.actualAttenuationDb === right.actualAttenuationDb
+    && left.resolutionBandwidthQualification === right.resolutionBandwidthQualification
+    && left.attenuationQualification === right.attenuationQualification
+    && left.source === right.source
+    && sameSweptSpectrumConfiguration(left.requested, right.requested)
+    && sameMeasurementIdentity(left.identity, right.identity);
+}
+
+function detectorSweepInputsMatch(left: Sweep, right: Sweep): boolean {
+  return left.id === right.id
+    && left.sequence === right.sequence
+    && left.complete === right.complete
+    && left.capturedAt === right.capturedAt
+    && sweepAcquisitionGeometryMatches(left, right)
+    && left.powerDbm.length === right.powerDbm.length
+    && left.powerDbm.every((powerDbm, index) => powerDbm === right.powerDbm[index]);
 }
 
 function hasCompleteAssociationRegion(detection: DetectedSignal): detection is DetectedSignal & {
@@ -350,7 +762,9 @@ function hasCompleteAssociationRegion(detection: DetectedSignal): detection is D
       || opportunities.length < observations.length
       || opportunities.length > BAYESIAN_FREQUENCY_AGILE_ACTIVITY_MODEL.maximumOpportunityWindow
       || !evidence
-      || !members || members.length < 2) return false;
+      || !members || members.length < 2
+      || detection.regularComponentAssociationObservations !== undefined
+      || detection.multicomponentAssociationObservations !== undefined) return false;
     if (observations.length !== associationRegionSweepIds.length
       || observations.some((observation, index) => observation.sweepId !== associationRegionSweepIds[index]
         || !observation.sweepId
@@ -398,13 +812,254 @@ function hasCompleteAssociationRegion(detection: DetectedSignal): detection is D
     || detection.associationOpportunities !== undefined
     || detection.associationBayesianEvidence !== undefined
     || detection.associationGeometryId !== undefined
-    || detection.associationModelId !== 'simultaneous-regular-components-v1'
-    || detection.associationMissedSweeps! > detection.detectorConfig.releaseAfterMissedSweeps
+    || detection.associationMissedSweeps !== 0
   ) return false;
-  if (!members || members.length < 3 || new Set(members).size !== members.length || !members.includes(detection.id)) return false;
+  if (!members || new Set(members).size !== members.length || !members.includes(detection.id)) return false;
   const sortedMembers = [...members].sort();
-  return members.every((member, index) => member === sortedMembers[index])
-    && detection.associationId === `regular-lines:${members.join(',')}`;
+  if (!members.every((member, index) => member === sortedMembers[index])) return false;
+  if (detection.associationMode === 'regular-spectral-component-activity') {
+    return members.length >= 3
+      && detection.multicomponentAssociationObservations === undefined
+      && detection.associationModelId === 'simultaneous-regular-components-v1'
+      && detection.associationId === `regular-lines:${members.join(',')}`
+      && regularAssociationProvenanceIsValid(detection);
+  }
+  return detection.associationMode === 'multicomponent-swept-region-activity'
+    && detection.regularComponentAssociationObservations === undefined
+    && detection.associationModelId === MULTICOMPONENT_SWEPT_REGION_MODEL_ID
+    && /^multicomponent-swept-region-\d{4,}$/.test(detection.associationId!)
+    && multicomponentAssociationProvenanceIsValid(detection);
+}
+
+type MulticomponentAssociationObservation = NonNullable<
+  DetectedSignal['multicomponentAssociationObservations']
+>[number];
+type MulticomponentMemberObservation = MulticomponentAssociationObservation['members'][number];
+
+function multicomponentAssociationProvenanceIsValid(
+  detection: DetectedSignal,
+  sweeps?: readonly Sweep[],
+): boolean {
+  const observations = detection.multicomponentAssociationObservations;
+  const sweepIds = detection.associationRegionSweepIds;
+  const currentMembers = detection.associationMemberTrackIds;
+  const currentStartHz = detection.associationRegionStartHz;
+  const currentStopHz = detection.associationRegionStopHz;
+  if (!observations?.length || observations.length > 64
+    || !sweepIds || sweepIds.length !== observations.length
+    || !currentMembers || currentMembers.length < 4
+    || currentStartHz === undefined || currentStopHz === undefined
+    || observations.some((observation, index) => observation.sweepId !== sweepIds[index])
+    || new Set(sweepIds).size !== sweepIds.length) return false;
+  const latest = observations.at(-1)!;
+  if (currentStartHz !== latest.observedRegionStartHz
+    || currentStopHz !== latest.observedRegionStopHz
+    || !detection.sweepIds.includes(latest.sweepId)) return false;
+  const sweepById = sweeps === undefined ? undefined : new Map(sweeps.map((sweep) => [sweep.id, sweep]));
+  if (sweepById && sweepById.size !== sweeps!.length) return false;
+  let previousSequence = Number.NEGATIVE_INFINITY;
+  for (const observation of observations) {
+    if (!multicomponentObservationIsValid(observation, detection)) return false;
+    if (observation.sweepSequence <= previousSequence) return false;
+    previousSequence = observation.sweepSequence;
+    if (observation.geometryId !== latest.geometryId
+      || observation.sweepStartHz !== latest.sweepStartHz
+      || observation.sweepStopHz !== latest.sweepStopHz
+      || observation.rbwHz !== latest.rbwHz
+      || observation.binWidthHz !== latest.binWidthHz
+      || !multicomponentAssociationRegionsOverlap(
+        observation.observedRegionStartHz,
+        observation.observedRegionStopHz,
+        latest.observedRegionStartHz,
+        latest.observedRegionStopHz,
+        latest.rbwHz,
+        latest.binWidthHz,
+      )) return false;
+    if (sweepById) {
+      const sweep = sweepById.get(observation.sweepId);
+      if (!sweep || !multicomponentObservationMatchesSweep(observation, sweep, detection)) return false;
+    }
+  }
+  if (sweepById) {
+    const latestSweep = sweepById.get(latest.sweepId);
+    if (!latestSweep
+      || latestSweep.capturedAt !== detection.lastSeenAt
+      || latest.sweepSequence > Math.max(...[...sweepById.values()].map((sweep) => sweep.sequence))) return false;
+  }
+  const latestMemberIds = latest.members.map((member) => member.trackId);
+  return currentMembers.length === latestMemberIds.length
+    && currentMembers.every((member, index) => member === latestMemberIds[index]);
+}
+
+function multicomponentObservationIsValid(
+  observation: MulticomponentAssociationObservation,
+  detection: DetectedSignal,
+): boolean {
+  if (!observation.sweepId || !Number.isInteger(observation.sweepSequence) || observation.sweepSequence < 0
+    || !observation.geometryId
+    || !finitePositive(observation.rbwHz)
+    || !finitePositive(observation.binWidthHz)
+    || !finitePositive(observation.containmentToleranceHz)
+    || !Number.isFinite(observation.sweepStartHz)
+    || !Number.isFinite(observation.sweepStopHz)
+    || observation.sweepStopHz <= observation.sweepStartHz
+    || !Number.isFinite(observation.observedRegionStartHz)
+    || !Number.isFinite(observation.observedRegionStopHz)
+    || observation.observedRegionStopHz <= observation.observedRegionStartHz
+    || observation.observedRegionStartHz < observation.sweepStartHz
+    || observation.observedRegionStopHz > observation.sweepStopHz
+    || observation.members.length < 4) return false;
+  const expectedContainmentToleranceHz = Math.max(observation.binWidthHz * 1.1, observation.rbwHz * 1.1);
+  if (observation.containmentToleranceHz !== expectedContainmentToleranceHz) return false;
+  const memberIds = observation.members.map((member) => member.trackId);
+  const sortedMemberIds = [...memberIds].sort();
+  if (new Set(memberIds).size !== memberIds.length
+    || memberIds.some((memberId, index) => !memberId || memberId !== sortedMemberIds[index])) return false;
+  if (observation.members.some((member) => !multicomponentMemberIsValid(member, observation, detection))) return false;
+  const observedStartHz = Math.min(...observation.members.map((member) => member.startHz));
+  const observedStopHz = Math.max(...observation.members.map((member) => member.stopHz));
+  if (observation.observedRegionStartHz !== observedStartHz || observation.observedRegionStopHz !== observedStopHz) return false;
+  const recomputed = multicomponentSweptRegionAssociationsForGeometry(
+    observation.members.map((member) => ({
+      startHz: member.startHz,
+      stopHz: member.stopHz,
+      peakHz: member.peakHz,
+      bandwidthHz: member.stopHz - member.startHz,
+      detectorId: member.detectorId,
+      bayesianEvidence: member.localBayesianEvidence,
+      classificationRegionStartHz: Math.min(
+        member.startHz,
+        member.localBayesianEvidence.testedRegionStartHz,
+      ),
+      classificationRegionStopHz: Math.max(
+        member.stopHz,
+        member.localBayesianEvidence.testedRegionStopHz,
+      ),
+    })),
+    {
+      actualStartHz: observation.sweepStartHz,
+      actualStopHz: observation.sweepStopHz,
+      actualRbwHz: observation.rbwHz,
+      binWidthHz: observation.binWidthHz,
+    },
+  );
+  if (recomputed.length !== 1) return false;
+  const association = recomputed[0]!;
+  const recomputedAnchorTrackId = association.anchorCandidateIndex === undefined
+    ? undefined
+    : observation.members[association.anchorCandidateIndex]?.trackId;
+  return association.candidateIndices.length === observation.members.length
+    && association.startHz === observation.observedRegionStartHz
+    && association.stopHz === observation.observedRegionStopHz
+    && association.containmentToleranceHz === observation.containmentToleranceHz
+    && association.qualification === observation.qualification
+    && recomputedAnchorTrackId === observation.anchorTrackId;
+}
+
+function multicomponentMemberIsValid(
+  member: MulticomponentMemberObservation,
+  observation: MulticomponentAssociationObservation,
+  detection: DetectedSignal,
+): boolean {
+  const evidence = member.localBayesianEvidence;
+  const numericEvidenceKeys = [
+    'priorSignalProbability',
+    'posteriorSignalProbability',
+    'logBayesFactor',
+    'effectiveIndependentBins',
+    'effectiveReferenceCells',
+    'noiseShape',
+    'posteriorPredictiveNullProbability',
+    'targetPosteriorPredictiveNullProbability',
+    'targetSweepFalseAlarmProbability',
+    'multiplicityAdjustedTests',
+    'testedRegionStartHz',
+    'testedRegionStopHz',
+    'noiseSigmaDb',
+    'observedMeanShiftDb',
+    'looks',
+  ] as const;
+  return !!member.trackId
+    && member.detectorId === detection.detectorId
+    && member.detectorId === MULTICOMPONENT_LOCAL_DETECTOR_MODEL_ID
+    && Number.isFinite(member.startHz)
+    && Number.isFinite(member.stopHz)
+    && Number.isFinite(member.peakHz)
+    && member.stopHz >= member.startHz
+    && member.peakHz >= member.startHz
+    && member.peakHz <= member.stopHz
+    && member.startHz >= observation.sweepStartHz
+    && member.stopHz <= observation.sweepStopHz
+    && evidence.modelId === MULTICOMPONENT_LOCAL_DETECTOR_MODEL_ID
+    && evidence.posteriorScope === 'selected-local-region'
+    && evidence.looks === 1
+    && evidence.posteriorSignalProbability >= 0.99
+    && evidence.posteriorPredictiveNullProbability <= evidence.targetPosteriorPredictiveNullProbability
+    && evidence.testedRegionStopHz >= evidence.testedRegionStartHz
+    && evidence.testedRegionStartHz >= observation.sweepStartHz
+    && evidence.testedRegionStopHz <= observation.sweepStopHz
+    && member.peakHz >= evidence.testedRegionStartHz
+    && member.peakHz <= evidence.testedRegionStopHz
+    && numericEvidenceKeys.every((key) => Number.isFinite(evidence[key]));
+}
+
+function multicomponentObservationMatchesSweep(
+  observation: MulticomponentAssociationObservation,
+  sweep: Sweep,
+  detection: DetectedSignal,
+): boolean {
+  if (observation.sweepId !== sweep.id
+    || observation.sweepSequence !== sweep.sequence
+    || observation.geometryId !== multicomponentSweepGeometryId(sweep)
+    || observation.sweepStartHz !== sweep.actualStartHz
+    || observation.sweepStopHz !== sweep.actualStopHz
+    || observation.rbwHz !== sweep.actualRbwHz
+    || observation.binWidthHz !== multicomponentSweepBinWidthHz(sweep)
+    || observation.containmentToleranceHz
+      !== Math.max(multicomponentSweepBinWidthHz(sweep) * 1.1, sweep.actualRbwHz * 1.1)) return false;
+  let candidates: readonly DetectedSignal[];
+  try {
+    candidates = analyzeBayesianSweep(sweep, detection.detectorConfig);
+  } catch {
+    return false;
+  }
+  const matchedCandidateIndices = observation.members.map((member) => {
+    const matches = candidates.map((candidate, index) => ({ candidate, index })).filter(({ candidate }) =>
+      member.detectorId === detection.detectorId
+      && member.detectorId === candidate.detectorId
+      && member.startHz === candidate.startHz
+      && member.stopHz === candidate.stopHz
+      && member.peakHz === candidate.peakHz
+      && bayesianDetectionEvidenceMatches(member.localBayesianEvidence, candidate.bayesianEvidence));
+    return matches.length === 1 ? matches[0]!.index : undefined;
+  });
+  if (matchedCandidateIndices.some((index) => index === undefined)
+    || new Set(matchedCandidateIndices).size !== matchedCandidateIndices.length) return false;
+  const memberByCandidateIndex = new Map(matchedCandidateIndices.map((candidateIndex, index) => [
+    candidateIndex!,
+    observation.members[index]!,
+  ] as const));
+  const expectedIndices = matchedCandidateIndices
+    .filter((index): index is number => index !== undefined)
+    .sort((left, right) => left - right);
+  const associations = multicomponentSweptRegionAssociations(candidates, sweep).filter((association) => {
+    const candidateIndices = [...association.candidateIndices].sort((left, right) => left - right);
+    const anchorTrackId = association.anchorCandidateIndex === undefined
+      ? undefined
+      : memberByCandidateIndex.get(association.anchorCandidateIndex)?.trackId;
+    return association.startHz === observation.observedRegionStartHz
+      && association.stopHz === observation.observedRegionStopHz
+      && association.containmentToleranceHz === observation.containmentToleranceHz
+      && association.qualification === observation.qualification
+      && anchorTrackId === observation.anchorTrackId
+      && candidateIndices.length === expectedIndices.length
+      && candidateIndices.every((candidateIndex, index) => candidateIndex === expectedIndices[index]);
+  });
+  return associations.length === 1;
+}
+
+function finitePositive(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
 }
 
 function activityEvidenceMatches(
@@ -504,10 +1159,25 @@ function zeroSpanProvenanceMatches(detection: DetectedSignal, referenceSweep: Sw
     && sameMeasurementIdentity(capture.identity, referenceSweep.identity);
 }
 
+function zeroSpanWindowMatches(
+  sweeps: readonly Sweep[],
+  boundSweepIds: readonly string[] | undefined,
+  referenceSweep: Sweep,
+): boolean {
+  // Historical offline fixtures used legacy device identities before this
+  // binding existed. Live instrument-session evidence must always carry the
+  // exact eight-look classification window captured with zero span.
+  if (boundSweepIds === undefined) return !isInstrumentMeasurementIdentity(referenceSweep.identity);
+  return boundSweepIds.length === 8
+    && sweeps.length === 8
+    && new Set(boundSweepIds).size === boundSweepIds.length
+    && boundSweepIds.every((sweepId, index) => sweepId === sweeps[index]!.id);
+}
+
 function supportedZeroSpanGeometry(capture: ZeroSpanCapture): boolean {
   const durationSeconds = capture.samplePeriodSeconds * Math.max(1, capture.powerDbm.length - 1);
   const requestedGeometryMatches = capture.powerDbm.length === BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points
-    && capture.requested.points === BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points
+    && capture.requested.sampleCount === BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.points
     && Math.abs(capture.requested.sweepTimeSeconds - BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds) <= 1e-9;
   if (!requestedGeometryMatches) return false;
   // Host wall time includes command/transport overhead and is not an honest
@@ -590,6 +1260,13 @@ function localPeaks(values: readonly number[], threshold: number): number[] {
 }
 
 function validateSweep(sweep: Sweep): void {
+  if (!Number.isSafeInteger(sweep.sequence) || sweep.sequence <= 0) {
+    throw new Error('Observable classification requires a positive safe-integer sweep sequence');
+  }
+  if (!instrumentTimestampSchema.safeParse(sweep.capturedAt).success
+    || !Number.isFinite(Date.parse(sweep.capturedAt))) {
+    throw new Error('Observable classification requires a canonical finite sweep timestamp');
+  }
   if (!sweep.complete || sweep.frequencyHz.length < 3 || sweep.frequencyHz.length !== sweep.powerDbm.length) throw new Error('Observable classification requires a complete aligned scalar sweep');
   if (sweep.frequencyHz.some((value) => !Number.isFinite(value)) || sweep.powerDbm.some((value) => !Number.isFinite(value))) throw new Error('Observable classification rejects non-finite sweep evidence');
   if (!Number.isFinite(sweep.actualRbwHz) || sweep.actualRbwHz <= 0) throw new Error('Observable classification requires a positive analysis resolution scale');

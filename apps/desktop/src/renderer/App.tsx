@@ -18,6 +18,7 @@ import {
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
+  projectDetectedPowerTuneHz,
   signalDetectionConfigSchema,
   spectrumDisplayConfigurationSchema,
   traceBankConfigurationSchema,
@@ -125,9 +126,13 @@ import {
   stageDetectedPowerConfigurationPatch,
   sweptSpectrumConfigurationFor,
 } from './instrument-configuration.js';
-import { agentDetectionResults } from './agent-detection-results.js';
+import { agentClassificationResults, agentDetectionResults } from './agent-detection-results.js';
 import { useAtomAgent } from './useAtomAgent.js';
 import { BoundedRevisionCache, type RevisionCacheLease } from './bounded-revision-cache.js';
+import {
+  instrumentCandidateMatchesPreference,
+  instrumentPreferenceSelectionForCandidate,
+} from './instrument-preference.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
@@ -246,6 +251,7 @@ export function App() {
   const historyRef = useRef<readonly Sweep[]>([]);
   const detectionsRef = useRef<readonly DetectedSignal[]>([]);
   const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
+  const zeroCaptureSpectrumSweepIdsRef = useRef<readonly string[] | undefined>(undefined);
   const instrumentRef = useRef<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE);
   const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const analyzerRevision = useRef(0);
@@ -279,7 +285,7 @@ export function App() {
   // compound operation, and the tap itself, closes touch admission.
   const touchBusy = connectionBusy || transportBusy || instrumentTransactionActive || remoteGestureActive
     || acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring';
-  const simulated = session !== undefined && session.provenance.sourceKind !== 'serial-port';
+  const simulated = session !== undefined && session.provenance.execution !== 'physical';
   const spectrumCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
   const detectedPowerCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
   const generatorCapability = session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
@@ -319,7 +325,9 @@ export function App() {
   useEffect(() => saveStored('waterfall', waterfallConfiguration), [waterfallConfiguration]);
   useEffect(() => saveStored('channel-measurement', channelConfiguration), [channelConfiguration]);
   useEffect(() => {
-    if (!selectedClassificationId || !detections.some((item) => item.id === selectedClassificationId)) setSelectedClassificationId(detections[0]?.id);
+    if (!selectedClassificationId || !detections.some((item) => item.id === selectedClassificationId)) {
+      selectClassificationCandidate(detections[0]?.id);
+    }
   }, [detections, selectedClassificationId]);
   useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
   useEffect(() => {
@@ -734,7 +742,7 @@ export function App() {
     const candidate = candidates.find((value) => instrumentCandidateUiKey(value) === selectedCandidateId);
     if (!candidate) { setError('Select an instrument source before setting the startup default'); return; }
     try {
-      const preference = await writeInstrumentPreference({ driverId: candidate.driverId, candidateKind: candidate.sourceKind });
+      const preference = await writeInstrumentPreference(instrumentPreferenceSelectionForCandidate(candidate));
       acceptInstrumentState({ ...instrumentRef.current, preference });
       setNotice(`${candidate.displayName} will be used at the next startup`);
     } catch (value) { setError(`Startup preference failed: ${errorMessage(value)}`); }
@@ -933,8 +941,27 @@ export function App() {
     zeroCaptureConfigurationRevision.current = undefined;
     retainEvidenceConfigurationRevisions();
     zeroCaptureRef.current = undefined;
+    zeroCaptureSpectrumSweepIdsRef.current = undefined;
     setZeroCapture(undefined);
     setEnvelope(undefined);
+  }
+
+  function selectClassificationCandidate(detectionId: string | undefined): number | undefined {
+    const changed = detectionId !== selectedClassificationId;
+    setSelectedClassificationId(detectionId);
+    if (changed) clearClassificationCapture();
+    if (!detectionId) return undefined;
+    const detection = detectionsRef.current.find((candidate) => candidate.id === detectionId)
+      ?? detections.find((candidate) => candidate.id === detectionId);
+    const capability = instrumentRef.current.session?.capabilities.acquisitions
+      .find((candidate) => candidate.kind === 'detected-power-timeseries');
+    if (!detection || capability?.kind !== 'detected-power-timeseries') return undefined;
+    const frequencyHz = projectDetectedPowerTuneHz(detection.peakHz, capability.centerFrequencyHz);
+    setZeroConfig((current) => reconcileDetectedPowerConfiguration(
+      capability,
+      zeroSpanConfigSchema.parse({ ...current, frequencyHz }),
+    ));
+    return frequencyHz;
   }
 
   function synchronizeContinuousAnalyzer(): Promise<void> {
@@ -1032,11 +1059,29 @@ export function App() {
     const tracked = tracker.current.update(next, candidates);
     detectionsRef.current = tracked;
     setDetections(tracked);
-    const currentSignals = classificationRepresentatives(
+    let currentSignals = classificationRepresentatives(
       tracked.filter((item) => item.state === 'active'),
       zeroCaptureRef.current?.targetDetectionId,
     );
-    const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, { sweeps: nextHistory, zeroSpan: zeroCaptureRef.current })));
+    const cachedCapture = zeroCaptureRef.current;
+    const cachedSweepIds = zeroCaptureSpectrumSweepIdsRef.current;
+    if (cachedCapture) {
+      const target = currentSignals.find((item) => item.id === cachedCapture.targetDetectionId);
+      const currentSweepIds = target ? classificationWindowSweepIds(target, nextHistory) : [];
+      if (!cachedSweepIds
+        || currentSweepIds.length !== cachedSweepIds.length
+        || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
+        clearClassificationCapture();
+        currentSignals = classificationRepresentatives(tracked.filter((item) => item.state === 'active'));
+      }
+    }
+    const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, {
+      sweeps: nextHistory,
+      zeroSpan: zeroCaptureRef.current,
+      ...(zeroCaptureSpectrumSweepIdsRef.current
+        ? { zeroSpanSpectrumSweepIds: zeroCaptureSpectrumSweepIdsRef.current }
+        : {}),
+    })));
     if (sequence === analysisSequence.current && stillCurrent()) setClassifications(results);
     return true;
   }
@@ -1167,7 +1212,18 @@ export function App() {
           detectionsRef.current.filter((item) => item.state === 'active'),
           capture.targetDetectionId,
         );
-        const results = await Promise.all(active.map((item) => classifier.current.classify(item, { sweeps: historyRef.current, zeroSpan: capture })));
+        const target = active.find((item) => item.id === capture.targetDetectionId);
+        const capturedSweepIds = target ? classificationWindowSweepIds(target, historyRef.current) : [];
+        zeroCaptureSpectrumSweepIdsRef.current = capturedSweepIds.length === 8
+          ? capturedSweepIds
+          : undefined;
+        const results = await Promise.all(active.map((item) => classifier.current.classify(item, {
+          sweeps: historyRef.current,
+          zeroSpan: capture,
+          ...(zeroCaptureSpectrumSweepIdsRef.current
+            ? { zeroSpanSpectrumSweepIds: zeroCaptureSpectrumSweepIdsRef.current }
+            : {}),
+        })));
         if (sequence === analysisSequence.current) setClassifications(results);
         setAcquisition('complete');
         return capture;
@@ -1716,12 +1772,16 @@ export function App() {
       case 'get_instrument_state': return { ...instrument, generatorOutput, scalarConfiguration: agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
       case 'get_detection_results': return agentDetectionResults(detections);
-      case 'get_classification_results': return { spectral: classifications, zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null };
+      case 'get_classification_results': return {
+        contract: 'classification-results-with-association-lineage-v1',
+        spectral: agentClassificationResults(detections, classifications),
+        zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null,
+      };
       case 'read_device_diagnostics': return refreshDiagnostics();
       case 'list_connection_candidates': {
         const discovery = await runInstrumentTransaction('list-connection-candidates', () => discoverInstruments());
         acceptDiscovery(discovery.candidates, discovery.failures);
-        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: candidate.sourceKind !== 'serial-port', selected: instrumentCandidateUiKey(candidate) === selectedCandidateId }));
+        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: instrumentCandidateIsSimulated(candidate), selected: instrumentCandidateUiKey(candidate) === selectedCandidateId }));
         agentConnectionCandidates.current = new Map(issued.map((candidate, index) => [candidate.candidateId, discovery.candidates[index]!]));
         return { candidates: issued, failures: discovery.failures };
       }
@@ -1884,8 +1944,8 @@ export function App() {
         const detectionId = (args as { detectionId: string }).detectionId;
         if (!detections.some((item) => item.id === detectionId)) throw new Error(`Detection ${detectionId} is no longer available`);
         applyWorkspace('classification');
-        setSelectedClassificationId(detectionId);
-        return { detectionId, selected: true, evidence: 'ui-only' };
+        const stagedDetectedPowerCenterHz = selectClassificationCandidate(detectionId);
+        return { detectionId, selected: true, stagedDetectedPowerCenterHz: stagedDetectedPowerCenterHz ?? null, evidence: 'ui-staging' };
       }
       case 'configure_zero_span': {
         const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
@@ -1955,7 +2015,7 @@ export function App() {
       {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
       {workspace === 'classification' && <ClassificationWorkspace
         sweep={sweep} detections={detections} classifications={classifications}
-        selectedId={selectedClassificationId} onSelectedId={setSelectedClassificationId}
+        selectedId={selectedClassificationId} onSelectedId={selectClassificationCandidate}
         zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope}
         capability={detectedPowerCapability} busy={!connected || busy}
         onZeroConfig={updateZeroSpanFromUi} onAcquireZero={() => void acquireZeroSpanFromUi()}
@@ -2034,8 +2094,19 @@ export function parseStoredDetection(value: unknown): SignalDetectionConfig {
 function preferredCandidate(candidates: readonly InstrumentCandidate[], state: AtomizerInstrumentState): InstrumentCandidate | undefined {
   const preference = state.preference?.preference;
   if (!preference) return undefined;
-  return candidates.find((candidate) => candidate.driverId === preference.driverId
-    && (preference.candidateKind === undefined || candidate.sourceKind === preference.candidateKind));
+  return candidates.find((candidate) => instrumentCandidateMatchesPreference(candidate, state.preference));
+}
+
+function instrumentCandidateIsSimulated(candidate: InstrumentCandidate): boolean {
+  switch (candidate.sourceKind) {
+    case 'serial-port': return false;
+    case 'tinysa-firmware-twin':
+    case 'signal-lab': return true;
+    default: {
+      const unhandledCandidate: never = candidate;
+      throw new Error(`Instrument candidate simulation status is undefined for ${JSON.stringify(unhandledCandidate)}`);
+    }
+  }
 }
 
 function generatorOutputState(session: InstrumentSessionSnapshot | undefined): GeneratorOutputState {
@@ -2099,6 +2170,23 @@ export function coherentSweepCount(history: readonly Sweep[], depth: number): nu
   if (!reference) return 0;
   return history.filter((candidate) => candidate.frequencyHz.length === reference.frequencyHz.length
     && candidate.frequencyHz.every((frequency, index) => frequency === reference.frequencyHz[index])).slice(0, depth).length;
+}
+
+function classificationWindowSweepIds(
+  detection: DetectedSignal,
+  history: readonly Sweep[],
+): readonly string[] {
+  const sourceIds = detection.associationMode !== undefined
+      && detection.associationMode !== 'frequency-local'
+      && detection.associationRegionSweepIds?.length
+    ? detection.associationRegionSweepIds
+    : detection.sweepIds;
+  const admitted = new Set(sourceIds);
+  return history
+    .filter((candidate) => admitted.has(candidate.id))
+    .sort((left, right) => right.sequence - left.sequence)
+    .slice(0, 8)
+    .map((candidate) => candidate.id);
 }
 
 function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {

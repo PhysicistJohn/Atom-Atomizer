@@ -1,18 +1,49 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { dirname, posix, resolve } from 'node:path';
 import {
   CLASSIFICATION_CORPUS_VERSION,
   canonicalClassificationScenarios,
   synthesizeCanonicalObservation,
   type CanonicalClassificationScenario,
 } from '../../TinySA_SignalLab/src/classification-corpus.js';
-import { extractObservableFeatures } from '../packages/analysis/src/observable-features.js';
-import { observableRepresentativeIsEligibleForModelFit } from '../packages/analysis/src/observable-hypothesis-domain.js';
+import {
+  CANONIZED_REPLAY_DETECTED_POWER_SYNTHESIS_FILTER_WIDTH_HZ,
+} from '../../TinySA_SignalLab/src/waveforms.js';
+import {
+  extractObservableFeatures,
+  observableAssociationEvidenceIsCurrentlyQualified,
+} from '../packages/analysis/src/observable-features.js';
+import { observableRepresentativeIsInClassDomain } from '../packages/analysis/src/observable-hypothesis-domain.js';
+import {
+  OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE,
+  OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY,
+  OBSERVABLE_TRAINING_SWEEP_POINTS,
+  SIGNAL_LAB_PRODUCTION_DETECTED_POWER_SYNTHESIS_FILTER_WIDTH_HZ,
+  SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY,
+  SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA,
+  SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES,
+  observableTrainingActualRbwHz,
+  observableTrainingDetectedPowerSynthesisFilterWidthHz,
+  observableTrainingInterleavedCaptureLookIndex,
+  observableTrainingSourceLookIndex,
+  occupiedBandwidthRbwDivisorGeometry,
+  type ObservableTrainingAcquisitionRegime,
+} from '../packages/analysis/src/observable-training-acquisition-geometry.js';
 import { studentTModelTailProbability } from '../packages/analysis/src/bayesian-predictive.js';
 import { classificationRepresentatives, SignalDetector, SignalTracker } from '../packages/analysis/src/index.js';
 import { OBSERVABLE_LEAF_CLASSES, type ObservableClassifierModelAsset, type ObservableLeafClass } from '../packages/analysis/src/observable-classifier-model.js';
-import type { DetectedSignal, DeviceIdentity, SignalDetectionConfig, Sweep, ZeroSpanCapture } from '../packages/contracts/src/index.js';
+import {
+  detectedPowerTimeseriesConfigurationSchema,
+  projectDetectedPowerTuneHz,
+  SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+  type DetectedSignal,
+  type DeviceIdentity,
+  type SignalDetectionConfig,
+  type Sweep,
+  type ZeroSpanCapture,
+} from '../packages/contracts/src/index.js';
 
 const OUTPUT = resolve('packages/analysis/src/models/bayesian-observable-v5.generated.ts');
 const MANIFEST_OUTPUT = resolve('packages/analysis/src/models/bayesian-observable-v5.manifest.generated.ts');
@@ -21,13 +52,52 @@ if (CLI_ARGUMENTS.some((argument) => argument !== '--check') || CLI_ARGUMENTS.le
   throw new Error('Usage: train-observable-classifier [--check]');
 }
 const CHECK_ONLY = CLI_ARGUMENTS[0] === '--check';
-const SOURCE_COMMIT = '03197cb5b4a03b85ef5efe6525f4f28ceedcaef3';
-const CORPUS_SHA256 = 'd813b3268eee7240a86b2de725ec78080dc0f3ce829fe0c493bf582b62f8529e';
+const SOURCE_COMMIT = 'c036e063bce6c6cc1515750a4d5614f1c2ab5df8';
+const SIGNAL_LAB_REPOSITORY_ROOT = resolve('../TinySA_SignalLab');
+const CHECKED_OUT_SOURCE_COMMIT = gitOutput(['rev-parse', 'HEAD']).toString('utf8').trim();
+if (CHECKED_OUT_SOURCE_COMMIT !== SOURCE_COMMIT) {
+  throw new Error(`SignalLab checked-out commit ${CHECKED_OUT_SOURCE_COMMIT} does not match pinned ${SOURCE_COMMIT}`);
+}
+assertSignalLabRepositoryIsClean();
+if (CANONIZED_REPLAY_DETECTED_POWER_SYNTHESIS_FILTER_WIDTH_HZ
+  !== SIGNAL_LAB_PRODUCTION_DETECTED_POWER_SYNTHESIS_FILTER_WIDTH_HZ) {
+  throw new Error('Atomizer production detected-power synthesis filter pin does not match SignalLab');
+}
+const CORPUS_SOURCE_ARTIFACT_PATHS = [
+  'package-lock.json',
+  'package.json',
+  'src/canonical-timing.ts',
+  'src/catalog.ts',
+  'src/classification-corpus.ts',
+  'src/contracts.ts',
+  'src/source-provenance.ts',
+  'src/waveforms.ts',
+] as const;
+const EXPECTED_CORPUS_TYPESCRIPT_IMPORT_CLOSURE = [
+  'src/canonical-timing.ts',
+  'src/catalog.ts',
+  'src/classification-corpus.ts',
+  'src/contracts.ts',
+  'src/source-provenance.ts',
+  'src/waveforms.ts',
+] as const;
+assertCanonicalCorpusSourceArtifactPaths(CORPUS_SOURCE_ARTIFACT_PATHS);
+assertCorpusSourceImportClosure(
+  'src/classification-corpus.ts',
+  EXPECTED_CORPUS_TYPESCRIPT_IMPORT_CLOSURE,
+  CORPUS_SOURCE_ARTIFACT_PATHS,
+);
+const CORPUS_SOURCE_MANIFEST = {
+  schemaVersion: 1 as const,
+  hashAlgorithm: 'sha256' as const,
+  artifacts: CORPUS_SOURCE_ARTIFACT_PATHS.map(corpusSourceArtifact),
+};
+const CORPUS_SHA256 = createHash('sha256').update(JSON.stringify(CORPUS_SOURCE_MANIFEST)).digest('hex');
 const STRICT_UNKNOWN_HOLDOUT_SCENARIO_IDS = [
-  'unknown-chirp',
   'unknown-impulsive',
 ] as const;
 const OBSERVABLE_AMBIGUITY_VALIDATION_ONLY_SCENARIO_IDS = [
+  'unknown-chirp',
   'unknown-regular-cw-comb-4',
   'unknown-regular-cw-comb-5',
   'unknown-irregular-cw-multitone-100-210-370k',
@@ -63,12 +133,34 @@ const SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS = [
 ] as const;
 const SNR_DB = [6, 10, 16, 24, 32] as const;
 const HIGH_SNR_MINIMUM_DB = 24;
-// Fit across the complete pinned RBW nuisance support. Using only two interior
-// points allowed a component to be estimated from one accidental acquisition
-// cell even when the production pipeline was sensitive at other RBWs.
+// Fit across the complete pinned RBW nuisance support, then add the owned
+// SignalLab production grid and session-sequence schedules as named regimes.
+// The production grid cannot be represented by one honest global divisor:
+// occupiedBandwidth / (recommendedSpan / 449) varies by scenario.
 const RBW_DIVISORS = [12, 20, 35, 55, 80, 120] as const;
+const DIVISOR_ACQUISITION_REGIMES: readonly ObservableTrainingAcquisitionRegime[] = RBW_DIVISORS.map(
+  (rbwDivisor) => {
+    const geometry = occupiedBandwidthRbwDivisorGeometry(rbwDivisor);
+    return Object.freeze({
+      id: `${geometry.id}/${OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE.id}`,
+      geometry,
+      temporalSchedule: OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE,
+    });
+  },
+);
+const SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIMES: readonly ObservableTrainingAcquisitionRegime[] =
+  SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES.map((temporalSchedule) => Object.freeze({
+    id: `${SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY.id}/${temporalSchedule.id}`,
+    geometry: SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY,
+    temporalSchedule,
+  }));
+const FITTING_ACQUISITION_REGIMES = Object.freeze([
+  ...DIVISOR_ACQUISITION_REGIMES,
+  ...SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIMES,
+]);
 const SEEDS = [407, 1_407, 2_407, 3_407, 4_407, 5_407] as const;
 const TAIL_CALIBRATION_RBW_DIVISORS = RBW_DIVISORS;
+const TAIL_CALIBRATION_ACQUISITION_REGIMES = FITTING_ACQUISITION_REGIMES;
 const TAIL_CALIBRATION_SEEDS = [6_407, 6_419, 6_421, 6_449, 6_451, 6_469, 6_473, 6_481] as const;
 const SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD = 0.025;
 // The empirical support rank is (lower-or-equal count + 1) / (n + 1).
@@ -79,6 +171,7 @@ const MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS = Math.floor(1 / SYNTHETIC_SUPPORT_R
 const MINIMUM_DISTINCT_FITTING_ATTEMPTS = SEEDS.length;
 const MINIMUM_FITTING_SNR_LEVELS = 2;
 const MINIMUM_FITTING_RBW_DIVISORS = 2;
+const MINIMUM_PRODUCTION_ACQUISITION_REGIME_HIGH_SNR_DISTINCT_SEEDS = 1;
 // BLE advertising is the sole sparse asynchronous exception: the swept scan
 // and packet-event phase can miss one another for an entire finite horizon.
 // Its gate still requires at least half of the independent event-phase seeds
@@ -101,18 +194,19 @@ const PRODUCTION_DETECTION_CONFIG: SignalDetectionConfig = {
 };
 const SELECTION_POLICY = 'online-first-ready-all-representatives-v3' as const;
 const REPRESENTATIVE_WEIGHTING_POLICY = 'equal-weight-per-first-ready-production-representative-v2' as const;
-const REPRESENTATIVE_ELIGIBILITY_POLICY = 'runtime-domain-qualified-known-representatives-v3' as const;
+const REPRESENTATIVE_ELIGIBILITY_POLICY = 'observation-only-hypothesis-domain-v5' as const;
 // A detector/tracker acquisition attempt is the reference-score unit.
 // Multiple first-ready representatives from one attempt share the same
 // synthesized noise/event phase, so flattening them would overstate the
 // reference sample size. For each class and evidence view, retain exactly one
-// conservative score: the minimum known-class support among the attempt's
-// fit-eligible representatives. A member's support rank is pointwise no lower
-// than the rank of its attempt minimum. The fixed stratified nuisance grid is
-// not an exchangeable operational sample, so this dominance fact does not
-// imply conformal coverage.
-const TAIL_CALIBRATION_SCORE_UNIT = 'one-score-per-fit-eligible-acquisition-attempt-v1' as const;
-const TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY = 'minimum-support-across-fit-eligible-first-ready-representatives-v1' as const;
+// conservative score: the minimum known-class support among every observation-domain-eligible
+// representative at every ready opportunity in the attempt. Any online
+// member's support rank is therefore pointwise no lower than its attempt
+// minimum's rank. The fixed stratified nuisance grid is not exchangeable
+// operational data, so this dominance fact does not imply conformal coverage.
+const TAIL_CALIBRATION_SCORE_UNIT = 'one-score-per-observation-domain-eligible-acquisition-attempt-v2' as const;
+const TAIL_CALIBRATION_REPRESENTATIVE_SELECTION_POLICY = 'online-all-ready-representatives-v1' as const;
+const TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY = 'minimum-support-across-observation-domain-eligible-online-representatives-v3' as const;
 const TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY = 'single-representative-rank-dominates-attempt-min-rank-v1' as const;
 const TAIL_CALIBRATION_STATISTICAL_INTERPRETATION = 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1' as const;
 
@@ -121,42 +215,45 @@ assertUniqueNumbers('tail-calibration seeds', TAIL_CALIBRATION_SEEDS);
 assertDisjointNumbers('fitting seeds', SEEDS, 'tail-calibration seeds', TAIL_CALIBRATION_SEEDS);
 assertUniqueNumbers('fitting RBW divisors', RBW_DIVISORS);
 assertUniqueNumbers('tail-calibration RBW divisors', TAIL_CALIBRATION_RBW_DIVISORS);
+assertUniqueStrings('fitting acquisition regimes', FITTING_ACQUISITION_REGIMES.map((regime) => regime.id));
+assertUniqueStrings('tail-calibration acquisition regimes', TAIL_CALIBRATION_ACQUISITION_REGIMES.map((regime) => regime.id));
 // RBW grids intentionally overlap so calibration covers the entire pinned
 // production nuisance support. Independent seeds, not disjoint RBW values,
 // isolate calibration from component fitting. Both grids remain serialized in
 // trainingMatrix so the independent validator can enforce its own held-out
-// RBW partition.
+// RBW and temporal-source-index partitions.
 
 interface RepresentativeSamplingAudit {
   attemptCount: number;
-  attemptsWithAnyFirstReadyRepresentative: number;
+  attemptsWithAnyRepresentative: number;
   attemptsWithFitEligibleRepresentative: number;
-  firstReadyRepresentativeCount: number;
+  representativeCount: number;
   fitEligibleRepresentativeCount: number;
   fitIneligibleRepresentativeCount: number;
   multiRepresentativeAttemptCount: number;
-  maximumFirstReadyRepresentativesPerAttempt: number;
+  maximumRepresentativesPerAttempt: number;
   observationHorizonCounts: Record<string, number>;
-  firstReadyOpportunityCounts: Record<string, number>;
+  observationOpportunityCounts: Record<string, number>;
 }
 
-interface FirstReadyFeatureSample {
+interface FeatureSample {
   values: Readonly<Record<string, number>>;
   representativeKey: string;
-  firstReadyOpportunity: number;
+  observationOpportunity: number;
   associationMode: NonNullable<DetectedSignal['associationMode']>;
   fitEligible: boolean;
 }
 
 interface FeatureSamplingAttempt {
   observationHorizon: number;
-  representatives: readonly FirstReadyFeatureSample[];
+  representatives: readonly FeatureSample[];
 }
 
 interface ScenarioSamplingAttempt {
   scenarioId: string;
   snrDb: number;
-  rbwDivisor: number;
+  acquisitionRegimeId: string;
+  rbwDivisor: number | null;
   seed: number;
   representativeCount: number;
   fitEligibleRepresentativeCount: number;
@@ -169,8 +266,6 @@ const identity: DeviceIdentity = {
   simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double',
 };
 
-const checkedOutCorpusSha256 = createHash('sha256').update(readFileSync(resolve('../TinySA_SignalLab/src/classification-corpus.ts'))).digest('hex');
-if (checkedOutCorpusSha256 !== CORPUS_SHA256) throw new Error(`SignalLab corpus source hash ${checkedOutCorpusSha256} does not match pinned ${CORPUS_SHA256}`);
 const scenarioById = new Map(canonicalClassificationScenarios.map((scenario) => [scenario.id, scenario]));
 if (new Set(SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS).size !== SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS.length) {
   throw new Error('Component-fit exclusion policy contains duplicate scenario IDs');
@@ -212,27 +307,34 @@ for (const scenario of canonicalClassificationScenarios) {
   if (SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS.includes(scenario.id as typeof SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS[number])) continue;
   const samples: Array<Readonly<Record<string, number>>> = [];
   for (const snrDb of SNR_DB) {
-    for (const rbwDivisor of RBW_DIVISORS) {
+    for (const acquisitionRegime of FITTING_ACQUISITION_REGIMES) {
       for (const seed of SEEDS) {
         try {
-          const attempt = featureSamples(scenario, snrDb, rbwDivisor, seed);
+          const attempt = featureSamples(scenario, snrDb, acquisitionRegime, seed, 'first-ready');
           recordRepresentativeSamplingAttempt(fittingSampling, attempt);
-          fittingAttempts.push(scenarioSamplingAttempt(scenario.id, snrDb, rbwDivisor, seed, attempt));
+          fittingAttempts.push(scenarioSamplingAttempt(scenario.id, snrDb, acquisitionRegime, seed, attempt));
           const attemptSamples = attempt.representatives.filter((sample) => sample.fitEligible).map((sample) => sample.values);
           if (attemptSamples.length > 0) samples.push(...attemptSamples);
-          else if (attempt.representatives.length === 0) detectorConditionedFitMisses.push(`${scenario.id}:snr=${snrDb}:rbw=${rbwDivisor}:seed=${seed}`);
-          else fitEligibilityExcludedFitAttempts.push(`${scenario.id}:snr=${snrDb}:rbw=${rbwDivisor}:seed=${seed}`);
+          else if (attempt.representatives.length === 0) detectorConditionedFitMisses.push(`${scenario.id}:snr=${snrDb}:regime=${acquisitionRegime.id}:seed=${seed}`);
+          else fitEligibilityExcludedFitAttempts.push(`${scenario.id}:snr=${snrDb}:regime=${acquisitionRegime.id}:seed=${seed}`);
         } catch (error) {
-          throw new Error(`Feature extraction failed for ${scenario.id} at SNR ${snrDb} dB, RBW divisor ${rbwDivisor}, seed ${seed}`, { cause: error });
+          throw new Error(`Feature extraction failed for ${scenario.id} at SNR ${snrDb} dB, acquisition regime ${acquisitionRegime.id}, seed ${seed}`, { cause: error });
         }
       }
     }
   }
   if (samples.length < 3) throw new Error(`${scenario.id} has only ${samples.length} detector-conditioned first-ready training observations`);
   const scenarioAttempts = fittingAttempts.filter((attempt) => attempt.scenarioId === scenario.id);
-  assertCompleteAttemptMatrix('fitting', scenario.id, scenarioAttempts, SNR_DB, RBW_DIVISORS, SEEDS);
+  assertCompleteAttemptMatrix('fitting', scenario.id, scenarioAttempts, SNR_DB, FITTING_ACQUISITION_REGIMES, SEEDS);
   assertFittingCoverage(scenario, scenarioAttempts);
   assertHighSnrSeedCoverage('fitting', scenario, scenarioAttempts, SEEDS);
+  assertHighSnrAcquisitionRegimeSeedCoverage(
+    'fitting',
+    scenario,
+    scenarioAttempts,
+    SEEDS,
+    SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIMES,
+  );
   samplesByScenario.set(scenario.id, samples);
 }
 
@@ -303,11 +405,11 @@ const classModels: ObservableClassifierModelAsset['classModels'] = fittedClassMo
   };
   for (const scenario of scenarios) {
     let scenarioCalibrationAttemptCount = 0;
-    for (const snrDb of SNR_DB) for (const rbwDivisor of TAIL_CALIBRATION_RBW_DIVISORS) for (const seed of TAIL_CALIBRATION_SEEDS) {
+    for (const snrDb of SNR_DB) for (const acquisitionRegime of TAIL_CALIBRATION_ACQUISITION_REGIMES) for (const seed of TAIL_CALIBRATION_SEEDS) {
       try {
-        const attempt = featureSamples(scenario, snrDb, rbwDivisor, seed);
+        const attempt = featureSamples(scenario, snrDb, acquisitionRegime, seed, 'all-ready');
         recordRepresentativeSamplingAttempt(calibrationSampling, attempt);
-        calibrationAttempts.push(scenarioSamplingAttempt(scenario.id, snrDb, rbwDivisor, seed, attempt));
+        calibrationAttempts.push(scenarioSamplingAttempt(scenario.id, snrDb, acquisitionRegime, seed, attempt));
         const attemptSamples = attempt.representatives.filter((sample) => sample.fitEligible).map((sample) => sample.values);
         if (attemptSamples.length > 0) {
           const attemptSamplesByView = {
@@ -321,19 +423,26 @@ const classModels: ObservableClassifierModelAsset['classModels'] = fittedClassMo
             calibrationScoresByView[view].push(Math.min(...representativeSupportScores));
           }
           scenarioCalibrationAttemptCount += 1;
-        } else if (attempt.representatives.length === 0) detectorConditionedCalibrationMisses.push(`${scenario.id}:snr=${snrDb}:rbw=${rbwDivisor}:seed=${seed}`);
-        else fitEligibilityExcludedCalibrationAttempts.push(`${scenario.id}:snr=${snrDb}:rbw=${rbwDivisor}:seed=${seed}`);
+        } else if (attempt.representatives.length === 0) detectorConditionedCalibrationMisses.push(`${scenario.id}:snr=${snrDb}:regime=${acquisitionRegime.id}:seed=${seed}`);
+        else fitEligibilityExcludedCalibrationAttempts.push(`${scenario.id}:snr=${snrDb}:regime=${acquisitionRegime.id}:seed=${seed}`);
       } catch (error) {
-        throw new Error(`Tail calibration extraction failed for ${scenario.id} at SNR ${snrDb} dB, RBW divisor ${rbwDivisor}, seed ${seed}`, { cause: error });
+        throw new Error(`Tail calibration extraction failed for ${scenario.id} at SNR ${snrDb} dB, acquisition regime ${acquisitionRegime.id}, seed ${seed}`, { cause: error });
       }
     }
     if (scenarioCalibrationAttemptCount < MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS) {
-      throw new Error(`${scenario.id} has only ${scenarioCalibrationAttemptCount} detector-conditioned fit-eligible tail-calibration attempts`);
+      throw new Error(`${scenario.id} has only ${scenarioCalibrationAttemptCount} detector-conditioned observation-domain-eligible tail-calibration attempts`);
     }
     const scenarioAttempts = calibrationAttempts.filter((attempt) => attempt.scenarioId === scenario.id);
-    assertCompleteAttemptMatrix('calibration', scenario.id, scenarioAttempts, SNR_DB, TAIL_CALIBRATION_RBW_DIVISORS, TAIL_CALIBRATION_SEEDS);
+    assertCompleteAttemptMatrix('calibration', scenario.id, scenarioAttempts, SNR_DB, TAIL_CALIBRATION_ACQUISITION_REGIMES, TAIL_CALIBRATION_SEEDS);
     assertCalibrationCoverage(scenario, scenarioAttempts);
     assertHighSnrSeedCoverage('calibration', scenario, scenarioAttempts, TAIL_CALIBRATION_SEEDS);
+    assertHighSnrAcquisitionRegimeSeedCoverage(
+      'calibration',
+      scenario,
+      scenarioAttempts,
+      TAIL_CALIBRATION_SEEDS,
+      SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIMES,
+    );
     calibrationAttemptsByScenario.set(scenario.id, scenarioCalibrationAttemptCount);
   }
   const calibrationAttemptCount = calibrationScoresByView['envelope-timed'].length;
@@ -341,11 +450,11 @@ const classModels: ObservableClassifierModelAsset['classModels'] = fittedClassMo
     sum + (calibrationAttemptsByScenario.get(scenario.id) ?? 0), 0);
   for (const view of ['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const) {
     if (calibrationScoresByView[view].length !== expectedCalibrationAttemptCount) {
-      throw new Error(`${model.id} ${view} calibration has ${calibrationScoresByView[view].length} scores for ${expectedCalibrationAttemptCount} fit-eligible acquisition attempts`);
+      throw new Error(`${model.id} ${view} calibration has ${calibrationScoresByView[view].length} scores for ${expectedCalibrationAttemptCount} observation-domain-eligible acquisition attempts`);
     }
   }
   if (calibrationAttemptCount < MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS) {
-    throw new Error(`${model.id} has only ${calibrationAttemptCount} detector-conditioned fit-eligible tail-calibration attempts`);
+    throw new Error(`${model.id} has only ${calibrationAttemptCount} detector-conditioned observation-domain-eligible tail-calibration attempts`);
   }
   const tailCalibrationScoresByView = {
     'spectrum-only': calibrationScoresByView['spectrum-only'].sort((left, right) => left - right),
@@ -359,17 +468,27 @@ const trainingMatrix = {
   snrDb: SNR_DB,
   rbwDivisors: RBW_DIVISORS,
   seeds: SEEDS,
+  fittingAcquisitionRegimeIds: FITTING_ACQUISITION_REGIMES.map((regime) => regime.id),
+  signalLabProductionAcquisitionRegime: SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA,
+  detectedPowerSynthesisFilterPolicy: OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY,
+  productionAcquisitionRegimeHighSnrSeedCoveragePolicy: {
+    id: 'detector-conditioned-production-regime-presence-v1',
+    minimumDistinctSeedsPerHighSnrCell: MINIMUM_PRODUCTION_ACQUISITION_REGIME_HIGH_SNR_DISTINCT_SEEDS,
+    globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1',
+  },
   classificationSweeps: CLASSIFICATION_SWEEPS,
   observationOpportunityHorizons: {
     standard: STANDARD_OBSERVATION_OPPORTUNITIES,
     fullBand2g4: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
   },
   // The validator uses both explicit fitting and calibration grids to prove
-  // its nuisance seeds/RBWs are held out. Fit/calibration RBWs intentionally
-  // overlap; their seed arrays are asserted disjoint above.
+  // its nuisance seeds/RBWs/source-clock schedule are held out. Fit/calibration
+  // regimes intentionally overlap; their seed arrays are asserted disjoint.
   tailCalibrationSeeds: TAIL_CALIBRATION_SEEDS,
   tailCalibrationRbwDivisors: TAIL_CALIBRATION_RBW_DIVISORS,
+  tailCalibrationAcquisitionRegimeIds: TAIL_CALIBRATION_ACQUISITION_REGIMES.map((regime) => regime.id),
   tailCalibrationScoreUnit: TAIL_CALIBRATION_SCORE_UNIT,
+  tailCalibrationRepresentativeSelectionPolicy: TAIL_CALIBRATION_REPRESENTATIVE_SELECTION_POLICY,
   tailCalibrationRepresentativeAggregationPolicy: TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY,
   tailCalibrationRuntimeInterpretationPolicy: TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY,
   tailCalibrationStatisticalInterpretation: TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
@@ -390,10 +509,11 @@ const asset: ObservableClassifierModelAsset = {
   id: 'bayesian-observable-equivalence-v5',
   corpusVersion: CLASSIFICATION_CORPUS_VERSION,
   sourceCommit: SOURCE_COMMIT,
+  corpusSourceManifest: CORPUS_SOURCE_MANIFEST,
   corpusSha256: CORPUS_SHA256,
-  preprocessing: 'scalar-observable-features-v5',
+  preprocessing: 'scalar-observable-features-v6',
   priorId: 'engineering-design-class-weights-v1',
-  calibrationId: 'synthetic-view-matched-stratified-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v7',
+  calibrationId: 'synthetic-view-matched-stratified-online-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v10',
   generatedAt: '2026-07-14T00:00:00.000Z',
   dimensions,
   trainingMatrix,
@@ -428,6 +548,7 @@ console.log(JSON.stringify({
   calibrationAttemptCoverageByScenario: attemptCoverageByScenario(calibrationAttempts),
   tailCalibrationAttemptScoresPerView: classModels.reduce((sum, model) => sum + (model.tailCalibrationScoresByView?.['envelope-timed'].length ?? 0), 0),
   tailCalibrationScoreUnit: TAIL_CALIBRATION_SCORE_UNIT,
+  tailCalibrationRepresentativeSelectionPolicy: TAIL_CALIBRATION_REPRESENTATIVE_SELECTION_POLICY,
   tailCalibrationRepresentativeAggregationPolicy: TAIL_CALIBRATION_REPRESENTATIVE_AGGREGATION_POLICY,
   tailCalibrationRuntimeInterpretationPolicy: TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY,
   tailCalibrationStatisticalInterpretation: TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
@@ -456,6 +577,92 @@ function assertGeneratedAssetIsCurrent(file: string, regenerated: string, label:
   );
 }
 
+function assertCanonicalCorpusSourceArtifactPaths(paths: readonly string[]): void {
+  if (new Set(paths).size !== paths.length) throw new Error('SignalLab corpus source manifest contains duplicate artifact paths');
+  for (const path of paths) assertRepositoryRelativePath(path, 'SignalLab corpus source artifact');
+  const canonical = [...paths].sort((left, right) => left.localeCompare(right));
+  if (paths.some((path, index) => path !== canonical[index])) throw new Error('SignalLab corpus source manifest paths must be in canonical lexical order');
+}
+
+function assertRepositoryRelativePath(path: string, label: string): void {
+  if (!path || path.includes('\\') || posix.isAbsolute(path) || posix.normalize(path) !== path
+    || path === '..' || path.startsWith('../') || path.includes('/../')) {
+    throw new Error(`${label} ${JSON.stringify(path)} must be a canonical repository-relative POSIX path`);
+  }
+}
+
+function corpusSourceArtifact(path: string): { path: string; sha256: string } {
+  const file = resolve(SIGNAL_LAB_REPOSITORY_ROOT, path);
+  const status = lstatSync(file);
+  if (!status.isFile() || status.isSymbolicLink()) throw new Error(`SignalLab corpus source artifact ${path} must be a regular non-symlink file`);
+  gitOutput(['ls-files', '--error-unmatch', '--', path]);
+  const bytes = readFileSync(file);
+  const committedBytes = gitOutput(['show', `${SOURCE_COMMIT}:${path}`]);
+  if (!bytes.equals(committedBytes)) {
+    throw new Error(`SignalLab corpus source artifact ${path} differs from pinned commit ${SOURCE_COMMIT}`);
+  }
+  return { path, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+function assertSignalLabRepositoryIsClean(): void {
+  const status = gitOutput(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  if (status.length !== 0) {
+    throw new Error('SignalLab repository must have a clean index and worktree, including no untracked files, before classifier generation');
+  }
+}
+
+function assertCorpusSourceImportClosure(
+  entryPath: string,
+  expectedPaths: readonly string[],
+  manifestPaths: readonly string[],
+): void {
+  const discovered = new Set<string>();
+  const pending = [entryPath];
+  while (pending.length > 0) {
+    const path = pending.pop()!;
+    assertRepositoryRelativePath(path, 'SignalLab corpus import');
+    if (discovered.has(path)) continue;
+    discovered.add(path);
+    const source = readFileSync(resolve(SIGNAL_LAB_REPOSITORY_ROOT, path), 'utf8');
+    for (const specifier of relativeTypeScriptModuleSpecifiers(source)) {
+      if (!specifier.endsWith('.js') && !specifier.endsWith('.ts')) {
+        throw new Error(`SignalLab corpus import ${JSON.stringify(specifier)} from ${path} must declare a .js or .ts TypeScript module target`);
+      }
+      const resolvedPath = posix.normalize(posix.join(
+        posix.dirname(path),
+        specifier.endsWith('.js') ? `${specifier.slice(0, -3)}.ts` : specifier,
+      ));
+      assertRepositoryRelativePath(resolvedPath, 'Resolved SignalLab corpus import');
+      pending.push(resolvedPath);
+    }
+  }
+  const actual = [...discovered].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expectedPaths)) {
+    throw new Error(`SignalLab corpus TypeScript import closure ${JSON.stringify(actual)} does not match pinned ${JSON.stringify(expectedPaths)}`);
+  }
+  const manifest = new Set(manifestPaths);
+  const omitted = actual.filter((path) => !manifest.has(path));
+  if (omitted.length > 0) throw new Error(`SignalLab corpus source manifest omits import-closure artifacts: ${omitted.join(', ')}`);
+}
+
+function relativeTypeScriptModuleSpecifiers(source: string): string[] {
+  const patterns = [
+    /\b(?:import|export)\s+(?:type\s+)?(?:[^'\";]*?\s+from\s+)?['\"](\.[^'\"]+)['\"]/g,
+    /\bimport\s*\(\s*['\"](\.[^'\"]+)['\"]/g,
+    /\brequire\s*\(\s*['\"](\.[^'\"]+)['\"]/g,
+  ];
+  return [...new Set(patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[1]!)))].sort();
+}
+
+function gitOutput(arguments_: readonly string[]): Buffer {
+  return execFileSync('git', arguments_, {
+    cwd: SIGNAL_LAB_REPOSITORY_ROOT,
+    encoding: 'buffer',
+    maxBuffer: 16 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 function spectrumOnly(sample: Readonly<Record<string, number>>): Readonly<Record<string, number>> {
   return Object.fromEntries(Object.entries(sample).filter(([name]) => !name.startsWith('envelope.')));
 }
@@ -464,71 +671,101 @@ function envelopeUntimed(sample: Readonly<Record<string, number>>): Readonly<Rec
   return Object.fromEntries(Object.entries(sample).filter(([name]) => !name.startsWith('envelope.periodicEnergy') && name !== 'envelope.logTransitionRateHz'));
 }
 
-function featureSamples(scenario: CanonicalClassificationScenario, snrDb: number, rbwDivisor: number, seed: number): FeatureSamplingAttempt {
-  const nominalBinWidthHz = scenario.recommendedSpanHz / 449;
-  const actualRbwHz = Math.max(nominalBinWidthHz * 0.8, scenario.occupiedBandwidthHz / rbwDivisor, 1_000);
+function featureSamples(
+  scenario: CanonicalClassificationScenario,
+  snrDb: number,
+  acquisitionRegime: ObservableTrainingAcquisitionRegime,
+  seed: number,
+  selection: 'first-ready' | 'all-ready',
+): FeatureSamplingAttempt {
+  const actualRbwHz = observableTrainingActualRbwHz(scenario, acquisitionRegime.geometry);
+  const detectedPowerSynthesisFilterWidthHz =
+    observableTrainingDetectedPowerSynthesisFilterWidthHz(scenario, acquisitionRegime.geometry);
   const observationHorizon = observationOpportunityHorizon(scenario);
-  const observations = Array.from({ length: observationHorizon }, (_, lookIndex) => synthesizeCanonicalObservation(scenario.id, {
-    lookIndex,
+  const observations = Array.from({ length: observationHorizon }, (_, spectrumOpportunity) => synthesizeCanonicalObservation(scenario.id, {
+    lookIndex: observableTrainingSourceLookIndex(acquisitionRegime.temporalSchedule, spectrumOpportunity),
     seed,
     snrDb,
     actualRbwHz,
-    points: 450,
+    detectedPowerSynthesisFilterWidthHz,
+    points: OBSERVABLE_TRAINING_SWEEP_POINTS,
     sweepTimeSeconds: 0.05,
-    zeroSpanPoints: 450,
+    zeroSpanPoints: OBSERVABLE_TRAINING_SWEEP_POINTS,
     zeroSpanSamplePeriodSeconds: 1 / 9_000,
   }));
+  for (const observation of observations) {
+    assertDetectedPowerSynthesisProvenance(
+      observation,
+      detectedPowerSynthesisFilterWidthHz,
+      `${scenario.id} swept observation`,
+    );
+  }
   const sweeps = observations.map((observation) => asSweep(scenario, observation));
   const detector = new SignalDetector(PRODUCTION_DETECTION_CONFIG);
   const tracker = new SignalTracker(PRODUCTION_DETECTION_CONFIG);
   const recordedRepresentativeKeys = new Set<string>();
-  const representatives: FirstReadyFeatureSample[] = [];
+  const representatives: FeatureSample[] = [];
   for (const [lookIndex, sweep] of sweeps.entries()) {
     const tracks = tracker.update(sweep, detector.analyze(sweep));
     const ready = classificationRepresentatives(tracks.filter((track) => track.state === 'active'))
       .filter((track) => classificationSourceSweepIds(track).length >= CLASSIFICATION_SWEEPS)
+      // Tracker hysteresis deliberately keeps a recently promoted association
+      // visible to an operator. Calibration admits only windows that still
+      // satisfy the classifier's current association-evidence gate.
+      .filter(observableAssociationEvidenceIsCurrentlyQualified)
       .map((detection) => ({ detection, representativeKey: classificationRepresentativeKey(detection) }))
       .sort((left, right) => left.representativeKey.localeCompare(right.representativeKey));
     for (const { detection, representativeKey } of ready) {
-      if (recordedRepresentativeKeys.has(representativeKey)) continue;
-      recordedRepresentativeKeys.add(representativeKey);
+      if (selection === 'first-ready' && recordedRepresentativeKeys.has(representativeKey)) continue;
+      if (selection === 'first-ready') recordedRepresentativeKeys.add(representativeKey);
       const evidenceSweeps = sweeps.slice(0, lookIndex + 1);
       const expectedSweepIds = classificationSourceSweepIds(detection).slice(-CLASSIFICATION_SWEEPS);
+      const zeroSpanTuneHz = projectDetectedPowerTuneHz(
+        detection.peakHz,
+        SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+      );
       const zeroSpanObservation = synthesizeCanonicalObservation(scenario.id, {
-        lookIndex: lookIndex + 1,
+        lookIndex: observableTrainingInterleavedCaptureLookIndex(
+          acquisitionRegime.temporalSchedule,
+          lookIndex,
+        ),
         seed,
         snrDb,
         actualRbwHz,
-        points: 450,
+        detectedPowerSynthesisFilterWidthHz,
+        points: OBSERVABLE_TRAINING_SWEEP_POINTS,
         sweepTimeSeconds: 0.05,
-        zeroSpanPoints: 450,
+        zeroSpanPoints: OBSERVABLE_TRAINING_SWEEP_POINTS,
         zeroSpanSamplePeriodSeconds: 1 / 9_000,
-        zeroSpanFrequencyHz: detection.peakHz,
+        zeroSpanFrequencyHz: zeroSpanTuneHz,
       });
+      assertDetectedPowerSynthesisProvenance(
+        zeroSpanObservation,
+        detectedPowerSynthesisFilterWidthHz,
+        `${scenario.id} detected-power observation`,
+      );
       const featureObservation = extractObservableFeatures(detection, {
         sweeps: evidenceSweeps,
         zeroSpan: asZeroSpan(zeroSpanObservation, detection),
       });
       if (expectedSweepIds.length !== CLASSIFICATION_SWEEPS || featureObservation.sweepIds.length !== CLASSIFICATION_SWEEPS) {
-        throw new Error(`Classifier fitting window has ${expectedSweepIds.length} admitted / ${featureObservation.sweepIds.length} extracted source sweeps, expected ${CLASSIFICATION_SWEEPS}`);
+        throw new Error(`Classifier ${selection} window has ${expectedSweepIds.length} admitted / ${featureObservation.sweepIds.length} extracted source sweeps, expected ${CLASSIFICATION_SWEEPS}`);
       }
       const observedSweepIds = [...featureObservation.sweepIds].sort();
       const admittedSweepIds = [...expectedSweepIds].sort();
       if (observedSweepIds.some((id, index) => id !== admittedSweepIds[index])) {
-        throw new Error(`Classifier fitting window does not preserve the latest ${CLASSIFICATION_SWEEPS} effective source sweeps for ${detection.id}`);
+        throw new Error(`Classifier ${selection} window does not preserve the latest ${CLASSIFICATION_SWEEPS} effective source sweeps for ${detection.id}`);
       }
       const associationMode = detection.associationMode ?? 'frequency-local';
       representatives.push({
         values: featureObservation.values,
         representativeKey,
-        firstReadyOpportunity: lookIndex + 1,
+        observationOpportunity: lookIndex + 1,
         associationMode,
-        fitEligible: observableRepresentativeIsEligibleForModelFit(
+        fitEligible: observableRepresentativeIsInClassDomain(
           scenario.truthClass === 'bluetooth-classic-like' || scenario.truthClass === 'bluetooth-le-like'
             ? 'bluetooth-like'
             : scenario.truthClass,
-          scenario.occupiedBandwidthHz,
-          detection,
           featureObservation,
         ),
       });
@@ -540,15 +777,15 @@ function featureSamples(scenario: CanonicalClassificationScenario, snrDb: number
 function emptyRepresentativeSamplingAudit(): RepresentativeSamplingAudit {
   return {
     attemptCount: 0,
-    attemptsWithAnyFirstReadyRepresentative: 0,
+    attemptsWithAnyRepresentative: 0,
     attemptsWithFitEligibleRepresentative: 0,
-    firstReadyRepresentativeCount: 0,
+    representativeCount: 0,
     fitEligibleRepresentativeCount: 0,
     fitIneligibleRepresentativeCount: 0,
     multiRepresentativeAttemptCount: 0,
-    maximumFirstReadyRepresentativesPerAttempt: 0,
+    maximumRepresentativesPerAttempt: 0,
     observationHorizonCounts: {},
-    firstReadyOpportunityCounts: {},
+    observationOpportunityCounts: {},
   };
 }
 
@@ -556,30 +793,33 @@ function recordRepresentativeSamplingAttempt(audit: RepresentativeSamplingAudit,
   const representativeCount = attempt.representatives.length;
   const eligibleCount = attempt.representatives.filter((sample) => sample.fitEligible).length;
   audit.attemptCount += 1;
-  if (representativeCount > 0) audit.attemptsWithAnyFirstReadyRepresentative += 1;
+  if (representativeCount > 0) audit.attemptsWithAnyRepresentative += 1;
   if (eligibleCount > 0) audit.attemptsWithFitEligibleRepresentative += 1;
   if (representativeCount > 1) audit.multiRepresentativeAttemptCount += 1;
-  audit.firstReadyRepresentativeCount += representativeCount;
+  audit.representativeCount += representativeCount;
   audit.fitEligibleRepresentativeCount += eligibleCount;
   audit.fitIneligibleRepresentativeCount += representativeCount - eligibleCount;
-  audit.maximumFirstReadyRepresentativesPerAttempt = Math.max(audit.maximumFirstReadyRepresentativesPerAttempt, representativeCount);
+  audit.maximumRepresentativesPerAttempt = Math.max(audit.maximumRepresentativesPerAttempt, representativeCount);
   audit.observationHorizonCounts[attempt.observationHorizon] = (audit.observationHorizonCounts[attempt.observationHorizon] ?? 0) + 1;
   for (const sample of attempt.representatives) {
-    audit.firstReadyOpportunityCounts[sample.firstReadyOpportunity] = (audit.firstReadyOpportunityCounts[sample.firstReadyOpportunity] ?? 0) + 1;
+    audit.observationOpportunityCounts[sample.observationOpportunity] = (audit.observationOpportunityCounts[sample.observationOpportunity] ?? 0) + 1;
   }
 }
 
 function scenarioSamplingAttempt(
   scenarioId: string,
   snrDb: number,
-  rbwDivisor: number,
+  acquisitionRegime: ObservableTrainingAcquisitionRegime,
   seed: number,
   attempt: FeatureSamplingAttempt,
 ): ScenarioSamplingAttempt {
   return {
     scenarioId,
     snrDb,
-    rbwDivisor,
+    acquisitionRegimeId: acquisitionRegime.id,
+    rbwDivisor: acquisitionRegime.geometry.kind === 'occupied-bandwidth-rbw-divisor'
+      ? acquisitionRegime.geometry.rbwDivisor
+      : null,
     seed,
     representativeCount: attempt.representatives.length,
     fitEligibleRepresentativeCount: attempt.representatives.filter((sample) => sample.fitEligible).length,
@@ -591,7 +831,7 @@ function assertCompleteAttemptMatrix(
   scenarioId: string,
   attempts: readonly ScenarioSamplingAttempt[],
   snrLevels: readonly number[],
-  rbwDivisors: readonly number[],
+  acquisitionRegimes: readonly ObservableTrainingAcquisitionRegime[],
   seeds: readonly number[],
 ): void {
   const keys = attempts.map(samplingAttemptKey);
@@ -599,8 +839,8 @@ function assertCompleteAttemptMatrix(
   if (uniqueKeys.size !== attempts.length) {
     throw new Error(`${scenarioId} ${purpose} matrix contains ${attempts.length - uniqueKeys.size} duplicate acquisition attempts`);
   }
-  const expectedKeys = snrLevels.flatMap((snrDb) => rbwDivisors.flatMap((rbwDivisor) => seeds.map((seed) =>
-    samplingAttemptKey({ scenarioId, snrDb, rbwDivisor, seed }))));
+  const expectedKeys = snrLevels.flatMap((snrDb) => acquisitionRegimes.flatMap((acquisitionRegime) => seeds.map((seed) =>
+    samplingAttemptKey({ scenarioId, snrDb, acquisitionRegimeId: acquisitionRegime.id, seed }))));
   const missingKeys = expectedKeys.filter((key) => !uniqueKeys.has(key));
   const unexpectedKeys = keys.filter((key) => !expectedKeys.includes(key));
   if (missingKeys.length > 0 || unexpectedKeys.length > 0) {
@@ -614,16 +854,18 @@ function assertFittingCoverage(
 ): void {
   const eligibleAttempts = attempts.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0);
   if (eligibleAttempts.length < MINIMUM_DISTINCT_FITTING_ATTEMPTS) {
-    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct fit-eligible acquisition attempts; expected at least one ${MINIMUM_DISTINCT_FITTING_ATTEMPTS}-seed block`);
+    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct observation-domain-eligible acquisition attempts; expected at least one ${MINIMUM_DISTINCT_FITTING_ATTEMPTS}-seed block`);
   }
   if (scenario.truthClass === 'unknown-signal') return;
   const coveredSnrLevels = new Set(eligibleAttempts.map((attempt) => attempt.snrDb));
-  const coveredRbwDivisors = new Set(eligibleAttempts.map((attempt) => attempt.rbwDivisor));
+  const coveredRbwDivisors = new Set(eligibleAttempts
+    .map((attempt) => attempt.rbwDivisor)
+    .filter((rbwDivisor): rbwDivisor is number => rbwDivisor !== null));
   if (coveredSnrLevels.size < MINIMUM_FITTING_SNR_LEVELS) {
-    throw new Error(`${scenario.id} fit-eligible attempts cover only ${coveredSnrLevels.size} SNR level(s); expected at least ${MINIMUM_FITTING_SNR_LEVELS}`);
+    throw new Error(`${scenario.id} observation-domain-eligible attempts cover only ${coveredSnrLevels.size} SNR level(s); expected at least ${MINIMUM_FITTING_SNR_LEVELS}`);
   }
   if (coveredRbwDivisors.size < MINIMUM_FITTING_RBW_DIVISORS) {
-    throw new Error(`${scenario.id} fit-eligible attempts cover only ${coveredRbwDivisors.size} RBW divisor(s); expected at least ${MINIMUM_FITTING_RBW_DIVISORS}`);
+    throw new Error(`${scenario.id} observation-domain-eligible attempts cover only ${coveredRbwDivisors.size} RBW divisor(s); expected at least ${MINIMUM_FITTING_RBW_DIVISORS}`);
   }
 }
 
@@ -633,7 +875,7 @@ function assertCalibrationCoverage(
 ): void {
   const eligibleAttempts = attempts.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0);
   if (eligibleAttempts.length < MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS) {
-    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct fit-eligible calibration attempts; ${MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS} are required to resolve an empirical rank below ${SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD}`);
+    throw new Error(`${scenario.id} has only ${eligibleAttempts.length} distinct observation-domain-eligible calibration attempts; ${MINIMUM_DISTINCT_CALIBRATION_ATTEMPTS} are required to resolve an empirical rank below ${SYNTHETIC_SUPPORT_RANK_REJECTION_THRESHOLD}`);
   }
 }
 
@@ -654,7 +896,31 @@ function assertHighSnrSeedCoverage(
         && attempt.fitEligibleRepresentativeCount > 0)
       .map((attempt) => attempt.seed));
     if (coveredSeeds.size < requiredSeedCount) {
-      throw new Error(`${scenario.id} ${purpose} high-SNR fit-eligible acquisition covered ${coveredSeeds.size}/${configuredSeeds.size} distinct seeds at ${snrDb} dB; required ${requiredSeedCount}/${configuredSeeds.size}`);
+      throw new Error(`${scenario.id} ${purpose} high-SNR observation-domain-eligible acquisition covered ${coveredSeeds.size}/${configuredSeeds.size} distinct seeds at ${snrDb} dB; required ${requiredSeedCount}/${configuredSeeds.size}`);
+    }
+  }
+}
+
+function assertHighSnrAcquisitionRegimeSeedCoverage(
+  purpose: 'fitting' | 'calibration',
+  scenario: CanonicalClassificationScenario,
+  attempts: readonly ScenarioSamplingAttempt[],
+  seeds: readonly number[],
+  requiredRegimes: readonly ObservableTrainingAcquisitionRegime[],
+): void {
+  const configuredSeeds = new Set(seeds);
+  const requiredSeedCount = MINIMUM_PRODUCTION_ACQUISITION_REGIME_HIGH_SNR_DISTINCT_SEEDS;
+  for (const acquisitionRegime of requiredRegimes) {
+    for (const snrDb of SNR_DB.filter((value) => value >= HIGH_SNR_MINIMUM_DB)) {
+      const coveredSeeds = new Set(attempts
+        .filter((attempt) => attempt.acquisitionRegimeId === acquisitionRegime.id
+          && attempt.snrDb === snrDb
+          && configuredSeeds.has(attempt.seed)
+          && attempt.fitEligibleRepresentativeCount > 0)
+        .map((attempt) => attempt.seed));
+      if (coveredSeeds.size < requiredSeedCount) {
+        throw new Error(`${scenario.id} ${purpose} production acquisition regime ${acquisitionRegime.id} covered ${coveredSeeds.size}/${configuredSeeds.size} distinct observation-domain-eligible seeds at ${snrDb} dB; required ${requiredSeedCount}/${configuredSeeds.size}`);
+      }
     }
   }
 }
@@ -667,22 +933,34 @@ function attemptCoverageByScenario(
     const selected = attempts.filter((attempt) => attempt.scenarioId === scenarioId);
     return [scenarioId, {
       distinctAttempts: new Set(selected.map(samplingAttemptKey)).size,
-      attemptsWithAnyFirstReadyRepresentative: selected.filter((attempt) => attempt.representativeCount > 0).length,
+      attemptsWithAnyRepresentative: selected.filter((attempt) => attempt.representativeCount > 0).length,
       attemptsWithFitEligibleRepresentative: selected.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0).length,
       fitEligibleSnrLevels: [...new Set(selected.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0).map((attempt) => attempt.snrDb))].sort((left, right) => left - right),
-      fitEligibleRbwDivisors: [...new Set(selected.filter((attempt) => attempt.fitEligibleRepresentativeCount > 0).map((attempt) => attempt.rbwDivisor))].sort((left, right) => left - right),
+      fitEligibleRbwDivisors: [...new Set(selected
+        .filter((attempt) => attempt.fitEligibleRepresentativeCount > 0 && attempt.rbwDivisor !== null)
+        .map((attempt) => attempt.rbwDivisor as number))].sort((left, right) => left - right),
+      fitEligibleAcquisitionRegimeIds: [...new Set(selected
+        .filter((attempt) => attempt.fitEligibleRepresentativeCount > 0)
+        .map((attempt) => attempt.acquisitionRegimeId))].sort(),
       highSnrSeedCoverage: Object.fromEntries(SNR_DB.filter((snrDb) => snrDb >= HIGH_SNR_MINIMUM_DB).map((snrDb) => [
         snrDb,
         new Set(selected
           .filter((attempt) => attempt.snrDb === snrDb && attempt.fitEligibleRepresentativeCount > 0)
           .map((attempt) => attempt.seed)).size,
       ])),
-      highSnrSeedCoverageUnit: 'distinct-seeds-with-fit-eligible-representative',
+      highSnrSeedCoverageUnit: 'distinct-seeds-with-observation-domain-eligible-representative',
     }];
   }));
 }
 
 function assertUniqueNumbers(label: string, values: readonly number[]): void {
+  const duplicates = values.filter((value, index) => values.indexOf(value) !== index);
+  if (duplicates.length > 0) {
+    throw new Error(`${label} contains duplicate values: ${[...new Set(duplicates)].join(', ')}`);
+  }
+}
+
+function assertUniqueStrings(label: string, values: readonly string[]): void {
   const duplicates = values.filter((value, index) => values.indexOf(value) !== index);
   if (duplicates.length > 0) {
     throw new Error(`${label} contains duplicate values: ${[...new Set(duplicates)].join(', ')}`);
@@ -702,8 +980,8 @@ function assertDisjointNumbers(
   }
 }
 
-function samplingAttemptKey(attempt: Pick<ScenarioSamplingAttempt, 'scenarioId' | 'snrDb' | 'rbwDivisor' | 'seed'>): string {
-  return `${attempt.scenarioId}:snr=${attempt.snrDb}:rbw=${attempt.rbwDivisor}:seed=${attempt.seed}`;
+function samplingAttemptKey(attempt: Pick<ScenarioSamplingAttempt, 'scenarioId' | 'snrDb' | 'acquisitionRegimeId' | 'seed'>): string {
+  return `${attempt.scenarioId}:snr=${attempt.snrDb}:regime=${attempt.acquisitionRegimeId}:seed=${attempt.seed}`;
 }
 
 function observationOpportunityHorizon(scenario: CanonicalClassificationScenario): number {
@@ -725,6 +1003,17 @@ function classificationSourceSweepIds(track: DetectedSignal): readonly string[] 
     : track.sweepIds;
 }
 
+function assertDetectedPowerSynthesisProvenance(
+  observation: ReturnType<typeof synthesizeCanonicalObservation>,
+  expectedFilterWidthHz: number,
+  context: string,
+): void {
+  if (observation.detectedPowerActualRbwHz !== null
+    || observation.detectedPowerSynthesisFilterWidthHz !== expectedFilterWidthHz) {
+    throw new Error(`${context} does not preserve unavailable measured RBW and the explicit synthesis-filter width`);
+  }
+}
+
 function asSweep(scenario: CanonicalClassificationScenario, observation: ReturnType<typeof synthesizeCanonicalObservation>): Sweep {
   const startHz = observation.frequencyHz[0]!;
   const stopHz = observation.frequencyHz.at(-1)!;
@@ -732,21 +1021,50 @@ function asSweep(scenario: CanonicalClassificationScenario, observation: ReturnT
     kind: 'spectrum', id: `${scenario.id}-${observation.seed}-${observation.lookIndex}`, sequence: observation.lookIndex + 1,
     capturedAt: new Date(Date.UTC(2026, 0, 1) + observation.lookIndex * observation.sweepTimeSeconds * 1_000).toISOString(), elapsedMilliseconds: observation.sweepTimeSeconds * 1_000,
     frequencyHz: observation.frequencyHz, powerDbm: observation.powerDbm,
-    requested: { startHz, stopHz, points: observation.frequencyHz.length, acquisitionFormat: 'text', rbwKhz: observation.actualRbwHz / 1_000, attenuationDb: 'auto', sweepTimeSeconds: observation.sweepTimeSeconds, detector: 'sample', spurRejection: 'off', lna: 'off', avoidSpurs: 'off', trigger: { mode: 'auto' } },
+    requested: {
+      kind: 'swept-spectrum', startHz, stopHz, points: observation.frequencyHz.length,
+      sweepTimeSeconds: observation.sweepTimeSeconds,
+      controls: {
+        schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text',
+        resolutionBandwidthKhz: observation.actualRbwHz / 1_000, attenuationDb: 'auto',
+        detector: 'sample', spurRejection: 'off', lowNoiseAmplifier: 'off', avoidSpurs: 'off',
+        trigger: { mode: 'auto' },
+      },
+    },
+    // This offline corpus is a protocol-test double for RBW-filtered receiver
+    // observations, not a SignalLab bridge measurement. The separate live
+    // bridge gate exercises synthetic-grid-equivalent session provenance.
     actualStartHz: startHz, actualStopHz: stopHz, actualRbwHz: observation.actualRbwHz, actualAttenuationDb: 0,
     source: 'scan-text', complete: true, identity,
   };
 }
 
 function asZeroSpan(observation: ReturnType<typeof synthesizeCanonicalObservation>, detection: DetectedSignal): ZeroSpanCapture {
+  const projectedTuneHz = projectDetectedPowerTuneHz(
+    observation.zeroSpanFrequencyHz,
+    SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+  );
+  if (projectedTuneHz !== observation.zeroSpanFrequencyHz) {
+    throw new Error(`SignalLab zero-span synthesis used unprojected ${observation.zeroSpanFrequencyHz} Hz instead of admitted ${projectedTuneHz} Hz`);
+  }
   const sweepTimeSeconds = observation.zeroSpanPowerDbm.length * observation.zeroSpanSamplePeriodSeconds;
+  const requested = detectedPowerTimeseriesConfigurationSchema.parse({
+    kind: 'detected-power-timeseries', centerHz: observation.zeroSpanFrequencyHz,
+    sampleCount: observation.zeroSpanPowerDbm.length, sweepTimeSeconds,
+    controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+  });
   return {
     kind: 'zero-span', id: `zero-${observation.scenarioId}-${observation.seed}`, sequence: 1, capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: sweepTimeSeconds * 1_000,
     frequencyHz: observation.zeroSpanFrequencyHz, samplePeriodSeconds: observation.zeroSpanSamplePeriodSeconds, timingQualification: 'simulation-exact',
     targetDetectionId: detection.id,
     powerDbm: observation.zeroSpanPowerDbm,
-    requested: { frequencyHz: observation.zeroSpanFrequencyHz, points: observation.zeroSpanPowerDbm.length, rbwKhz: observation.actualRbwHz / 1_000, attenuationDb: 'auto', sweepTimeSeconds, trigger: { mode: 'auto' } },
-    actualRbwHz: observation.actualRbwHz, actualAttenuationDb: 0, source: 'scan-text', complete: true, identity,
+    requested,
+    // This is the same contract shape admitted by the SignalLab manager/live
+    // gate: exact simulated cadence, no invented physical RF filter or front
+    // end attenuation. Runtime marginalizes the unavailable zero-span RBW.
+    actualRbwHz: null, actualAttenuationDb: null,
+    resolutionBandwidthQualification: 'unavailable', attenuationQualification: 'not-applicable',
+    source: 'signal-lab-synthetic', complete: true, identity,
   };
 }
 

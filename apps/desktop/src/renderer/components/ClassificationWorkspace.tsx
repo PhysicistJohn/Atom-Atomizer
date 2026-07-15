@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint } from 'lucide-react';
-import { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, observableClassDefinitions, signalLabWaveformHypotheses, type EnvelopeClassification } from '@tinysa/analysis';
+import { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, observableClassDefinitions, type EnvelopeClassification } from '@tinysa/analysis';
 import { zeroSpanConfigSchema, type DetectedSignal, type InstrumentAcquisitionCapability, type Sweep, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
@@ -129,9 +129,20 @@ function ResultProvenance({ detection, result }: { detection: DetectedSignal | u
       <span>{sweeps} · {result.modelId}</span>
     </div>;
   }
+  if (detection.associationMode === 'multicomponent-swept-region-activity') {
+    const observations = detection.multicomponentAssociationObservations;
+    const latest = observations?.at(-1);
+    return <div className="result-provenance result-provenance-association">
+      <span>Local detection {formatFrequency(detection.peakHz)} · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)}</span>
+      <span>Multicomponent swept-region association {detection.associationId ?? 'unavailable'} · {detection.associationMemberTrackIds?.length ?? 0} current local members · {observations?.length ?? 0} lineage looks</span>
+      <span>{latest?.qualification?.replaceAll('-', ' ') ?? 'qualification unavailable'} · not emitter identity · not common-process or simultaneity evidence</span>
+      <span>Association evidence {formatFrequency(result.evidence.bandwidthHz)} · {detection.associationModelId} · {sweeps} · {result.modelId}</span>
+    </div>;
+  }
   return <div className="result-provenance">
     <span>Local detection {formatFrequency(detection.peakHz)} · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)}</span>
-    {detection.associationMode === 'regular-spectral-component-activity' && <span>Association evidence {formatFrequency(result.evidence.bandwidthHz)} · {detection.associationModelId} · not emitter identity</span>}
+    {detection.associationMode === 'regular-spectral-component-activity'
+      && <span>Association evidence {formatFrequency(result.evidence.bandwidthHz)} · {detection.associationModelId} · not emitter identity</span>}
     <span>{sweeps} · {result.modelId}</span>
   </div>;
 }
@@ -144,18 +155,35 @@ function formatSweepTime(seconds: number | undefined): string {
   return Number.isFinite(seconds) ? `${(seconds! * 1_000).toFixed(0)} ms modeled sweep` : 'sweep time unavailable';
 }
 
-function classificationForDetection(
+export function classificationForDetection(
   detection: DetectedSignal | undefined,
   detections: readonly DetectedSignal[],
   classifications: readonly WaveformClassification[],
 ): WaveformClassification | undefined {
   if (!detection) return undefined;
   const direct = classifications.find((item) => item.detectionId === detection.id);
-  if (direct || detection.associationMode !== 'regular-spectral-component-activity' || !detection.associationId) return direct;
-  const memberIds = new Set(detections
-    .filter((item) => item.associationMode === 'regular-spectral-component-activity' && item.associationId === detection.associationId)
-    .map((item) => item.id));
-  return classifications.find((item) => memberIds.has(item.detectionId));
+  if (direct || !isStaticRegionAssociation(detection) || !detection.associationId) return direct;
+  if (!isCurrentStaticAssociationMember(detection)) return undefined;
+  return classifications.find((item) => {
+    const representative = detections.find((candidate) => candidate.id === item.detectionId);
+    return representative !== undefined
+      && isStaticRegionAssociation(representative)
+      && isCurrentStaticAssociationMember(representative)
+      && representative.associationId === detection.associationId
+      && representative.associationMemberTrackIds?.includes(detection.id) === true;
+  });
+}
+
+function isStaticRegionAssociation(detection: DetectedSignal): boolean {
+  return detection.associationMode === 'regular-spectral-component-activity'
+    || detection.associationMode === 'multicomponent-swept-region-activity';
+}
+
+function isCurrentStaticAssociationMember(detection: DetectedSignal): boolean {
+  return isStaticRegionAssociation(detection)
+    && detection.missedSweeps === 0
+    && detection.associationMissedSweeps === 0
+    && detection.associationMemberTrackIds?.includes(detection.id) === true;
 }
 
 function PipelineStep({ icon, label, detail, ready }: { icon: React.ReactNode; label: string; detail: string; ready: boolean }) { return <div className={`pipeline-step ${ready ? 'ready' : ''}`}><span>{icon}</span><div><strong>{label}</strong><small>{detail}</small></div>{ready && <CheckCircle2 size={14}/>}</div>; }
@@ -171,9 +199,11 @@ function EnvelopePlot({ capture }: { capture?: ZeroSpanCapture }) {
 export function waveformLabel(value: string): string {
   const observable = value.match(/^observable:(.+)$/)?.[1];
   if (observable && observable in observableClassDefinitions) return observableClassDefinitions[observable as keyof typeof observableClassDefinitions].label;
-  const profileId = value.replace(/^signal-lab:/, '');
-  const profile = signalLabWaveformHypotheses.find((item) => item.id === profileId);
-  if (profile) return profile.label.replace(/^(AM|FM) replay$/, '$1 signal');
+  const legacyProfileId = value.match(/^signal-lab:(.+)$/)?.[1];
+  if (legacyProfileId) {
+    if (legacyProfileId === 'am' || legacyProfileId === 'fm') return `${legacyProfileId.toUpperCase()} signal`;
+    return titleCase(legacyProfileId);
+  }
   const family = value.match(/^signal-lab-family:(.+)$/)?.[1];
   if (family) return ({ tone: 'Tone', analog: 'Analog', geran: 'GSM / EDGE', 'e-utra': 'LTE', nr: '5G NR', wlan: 'Wi-Fi' } as const)[family as 'tone' | 'analog' | 'geran' | 'e-utra' | 'nr' | 'wlan'] ?? titleCase(family);
   return titleCase(value);

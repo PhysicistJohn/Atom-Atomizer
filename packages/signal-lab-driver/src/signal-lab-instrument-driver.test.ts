@@ -3,9 +3,10 @@ import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'no
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { InstrumentMeasurement } from '@tinysa/contracts';
+import type { InstrumentConfiguration, InstrumentMeasurement } from '@tinysa/contracts';
 import {
   SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE,
+  SIGNAL_LAB_PROFILE_IDS,
   SignalLabBridgeClient,
 } from './signal-lab-bridge-client.js';
 import {
@@ -15,10 +16,10 @@ import {
 
 const temporaryRoots: string[] = [];
 const GENERATOR_ARTIFACTS = [
-  'atomizer-bridge.js', 'catalog.js', 'contracts.js', 'measurement-bridge.js',
-  'measurement-contract.js', 'measurement-service.js', 'waveforms.js',
+  'atomizer-bridge.js', 'canonical-timing.js', 'catalog.js', 'contracts.js', 'measurement-bridge.js',
+  'measurement-contract.js', 'measurement-service.js', 'source-provenance.js', 'waveforms.js',
 ] as const;
-const FIXTURE_DESCRIPTORS = ['cw', 'fm'].map((id) => ({
+const FIXTURE_DESCRIPTORS = SIGNAL_LAB_PROFILE_IDS.map((id) => ({
   id,
   label: id.toUpperCase(),
   family: id === 'cw' ? 'tone' : 'analog',
@@ -32,14 +33,17 @@ const FIXTURE_DESCRIPTORS = ['cw', 'fm'].map((id) => ({
     modulation: id === 'cw' ? 'unmodulated' : 'fm',
     timing: 'continuous',
   },
-  standard: {
-    organization: 'TinySA SignalLab', specification: 'fixture', clause: 'fixture',
-    revision: '1', url: 'https://example.test/signal-lab',
+  source: {
+    organization: 'TinySA SignalLab',
+    references: [{
+      specification: 'fixture', clause: 'fixture', revision: '1',
+      url: 'https://example.test/signal-lab',
+    }],
   },
   disclosure: 'Synthetic fixture only.',
 }));
 
-type FixtureBehavior = 'normal' | 'dishonest-ready-hash' | 'mutate-artifact-during-startup' | 'stale-measurement-epoch' | 'unchanged-profile-epoch' | 'exit-after-status';
+type FixtureBehavior = 'normal' | 'dishonest-ready-hash' | 'mutate-artifact-during-startup' | 'mutate-source-provenance-during-startup' | 'stale-measurement-epoch' | 'unchanged-profile-epoch' | 'exit-after-status';
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -108,17 +112,23 @@ describe('SignalLab instrument driver', () => {
     expect(session.capabilities.acquisitions.map((capability) => capability.kind)).toEqual([
       'swept-spectrum', 'detected-power-timeseries',
     ]);
-    expect(session.capabilities.features).toEqual([{
-      kind: 'signal-lab-profile-selection',
-      profiles: [
-        { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 },
-        { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 },
-      ],
-      selectedProfileId: 'cw',
-    }]);
+    expect(session.capabilities.features).toHaveLength(1);
+    expect(session.capabilities.features[0]).toMatchObject({
+      kind: 'signal-lab-profile-selection', selectedProfileId: 'cw',
+    });
+    if (session.capabilities.features[0]?.kind !== 'signal-lab-profile-selection') {
+      throw new Error('fixture did not expose SignalLab profile selection');
+    }
+    expect(session.capabilities.features[0].profiles).toHaveLength(SIGNAL_LAB_PROFILE_IDS.length);
+    expect(session.capabilities.features[0].profiles.slice(0, 3)).toEqual([
+      { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 },
+      { profileId: 'am', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 },
+      { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 },
+    ]);
     expect(session.capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')).toBe(false);
     expect(session.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries')).toMatchObject({
-      sampleIntervalSeconds: { min: 0.000_001, max: 10 },
+      sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+      controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
     });
     expect(session.capabilities.features.some((feature) => feature.kind === 'rf-generator')).toBe(false);
     expect(session.capabilities.features.some((feature) => feature.kind === 'screen')).toBe(false);
@@ -138,7 +148,7 @@ describe('SignalLab instrument driver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:spectrum',
-      configuration: { kind: 'swept-spectrum', startHz: 99_000_000, stopHz: 101_000_000, points: 5 },
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
     });
     const spectrum = await session.acquire();
     expect(spectrum).toMatchObject({
@@ -150,6 +160,9 @@ describe('SignalLab instrument driver', () => {
     });
     if (spectrum.kind !== 'swept-spectrum') throw new Error('Expected swept spectrum');
     expect(spectrum.frequencyHz).toEqual([99_000_000, 99_500_000, 100_000_000, 100_500_000, 101_000_000]);
+    expect(deepKeys(spectrum)).not.toEqual(expect.arrayContaining([
+      'profile', 'profileId', 'selectedProfileId',
+    ]));
 
     await expect(session.executeFeature({
       sessionId: session.sessionId,
@@ -167,22 +180,22 @@ describe('SignalLab instrument driver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:detected',
-      configuration: {
-        kind: 'detected-power-timeseries', centerHz: 100_000_000,
-        sampleCount: 4, sampleIntervalSeconds: 0.001,
-      },
+      configuration: syntheticDetectedPower(100_000_000, 4),
     });
     const detected = await session.acquire();
     expect(detected).toMatchObject({
       schemaVersion: 1, kind: 'detected-power-timeseries', sessionId: session.sessionId,
       configurationRevision: 'configuration:detected', centerHz: 100_000_000,
       producerConfigurationEpoch: '20000000-0000-4000-8000-000000000002',
-      sampleIntervalSeconds: 0.001, elapsedMilliseconds: 1,
+      sampleIntervalSeconds: 0.0125, elapsedMilliseconds: 1,
       resolutionBandwidthHz: null, attenuationDb: null,
       qualification: 'synthetic-visual-projection', complete: true,
     });
     if (detected.kind !== 'detected-power-timeseries') throw new Error('Expected detected power');
     expect(detected.powerDbm).toEqual([-65, -65, -65, -65]);
+    expect(deepKeys(detected)).not.toEqual(expect.arrayContaining([
+      'profile', 'profileId', 'selectedProfileId',
+    ]));
     expect(events).toEqual([
       { type: 'status', sessionId: session.sessionId, status: 'busy' },
       { type: 'status', sessionId: session.sessionId, status: 'ready' },
@@ -228,7 +241,7 @@ describe('SignalLab instrument driver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:renewal-stress',
-      configuration: { kind: 'swept-spectrum', startHz: 99_750_000, stopHz: 100_250_000, points: 3 },
+      configuration: syntheticSpectrum(99_750_000, 100_250_000, 3),
     });
 
     const measurements: InstrumentMeasurement[] = [];
@@ -250,19 +263,19 @@ describe('SignalLab instrument driver', () => {
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
 
-  it('rejects dishonest center/IQ/RF operations while acknowledging a defensive RF-off no-op', async () => {
+  it('honors admitted detected-power tuning, rejects IQ/RF operations, and acknowledges a defensive RF-off no-op', async () => {
     const fixture = await createBridgeFixture();
     const driver = fixture.driver();
     const descriptor = (await driver.discover()).candidates[0]!;
     const session = await driver.connect({ ...descriptor, discoveryRevision: 'discovery:test' });
     await expect(session.configure({
       sessionId: session.sessionId,
-      configurationRevision: 'configuration:wrong-center',
-      configuration: {
-        kind: 'detected-power-timeseries', centerHz: 101_000_000,
-        sampleCount: 4, sampleIntervalSeconds: 0.001,
-      },
-    })).rejects.toThrow(/centered at 100000000 Hz/);
+      configurationRevision: 'configuration:tuned-center',
+      configuration: syntheticDetectedPower(101_000_000, 4),
+    })).resolves.toBeUndefined();
+    await expect(session.acquire()).resolves.toMatchObject({
+      kind: 'detected-power-timeseries', centerHz: 101_000_000,
+    });
     await expect(session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:iq',
@@ -301,6 +314,14 @@ describe('SignalLab instrument driver', () => {
 
   it('rejects artifacts changed by the bridge while it is starting', async () => {
     const fixture = await createBridgeFixture('mutate-artifact-during-startup');
+    const driver = fixture.driver();
+    const descriptor = (await driver.discover()).candidates[0]!;
+    await expect(driver.connect({ ...descriptor, discoveryRevision: 'discovery:test' }))
+      .rejects.toThrow(/artifacts changed while the bridge was starting/);
+  });
+
+  it('rejects source-provenance runtime bytes changed while the bridge is starting', async () => {
+    const fixture = await createBridgeFixture('mutate-source-provenance-during-startup');
     const driver = fixture.driver();
     const descriptor = (await driver.discover()).candidates[0]!;
     await expect(driver.connect({ ...descriptor, discoveryRevision: 'discovery:test' }))
@@ -372,7 +393,7 @@ describe('SignalLab instrument driver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:spectrum',
-      configuration: { kind: 'swept-spectrum', startHz: 99_000_000, stopHz: 101_000_000, points: 5 },
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
     });
     await expect(session.acquire()).rejects.toThrow(/producer configuration epoch is stale or mismatched/);
     expect(events).toEqual(expect.arrayContaining([
@@ -382,7 +403,7 @@ describe('SignalLab instrument driver', () => {
     await expect(session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:again',
-      configuration: { kind: 'swept-spectrum', startHz: 99_000_000, stopHz: 101_000_000, points: 5 },
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
     })).rejects.toThrow(/producer configuration epoch is stale or mismatched/);
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
@@ -403,7 +424,7 @@ describe('SignalLab instrument driver', () => {
     await expect(session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:after-terminal-handoff',
-      configuration: { kind: 'swept-spectrum', startHz: 99_000_000, stopHz: 101_000_000, points: 5 },
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
     })).rejects.toThrow(/closed stdout unexpectedly|exited unexpectedly/);
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
@@ -416,7 +437,7 @@ describe('SignalLab instrument driver', () => {
     await session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:spectrum',
-      configuration: { kind: 'swept-spectrum', startHz: 99_000_000, stopHz: 101_000_000, points: 5 },
+      configuration: syntheticSpectrum(99_000_000, 101_000_000, 5),
     });
     await expect(session.executeFeature({
       sessionId: session.sessionId,
@@ -426,6 +447,27 @@ describe('SignalLab instrument driver', () => {
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
 });
+
+function syntheticSpectrum(
+  startHz: number,
+  stopHz: number,
+  points: number,
+): Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }> {
+  return {
+    kind: 'swept-spectrum', startHz, stopHz, points, sweepTimeSeconds: 0.05,
+    controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+  };
+}
+
+function syntheticDetectedPower(
+  centerHz: number,
+  sampleCount: number,
+): Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }> {
+  return {
+    kind: 'detected-power-timeseries', centerHz, sampleCount, sweepTimeSeconds: 0.05,
+    controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+  };
+}
 
 async function createBridgeFixture(behavior: FixtureBehavior = 'normal'): Promise<{
   atomizerRoot: string;
@@ -500,7 +542,7 @@ const identity = {
 };
 const capabilities = [
   { kind: 'swept-spectrum', minimumFrequencyHz: 1, maximumFrequencyHz: 17922600000, minimumPoints: 2, maximumPoints: 4096, frequencyUnit: 'Hz', powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
-  { kind: 'detected-power-timeseries', minimumPoints: 1, maximumPoints: 4096, minimumSamplePeriodSeconds: 0.000001, maximumSamplePeriodSeconds: 10, powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
+  { kind: 'detected-power-timeseries', minimumFrequencyHz: 1, maximumFrequencyHz: 17922600000, frequencyStepHz: 1, frequencyUnit: 'Hz', minimumPoints: 1, maximumPoints: 4096, minimumSamplePeriodSeconds: 0.000001, maximumSamplePeriodSeconds: 10, powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
 ];
 const continuationSource = process.env.ATOMIZER_SIGNAL_LAB_CONTINUATION_V1;
 const continuation = continuationSource
@@ -519,7 +561,7 @@ let channel = continuation?.channel ?? { model: 'awgn', noiseFloorDbm: -110, see
 let sequence = continuation?.sequence ?? 0;
 const status = () => ({
   kind: 'status', sessionId, configurationRevision: revision, updatedAt,
-  available: true, active: true, profile, profiles: ['cw', 'fm'],
+  available: true, active: true, profile, profiles: descriptors.map((item) => item.id),
   waveform: descriptors.find((item) => item.id === profile), catalog: descriptors,
   channel, capabilities, identity,
 });
@@ -534,6 +576,9 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   if (request.method === 'status') {
     if (${JSON.stringify(behavior)} === 'mutate-artifact-during-startup') {
       fs.appendFileSync(path.resolve(__dirname, 'waveforms.js'), '// startup mutation\\n');
+    }
+    if (${JSON.stringify(behavior)} === 'mutate-source-provenance-during-startup') {
+      fs.appendFileSync(path.resolve(__dirname, 'source-provenance.js'), '// startup mutation\\n');
     }
     reply(request, status());
     if (${JSON.stringify(behavior)} === 'exit-after-status') process.stdout.end();
@@ -561,8 +606,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     reply(request, measurement);
   } else if (request.method === 'acquire_detected_power') {
     sequence += 1;
-    const { points, samplePeriodSeconds } = request.params;
-    reply(request, { ...base(), kind: 'detected-power-timeseries', centerFrequencyHz: 100000000, points, samplePeriodSeconds, powerDbm: Array(points).fill(-65) });
+    const { centerFrequencyHz, points, samplePeriodSeconds } = request.params;
+    reply(request, { ...base(), kind: 'detected-power-timeseries', centerFrequencyHz, points, samplePeriodSeconds, powerDbm: Array(points).fill(-65) });
   } else if (request.method === 'shutdown') { reply(request, { kind: 'shutdown', closed: true }); setTimeout(() => process.exit(0), 5); }
 });
 `;

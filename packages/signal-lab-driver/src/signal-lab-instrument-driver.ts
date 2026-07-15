@@ -5,7 +5,9 @@ import { resolve, sep } from 'node:path';
 import {
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
+  instrumentSessionEventSchema,
   instrumentSessionProvenanceSchema,
+  SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
   type InstrumentCandidate,
   type InstrumentCapabilities,
   type InstrumentConfigurationCommand,
@@ -23,7 +25,7 @@ import {
   parseInstrumentMeasurement,
   type InstrumentDriver,
   type InstrumentSession,
-} from './instrument-driver.js';
+} from '@tinysa/instrument-runtime';
 import {
   SignalLabBridgeClient,
   SignalLabBridgeTerminalError,
@@ -41,19 +43,22 @@ export const SIGNAL_LAB_INSTRUMENT_DRIVER_ID = 'signal-lab' as const;
 export const SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID = 'signal-lab:default' as const;
 export const SIGNAL_LAB_INSTRUMENT_SOURCE_ID = 'default' as const;
 
-const MAX_FREQUENCY_HZ = 17_922_600_000;
+const MIN_FREQUENCY_HZ = SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1.min;
+const MAX_FREQUENCY_HZ = SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1.max;
 const MAX_SPECTRUM_POINTS = 4_096;
 const MAX_DETECTED_POWER_POINTS = 4_096;
-const MIN_SAMPLE_PERIOD_SECONDS = 0.000_001;
-const MAX_SAMPLE_PERIOD_SECONDS = 10;
+/** Canonical synthetic scalar-view duration admitted by the v1 bridge model. */
+export const SIGNAL_LAB_EXACT_SWEEP_SECONDS = 0.05 as const;
 const SIGNAL_LAB_CONTRACT_FILE = 'signal-lab-measurement-bridge-v1.json';
 const SIGNAL_LAB_GENERATOR_ARTIFACTS = Object.freeze([
   'atomizer-bridge.js',
+  'canonical-timing.js',
   'catalog.js',
   'contracts.js',
   'measurement-bridge.js',
   'measurement-contract.js',
   'measurement-service.js',
+  'source-provenance.js',
   'waveforms.js',
 ] as const);
 
@@ -300,15 +305,32 @@ class SignalLabInstrumentSession implements InstrumentSession {
       acquisitions: [
         {
           kind: 'swept-spectrum',
-          frequencyHz: { min: 1, max: MAX_FREQUENCY_HZ, step: 1 },
+          frequencyHz: SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
           points: { min: 2, max: MAX_SPECTRUM_POINTS, step: 1 },
+          sweepTimeSeconds: {
+            automatic: false,
+            manualSeconds: { min: SIGNAL_LAB_EXACT_SWEEP_SECONDS, max: SIGNAL_LAB_EXACT_SWEEP_SECONDS },
+          },
+          controls: {
+            schemaVersion: 1,
+            model: 'synthetic-scalar',
+            timingQualification: 'simulation-exact',
+          },
           powerUnit: 'dBm',
         },
         {
           kind: 'detected-power-timeseries',
-          centerFrequencyHz: { min: 1, max: MAX_FREQUENCY_HZ, step: 1 },
+          centerFrequencyHz: SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
           sampleCount: { min: 1, max: MAX_DETECTED_POWER_POINTS, step: 1 },
-          sampleIntervalSeconds: { min: MIN_SAMPLE_PERIOD_SECONDS, max: MAX_SAMPLE_PERIOD_SECONDS },
+          sweepTimeSeconds: {
+            automatic: false,
+            manualSeconds: { min: SIGNAL_LAB_EXACT_SWEEP_SECONDS, max: SIGNAL_LAB_EXACT_SWEEP_SECONDS },
+          },
+          controls: {
+            schemaVersion: 1,
+            model: 'synthetic-scalar',
+            timingQualification: 'simulation-exact',
+          },
           powerUnit: 'dBm',
           timing: 'uniform',
         },
@@ -329,18 +351,19 @@ class SignalLabInstrumentSession implements InstrumentSession {
     this.#requireSession(command.sessionId);
     const configuration = command.configuration;
     if (configuration.kind === 'complex-iq') throw new Error('SignalLab does not provide complex I/Q');
+    if (configuration.controls.model !== 'synthetic-scalar'
+      || configuration.controls.timingQualification !== 'simulation-exact'
+      || configuration.sweepTimeSeconds !== SIGNAL_LAB_EXACT_SWEEP_SECONDS) {
+      throw new RangeError(`SignalLab admits only exact ${SIGNAL_LAB_EXACT_SWEEP_SECONDS}s synthetic scalar timing and no receiver controls`);
+    }
     if (configuration.kind === 'swept-spectrum') {
-      requireInteger(configuration.startHz, 1, MAX_FREQUENCY_HZ, 'SignalLab sweep start');
-      requireInteger(configuration.stopHz, 1, MAX_FREQUENCY_HZ, 'SignalLab sweep stop');
+      requireInteger(configuration.startHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep start');
+      requireInteger(configuration.stopHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep stop');
       if (configuration.stopHz <= configuration.startHz) throw new RangeError('SignalLab sweep stop must exceed start');
       requireInteger(configuration.points, 2, MAX_SPECTRUM_POINTS, 'SignalLab sweep points');
     } else {
-      requireInteger(configuration.centerHz, 1, MAX_FREQUENCY_HZ, 'SignalLab detected-power center');
+      requireInteger(configuration.centerHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab detected-power center');
       requireInteger(configuration.sampleCount, 1, MAX_DETECTED_POWER_POINTS, 'SignalLab detected-power samples');
-      requireFinite(configuration.sampleIntervalSeconds, MIN_SAMPLE_PERIOD_SECONDS, MAX_SAMPLE_PERIOD_SECONDS, 'SignalLab sample interval');
-      if (configuration.centerHz !== this.#status.waveform.centerHz) {
-        throw new RangeError(`SignalLab profile ${this.#status.profile} is centered at ${this.#status.waveform.centerHz} Hz, not ${configuration.centerHz} Hz`);
-      }
     }
     this.#configuration = Object.freeze({
       command: structuredClone(command),
@@ -389,12 +412,10 @@ class SignalLabInstrumentSession implements InstrumentSession {
         this.#emit({ type: 'status', sessionId: this.sessionId, status: 'ready' });
         return measurement;
       }
-      if (configuration.centerHz !== this.#status.waveform.centerHz) {
-        throw new Error(`SignalLab profile changed center; reconfigure detected power for ${this.#status.waveform.centerHz} Hz`);
-      }
       const source = await this.#client.acquireDetectedPower({
+        centerFrequencyHz: configuration.centerHz,
         points: configuration.sampleCount,
-        samplePeriodSeconds: configuration.sampleIntervalSeconds,
+        samplePeriodSeconds: configuration.sweepTimeSeconds / configuration.sampleCount,
       });
       this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
       this.#acceptSourceSequence(source.sequence);
@@ -529,7 +550,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
     this.#listeners.add(listener);
     if (this.#terminalError) {
       for (const event of signalLabTerminalEvents(this.sessionId, this.#terminalError)) {
-        try { listener(event); } catch { /* Consumer isolation. */ }
+        try { listener(structuredClone(instrumentSessionEventSchema.parse(event))); } catch { /* Consumer isolation. */ }
       }
     }
     return () => this.#listeners.delete(listener);
@@ -657,8 +678,9 @@ class SignalLabInstrumentSession implements InstrumentSession {
   }
 
   #emit(event: InstrumentSessionEvent): void {
-    for (const listener of this.#listeners) {
-      try { listener(event); } catch { /* Consumers cannot change session state. */ }
+    const admitted = instrumentSessionEventSchema.parse(event);
+    for (const listener of [...this.#listeners]) {
+      try { listener(structuredClone(admitted)); } catch { /* Consumers cannot change session state. */ }
     }
   }
 }
@@ -677,10 +699,6 @@ function defaultDiagnosticLogger(line: string): void {
 
 function requireInteger(value: number, minimum: number, maximum: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new RangeError(`${label} is outside ${minimum}..${maximum}`);
-}
-
-function requireFinite(value: number, minimum: number, maximum: number, label: string): void {
-  if (!Number.isFinite(value) || value < minimum || value > maximum) throw new RangeError(`${label} is outside ${minimum}..${maximum}`);
 }
 
 async function verifySignalLabArtifacts(location: SignalLabBridgeLocation): Promise<SignalLabArtifactEvidence> {

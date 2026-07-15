@@ -3,6 +3,10 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
 
 const APP_NAME = 'TinySA Atomizer Dev';
 const BUNDLE_ID = 'org.tinysa.atomizer.dev';
@@ -91,9 +95,10 @@ function signApplication(application) {
 
 function installApplication() {
   assertFile(sourceApp, 'Electron development runtime');
-  assertFile(join(repoRoot, '.env'), 'TinySA Atomizer environment file');
+  requirePrivateEnvironmentFile(join(repoRoot, '.env'));
   assertFile(join(here, 'main.cjs'), 'Development launcher runtime');
   assertFile(join(here, 'bounded-log.cjs'), 'Development launcher bounded-log runtime');
+  assertFile(join(here, 'private-environment-file.cjs'), 'Development launcher environment-file validator');
   assertFile(join(here, 'package.json'), 'Development launcher package');
   assertFile(join(here, 'config.json'), 'Development runtime contract');
 
@@ -116,6 +121,7 @@ function installApplication() {
   mkdirSync(runtime);
   cpSync(join(here, 'main.cjs'), join(runtime, 'main.cjs'));
   cpSync(join(here, 'bounded-log.cjs'), join(runtime, 'bounded-log.cjs'));
+  cpSync(join(here, 'private-environment-file.cjs'), join(runtime, 'private-environment-file.cjs'));
   cpSync(join(here, 'package.json'), join(runtime, 'package.json'));
   writeFileSync(join(runtime, 'launcher-config.json'), `${JSON.stringify({ contractVersion: CONTRACT_VERSION, repoRoot }, null, 2)}\n`, 'utf8');
 

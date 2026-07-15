@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  isSupportedZs407FirmwareIdentity,
+  isZs407FirmwareVersionRevisionPair,
+} from './firmware-provenance.js';
 
 export const INSTRUMENT_CONTRACT_VERSION = 1 as const;
 export const MAX_COMPLEX_IQ_BYTES_V1 = 64 * 1024 * 1024;
@@ -38,6 +42,47 @@ export const MAX_INSTRUMENT_DRIVER_ID_CHARACTERS_V1 = 128;
 export const MAX_INSTRUMENT_OPAQUE_ID_CHARACTERS_V1 = 256;
 export const MAX_INSTRUMENT_SOURCE_KINDS_V1 = 3;
 export const SIGNAL_LAB_EXACT_SWEEP_SECONDS_V1 = 0.05;
+/** Exact integer-Hz scalar tuning lattice advertised by the SignalLab v1 driver. */
+export const SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1 = Object.freeze({
+  min: 1,
+  max: 17_922_600_000,
+  step: 1,
+} as const);
+
+/**
+ * Project a measured/detected centroid onto an advertised integer-Hz
+ * detected-power tuning lattice. A missing capability step means every
+ * integer hertz is supported. Half-step ties select the higher lattice point.
+ * Out-of-range or non-finite observations are rejected rather than clamped.
+ */
+export function projectDetectedPowerTuneHz(
+  observedFrequencyHz: number,
+  centerFrequencyHz: Readonly<{ min: number; max: number; step?: number }>,
+): number {
+  if (!Number.isFinite(observedFrequencyHz)) {
+    throw new TypeError(`Detected-power tune source ${observedFrequencyHz} Hz must be finite`);
+  }
+  const step = centerFrequencyHz.step ?? 1;
+  if (!Number.isSafeInteger(centerFrequencyHz.min)
+    || !Number.isSafeInteger(centerFrequencyHz.max)
+    || !Number.isSafeInteger(step)
+    || centerFrequencyHz.min < 0
+    || centerFrequencyHz.max < centerFrequencyHz.min
+    || step <= 0) {
+    throw new TypeError('Detected-power center-frequency capability must be a nonnegative safe-integer range with a positive safe-integer step');
+  }
+  if (observedFrequencyHz < centerFrequencyHz.min || observedFrequencyHz > centerFrequencyHz.max) {
+    throw new RangeError(`Detected-power tune source ${observedFrequencyHz} Hz is outside ${centerFrequencyHz.min}-${centerFrequencyHz.max} Hz`);
+  }
+  const maximumStepIndex = Math.floor((centerFrequencyHz.max - centerFrequencyHz.min) / step);
+  const nearestStepIndex = Math.min(
+    maximumStepIndex,
+    Math.max(0, Math.round((observedFrequencyHz - centerFrequencyHz.min) / step)),
+  );
+  const projected = centerFrequencyHz.min + nearestStepIndex * step;
+  if (!Number.isSafeInteger(projected)) throw new RangeError('Projected detected-power tune is not a safe integer hertz value');
+  return projected;
+}
 
 export const INSTRUMENT_CONTRACT_LIMITS_V1 = Object.freeze({
   complexIqBytes: MAX_COMPLEX_IQ_BYTES_V1,
@@ -269,7 +314,7 @@ const powerRangeSchema = boundedFiniteRangeSchema(
 const receiverScalarSpectrumControlCapabilitySchema = z.object({
   schemaVersion: z.literal(1),
   model: z.literal('receiver'),
-  acquisitionFormats: z.array(z.enum(['text', 'raw'])).min(1).max(2).readonly(),
+  acquisitionFormats: boundedReadonlyArray(z.enum(['text', 'raw']), 2, 1),
   resolutionBandwidthKhz: z.object({
     automatic: z.boolean(),
     manual: boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000)
@@ -279,14 +324,14 @@ const receiverScalarSpectrumControlCapabilitySchema = z.object({
     automatic: z.boolean(),
     manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
   }).strict(),
-  detectors: z.array(z.enum([
+  detectors: boundedReadonlyArray(z.enum([
     'sample', 'minimum-hold', 'maximum-hold', 'maximum-decay',
     'average-4', 'average-16', 'average', 'quasi-peak',
-  ])).min(1).max(8).readonly(),
-  spurRejection: z.array(z.enum(['off', 'on', 'auto'])).min(1).max(3).readonly(),
-  lowNoiseAmplifier: z.array(z.enum(['off', 'on'])).min(1).max(2).readonly(),
-  avoidSpurs: z.array(z.enum(['off', 'on', 'auto'])).min(1).max(3).readonly(),
-  triggerModes: z.array(z.enum(['auto', 'normal', 'single'])).min(1).max(3).readonly(),
+  ]), 8, 1),
+  spurRejection: boundedReadonlyArray(z.enum(['off', 'on', 'auto']), 3, 1),
+  lowNoiseAmplifier: boundedReadonlyArray(z.enum(['off', 'on']), 2, 1),
+  avoidSpurs: boundedReadonlyArray(z.enum(['off', 'on', 'auto']), 3, 1),
+  triggerModes: boundedReadonlyArray(z.enum(['auto', 'normal', 'single']), 3, 1),
   triggerLevelDbm: powerRangeSchema.optional(),
 }).strict().superRefine((capability, context) => {
   for (const key of ['acquisitionFormats', 'detectors', 'spurRejection', 'lowNoiseAmplifier', 'avoidSpurs', 'triggerModes'] as const) {
@@ -314,7 +359,7 @@ const receiverDetectedPowerControlCapabilitySchema = z.object({
     automatic: z.boolean(),
     manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
   }).strict(),
-  triggerModes: z.array(z.enum(['auto', 'normal', 'single'])).min(1).max(3).readonly(),
+  triggerModes: boundedReadonlyArray(z.enum(['auto', 'normal', 'single']), 3, 1),
   triggerLevelDbm: powerRangeSchema.optional(),
 }).strict().superRefine((capability, context) => {
   if (new Set(capability.triggerModes).size !== capability.triggerModes.length) {
@@ -571,6 +616,64 @@ const sessionSerialPortSchema = z.object({
   productId: z.string().regex(/^[a-f0-9]{4}$/i).optional(),
 }).strict();
 
+const serialSessionDeviceBaseShape = {
+  model: metadataStringSchema,
+  hardwareVersion: metadataStringSchema,
+  firmwareVersion: metadataStringSchema,
+  usbIdentityVerified: z.literal(true),
+} as const;
+
+const supportedOemSerialSessionDeviceSchema = z.object({
+  ...serialSessionDeviceBaseShape,
+  firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i),
+  firmwareSourceCommit: z.string().regex(/^[a-f0-9]{40}$/i),
+  firmwareQualification: z.literal('supported-oem'),
+  firmwareWarning: z.never().optional(),
+}).strict().superRefine((device, context) => {
+  if (!isZs407FirmwareVersionRevisionPair(device.firmwareVersion, device.firmwareReportedRevision)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareReportedRevision'],
+      message: 'Supported OEM reported revision must equal the single revision token in the firmware version',
+    });
+  }
+  if (!isSupportedZs407FirmwareIdentity(device.firmwareVersion, device.firmwareReportedRevision, device.firmwareSourceCommit)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareSourceCommit'],
+      message: 'Supported OEM firmware revision and source commit must match the closed qualification registry',
+    });
+  }
+});
+
+const customSerialSessionDeviceSchema = z.object({
+  ...serialSessionDeviceBaseShape,
+  firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i),
+  firmwareSourceCommit: z.never().optional(),
+  firmwareQualification: z.literal('custom-unqualified'),
+  firmwareWarning: metadataStringSchema,
+}).strict().superRefine((device, context) => {
+  if (!isZs407FirmwareVersionRevisionPair(device.firmwareVersion, device.firmwareReportedRevision)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareReportedRevision'],
+      message: 'Custom reported revision must equal the single revision token in the firmware version',
+    });
+  }
+  if (!device.firmwareWarning.toLowerCase().includes(device.firmwareReportedRevision.toLowerCase())) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareWarning'],
+      message: 'Custom firmware warning must identify the unresolved reported revision',
+    });
+  }
+});
+
+const serialSessionDeviceSchema = z.union([
+  supportedOemSerialSessionDeviceSchema,
+  customSerialSessionDeviceSchema,
+]);
+
 export const serialInstrumentSessionProvenanceSchema = z.object({
   sourceKind: z.literal('serial-port'),
   execution: z.literal('physical'),
@@ -578,15 +681,7 @@ export const serialInstrumentSessionProvenanceSchema = z.object({
   qualification: z.literal('device-observed'),
   verifiedAt: instrumentTimestampSchema,
   serialPort: sessionSerialPortSchema,
-  device: z.object({
-    model: metadataStringSchema,
-    hardwareVersion: metadataStringSchema,
-    firmwareVersion: metadataStringSchema,
-    firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i).optional(),
-    firmwareSourceCommit: z.string().regex(/^[a-f0-9]{40}$/i).optional(),
-    firmwareQualification: z.enum(['supported-oem', 'custom-unqualified']),
-    usbIdentityVerified: z.boolean(),
-  }).strict(),
+  device: serialSessionDeviceSchema,
 }).strict();
 
 export const tinySaFirmwareTwinSessionProvenanceSchema = z.object({
@@ -880,6 +975,178 @@ export const instrumentConfigurationStateSchema = instrumentConfigurationCommand
 }).strict();
 export type InstrumentConfigurationState = z.infer<typeof instrumentConfigurationStateSchema>;
 
+export interface InstrumentConfigurationCapabilityBindingIssue {
+  readonly path: readonly (string | number)[];
+  readonly message: string;
+}
+
+/**
+ * Relational validation for authoritative configuration state. The standalone
+ * configuration schema proves only that a request is well formed; a public
+ * session snapshot must also prove that the active capability set admits every
+ * requested value and control.
+ */
+export function instrumentConfigurationCapabilityBindingIssues(
+  configuration: InstrumentConfiguration,
+  capabilities: InstrumentCapabilities,
+): readonly InstrumentConfigurationCapabilityBindingIssue[] {
+  const issues: InstrumentConfigurationCapabilityBindingIssue[] = [];
+  const capability = capabilities.acquisitions.find((candidate) => candidate.kind === configuration.kind);
+  if (!capability) {
+    return [{ path: ['kind'], message: `Configuration kind ${configuration.kind} is not advertised by the session` }];
+  }
+
+  if (configuration.kind === 'swept-spectrum' && capability.kind === 'swept-spectrum') {
+    appendRangeBindingIssue(issues, ['startHz'], configuration.startHz, capability.frequencyHz, 'Sweep start');
+    appendRangeBindingIssue(issues, ['stopHz'], configuration.stopHz, capability.frequencyHz, 'Sweep stop');
+    appendRangeBindingIssue(issues, ['points'], configuration.points, capability.points, 'Sweep points');
+    appendAutomaticOrRangeBindingIssue(
+      issues,
+      ['sweepTimeSeconds'],
+      configuration.sweepTimeSeconds,
+      capability.sweepTimeSeconds,
+      'Sweep time',
+    );
+    if (configuration.controls.model !== capability.controls.model) {
+      issues.push({ path: ['controls', 'model'], message: `Sweep control model ${configuration.controls.model} is not advertised` });
+    } else if (configuration.controls.model === 'receiver' && capability.controls.model === 'receiver') {
+      if (!capability.controls.acquisitionFormats.includes(configuration.controls.acquisitionFormat)) {
+        issues.push({ path: ['controls', 'acquisitionFormat'], message: `Acquisition format ${configuration.controls.acquisitionFormat} is not advertised` });
+      }
+      appendAutomaticOrManualRangeBindingIssue(
+        issues,
+        ['controls', 'resolutionBandwidthKhz'],
+        configuration.controls.resolutionBandwidthKhz,
+        capability.controls.resolutionBandwidthKhz,
+        'Resolution bandwidth',
+      );
+      appendAutomaticOrManualRangeBindingIssue(
+        issues,
+        ['controls', 'attenuationDb'],
+        configuration.controls.attenuationDb,
+        capability.controls.attenuationDb,
+        'Attenuation',
+      );
+      if (!capability.controls.detectors.includes(configuration.controls.detector)) {
+        issues.push({ path: ['controls', 'detector'], message: `Detector ${configuration.controls.detector} is not advertised` });
+      }
+      if (!capability.controls.spurRejection.includes(configuration.controls.spurRejection)) {
+        issues.push({ path: ['controls', 'spurRejection'], message: `Spur-rejection mode ${configuration.controls.spurRejection} is not advertised` });
+      }
+      if (!capability.controls.lowNoiseAmplifier.includes(configuration.controls.lowNoiseAmplifier)) {
+        issues.push({ path: ['controls', 'lowNoiseAmplifier'], message: `LNA mode ${configuration.controls.lowNoiseAmplifier} is not advertised` });
+      }
+      if (!capability.controls.avoidSpurs.includes(configuration.controls.avoidSpurs)) {
+        issues.push({ path: ['controls', 'avoidSpurs'], message: `Avoid-spurs mode ${configuration.controls.avoidSpurs} is not advertised` });
+      }
+      appendTriggerBindingIssues(issues, configuration.controls.trigger, capability.controls);
+    }
+  } else if (configuration.kind === 'detected-power-timeseries' && capability.kind === 'detected-power-timeseries') {
+    appendRangeBindingIssue(issues, ['centerHz'], configuration.centerHz, capability.centerFrequencyHz, 'Detected-power center');
+    appendRangeBindingIssue(issues, ['sampleCount'], configuration.sampleCount, capability.sampleCount, 'Detected-power sample count');
+    appendRangeBindingIssue(issues, ['sweepTimeSeconds'], configuration.sweepTimeSeconds, capability.sweepTimeSeconds.manualSeconds, 'Detected-power sweep time');
+    if (configuration.controls.model !== capability.controls.model) {
+      issues.push({ path: ['controls', 'model'], message: `Detected-power control model ${configuration.controls.model} is not advertised` });
+    } else if (configuration.controls.model === 'receiver' && capability.controls.model === 'receiver') {
+      appendAutomaticOrManualRangeBindingIssue(
+        issues,
+        ['controls', 'resolutionBandwidthKhz'],
+        configuration.controls.resolutionBandwidthKhz,
+        capability.controls.resolutionBandwidthKhz,
+        'Resolution bandwidth',
+      );
+      appendAutomaticOrManualRangeBindingIssue(
+        issues,
+        ['controls', 'attenuationDb'],
+        configuration.controls.attenuationDb,
+        capability.controls.attenuationDb,
+        'Attenuation',
+      );
+      appendTriggerBindingIssues(issues, configuration.controls.trigger, capability.controls);
+    }
+  } else if (configuration.kind === 'complex-iq' && capability.kind === 'complex-iq') {
+    appendRangeBindingIssue(issues, ['centerHz'], configuration.centerHz, capability.centerFrequencyHz, 'I/Q center');
+    appendRangeBindingIssue(issues, ['sampleRateHz'], configuration.sampleRateHz, capability.sampleRateHz, 'I/Q sample rate');
+    appendRangeBindingIssue(issues, ['bandwidthHz'], configuration.bandwidthHz, capability.bandwidthHz, 'I/Q bandwidth');
+    appendRangeBindingIssue(issues, ['sampleCount'], configuration.sampleCount, capability.sampleCount, 'I/Q sample count');
+    if (configuration.sampleFormat !== capability.sampleFormat) {
+      issues.push({ path: ['sampleFormat'], message: `I/Q sample format ${configuration.sampleFormat} is not advertised` });
+    }
+  }
+  return issues;
+}
+
+type NumericCapabilityRange = Readonly<{ min: number; max: number; step?: number }>;
+
+function appendRangeBindingIssue(
+  issues: InstrumentConfigurationCapabilityBindingIssue[],
+  path: readonly (string | number)[],
+  value: number,
+  range: NumericCapabilityRange,
+  label: string,
+): void {
+  if (!capabilityRangeAdmits(value, range)) {
+    issues.push({ path, message: `${label} ${value} is outside the advertised capability` });
+  }
+}
+
+function appendAutomaticOrRangeBindingIssue(
+  issues: InstrumentConfigurationCapabilityBindingIssue[],
+  path: readonly (string | number)[],
+  value: 'auto' | number,
+  capability: Readonly<{ automatic: boolean; manualSeconds: NumericCapabilityRange }>,
+  label: string,
+): void {
+  if (value === 'auto') {
+    if (!capability.automatic) issues.push({ path, message: `${label} does not advertise automatic selection` });
+  } else {
+    appendRangeBindingIssue(issues, path, value, capability.manualSeconds, label);
+  }
+}
+
+function appendAutomaticOrManualRangeBindingIssue(
+  issues: InstrumentConfigurationCapabilityBindingIssue[],
+  path: readonly (string | number)[],
+  value: 'auto' | number,
+  capability: Readonly<{ automatic: boolean; manual: NumericCapabilityRange }>,
+  label: string,
+): void {
+  if (value === 'auto') {
+    if (!capability.automatic) issues.push({ path, message: `${label} does not advertise automatic selection` });
+  } else {
+    appendRangeBindingIssue(issues, path, value, capability.manual, label);
+  }
+}
+
+function appendTriggerBindingIssues(
+  issues: InstrumentConfigurationCapabilityBindingIssue[],
+  trigger: z.infer<typeof scalarTriggerSchema>,
+  capability: Readonly<{
+    triggerModes: readonly ('auto' | 'normal' | 'single')[];
+    triggerLevelDbm?: NumericCapabilityRange;
+  }>,
+): void {
+  if (!capability.triggerModes.includes(trigger.mode)) {
+    issues.push({ path: ['controls', 'trigger', 'mode'], message: `Trigger mode ${trigger.mode} is not advertised` });
+    return;
+  }
+  if (trigger.mode !== 'auto') {
+    if (!capability.triggerLevelDbm) {
+      issues.push({ path: ['controls', 'trigger', 'levelDbm'], message: `Trigger mode ${trigger.mode} has no advertised level range` });
+    } else {
+      appendRangeBindingIssue(issues, ['controls', 'trigger', 'levelDbm'], trigger.levelDbm, capability.triggerLevelDbm, 'Trigger level');
+    }
+  }
+}
+
+function capabilityRangeAdmits(value: number, range: NumericCapabilityRange): boolean {
+  if (value < range.min || value > range.max) return false;
+  if (range.step === undefined) return true;
+  const stepOffset = (value - range.min) / range.step;
+  return Math.abs(stepOffset - Math.round(stepOffset))
+    <= Number.EPSILON * Math.max(8, Math.abs(stepOffset) * 8);
+}
+
 const measurementBaseShape = {
   schemaVersion: z.literal(INSTRUMENT_CONTRACT_VERSION),
   measurementId: instrumentOpaqueIdSchema,
@@ -1007,24 +1274,60 @@ export const instrumentSessionSnapshotSchema = z.object({
   }
   if (session.candidate.sourceKind !== session.provenance.sourceKind) {
     context.addIssue({ code: 'custom', path: ['provenance', 'sourceKind'], message: 'Session provenance must match the admitted candidate source kind' });
-  } else if (session.candidate.sourceKind === 'serial-port' && session.provenance.sourceKind === 'serial-port') {
-    for (const field of ['path', 'manufacturer', 'product', 'serialNumber', 'vendorId', 'productId'] as const) {
-      if (session.candidate.serialPort[field] !== session.provenance.serialPort[field]) {
-        context.addIssue({ code: 'custom', path: ['provenance', 'serialPort', field], message: `Session serial ${field} must match the admitted endpoint` });
+  } else {
+    switch (session.candidate.sourceKind) {
+      case 'serial-port': {
+        if (session.provenance.sourceKind !== 'serial-port') throw new Error('Candidate/provenance source narrowing failed');
+        for (const field of ['path', 'manufacturer', 'product', 'serialNumber', 'vendorId', 'productId'] as const) {
+          if (session.candidate.serialPort[field] !== session.provenance.serialPort[field]) {
+            context.addIssue({ code: 'custom', path: ['provenance', 'serialPort', field], message: `Session serial ${field} must match the admitted endpoint` });
+          }
+        }
+        break;
+      }
+      case 'tinysa-firmware-twin': {
+        if (session.provenance.sourceKind !== 'tinysa-firmware-twin') throw new Error('Candidate/provenance source narrowing failed');
+        for (const field of ['bridge', 'repositoryCommit', 'firmwareBinarySha256', 'usbTransactionsModeled'] as const) {
+          if (session.candidate.firmwareTwin[field] !== session.provenance[field]) {
+            context.addIssue({ code: 'custom', path: ['provenance', field], message: `Session firmware-twin ${field} must match discovery evidence` });
+          }
+        }
+        break;
+      }
+      case 'signal-lab': {
+        if (session.provenance.sourceKind !== 'signal-lab') throw new Error('Candidate/provenance source narrowing failed');
+        if (session.candidate.signalLab.sourceId !== session.provenance.sourceId) {
+          context.addIssue({ code: 'custom', path: ['provenance', 'sourceId'], message: 'Session SignalLab source must match the admitted candidate' });
+        }
+        break;
+      }
+      default: {
+        const unhandledCandidate: never = session.candidate;
+        throw new Error(`Session candidate binding is undefined for ${JSON.stringify(unhandledCandidate)}`);
       }
     }
-  } else if (session.candidate.sourceKind === 'tinysa-firmware-twin' && session.provenance.sourceKind === 'tinysa-firmware-twin') {
-    for (const field of ['bridge', 'repositoryCommit', 'firmwareBinarySha256', 'usbTransactionsModeled'] as const) {
-      if (session.candidate.firmwareTwin[field] !== session.provenance[field]) {
-        context.addIssue({ code: 'custom', path: ['provenance', field], message: `Session firmware-twin ${field} must match discovery evidence` });
-      }
-    }
-  } else if (session.candidate.sourceKind === 'signal-lab' && session.provenance.sourceKind === 'signal-lab'
-    && session.candidate.signalLab.sourceId !== session.provenance.sourceId) {
-    context.addIssue({ code: 'custom', path: ['provenance', 'sourceId'], message: 'Session SignalLab source must match the admitted candidate' });
   }
   for (const issue of instrumentCapabilitySourceBindingIssues(session.candidate.sourceKind, session.capabilities)) {
     context.addIssue({ code: 'custom', path: ['capabilities', ...issue.path], message: issue.message });
+  }
+  if (session.configuration) {
+    if (session.configuration.sessionId !== session.sessionId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['configuration', 'sessionId'],
+        message: 'Configuration state must belong to the enclosing session',
+      });
+    }
+    for (const issue of instrumentConfigurationCapabilityBindingIssues(
+      session.configuration.configuration,
+      session.capabilities,
+    )) {
+      context.addIssue({
+        code: 'custom',
+        path: ['configuration', 'configuration', ...issue.path],
+        message: issue.message,
+      });
+    }
   }
   const supportsRf = session.capabilities.features.some((feature) => feature.kind === 'rf-generator');
   if (supportsRf && session.rfOutput === 'not-supported') {
@@ -1032,20 +1335,29 @@ export const instrumentSessionSnapshotSchema = z.object({
   } else if (!supportsRf && session.rfOutput !== 'not-supported') {
     context.addIssue({ code: 'custom', path: ['rfOutput'], message: 'Sessions without RF capability must expose not-supported output state' });
   }
-  const expectedQualification = session.rfOutput === 'unknown'
-    ? 'unverified'
-    : session.rfOutput === 'not-supported'
-      ? 'not-applicable'
-      : session.provenance.sourceKind === 'serial-port'
-        ? 'command-acknowledged'
-        : session.provenance.sourceKind === 'tinysa-firmware-twin'
-          ? 'firmware-executed-twin'
-          : 'not-applicable';
+  const expectedQualification = expectedSessionRfOutputQualification(session.provenance, session.rfOutput);
   if (session.rfOutputQualification !== expectedQualification) {
     context.addIssue({ code: 'custom', path: ['rfOutputQualification'], message: `RF output qualification must be ${expectedQualification}` });
   }
 });
 export type InstrumentSessionSnapshot = z.infer<typeof instrumentSessionSnapshotSchema>;
+
+function expectedSessionRfOutputQualification(
+  provenance: InstrumentSessionProvenance,
+  state: InstrumentRfOutputState,
+): InstrumentRfOutputQualification {
+  if (state === 'unknown') return 'unverified';
+  if (state === 'not-supported') return 'not-applicable';
+  switch (provenance.sourceKind) {
+    case 'serial-port': return 'command-acknowledged';
+    case 'tinysa-firmware-twin': return 'firmware-executed-twin';
+    case 'signal-lab': return 'not-applicable';
+    default: {
+      const unhandledProvenance: never = provenance;
+      throw new Error(`RF-output qualification is undefined for ${JSON.stringify(unhandledProvenance)}`);
+    }
+  }
+}
 
 export const instrumentManagerEventSchema = z.union([
   instrumentSessionEventSchema,

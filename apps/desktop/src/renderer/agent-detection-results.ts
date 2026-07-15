@@ -1,8 +1,65 @@
-import type { DetectedSignal } from '@tinysa/contracts';
+import type { DetectedSignal, WaveformClassification } from '@tinysa/contracts';
+
+type StaticClassificationAssociationMode = Extract<
+  NonNullable<DetectedSignal['associationMode']>,
+  'regular-spectral-component-activity' | 'multicomponent-swept-region-activity'
+>;
+
+function isStaticClassificationAssociationMode(
+  mode: DetectedSignal['associationMode'],
+): mode is StaticClassificationAssociationMode {
+  return mode === 'regular-spectral-component-activity'
+    || mode === 'multicomponent-swept-region-activity';
+}
+
+/**
+ * Preserve a static classifier association as evidence lineage, never as a
+ * merged emission, common process, simultaneous event, protocol, or emitter.
+ */
+export function agentClassificationAssociation(detection: DetectedSignal | undefined) {
+  if (!detection || !isStaticClassificationAssociationMode(detection.associationMode)) return null;
+  const observations = detection.multicomponentAssociationObservations;
+  return {
+    evidenceKind: 'nonidentifying-static-classification-association' as const,
+    mode: detection.associationMode,
+    associationId: detection.associationId,
+    associationModelId: detection.associationModelId,
+    regionHz: [detection.associationRegionStartHz, detection.associationRegionStopHz] as const,
+    sweepIds: detection.associationRegionSweepIds,
+    memberLocalTrackIds: detection.associationMemberTrackIds,
+    missedSweeps: detection.associationMissedSweeps,
+    currentLocalMember: detection.missedSweeps === 0
+      && detection.associationMissedSweeps === 0
+      && detection.associationMemberTrackIds?.includes(detection.id) === true,
+    multicomponentLineage: detection.associationMode === 'multicomponent-swept-region-activity'
+      ? {
+        observations,
+        latestObservation: observations?.at(-1),
+      }
+      : null,
+    representsPhysicalEmission: false as const,
+    representsEmitterIdentity: false as const,
+    representsCommonProcess: false as const,
+    representsSimultaneity: false as const,
+    representsProtocolIdentity: false as const,
+  };
+}
+
+/** Attach the exact association lineage to the representative result itself. */
+export function agentClassificationResults(
+  detections: readonly DetectedSignal[],
+  classifications: readonly WaveformClassification[],
+) {
+  const detectionById = new Map(detections.map((detection) => [detection.id, detection] as const));
+  return classifications.map((classification) => ({
+    ...classification,
+    classificationAssociation: agentClassificationAssociation(detectionById.get(classification.detectionId)),
+  }));
+}
 
 /**
  * Projects detector state across the Atom boundary without allowing a rolling
- * frequency-agility association to masquerade as one physical emission.
+ * or static classification association to masquerade as one physical emission.
  */
 export function agentDetectionResults(detections: readonly DetectedSignal[]) {
   return {
@@ -28,18 +85,7 @@ export function agentDetectionResults(detections: readonly DetectedSignal[]) {
         // Scope is explicit: this may be a local look, a track update, or a
         // prediction-only state after a miss.
         bayesianDetectionEvidence: detection.bayesianEvidence,
-        classificationAssociation: detection.associationMode === 'regular-spectral-component-activity'
-          ? {
-              mode: detection.associationMode,
-              associationId: detection.associationId,
-              associationModelId: detection.associationModelId,
-              regionHz: [detection.associationRegionStartHz, detection.associationRegionStopHz],
-              sweepIds: detection.associationRegionSweepIds,
-              memberLocalTrackIds: detection.associationMemberTrackIds,
-              missedSweeps: detection.associationMissedSweeps,
-              representsEmitterIdentity: false as const,
-            }
-          : null,
+        classificationAssociation: agentClassificationAssociation(detection),
       })),
     activityAssociations: detections
       .filter((detection) => detection.associationMode === 'frequency-agile-2g4-activity')

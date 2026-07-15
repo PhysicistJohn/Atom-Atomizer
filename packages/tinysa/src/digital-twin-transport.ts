@@ -3,6 +3,7 @@ import { constants, type BigIntStats } from 'node:fs';
 import { open, realpath, type FileHandle } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
+import { isDeepStrictEqual } from 'node:util';
 import {
   TINYSA_SHELL_PROMPT,
   ZS407_FIRMWARE_LIMITS,
@@ -370,6 +371,8 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
   readonly #events = new Set<(event: TransportEvent) => void>();
   readonly #bridgeCommand: string;
   #client?: TwinBridgeClient;
+  #openAttempt?: Promise<void>;
+  #closeAttempt?: Promise<void>;
   #open = false;
   #closing = false;
   #startHz = 88_000_000;
@@ -413,20 +416,53 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
 
   async list(): Promise<TransportDiscoveryResult> { return { candidates: [structuredClone(this.port)], failures: [] }; }
 
-  async open(candidate: PortCandidate): Promise<void> {
-    if (this.#open || this.#client) throw new Error('Digital twin transport is already open');
-    const input = portCandidateSchema.parse(candidate);
-    if (input.id !== this.port.id || input.execution !== 'firmware-digital-twin') throw new Error('Digital twin transport received an unknown candidate');
-    delete candidate.digitalTwin?.bootEvidence;
-    const client = await TwinBridgeClient.launch(this.#bridgeCommand, (error) => this.#unexpectedFailure(error));
-    this.#client = client;
+  open(candidate: PortCandidate): Promise<void> {
+    if (this.#open || this.#client || this.#openAttempt || this.#closeAttempt || this.#closing) {
+      return Promise.reject(new Error('Digital twin transport is already open or transitioning'));
+    }
     try {
-      const provenance = await client.start();
+      const input = portCandidateSchema.parse(candidate);
+      if (!isDeepStrictEqual(input, this.port)) {
+        return Promise.reject(new Error('Digital twin transport received an unknown or stale candidate'));
+      }
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    // Reserve startup synchronously, before bridge-command admission performs
+    // its first await. Otherwise concurrent callers can launch two detached
+    // process groups and overwrite the only client reference.
+    const attempt = this.#openOnce(candidate);
+    this.#openAttempt = attempt;
+    void attempt.then(
+      () => { if (this.#openAttempt === attempt) this.#openAttempt = undefined; },
+      () => { if (this.#openAttempt === attempt) this.#openAttempt = undefined; },
+    );
+    return attempt;
+  }
+
+  async #openOnce(candidate: PortCandidate): Promise<void> {
+    let client: TwinBridgeClient | undefined;
+    try {
+      client = await TwinBridgeClient.launch(this.#bridgeCommand, (error) => this.#unexpectedFailure(error));
+      this.#client = client;
+      // Attach to the boot promise before honoring an overtaking close so the
+      // client's intentional boot rejection always has an observer.
+      const starting = client.start();
+      if (this.#closing) {
+        void starting.catch(() => undefined);
+        throw new Error('Digital twin transport was closed during startup');
+      }
+      const provenance = await starting;
+      if (this.#closing) throw new Error('Digital twin transport was closed during startup');
+      // Fresh boot proof belongs only to this admitted connection. The static
+      // discovery descriptor must never claim evidence from a prior process.
       candidate.digitalTwin = provenance;
-      this.port.digitalTwin = structuredClone(provenance);
       this.#open = true;
       this.#emitEvent({ type: 'opened' });
     } catch (error) {
+      this.#open = false;
+      if (!client) throw error;
       try {
         await client.close();
         if (this.#client === client) this.#client = undefined;
@@ -436,17 +472,48 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
     }
   }
 
-  async close(): Promise<void> {
-    const client = this.#client;
-    if (!client) return;
+  close(): Promise<void> {
+    if (this.#closeAttempt) return this.#closeAttempt;
+    const opening = this.#openAttempt;
+    if (!this.#client && !opening) return Promise.resolve();
     this.#closing = true;
     this.#open = false;
-    try {
-      await client.close();
-      this.#client = undefined; this.#open = false; this.#closing = false; this.#generatorConfigured = false; this.#generatorEnabled = false; this.#lastAcquisition = undefined;
-      this.#emitEvent({ type: 'closed', reason: 'Digital twin bridge stopped' });
+    const attempt = this.#closeOnce(opening);
+    this.#closeAttempt = attempt;
+    void attempt.then(
+      () => {
+        if (this.#closeAttempt === attempt) this.#closeAttempt = undefined;
+        this.#closing = false;
+      },
+      () => {
+        if (this.#closeAttempt === attempt) this.#closeAttempt = undefined;
+        this.#closing = false;
+      },
+    );
+    return attempt;
+  }
+
+  async #closeOnce(opening: Promise<void> | undefined): Promise<void> {
+    if (opening) {
+      // If bridge admission has already produced a booting client, closing it
+      // rejects start() immediately instead of waiting for the boot timeout.
+      // open() performs the same coalesced cleanup; a final retry below is the
+      // authority when that first termination attempt fails.
+      try { await this.#client?.close(); } catch { /* Final retained-client cleanup follows. */ }
+      // An open canceled by close performs its own client cleanup. Waiting for
+      // it here makes a close during command admission/boot a teardown barrier.
+      try { await opening; } catch { /* Startup cleanup is completed by open(). */ }
     }
-    finally { this.#closing = false; }
+    const client = this.#client;
+    if (!client) return;
+    await client.close();
+    if (this.#client !== client) return;
+    this.#client = undefined;
+    this.#open = false;
+    this.#generatorConfigured = false;
+    this.#generatorEnabled = false;
+    this.#lastAcquisition = undefined;
+    this.#emitEvent({ type: 'closed', reason: 'Digital twin bridge stopped' });
   }
 
   async write(bytes: Uint8Array): Promise<void> {
@@ -619,8 +686,16 @@ export class RenodeDigitalTwinTransport implements ByteTransport {
 
   async #touch(args: string[]): Promise<string> { const x = unsigned(args[0], 'touch x'); const y = unsigned(args[1], 'touch y'); await this.#request('touch', { x, y }); return ''; }
   #request(method: string, params: Record<string, unknown> = {}): Promise<unknown> { const client = this.#client; if (!client) throw new Error('Digital twin bridge is unavailable'); return client.request(method, params); }
-  #emitBytes(bytes: Uint8Array): void { for (const listener of this.#bytes) listener(bytes); }
-  #emitEvent(event: TransportEvent): void { for (const listener of this.#events) listener(event); }
+  #emitBytes(bytes: Uint8Array): void {
+    for (const listener of [...this.#bytes]) {
+      try { listener(bytes.slice()); } catch { /* Transport observers are observational only. */ }
+    }
+  }
+  #emitEvent(event: TransportEvent): void {
+    for (const listener of [...this.#events]) {
+      try { listener(structuredClone(event)); } catch { /* Transport observers are observational only. */ }
+    }
+  }
   #unexpectedFailure(error: Error): void { if (this.#closing) return; this.#open = false; this.#emitEvent({ type: 'error', error }); }
 }
 

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 export default defineConfig({
   resolve: { alias: {
     '@tinysa/contracts': fileURLToPath(new URL('./packages/contracts/src/index.ts', import.meta.url)),
+    '@tinysa/instrument-runtime': fileURLToPath(new URL('./packages/instrument-runtime/src/index.ts', import.meta.url)),
+    '@tinysa/signal-lab-driver': fileURLToPath(new URL('./packages/signal-lab-driver/src/index.ts', import.meta.url)),
     '@tinysa/device': fileURLToPath(new URL('./packages/tinysa/src/index.ts', import.meta.url)),
     '@tinysa/test-device': fileURLToPath(new URL('./packages/test-device/src/index.ts', import.meta.url)),
     '@tinysa/analysis': fileURLToPath(new URL('./packages/analysis/src/index.ts', import.meta.url)),

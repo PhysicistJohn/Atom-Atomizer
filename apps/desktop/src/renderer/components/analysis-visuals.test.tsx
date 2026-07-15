@@ -250,6 +250,103 @@ describe('analysis visual contracts', () => {
     expect(view.container.textContent).toContain('Group · FM / angle-modulated-like');
   });
 
+  it('maps a changing multicomponent result only to the latest member hull', () => {
+    const associationId = 'multicomponent-swept-region-0001';
+    const currentMemberIds = ['line-2', 'line-3', 'line-4', 'line-5'];
+    const lineageObservation = {
+      sweepId: 'sweep-1',
+      sweepSequence: 1,
+      geometryId: 'multicomponent:test',
+      sweepStartHz: 90_000_000,
+      sweepStopHz: 110_000_000,
+      rbwHz: 50_000,
+      binWidthHz: 50_000,
+      observedRegionStartHz: 98_000_000,
+      observedRegionStopHz: 104_100_000,
+      containmentToleranceHz: 55_000,
+      qualification: 'resolved-component-raster-not-emitter-identity' as const,
+      members: [],
+    };
+    const current = currentMemberIds.map((id, index): DetectedSignal => ({
+      ...detection,
+      id,
+      startHz: 98_000_000 + index * 2_000_000,
+      stopHz: 98_100_000 + index * 2_000_000,
+      peakHz: 98_050_000 + index * 2_000_000,
+      bandwidthHz: 100_000,
+      associationMode: 'multicomponent-swept-region-activity',
+      associationRegionStartHz: 98_000_000,
+      associationRegionStopHz: 104_100_000,
+      associationRegionSweepIds: ['sweep-1'],
+      associationId,
+      associationModelId: 'multicomponent-swept-region-v1',
+      associationMemberTrackIds: currentMemberIds,
+      associationMissedSweeps: 0,
+      multicomponentAssociationObservations: [lineageObservation],
+    }));
+    const departed = {
+      ...detection,
+      id: 'line-1',
+      missedSweeps: 1,
+      associationMode: 'multicomponent-swept-region-activity',
+      associationRegionStartHz: 96_000_000,
+      associationRegionStopHz: 104_100_000,
+      associationRegionSweepIds: ['previous-sweep'],
+      associationId,
+      associationModelId: 'multicomponent-swept-region-v1',
+      associationMemberTrackIds: ['line-1', ...currentMemberIds],
+      associationMissedSweeps: 1,
+      multicomponentAssociationObservations: [{ ...lineageObservation, sweepId: 'previous-sweep' }],
+    } satisfies DetectedSignal;
+    const groupClassification = {
+      ...classification,
+      detectionId: 'line-3',
+      label: 'observable:fm-angle-modulated-like',
+      evidence: {
+        ...classification.evidence,
+        centerHz: 101_050_000,
+        bandwidthHz: 6_100_000,
+        limitations: ['multicomponent-swept-region-activity-association'],
+      },
+    } satisfies WaveformClassification;
+    const detections = [...current, departed];
+
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={detections}
+      classifications={[groupClassification]}
+      selectedId={departed.id}
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onZeroConfig={vi.fn()}
+      onAcquireZero={vi.fn()}
+    />);
+
+    const departedRow = view.container.querySelector('[data-agent-control="classification.candidate.line-1.select"]');
+    expect(departedRow?.querySelector('.pending')).not.toBeNull();
+    expect(departedRow?.textContent).not.toContain('Group ·');
+    expect(view.container.querySelectorAll('.candidate-row .classified')).toHaveLength(4);
+    expect(view.container.querySelector('.classification-result')?.textContent).toContain('Select evidence');
+
+    view.rerender(<ClassificationWorkspace
+      sweep={sweep}
+      detections={detections}
+      classifications={[groupClassification]}
+      selectedId="line-4"
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onZeroConfig={vi.fn()}
+      onAcquireZero={vi.fn()}
+    />);
+    const provenance = view.container.querySelector('.result-provenance')?.textContent ?? '';
+    expect(provenance).toContain(`Multicomponent swept-region association ${associationId}`);
+    expect(provenance).toContain('4 current local members · 1 lineage looks');
+    expect(provenance).toContain('not emitter identity');
+    expect(provenance).toContain('not common-process or simultaneity evidence');
+  });
+
   it('discloses frequency-agile evidence as a conditional activity association, never a local emission', () => {
     const localBayesianEvidence = {
       ...detection.bayesianEvidence,

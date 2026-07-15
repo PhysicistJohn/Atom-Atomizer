@@ -40,9 +40,7 @@ export function frequencyAgileSweepGeometryCompatible(previous: Sweep, candidate
     && previous.actualRbwHz === candidate.actualRbwHz
     && previous.actualAttenuationDb === candidate.actualAttenuationDb
     && previous.requested.sweepTimeSeconds === candidate.requested.sweepTimeSeconds
-    && previous.requested.detector === candidate.requested.detector
-    && previous.requested.lna === candidate.requested.lna
-    && previous.requested.spurRejection === candidate.requested.spurRejection
+    && JSON.stringify(previous.requested.controls) === JSON.stringify(candidate.requested.controls)
     && previous.source === candidate.source
     && sameMeasurementIdentity(previous.identity, candidate.identity);
 }
@@ -61,8 +59,22 @@ export function frequencyAgileSequentialOpportunity(previous: Sweep, candidate: 
   const captureGapMilliseconds = Date.parse(candidate.capturedAt) - Date.parse(previous.capturedAt);
   return frequencyAgileStrictlyOrderedOpportunity(previous, candidate)
     && candidate.sequence === previous.sequence + 1
-    && captureGapMilliseconds >= FREQUENCY_AGILE_ACQUISITION_MODEL.minimumCaptureGapMilliseconds
-    && captureGapMilliseconds <= FREQUENCY_AGILE_ACQUISITION_MODEL.maximumCaptureGapMilliseconds;
+    && (signalLabSimulationExactCadence(previous, candidate)
+      || (captureGapMilliseconds >= FREQUENCY_AGILE_ACQUISITION_MODEL.minimumCaptureGapMilliseconds
+        && captureGapMilliseconds <= FREQUENCY_AGILE_ACQUISITION_MODEL.maximumCaptureGapMilliseconds));
+}
+
+function signalLabSimulationExactCadence(previous: Sweep, candidate: Sweep): boolean {
+  return [previous, candidate].every((sweep) => sweep.source === 'signal-lab-synthetic'
+    && sweep.resolutionBandwidthQualification === 'synthetic-grid-equivalent'
+    && sweep.attenuationQualification === 'not-applicable'
+    && sweep.actualAttenuationDb === null
+    && sweep.requested.controls.model === 'synthetic-scalar'
+    && sweep.requested.controls.timingQualification === 'simulation-exact'
+    && 'kind' in sweep.identity
+    && sweep.identity.kind === 'instrument-session'
+    && sweep.identity.provenance.sourceKind === 'signal-lab'
+    && sweep.identity.provenance.execution === 'signal-lab-simulation');
 }
 
 export function frequencyAgileGeometryId(sweep: Sweep): string {
@@ -79,9 +91,7 @@ export function frequencyAgileGeometryId(sweep: Sweep): string {
     sweep.actualRbwHz,
     sweep.actualAttenuationDb,
     sweep.requested.sweepTimeSeconds,
-    sweep.requested.detector,
-    sweep.requested.lna,
-    sweep.requested.spurRejection,
+    JSON.stringify(sweep.requested.controls),
     sweep.source,
     measurementIdentityKey(sweep.identity),
   ].join(':');
