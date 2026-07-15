@@ -17,6 +17,14 @@ test('admits the independent runtime, SignalLab adapter, TinySA adapter, and des
   });
 });
 
+test('admits a future driver package only through contracts and the external generic runtime', async () => {
+  await withFixture(async (root) => {
+    await addFutureInstrumentDriver(root);
+    const result = await verify(root);
+    assert.match(result.stdout, /"@tinysa\/neptune-driver"/);
+  });
+});
+
 for (const scenario of [
   {
     name: 'rejects a reverse runtime dependency on the TinySA adapter',
@@ -31,6 +39,53 @@ for (const scenario of [
       'packages/instrument-runtime/src/index.ts',
       "\nimport type { SignalLabInstrumentDriver } from '@tinysa/signal-lab-driver';\nexport type ReverseAdapterLeak = SignalLabInstrumentDriver;\n",
     ),
+  },
+  {
+    name: 'rejects a renderer adapter reference expressed as an import type query',
+    failure: /desktop renderer.*illegally imports @tinysa\/device/s,
+    mutate: (root) => append(
+      root,
+      'apps/desktop/src/renderer/instrument-preference.ts',
+      '\nexport type RendererAdapterEscape = import("@tinysa/device").TinySaDeviceService;\n',
+    ),
+  },
+  {
+    name: 'rejects a TinySA generic-runtime alias expressed as an import type query',
+    failure: /non-interface compatibility binding.*import type query/,
+    mutate: (root) => append(
+      root,
+      'packages/tinysa/src/index.ts',
+      '\nexport type GenericManagerEscape = import("@tinysa/instrument-runtime").InstrumentManager;\n',
+    ),
+  },
+  {
+    name: 'rejects a future driver dependency on the TinySA adapter',
+    failure: /@tinysa\/neptune-driver instrument-driver dependency boundary forbids @tinysa\/device/,
+    mutate: (root) => addFutureInstrumentDriver(root, { forbiddenDependency: '@tinysa/device' }),
+  },
+  {
+    name: 'rejects a future driver dependency on Electron',
+    failure: /@tinysa\/neptune-driver instrument-driver dependency boundary forbids electron/,
+    mutate: (root) => addFutureInstrumentDriver(root, { forbiddenDependency: 'electron' }),
+  },
+  {
+    name: 'rejects a future driver dependency on the TinySA serial transport',
+    failure: /@tinysa\/neptune-driver instrument-driver dependency boundary forbids serialport/,
+    mutate: (root) => addFutureInstrumentDriver(root, { forbiddenDependency: 'serialport' }),
+  },
+  {
+    name: 'rejects generic-runtime ownership bundled into a future driver artifact',
+    failure: /@tinysa\/neptune-driver instrument-driver artifact illegally bundles the generic-runtime measurement fingerprint implementation/,
+    mutate: (root) => addFutureInstrumentDriver(root, {
+      javascriptSuffix: '\nfunction fingerprintInstrumentMeasurement(value) { return String(value); }\n',
+    }),
+  },
+  {
+    name: 'rejects a forbidden adapter import type query in future driver declarations',
+    failure: /@tinysa\/neptune-driver instrument-driver artifact.*illegally imports @tinysa\/device/,
+    mutate: (root) => addFutureInstrumentDriver(root, {
+      declarationsSuffix: '\nexport type TinySaLeak = import("@tinysa/device").TinySaDeviceService;\n',
+    }),
   },
   {
     name: 'rejects a reverse adapter type reference injected only into runtime declarations',
@@ -346,7 +401,7 @@ async function createFixture(root) {
     }),
     'packages/tinysa/src/index.ts': "import '@tinysa/contracts';\nimport 'serialport';\nexport class TinySaZs407InstrumentDriver {}\n",
     'packages/tinysa/dist/index.js': 'export class TinySaZs407InstrumentDriver {}\n',
-    'packages/tinysa/dist/index.d.ts': 'export declare class TinySaZs407InstrumentDriver {}\n',
+    'packages/tinysa/dist/index.d.ts': "import type { InstrumentDriver } from '@tinysa/instrument-runtime';\nexport declare class TinySaZs407InstrumentDriver implements InstrumentDriver {}\n",
     'apps/desktop/package.json': JSON.stringify({
       name: '@tinysa/desktop',
       dependencies: {
@@ -373,6 +428,34 @@ async function createFixture(root) {
       "['signal-lab-driver', ['--external', '@tinysa/instrument-runtime']]",
       '',
     ].join('\n'),
+  };
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const path = join(root, relativePath);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, contents);
+  }
+}
+
+async function addFutureInstrumentDriver(root, options = {}) {
+  const dependencies = {
+    '@tinysa/contracts': '*',
+    '@tinysa/instrument-runtime': '*',
+    ...(options.forbiddenDependency ? { [options.forbiddenDependency]: '*' } : {}),
+  };
+  const forbiddenImport = options.forbiddenDependency
+    ? `import '${options.forbiddenDependency}';\n`
+    : '';
+  const files = {
+    'packages/neptune-driver/package.json': JSON.stringify({
+      name: '@tinysa/neptune-driver',
+      exports: { '.': './dist/index.js' },
+      types: './dist/index.d.ts',
+      dependencies,
+      scripts: { build: 'tsup src/index.ts --format esm --dts --clean --external @tinysa/instrument-runtime' },
+    }),
+    'packages/neptune-driver/src/index.ts': `${forbiddenImport}import type { InstrumentDriver } from '@tinysa/instrument-runtime';\nexport class NeptuneInstrumentDriver implements InstrumentDriver {}\n`,
+    'packages/neptune-driver/dist/index.js': `export class NeptuneInstrumentDriver {}\n${options.javascriptSuffix ?? ''}`,
+    'packages/neptune-driver/dist/index.d.ts': `import type { InstrumentDriver } from '@tinysa/instrument-runtime';\nexport declare class NeptuneInstrumentDriver implements InstrumentDriver {}\n${options.declarationsSuffix ?? ''}`,
   };
   for (const [relativePath, contents] of Object.entries(files)) {
     const path = join(root, relativePath);

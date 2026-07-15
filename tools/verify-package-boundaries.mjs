@@ -9,6 +9,12 @@ const rootPackage = await readJson(fromRoot('package.json'));
 const workspacePackages = await discoverWorkspacePackages(rootPackage.workspaces);
 const packageByName = new Map(workspacePackages.map((item) => [item.manifest.name, item]));
 const nodeBuiltinModules = new Set(builtinModules.map((name) => name.replace(/^node:/, '')));
+const genericRuntimeImplementations = Object.freeze([
+  ['InstrumentManager implementation', /class InstrumentManager\b/],
+  ['InstrumentDriverContractError implementation', /class InstrumentDriverContractError\b/],
+  ['measurement parser implementation', /function parseInstrumentMeasurement\b/],
+  ['measurement fingerprint implementation', /function fingerprintInstrumentMeasurement\b/],
+]);
 
 if (packageByName.size !== workspacePackages.length) {
   throw new Error('Workspace contains duplicate or missing package names');
@@ -19,6 +25,8 @@ const runtime = requireWorkspacePackage('@tinysa/instrument-runtime');
 const signalLabDriver = requireWorkspacePackage('@tinysa/signal-lab-driver');
 const device = requireWorkspacePackage('@tinysa/device');
 const desktop = requireWorkspacePackage('@tinysa/desktop');
+const instrumentAdapters = workspacePackages.filter(isInstrumentAdapterPackage);
+const instrumentAdapterNames = instrumentAdapters.map(({ manifest }) => manifest.name).sort();
 assertExactKeys(
   runtime.manifest.dependencies,
   ['@tinysa/contracts', 'zod'],
@@ -33,7 +41,7 @@ if (runtime.manifest.devDependencies !== undefined) {
 
 const runtimeSources = await readProductionSources(runtime.directory);
 assertProductionImportsDeclared(runtimeSources, runtime.manifest);
-for (const forbidden of ['@tinysa/device', '@tinysa/signal-lab-driver', 'serialport', 'electron']) {
+for (const forbidden of [...instrumentAdapterNames, 'serialport', 'electron']) {
   assertNoBareImport(runtimeSources, forbidden, '@tinysa/instrument-runtime');
 }
 
@@ -103,11 +111,7 @@ assertRuntimeBareImportsWhitelisted(
   ['electron'],
   '@tinysa/desktop preload',
 );
-for (const privilegedPackage of [
-  '@tinysa/device',
-  '@tinysa/instrument-runtime',
-  '@tinysa/signal-lab-driver',
-]) {
+for (const privilegedPackage of [...instrumentAdapterNames, '@tinysa/instrument-runtime']) {
   assertNoBareImport(desktopRendererSources, privilegedPackage, '@tinysa/desktop renderer');
 }
 assertBareImportOnlyInPaths(
@@ -128,6 +132,15 @@ assertBareImportOnlyInPaths(
   ['src/main/main.ts', 'src/main/instrument-preference.ts'],
   '@tinysa/desktop SignalLab adapter ownership',
 );
+for (const adapterName of instrumentAdapterNames.filter((name) => name !== '@tinysa/device'
+  && name !== '@tinysa/signal-lab-driver')) {
+  assertBareImportOnlyInPaths(
+    desktopPrivilegedSources,
+    adapterName,
+    ['src/main/main.ts'],
+    `@tinysa/desktop ${adapterName} adapter ownership`,
+  );
+}
 assertProductionImportsDeclared(
   desktopPrivilegedSources,
   desktop.manifest,
@@ -237,10 +250,13 @@ for (const forbidden of ['@tinysa/device', 'serialport', 'electron']) {
   }
 }
 
+await assertInstrumentAdapterBoundaries(instrumentAdapters);
+
 console.log(JSON.stringify({
   status: 'passed',
   workspacePackages: workspacePackages.length,
   workspaceProductionDependencyGraph: 'acyclic',
+  instrumentDriverPackages: instrumentAdapterNames,
   genericRuntimeDependencies: Object.keys(runtime.manifest.dependencies).sort(),
   deviceArtifact: relative(repositoryRoot, deviceJavascriptPath),
   genericRuntime: 'external-singleton',
@@ -249,6 +265,66 @@ console.log(JSON.stringify({
   desktopLifecycleOwnership: 'direct-runtime-imports',
   adapterOnlyPublicSurface: true,
 }, null, 2));
+
+async function assertInstrumentAdapterBoundaries(adapters) {
+  const adapterNames = new Set(adapters.map(({ manifest }) => manifest.name));
+  for (const adapter of adapters) {
+    const label = adapter.manifest.name;
+    const isTinySaAdapter = label === '@tinysa/device';
+    const dependencies = adapter.manifest.dependencies ?? {};
+    if (dependencies['@tinysa/contracts'] === undefined
+      || dependencies['@tinysa/instrument-runtime'] === undefined) {
+      throw new Error(`${label} instrument driver must depend directly on @tinysa/contracts and @tinysa/instrument-runtime`);
+    }
+
+    const forbiddenDependencies = new Set([
+      'electron',
+      ...(!isTinySaAdapter ? ['serialport', '@tinysa/device'] : []),
+      ...[...adapterNames].filter((name) => name !== label
+        && (isTinySaAdapter ? name !== '@tinysa/device' : true)),
+    ]);
+    assertNoDependencies(
+      adapter.manifest,
+      forbiddenDependencies,
+      `${label} instrument-driver dependency boundary`,
+    );
+
+    const sources = await readProductionSources(adapter.directory);
+    assertProductionImportsDeclared(sources, adapter.manifest);
+    for (const forbidden of forbiddenDependencies) {
+      assertNoBareImport(sources, forbidden, `${label} instrument driver`);
+    }
+    assertNoBareReExport(sources, '@tinysa/instrument-runtime', `${label} instrument driver`);
+    requireText(
+      adapter.manifest.scripts?.build,
+      '--external @tinysa/instrument-runtime',
+      `${label} external generic-runtime build boundary`,
+    );
+
+    const javascriptPath = resolve(adapter.directory, packageExportPath(adapter.manifest, 'dist/index.js'));
+    const declarationsPath = resolve(adapter.directory, packageDeclarationsPath(adapter.manifest, 'dist/index.d.ts'));
+    const [javascript, declarations] = await Promise.all([
+      readFile(javascriptPath, 'utf8'),
+      readFile(declarationsPath, 'utf8'),
+    ]);
+    const artifactSources = [
+      { path: relative(adapter.directory, javascriptPath).replaceAll('\\', '/'), text: javascript },
+      { path: relative(adapter.directory, declarationsPath).replaceAll('\\', '/'), text: declarations },
+    ];
+    for (const forbidden of forbiddenDependencies) {
+      assertNoBareImport(artifactSources, forbidden, `${label} instrument-driver artifact`);
+    }
+    if (!staticImports(declarations).some(({ specifier }) => typeof specifier === 'string'
+      && matchesPackage(specifier, '@tinysa/instrument-runtime'))) {
+      throw new Error(`${label} instrument-driver declarations must retain the external generic-runtime interface dependency`);
+    }
+    for (const [implementation, expression] of genericRuntimeImplementations) {
+      if (expression.test(javascript)) {
+        throw new Error(`${label} instrument-driver artifact illegally bundles the generic-runtime ${implementation}`);
+      }
+    }
+  }
+}
 
 async function discoverWorkspacePackages(patterns) {
   if (!Array.isArray(patterns) || patterns.length === 0
@@ -270,6 +346,15 @@ async function discoverWorkspacePackages(patterns) {
     }
   }
   return packages;
+}
+
+function isInstrumentAdapterPackage(workspacePackage) {
+  const directory = relative(repositoryRoot, workspacePackage.directory).replaceAll('\\', '/');
+  if (!directory.startsWith('packages/')) return false;
+  const name = workspacePackage.manifest.name;
+  if (name === '@tinysa/device') return true;
+  if (typeof name === 'string' && /(?:^|[-_/])driver$/.test(name)) return true;
+  return productionDependencyNames(workspacePackage.manifest).includes('@tinysa/instrument-runtime');
 }
 
 function assertWorkspaceGraphIsAcyclic(packages, byName) {
@@ -304,6 +389,25 @@ function productionDependencyNames(manifest) {
 function productionImportDependencyNames(manifest) {
   return ['dependencies', 'peerDependencies', 'optionalDependencies']
     .flatMap((section) => Object.keys(manifest[section] ?? {}));
+}
+
+function assertNoDependencies(manifest, forbiddenNames, label) {
+  for (const section of ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies']) {
+    for (const dependency of Object.keys(manifest[section] ?? {})) {
+      if (forbiddenNames.has(dependency)) {
+        throw new Error(`${label} forbids ${dependency} in ${section}`);
+      }
+    }
+  }
+}
+
+function packageExportPath(manifest, fallback) {
+  const value = manifest.exports?.['.'];
+  return typeof value === 'string' ? value : fallback;
+}
+
+function packageDeclarationsPath(manifest, fallback) {
+  return typeof manifest.types === 'string' ? manifest.types : fallback;
 }
 
 async function readProductionSources(packageDirectory) {
@@ -425,6 +529,11 @@ function assertOnlyTypeImportsFrom(sources, packageName, label) {
 function assertImportedTypeNamesWhitelisted(sources, packageName, admittedNames, label) {
   const admitted = new Set(admittedNames);
   for (const source of sources) {
+    if (staticImports(source.text).some(({ kind, specifier }) => kind === 'import-type'
+      && typeof specifier === 'string'
+      && matchesPackage(specifier, packageName))) {
+      throw new Error(`${label} source ${source.path} imports a non-interface compatibility binding from ${packageName} through an import type query`);
+    }
     const parsed = ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     for (const statement of parsed.statements) {
       if (!ts.isImportDeclaration(statement)
@@ -523,7 +632,16 @@ function staticImports(text) {
     }
   }
   const visit = (node) => {
-    if (ts.isCallExpression(node)) {
+    if (ts.isImportTypeNode(node)) {
+      const literal = ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined;
+      const specifier = literal && ts.isStringLiteral(literal) ? literal.text : undefined;
+      values.push({
+        kind: 'import-type',
+        clause: node.getText(source),
+        specifier,
+        typeOnly: true,
+      });
+    } else if (ts.isCallExpression(node)) {
       const dynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const requireCall = ts.isIdentifier(node.expression) && node.expression.text === 'require';
       if (dynamicImport || requireCall) {
