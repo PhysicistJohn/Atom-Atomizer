@@ -7,7 +7,7 @@ import type { MeasurementIdentity } from '@tinysa/contracts';
  */
 export function measurementIdentityKey(identity: MeasurementIdentity): string {
   if (isInstrumentMeasurementIdentity(identity)) {
-    return [
+    return lengthFramedKey([
       'instrument-session',
       identity.driverId,
       identity.provenance.sourceKind,
@@ -16,14 +16,14 @@ export function measurementIdentityKey(identity: MeasurementIdentity): string {
       ...(identity.provenance.sourceKind === 'signal-lab'
         ? ['producer-configuration-epoch', identity.provenance.producerConfigurationEpoch]
         : []),
-    ].join('\u0000');
+    ]);
   }
-  return [
+  return lengthFramedKey([
     'legacy-device',
     identity.port.id,
     identity.firmwareVersion,
     identity.execution,
-  ].join('\u0000');
+  ]);
 }
 
 export function sameMeasurementIdentity(left: MeasurementIdentity, right: MeasurementIdentity): boolean {
@@ -34,4 +34,9 @@ export function isInstrumentMeasurementIdentity(
   identity: MeasurementIdentity,
 ): identity is Extract<MeasurementIdentity, { kind: 'instrument-session' }> {
   return 'kind' in identity && identity.kind === 'instrument-session';
+}
+
+/** Injective for arbitrary JavaScript strings, including embedded delimiters. */
+function lengthFramedKey(components: readonly string[]): string {
+  return components.map((component) => `${component.length}:${component}`).join('');
 }
