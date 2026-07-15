@@ -323,9 +323,8 @@ describe('InstrumentManager discovery and selection', () => {
 });
 
 describe('InstrumentManager lifecycle and measurement admission', () => {
-  it('serializes configure, acquire, and disconnect without overlapping driver calls', async () => {
+  it('finishes active work, then prioritizes teardown ahead of queued normal calls without overlap', async () => {
     const configureGate = deferred<void>();
-    const acquireGate = deferred<InstrumentMeasurement>();
     const order: string[] = [];
     let session: StubSession;
     const driver = new StubDriver(
@@ -333,7 +332,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       async (candidate) => {
         session = new StubSession(candidate, analyzerCapabilities());
         session.onConfigure = async () => { order.push('configure:start'); await configureGate.promise; order.push('configure:end'); };
-        session.onAcquire = async () => { order.push('acquire:start'); const value = await acquireGate.promise; order.push('acquire:end'); return value; };
+        session.onAcquire = async () => { throw new Error('queued acquisition must not outrun teardown'); };
         session.onDisconnect = async () => { order.push('disconnect'); };
         return session;
       },
@@ -343,37 +342,37 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     await manager.connect(candidate);
 
     const configuring = manager.configure(sweepConfiguration());
-    const acquiring = manager.acquire();
-    const disconnecting = manager.disconnect();
     await turn();
     expect(order).toEqual(['configure:start']);
+    const acquisitionFailure = expect(manager.acquire()).rejects.toMatchObject({ code: 'no-session' });
+    const disconnecting = manager.disconnect();
 
     configureGate.resolve();
-    const configuration = await configuring;
+    await configuring;
     await turn();
-    expect(order).toEqual(['configure:start', 'configure:end', 'acquire:start']);
-    expect(session!.disconnectCalls).toBe(0);
-
-    acquireGate.resolve(sweptMeasurement(session!, configuration.configurationRevision, 1));
-    await expect(acquiring).resolves.toMatchObject({ sequence: 1 });
+    expect(order).toEqual(['configure:start', 'configure:end', 'disconnect']);
     await disconnecting;
-    expect(order).toEqual(['configure:start', 'configure:end', 'acquire:start', 'acquire:end', 'disconnect']);
+    await acquisitionFailure;
+    expect(order).toEqual(['configure:start', 'configure:end', 'disconnect']);
   });
 
   it('bounds its internal queue while reserving one coalesced RF-safe teardown admission', async () => {
     const configureGate = deferred<void>();
+    const order: string[] = [];
     let session: StubSession;
     const driver = new StubDriver(
-      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      'tinysa-zs407', ['serial-port'], async () => { order.push('discover'); return [serialDescriptor()]; },
       async (candidate) => {
         session = new StubSession(candidate, analyzerCapabilities());
         session.onConfigure = async () => configureGate.promise;
+        session.onDisconnect = async () => { order.push('disconnect'); };
         return session;
       },
     );
     const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
     const candidate = (await manager.discover()).candidates[0]!;
     await manager.connect(candidate);
+    order.length = 0;
 
     const configuring = manager.configure(sweepConfiguration());
     await turn();
@@ -389,6 +388,9 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
 
     expect(driver.discoverCalls).toBe(64);
     expect(session!.disconnectCalls).toBe(1);
+    expect(order[0]).toBe('disconnect');
+    expect(order.slice(1)).toHaveLength(63);
+    expect(new Set(order.slice(1))).toEqual(new Set(['discover']));
   });
 
   it('does not readmit configuration or RF certainty after a terminal event during configure', async () => {

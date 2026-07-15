@@ -73,11 +73,15 @@ Admission is independently bounded at each asynchronous ownership layer:
 
 - the renderer admits one compound instrument transaction and one remote gesture, and continuous measurements use a bounded active/pending projection path;
 - Electron main shares one 32-operation pending cap across all privileged instrument, file, AI, and computer handlers;
-- `AtomizerInstrumentHost` and `InstrumentManager` each admit at most 64 normal pending operations and reserve one coalesced RF-safe teardown slot;
+- `AtomizerInstrumentHost` and `InstrumentManager` each admit at most 64 normal pending operations and reserve one coalesced RF-safe teardown slot, which runs immediately after active work and ahead of queued normal work;
 - the TinySA command scheduler admits at most 64 active-plus-queued commands in addition to its byte-buffer ceiling; and
-- SignalLab bridge input pauses at 33 total reply obligations, with malformed, duplicate, oversized, overloaded, and final unterminated lines charged to the same lifetime and backpressure budgets.
+- SignalLab bridge input pauses at 33 total reply obligations, with malformed, duplicate, oversized, overloaded, and final unterminated lines charged to the same 10,000-line process budget. One additional valid shutdown line is reserved. Before the normal budget is consumed, Atomizer closes and joins that child, then starts a verified replacement from the exact same session ID, producer configuration epoch, profile, channel, and next sequence. Any continuity or identity mismatch is terminal; child generations never overlap.
 
 Overflow is an explicit failure, never a retry, fallback, hidden queue, or reason to skip output-off/disconnect. The separately reserved teardown slots exist only for idempotently coalesced RF-safe cleanup. Text sweep export v1 admits at most 100,000 points and emits at most 8 MiB after complete strict provenance/vector validation. Development-launcher diagnostics retain one 4 MiB log plus one bounded rotation and truncate any single process-output append above 64 KiB.
+
+Continuous scalar acquisition is one-in-flight and completion-paced to at most 10 acquisitions per second by default. Stop interrupts the pending cadence slot immediately and waits only for a currently executing acquisition. This keeps synthetic generation from becoming an unbounded main/renderer producer while allowing a bounded bridge process to renew indefinitely at explicit, joined generation boundaries.
+
+The paired SignalLab bridge v1 is still pre-publication. Adding its strict `reservedShutdownRequests` ready field intentionally changes the exact contract hash, so an older strict Atomizer build rejects the producer before dispatch. Once this boundary has a stable external release, a wire-field or semantic change requires a new bridge contract version rather than mutation of v1.
 
 ## Capability growth and NeptuneSDR
 

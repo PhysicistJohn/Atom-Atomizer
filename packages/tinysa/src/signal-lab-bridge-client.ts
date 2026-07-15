@@ -4,6 +4,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 export const SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE = 'ATOMIZER_SIGNAL_LAB_BRIDGE' as const;
+export const SIGNAL_LAB_BRIDGE_CONTINUATION_ENVIRONMENT_VARIABLE = 'ATOMIZER_SIGNAL_LAB_CONTINUATION_V1' as const;
 export const SIGNAL_LAB_PACKAGED_BRIDGE_RELATIVE_PATH = 'signal-lab/dist/bridge/atomizer-bridge.js' as const;
 export const SIGNAL_LAB_BRIDGE_CONTRACT_ID = 'tinysa-signal-lab-atomizer-measurement' as const;
 export const SIGNAL_LAB_BRIDGE_CONTRACT_VERSION = 1 as const;
@@ -87,6 +88,7 @@ export interface SignalLabBridgeReady {
     maxResponseLineBytes: typeof MAX_RESPONSE_LINE_BYTES;
     maxQueuedRequests: 32;
     maxSessionRequests: 10_000;
+    reservedShutdownRequests: 1;
     requestTimeoutMs: typeof SERVER_REQUEST_TIMEOUT_MS;
   }>;
 }
@@ -176,6 +178,14 @@ export interface SignalLabBridgeClientOptions {
   readonly readyTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
+  /**
+   * Rotate before this many protocol lines have been sent. Production uses
+   * the bridge-advertised lifetime limit; a lower value permits deterministic
+   * renewal testing without weakening the server-side limit.
+   */
+  readonly renewalThresholdRequests?: number;
+  /** Internal, validated state transfer used only for a joined-process renewal. */
+  readonly continuation?: SignalLabBridgeContinuation;
   /** Defaults to process.execPath; injectable so the exact packaged Electron runtime can be exercised. */
   readonly runtimeExecutablePath?: string;
   readonly diagnostics?: (line: string) => void;
@@ -186,9 +196,20 @@ interface NormalizedSignalLabBridgeClientOptions {
   readonly readyTimeoutMs: number;
   readonly requestTimeoutMs: number;
   readonly shutdownTimeoutMs: number;
+  readonly renewalThresholdRequests: number;
+  readonly continuation?: SignalLabBridgeContinuation;
   readonly runtimeExecutablePath: string;
   readonly diagnostics?: (line: string) => void;
   readonly onTerminalFailure?: (error: Error) => void;
+}
+
+export interface SignalLabBridgeContinuation {
+  readonly sessionId: string;
+  readonly configurationRevision: string;
+  readonly updatedAt: string;
+  readonly profile: string;
+  readonly channel: SignalLabChannelConfiguration;
+  readonly sequence: number;
 }
 
 /** Ownership token for a bridge process opened before session admission. */
@@ -257,6 +278,11 @@ export class SignalLabBridgeClient {
   #exitConfirmed = false;
 
   get cleanupConfirmed(): boolean { return this.#state === 'closed' || this.#exitConfirmed; }
+  /** True while one final, separately admitted shutdown line still remains. */
+  get renewalRequired(): boolean {
+    return this.#requestSequence >= this.#options.renewalThresholdRequests - 1;
+  }
+  get requestCount(): number { return this.#requestSequence; }
 
   private constructor(
     child: ChildProcessWithoutNullStreams,
@@ -282,7 +308,7 @@ export class SignalLabBridgeClient {
     const admittedOptions = normalizeOptions(options);
     const child = spawn(admittedOptions.runtimeExecutablePath, ['--disable-proto=throw', location.executablePath], {
       cwd: location.repositoryRoot,
-      env: admittedEnvironment(process.env),
+      env: admittedEnvironment(process.env, admittedOptions.continuation),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let resolveExit!: (value: { code: number | null; signal: NodeJS.Signals | null }) => void;
@@ -410,6 +436,11 @@ export class SignalLabBridgeClient {
 
   #beginRequest(method: BridgeMethod, params: BridgeParams[BridgeMethod]): Promise<unknown> {
     if (this.#pending) return Promise.reject(new SignalLabBridgeTerminalError('SignalLab bridge permits exactly one in-flight request'));
+    if (method !== 'shutdown' && this.renewalRequired) {
+      return Promise.reject(new SignalLabBridgeTerminalError(
+        'SignalLab bridge request budget is reserved for shutdown and requires joined-process renewal',
+      ));
+    }
     const requestId = `atomizer-${++this.#requestSequence}`;
     const line = JSON.stringify({ type: 'request', contractVersion: 1, requestId, method, params });
     if (Buffer.byteLength(line, 'utf8') > MAX_REQUEST_LINE_BYTES) {
@@ -729,18 +760,20 @@ function parseReady(value: unknown): SignalLabBridgeReady {
   uuid(ready.sessionId, 'SignalLab ready session ID');
   const identity = parseIdentity(ready.identity);
   const capabilities = parseCapabilities(ready.capabilities);
-  const limits = exactRecord(ready.limits, ['maxRequestLineBytes', 'maxResponseLineBytes', 'maxQueuedRequests', 'maxSessionRequests', 'requestTimeoutMs'], [], 'SignalLab ready limits');
+  const limits = exactRecord(ready.limits, ['maxRequestLineBytes', 'maxResponseLineBytes', 'maxQueuedRequests', 'maxSessionRequests', 'reservedShutdownRequests', 'requestTimeoutMs'], [], 'SignalLab ready limits');
   literal(limits.maxRequestLineBytes, MAX_REQUEST_LINE_BYTES, 'SignalLab request line limit');
   literal(limits.maxResponseLineBytes, MAX_RESPONSE_LINE_BYTES, 'SignalLab response line limit');
   literal(limits.maxQueuedRequests, 32, 'SignalLab queue limit');
   literal(limits.maxSessionRequests, 10_000, 'SignalLab session request limit');
+  literal(limits.reservedShutdownRequests, 1, 'SignalLab reserved shutdown request limit');
   literal(limits.requestTimeoutMs, SERVER_REQUEST_TIMEOUT_MS, 'SignalLab server request timeout');
   return Object.freeze({
     type: 'ready', protocol: SIGNAL_LAB_BRIDGE_PROTOCOL, contractId: SIGNAL_LAB_BRIDGE_CONTRACT_ID,
     contractVersion: 1, service: 'tinysa-signal-lab', sessionId: ready.sessionId as string,
     identity, capabilities, limits: Object.freeze({
       maxRequestLineBytes: MAX_REQUEST_LINE_BYTES, maxResponseLineBytes: MAX_RESPONSE_LINE_BYTES,
-      maxQueuedRequests: 32, maxSessionRequests: 10_000, requestTimeoutMs: SERVER_REQUEST_TIMEOUT_MS,
+      maxQueuedRequests: 32, maxSessionRequests: 10_000, reservedShutdownRequests: 1,
+      requestTimeoutMs: SERVER_REQUEST_TIMEOUT_MS,
     }),
   });
 }
@@ -1004,17 +1037,28 @@ async function requireSafeExecutable(path: string): Promise<void> {
 function normalizeOptions(options: SignalLabBridgeClientOptions): NormalizedSignalLabBridgeClientOptions {
   const runtimeExecutablePath = options.runtimeExecutablePath?.trim() || process.execPath;
   if (!isAbsolute(runtimeExecutablePath)) throw new TypeError('SignalLab bridge runtime executable path must be absolute');
+  const renewalThresholdRequests = options.renewalThresholdRequests ?? 10_000;
+  if (!Number.isSafeInteger(renewalThresholdRequests)
+    || renewalThresholdRequests < 3
+    || renewalThresholdRequests > 10_000) {
+    throw new RangeError('SignalLab renewal request threshold must be an integer in 3..10000');
+  }
   return {
     readyTimeoutMs: duration(options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS, 'SignalLab ready timeout'),
     requestTimeoutMs: duration(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 'SignalLab request timeout'),
     shutdownTimeoutMs: duration(options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS, 'SignalLab shutdown timeout'),
+    renewalThresholdRequests,
+    ...(options.continuation ? { continuation: parseContinuation(options.continuation) } : {}),
     runtimeExecutablePath: resolve(runtimeExecutablePath),
     diagnostics: options.diagnostics,
     onTerminalFailure: options.onTerminalFailure,
   };
 }
 
-function admittedEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function admittedEnvironment(
+  environment: NodeJS.ProcessEnv,
+  continuation?: SignalLabBridgeContinuation,
+): NodeJS.ProcessEnv {
   const admitted: NodeJS.ProcessEnv = {};
   for (const name of ['HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR', 'TZ']) {
     const value = environment[name];
@@ -1024,7 +1068,29 @@ function admittedEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   // In Electron, process.execPath is the Electron binary. This makes that exact,
   // admitted runtime execute the bridge as Node rather than starting another app.
   admitted.ELECTRON_RUN_AS_NODE = '1';
+  if (continuation) {
+    const encoded = Buffer.from(JSON.stringify(continuation), 'utf8').toString('base64url');
+    if (encoded.length > 4_096) throw new RangeError('SignalLab continuation exceeds its environment bound');
+    admitted[SIGNAL_LAB_BRIDGE_CONTINUATION_ENVIRONMENT_VARIABLE] = encoded;
+  }
   return admitted;
+}
+
+function parseContinuation(value: SignalLabBridgeContinuation): SignalLabBridgeContinuation {
+  uuid(value.sessionId, 'SignalLab continuation session ID');
+  uuid(value.configurationRevision, 'SignalLab continuation configuration revision');
+  instant(value.updatedAt, 'SignalLab continuation update timestamp');
+  const profile = profileId(value.profile, 'SignalLab continuation profile');
+  const channel = parseChannel(value.channel);
+  const sequence = integer(value.sequence, 0, Number.MAX_SAFE_INTEGER, 'SignalLab continuation sequence');
+  return Object.freeze({
+    sessionId: value.sessionId,
+    configurationRevision: value.configurationRevision,
+    updatedAt: value.updatedAt,
+    profile,
+    channel,
+    sequence,
+  });
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {

@@ -46,6 +46,7 @@ import { selectPreferredInstrument } from './startup-admission.js';
 
 const MAX_REMEMBERED_MEASUREMENTS = 8_192;
 const MAX_PENDING_HOST_OPERATIONS = 64;
+const CONTINUOUS_ACQUISITION_INTERVAL_MS = 100;
 
 export interface AtomizerInstrumentPreferencePort {
   load(): Promise<LoadedInstrumentPreference>;
@@ -54,12 +55,13 @@ export interface AtomizerInstrumentPreferencePort {
 
 export interface AtomizerInstrumentHostRuntime {
   now(): Date;
+  /** One backpressure slot between completed continuous acquisitions. */
   yieldToEventLoop(): Promise<void>;
 }
 
 const defaultRuntime: AtomizerInstrumentHostRuntime = Object.freeze({
   now: () => new Date(),
-  yieldToEventLoop: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  yieldToEventLoop: () => new Promise<void>((resolve) => setTimeout(resolve, CONTINUOUS_ACQUISITION_INTERVAL_MS)),
 });
 
 type ManagerPort = Pick<InstrumentManager,
@@ -81,7 +83,16 @@ interface StreamRun {
   stopRequested: boolean;
   externalFault?: string;
   readonly done: Promise<void>;
+  readonly stopSignal: Promise<void>;
   resolveDone(): void;
+  resolveStop(): void;
+}
+
+interface ScheduledHostOperation {
+  readonly operation: () => Promise<unknown> | unknown;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (reason: unknown) => void;
+  readonly releaseAdmission: () => void;
 }
 
 type HostLifecycle = 'open' | 'closing' | 'closed';
@@ -96,7 +107,9 @@ export class AtomizerInstrumentHost {
   readonly #unsubscribeManager: () => void;
   readonly #emittedMeasurements = new Map<string, string>();
   readonly #measurementOrder: string[] = [];
-  #tail: Promise<void> = Promise.resolve();
+  readonly #normalOperations: ScheduledHostOperation[] = [];
+  #safetyOperation: ScheduledHostOperation | undefined;
+  #operationRunning = false;
   #pendingOperations = 0;
   #pendingSafetyOperations = 0;
   #preference: AtomizerInstrumentPreferenceState | undefined;
@@ -238,8 +251,10 @@ export class AtomizerInstrumentHost {
     }
 
     let resolveDone!: () => void;
+    let resolveStop!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
-    const run: StreamRun = { stopRequested: false, done, resolveDone };
+    const stopSignal = new Promise<void>((resolve) => { resolveStop = resolve; });
+    const run: StreamRun = { stopRequested: false, done, stopSignal, resolveDone, resolveStop };
     this.#streamRun = run;
     this.#setStreaming({ status: 'running', startedAt: this.#timestamp() });
     queueMicrotask(() => { void this.#pump(run); });
@@ -339,7 +354,9 @@ export class AtomizerInstrumentHost {
         await this.#serializeOpen(async () => {
           if (!run.stopRequested && this.#streamRun === run) await this.#acquireAndPublish();
         });
-        if (!run.stopRequested && this.#streamRun === run) await this.runtime.yieldToEventLoop();
+        if (!run.stopRequested && this.#streamRun === run) {
+          await Promise.race([this.runtime.yieldToEventLoop(), run.stopSignal]);
+        }
       }
     } catch (value) {
       failure = value;
@@ -454,7 +471,10 @@ export class AtomizerInstrumentHost {
     const run = this.#streamRun;
     if (!run) return;
     run.externalFault = errorMessage(message);
-    run.stopRequested = true;
+    if (!run.stopRequested) {
+      run.stopRequested = true;
+      run.resolveStop();
+    }
   }
 
   #acceptPreference(value: LoadedInstrumentPreference): AtomizerInstrumentPreferenceState {
@@ -497,7 +517,10 @@ export class AtomizerInstrumentHost {
 
   #requestStreamingStop(): StreamRun | undefined {
     const run = this.#streamRun;
-    if (run) run.stopRequested = true;
+    if (run && !run.stopRequested) {
+      run.stopRequested = true;
+      run.resolveStop();
+    }
     else if (this.#streaming.status === 'faulted') this.#setStreaming({ status: 'stopped' });
     return run;
   }
@@ -518,7 +541,7 @@ export class AtomizerInstrumentHost {
       const result = this.#enqueueAdmitted(() => {
         this.#requireOpen();
         return operation();
-      }, releaseAdmission);
+      }, releaseAdmission, 'normal');
       handedToTail = true;
       return await result;
     } finally {
@@ -542,14 +565,46 @@ export class AtomizerInstrumentHost {
     let releaseAdmission: () => void;
     try { releaseAdmission = this.#reserveAdmission(admission); }
     catch (error) { return Promise.reject(error); }
-    return this.#enqueueAdmitted(operation, releaseAdmission);
+    return this.#enqueueAdmitted(operation, releaseAdmission, admission);
   }
 
-  #enqueueAdmitted<T>(operation: () => Promise<T> | T, releaseAdmission: () => void): Promise<T> {
-    const result = this.#tail.then(operation, operation);
-    this.#tail = result.then(() => undefined, () => undefined);
-    void result.then(releaseAdmission, releaseAdmission);
+  #enqueueAdmitted<T>(
+    operation: () => Promise<T> | T,
+    releaseAdmission: () => void,
+    admission: 'normal' | 'rf-safe-teardown',
+  ): Promise<T> {
+    const result = new Promise<T>((resolve, reject) => {
+      const scheduled: ScheduledHostOperation = {
+        operation,
+        resolve: (value) => resolve(value as T),
+        reject,
+        releaseAdmission,
+      };
+      if (admission === 'rf-safe-teardown') this.#safetyOperation = scheduled;
+      else this.#normalOperations.push(scheduled);
+      this.#drainOperations();
+    });
     return result;
+  }
+
+  #drainOperations(): void {
+    if (this.#operationRunning) return;
+    const scheduled = this.#safetyOperation ?? this.#normalOperations.shift();
+    if (!scheduled) return;
+    if (this.#safetyOperation === scheduled) this.#safetyOperation = undefined;
+    this.#operationRunning = true;
+    void Promise.resolve().then(scheduled.operation).then(
+      (value) => this.#settleOperation(scheduled, true, value),
+      (reason: unknown) => this.#settleOperation(scheduled, false, reason),
+    );
+  }
+
+  #settleOperation(scheduled: ScheduledHostOperation, succeeded: boolean, value: unknown): void {
+    scheduled.releaseAdmission();
+    this.#operationRunning = false;
+    if (succeeded) scheduled.resolve(value);
+    else scheduled.reject(value);
+    this.#drainOperations();
   }
 
   #reserveAdmission(admission: 'normal' | 'rf-safe-teardown'): () => void {

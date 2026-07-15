@@ -141,6 +141,56 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(manager.acquireCalls).toBe(2);
   });
 
+  it('interrupts a pending cadence slot immediately on Stop and leaks no additional acquisition work', async () => {
+    const manager = new FakeManager();
+    manager.session = sessionFixture(configurationFixture());
+    const cadence = deferred<void>();
+    let cadenceCalls = 0;
+    const host = new AtomizerInstrumentHost(manager, new FakePreferences(), {
+      now: () => new Date(NOW),
+      yieldToEventLoop: () => { cadenceCalls++; return cadence.promise; },
+    });
+
+    await host.startStreaming();
+    await until(() => manager.acquireCalls === 1 && cadenceCalls === 1);
+    await host.stopStreaming();
+
+    expect(host.state().streaming).toEqual({ status: 'stopped' });
+    expect(manager.acquireCalls).toBe(1);
+    expect(manager.concurrentAcquisitions).toBe(0);
+    cadence.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(manager.acquireCalls).toBe(1);
+  });
+
+  it('keeps a prolonged zero-latency producer serialized and bounds remembered measurement identities', async () => {
+    const manager = new FakeManager();
+    manager.session = sessionFixture(configurationFixture());
+    const host = new AtomizerInstrumentHost(manager, new FakePreferences(), {
+      now: () => new Date(NOW),
+      yieldToEventLoop: () => Promise.resolve(),
+    });
+    const target = 8_205;
+    let stop: Promise<unknown> | undefined;
+    host.subscribe((event) => {
+      if (event.type === 'measurement' && event.measurement.sequence === target) stop = host.stopStreaming();
+    });
+
+    await host.startStreaming();
+    await until(() => stop !== undefined);
+    await stop;
+
+    expect(manager.acquireCalls).toBe(target);
+    expect(manager.maximumConcurrentAcquisitions).toBe(1);
+    expect(manager.concurrentAcquisitions).toBe(0);
+    manager.measurementQueue.push({
+      ...measurementFixture(1),
+      measurementId: 'measurement:reused-after-bounded-window',
+    });
+    await expect(host.acquire()).resolves.toMatchObject({ measurementId: 'measurement:reused-after-bounded-window' });
+  }, 20_000);
+
   it('makes background acquisition failure queryable and delegates shutdown to manager', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
@@ -414,6 +464,10 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
 
     expect(manager.discoverCalls).toBe(63);
     expect(manager.disconnectCalls).toBe(1);
+    expect(manager.operationOrder[0]).toBe('acquire');
+    expect(manager.operationOrder[1]).toBe('disconnect');
+    expect(manager.operationOrder.slice(2)).toHaveLength(63);
+    expect(new Set(manager.operationOrder.slice(2))).toEqual(new Set(['discover']));
   });
 
   it('reserves transition admission before callers wait for a running stream to stop', async () => {
@@ -498,6 +552,7 @@ class FakeManager {
   echoMeasurementEvent = false;
   measurementEventTransform: ((measurement: InstrumentMeasurement) => InstrumentMeasurement) | undefined;
   readonly measurementQueue: InstrumentMeasurement[] = [];
+  readonly operationOrder: string[] = [];
   acquireError: Error | undefined;
   connectError: Error | undefined;
   disconnectError: Error | undefined;
@@ -515,6 +570,7 @@ class FakeManager {
   pendingConnectionCleanup() { return this.cleanupRequirement; }
 
   async discover(): Promise<InstrumentDiscoveryResult> {
+    this.operationOrder.push('discover');
     this.discoverCalls++;
     const result: InstrumentDiscoveryResult = {
       discoveryRevision: 'discovery:1', discoveredAt: NOW, candidates: [signalLabCandidate], failures: [],
@@ -524,6 +580,7 @@ class FakeManager {
   }
 
   async connect(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
+    this.operationOrder.push('connect');
     this.connectCalls.push(candidate);
     if (this.connectError) throw this.connectError;
     this.session = sessionFixture();
@@ -532,6 +589,7 @@ class FakeManager {
   }
 
   async configure(configuration: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
+    this.operationOrder.push('configure');
     if (!this.session) throw new Error('no session');
     this.configureCalls.push(configuration);
     const state = configurationFixture(configuration);
@@ -541,6 +599,7 @@ class FakeManager {
   }
 
   async acquire(): Promise<InstrumentMeasurement> {
+    this.operationOrder.push('acquire');
     this.acquireCalls++;
     this.concurrentAcquisitions++;
     this.maximumConcurrentAcquisitions = Math.max(this.maximumConcurrentAcquisitions, this.concurrentAcquisitions);
@@ -559,6 +618,7 @@ class FakeManager {
   }
 
   async executeFeature(request: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
+    this.operationOrder.push('feature');
     if (!this.session) throw new Error('unsupported fixture feature');
     this.featureCalls.push(request);
     if (request.kind === 'touch') {
@@ -585,6 +645,7 @@ class FakeManager {
   }
 
   async disconnect(): Promise<void> {
+    this.operationOrder.push('disconnect');
     this.disconnectCalls++;
     if (this.disconnectError) throw this.disconnectError;
     if (this.session) {

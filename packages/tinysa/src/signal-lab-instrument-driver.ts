@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import {
@@ -28,6 +29,7 @@ import {
   SignalLabBridgeTerminalError,
   resolveSignalLabBridgeLocation,
   type SignalLabBridgeClientOptions,
+  type SignalLabBridgeContinuation,
   type SignalLabBridgeIdentity,
   type SignalLabBridgeLocation,
   type SignalLabPendingConnectionCleanup,
@@ -75,6 +77,14 @@ interface DiscoveredSignalLabSource {
 interface AdmittedSignalLabEvidence extends SignalLabArtifactEvidence {
   readonly catalogSha256: string;
   readonly verifiedAt: string;
+}
+
+interface SignalLabBridgeRenewalContext {
+  readonly location: SignalLabBridgeLocation;
+  readonly bridgeOptions: SignalLabBridgeClientOptions;
+  readonly launchBridgeClient: typeof SignalLabBridgeClient.launch;
+  readonly evidence: AdmittedSignalLabEvidence;
+  readonly configuredTerminalObserver?: (error: Error) => void;
 }
 
 /**
@@ -163,11 +173,15 @@ export class SignalLabInstrumentDriver implements InstrumentDriver {
     }
     const discovered = this.#lastDiscoveredSource;
     if (!discovered) throw new Error('SignalLab driver requires a successful discovery before connect');
+    if (this.#options.bridge?.continuation) {
+      throw new Error('SignalLab continuation state is reserved for an admitted session renewal');
+    }
     const prelaunchArtifacts = await verifySignalLabArtifacts(discovered.location);
     assertArtifactEvidence(prelaunchArtifacts, discovered.artifacts, 'SignalLab artifacts changed after discovery');
 
     let session: SignalLabInstrumentSession | undefined;
     let terminalBeforeSession: Error | undefined;
+    const launched: { client?: SignalLabBridgeClient } = {};
     const configuredTerminalObserver = this.#options.bridge?.onTerminalFailure;
     let client: SignalLabBridgeClient;
     try {
@@ -177,9 +191,10 @@ export class SignalLabInstrumentDriver implements InstrumentDriver {
         onTerminalFailure: (error) => {
           terminalBeforeSession ??= error;
           try { configuredTerminalObserver?.(error); } catch { /* Observational only. */ }
-          session?.acceptTerminalFailure(error);
+          if (launched.client) session?.acceptTerminalFailureFrom(launched.client, error);
         },
       }, (lease) => { this.#pendingConnection = lease; });
+      launched.client = client;
       // A test/composition launcher may omit the early boot callback, but once
       // a client exists the driver can still establish explicit ownership.
       this.#pendingConnection = client;
@@ -194,10 +209,17 @@ export class SignalLabInstrumentDriver implements InstrumentDriver {
       assertArtifactEvidence(postlaunchArtifacts, prelaunchArtifacts, 'SignalLab artifacts changed while the bridge was starting');
       const catalogSha256 = sha256Hex(Buffer.from(JSON.stringify(status.catalog), 'utf8'));
       assertBridgeIdentity(client.ready.identity, postlaunchArtifacts, catalogSha256);
-      session = new SignalLabInstrumentSession(candidate, client, status, {
+      const evidence: AdmittedSignalLabEvidence = {
         ...postlaunchArtifacts,
         catalogSha256,
         verifiedAt: localTimestamp(this.#options.now ?? (() => new Date())),
+      };
+      session = new SignalLabInstrumentSession(candidate, client, status, evidence, {
+        location: discovered.location,
+        bridgeOptions: this.#options.bridge ?? {},
+        launchBridgeClient: this.#options.launchBridgeClient ?? SignalLabBridgeClient.launch,
+        evidence,
+        ...(configuredTerminalObserver ? { configuredTerminalObserver } : {}),
       });
       if (terminalBeforeSession) session.acceptTerminalFailure(terminalBeforeSession);
       if (this.#pendingConnection === client) this.#pendingConnection = undefined;
@@ -222,7 +244,8 @@ class SignalLabInstrumentSession implements InstrumentSession {
   readonly driverId = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
   readonly candidate: InstrumentCandidate;
   readonly capabilities: InstrumentCapabilities;
-  readonly #client: SignalLabBridgeClient;
+  #client: SignalLabBridgeClient;
+  readonly #renewal: SignalLabBridgeRenewalContext;
   readonly #listeners = new Set<(event: InstrumentSessionEvent) => void>();
   #status: SignalLabBridgeStatus;
   #provenance: InstrumentSessionProvenance;
@@ -231,6 +254,8 @@ class SignalLabInstrumentSession implements InstrumentSession {
     producerConfigurationEpoch: string;
   }> | undefined;
   #terminalError: Error | undefined;
+  #sourceSequence = 0;
+  #renewalCleanup: SignalLabPendingConnectionCleanup | undefined;
   #closing = false;
   #closed = false;
 
@@ -239,9 +264,11 @@ class SignalLabInstrumentSession implements InstrumentSession {
     client: SignalLabBridgeClient,
     status: SignalLabBridgeStatus,
     evidence: AdmittedSignalLabEvidence,
+    renewal: SignalLabBridgeRenewalContext,
   ) {
     this.candidate = candidate;
     this.#client = client;
+    this.#renewal = renewal;
     this.#status = status;
     this.sessionId = client.ready.sessionId;
     const profileCapabilities = status.profiles.map((profileId) => {
@@ -328,6 +355,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
     if (binding.producerConfigurationEpoch !== this.#status.configurationRevision) {
       throw this.#terminalProtocolFailure('SignalLab producer configuration changed after local configuration admission');
     }
+    await this.#renewBridgeIfRequired();
     const { command } = binding;
     this.#emit({ type: 'status', sessionId: this.sessionId, status: 'busy' });
     try {
@@ -340,6 +368,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
           points: configuration.points,
         });
         this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
+        this.#acceptSourceSequence(source.sequence);
         const measurement = parseInstrumentMeasurement({
           schemaVersion: 1,
           measurementId: source.measurementId,
@@ -368,6 +397,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
         samplePeriodSeconds: configuration.sampleIntervalSeconds,
       });
       this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
+      this.#acceptSourceSequence(source.sequence);
       if (source.centerFrequencyHz !== configuration.centerHz) {
         throw new Error('SignalLab detected-power result center does not match the admitted configuration');
       }
@@ -416,6 +446,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
       // prior acquisition binding is therefore invalid before dispatch.
       this.#configuration = undefined;
       try {
+        await this.#renewBridgeIfRequired();
         const status = await this.#client.selectProfile(command.profileId);
         if (status.profile !== command.profileId) throw new Error('SignalLab did not acknowledge the selected profile');
         if (status.configurationRevision === previousEpoch) {
@@ -477,6 +508,14 @@ class SignalLabInstrumentSession implements InstrumentSession {
         // failure and must keep the session active for another cleanup attempt.
         if (!this.#terminalError || value !== this.#terminalError) throw value;
       }
+      const renewalCleanup = this.#renewalCleanup;
+      if (renewalCleanup) {
+        await renewalCleanup.cleanupPendingConnection();
+        if (!renewalCleanup.cleanupConfirmed) {
+          throw new Error('SignalLab renewal cleanup resolved without confirming child-process exit');
+        }
+        if (this.#renewalCleanup === renewalCleanup) this.#renewalCleanup = undefined;
+      }
       this.#closed = true;
       this.#configuration = undefined;
       this.#listeners.clear();
@@ -503,6 +542,10 @@ class SignalLabInstrumentSession implements InstrumentSession {
     for (const event of signalLabTerminalEvents(this.sessionId, error)) this.#emit(event);
   }
 
+  acceptTerminalFailureFrom(source: SignalLabBridgeClient, error: Error): void {
+    if (this.#client === source) this.acceptTerminalFailure(error);
+  }
+
   #requireAvailable(): void {
     if (this.#closed || this.#closing) throw new SignalLabBridgeTerminalError('SignalLab session is closed');
     if (this.#terminalError) throw this.#terminalError;
@@ -515,6 +558,95 @@ class SignalLabInstrumentSession implements InstrumentSession {
   #requireMeasurementEpoch(actual: string, expected: string): void {
     if (actual !== expected || actual !== this.#status.configurationRevision) {
       throw this.#terminalProtocolFailure('SignalLab measurement producer configuration epoch is stale or mismatched');
+    }
+  }
+
+  #acceptSourceSequence(sequence: number): void {
+    if (sequence !== this.#sourceSequence + 1) {
+      throw this.#terminalProtocolFailure(
+        `SignalLab measurement sequence ${sequence} did not continue after ${this.#sourceSequence}`,
+      );
+    }
+    this.#sourceSequence = sequence;
+  }
+
+  async #renewBridgeIfRequired(): Promise<void> {
+    const retired = this.#client;
+    if (!retired.renewalRequired) return;
+    const continuation: SignalLabBridgeContinuation = Object.freeze({
+      sessionId: this.sessionId,
+      configurationRevision: this.#status.configurationRevision,
+      updatedAt: this.#status.updatedAt,
+      profile: this.#status.profile,
+      channel: this.#status.channel,
+      sequence: this.#sourceSequence,
+    });
+    let replacement: SignalLabBridgeClient | undefined;
+    let terminalBeforeAdmission: Error | undefined;
+    try {
+      // No two producer generations may overlap. The old child acknowledges
+      // shutdown and is joined before the replacement process is spawned.
+      await retired.close();
+      if (!retired.cleanupConfirmed) throw new Error('Retired SignalLab bridge process exit was not confirmed');
+
+      const prelaunchArtifacts = await verifySignalLabArtifacts(this.#renewal.location);
+      assertArtifactEvidence(prelaunchArtifacts, this.#renewal.evidence, 'SignalLab artifacts changed before session renewal');
+      replacement = await this.#renewal.launchBridgeClient(this.#renewal.location, {
+        ...this.#renewal.bridgeOptions,
+        continuation,
+        diagnostics: this.#renewal.bridgeOptions.diagnostics ?? defaultDiagnosticLogger,
+        onTerminalFailure: (error) => {
+          terminalBeforeAdmission ??= error;
+          try { this.#renewal.configuredTerminalObserver?.(error); } catch { /* Observational only. */ }
+          // A late observer from a retired generation cannot poison the
+          // currently admitted child.
+          if (replacement && this.#client === replacement) this.acceptTerminalFailure(error);
+        },
+      }, (lease) => { this.#renewalCleanup = lease; });
+      this.#renewalCleanup = replacement;
+      const status = await replacement.status();
+      const postlaunchArtifacts = await verifySignalLabArtifacts(this.#renewal.location);
+      assertArtifactEvidence(postlaunchArtifacts, prelaunchArtifacts, 'SignalLab artifacts changed while renewing the bridge');
+      assertBridgeIdentity(replacement.ready.identity, postlaunchArtifacts, this.#renewal.evidence.catalogSha256);
+      this.#assertRenewedState(replacement, status, continuation);
+      if (terminalBeforeAdmission) throw terminalBeforeAdmission;
+      this.#client = replacement;
+      this.#status = status;
+      if (this.#renewalCleanup === replacement) this.#renewalCleanup = undefined;
+    } catch (value) {
+      const failure = value instanceof Error ? value : new Error(String(value));
+      const cleanup = this.#renewalCleanup;
+      if (cleanup) {
+        try {
+          await cleanup.cleanupPendingConnection();
+          if (!cleanup.cleanupConfirmed) throw new Error('SignalLab replacement process exit was not confirmed');
+          if (this.#renewalCleanup === cleanup) this.#renewalCleanup = undefined;
+        } catch (cleanupFailure) {
+          const aggregate = new AggregateError([failure, cleanupFailure], 'SignalLab renewal failed and replacement cleanup was not confirmed');
+          this.acceptTerminalFailure(aggregate);
+          throw aggregate;
+        }
+      }
+      this.acceptTerminalFailure(failure);
+      throw failure;
+    }
+  }
+
+  #assertRenewedState(
+    replacement: SignalLabBridgeClient,
+    status: SignalLabBridgeStatus,
+    continuation: SignalLabBridgeContinuation,
+  ): void {
+    if (replacement.ready.sessionId !== continuation.sessionId
+      || status.sessionId !== continuation.sessionId
+      || status.configurationRevision !== continuation.configurationRevision
+      || status.updatedAt !== continuation.updatedAt
+      || status.profile !== continuation.profile
+      || !isDeepStrictEqual(status.channel, continuation.channel)
+      || !isDeepStrictEqual(status.identity, this.#status.identity)
+      || !isDeepStrictEqual(status.capabilities, this.#status.capabilities)
+      || !isDeepStrictEqual(status.catalog, this.#status.catalog)) {
+      throw new SignalLabBridgeTerminalError('SignalLab replacement did not preserve the exact admitted session state');
     }
   }
 

@@ -133,6 +133,26 @@ describe('SignalLab bridge client', () => {
     expect(diagnostics).toContain('fixture diagnostic');
   });
 
+  it('reserves the final process-budget line for joined shutdown before renewal', async () => {
+    const fixture = await createFixture('valid');
+    const client = await SignalLabBridgeClient.launch(await fixture.location(), {
+      readyTimeoutMs: 1_000,
+      requestTimeoutMs: 1_000,
+      shutdownTimeoutMs: 1_000,
+      renewalThresholdRequests: 3,
+    });
+
+    await client.status();
+    expect(client.requestCount).toBe(1);
+    expect(client.renewalRequired).toBe(false);
+    await client.status();
+    expect(client.requestCount).toBe(2);
+    expect(client.renewalRequired).toBe(true);
+    await expect(client.status()).rejects.toThrow(/reserved for shutdown/);
+    await expect(client.close()).resolves.toBeUndefined();
+    expect(client.requestCount).toBe(3);
+  });
+
   it('makes a wrong correlation ID terminal and never retries or accepts another request', async () => {
     const fixture = await createFixture('wrong-correlation');
     const failures: Error[] = [];
@@ -389,7 +409,7 @@ function readyMessage() {
     ],
     limits: {
       maxRequestLineBytes: 65_536, maxResponseLineBytes: 1_048_576,
-      maxQueuedRequests: 32, maxSessionRequests: 10_000, requestTimeoutMs: 5_000,
+      maxQueuedRequests: 32, maxSessionRequests: 10_000, reservedShutdownRequests: 1, requestTimeoutMs: 5_000,
     },
   };
 }

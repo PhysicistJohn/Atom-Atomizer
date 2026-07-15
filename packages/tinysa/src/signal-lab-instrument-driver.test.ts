@@ -3,6 +3,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'no
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { InstrumentMeasurement } from '@tinysa/contracts';
 import {
   SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE,
   SignalLabBridgeClient,
@@ -190,6 +191,63 @@ describe('SignalLab instrument driver', () => {
     ]);
     unsubscribe();
     await session.disconnect();
+  });
+
+  it('renews bounded child processes across the prior request boundary without changing session state or sequence', async () => {
+    const fixture = await createBridgeFixture();
+    const terminalObservers: Array<(error: Error) => void> = [];
+    const driver = new SignalLabInstrumentDriver({
+      atomizerRepositoryRoot: fixture.atomizerRoot,
+      environment: { [SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE]: fixture.executable },
+      bridge: {
+        readyTimeoutMs: 1_000,
+        requestTimeoutMs: 1_000,
+        shutdownTimeoutMs: 1_000,
+        renewalThresholdRequests: 5,
+        diagnostics: () => undefined,
+      },
+      launchBridgeClient: async (location, options, retainPendingConnection) => {
+        const admittedOptions = options ?? {};
+        if (admittedOptions.onTerminalFailure) terminalObservers.push(admittedOptions.onTerminalFailure);
+        return SignalLabBridgeClient.launch(location, admittedOptions, retainPendingConnection);
+      },
+      now: () => new Date('2026-07-14T21:00:00.000Z'),
+    });
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const session = await driver.connect({ ...descriptor, discoveryRevision: 'discovery:test' });
+    const originalSessionId = session.sessionId;
+    const originalIdentity = structuredClone(session.provenance);
+
+    await session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm',
+    });
+    const provenance = session.provenance;
+    if (provenance.sourceKind !== 'signal-lab') throw new Error('Expected SignalLab provenance');
+    const producerEpoch = provenance.producerConfigurationEpoch;
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:renewal-stress',
+      configuration: { kind: 'swept-spectrum', startHz: 99_750_000, stopHz: 100_250_000, points: 3 },
+    });
+
+    const measurements: InstrumentMeasurement[] = [];
+    for (let index = 0; index < 14; index += 1) measurements.push(await session.acquire());
+
+    expect(measurements.map((measurement) => measurement.sequence))
+      .toEqual(Array.from({ length: 14 }, (_unused, index) => index + 1));
+    expect(new Set(measurements.map((measurement) => measurement.sessionId))).toEqual(new Set([originalSessionId]));
+    expect(new Set(measurements.map((measurement) => measurement.producerConfigurationEpoch)))
+      .toEqual(new Set([producerEpoch]));
+    expect(session.provenance).toMatchObject({ producerConfigurationEpoch: producerEpoch });
+    expect(session.provenance).toEqual({ ...originalIdentity, producerConfigurationEpoch: producerEpoch });
+    expect(terminalObservers.length).toBeGreaterThan(1);
+
+    // The callback belonging to the joined, retired child is generation
+    // fenced and cannot fault its admitted replacement.
+    terminalObservers[0]!(new Error('late retired-child terminal observer'));
+    await expect(session.acquire()).resolves.toMatchObject({ sequence: 15, sessionId: originalSessionId });
+    await expect(session.disconnect()).resolves.toBeUndefined();
   });
 
   it('rejects dishonest center/IQ/RF operations while acknowledging a defensive RF-off no-op', async () => {
@@ -444,20 +502,26 @@ const capabilities = [
   { kind: 'swept-spectrum', minimumFrequencyHz: 1, maximumFrequencyHz: 17922600000, minimumPoints: 2, maximumPoints: 4096, frequencyUnit: 'Hz', powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
   { kind: 'detected-power-timeseries', minimumPoints: 1, maximumPoints: 4096, minimumSamplePeriodSeconds: 0.000001, maximumSamplePeriodSeconds: 10, powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
 ];
-const sessionId = '10000000-0000-4000-8000-000000000001';
+const continuationSource = process.env.ATOMIZER_SIGNAL_LAB_CONTINUATION_V1;
+const continuation = continuationSource
+  ? JSON.parse(Buffer.from(continuationSource, 'base64url').toString('utf8'))
+  : undefined;
+const sessionId = continuation?.sessionId ?? '10000000-0000-4000-8000-000000000001';
 process.stdout.write(JSON.stringify({
   type: 'ready', protocol: 'signal-lab-measurement-bridge', contractId: 'tinysa-signal-lab-atomizer-measurement',
   contractVersion: 1, service: 'tinysa-signal-lab', sessionId, identity, capabilities,
-  limits: { maxRequestLineBytes: 65536, maxResponseLineBytes: 1048576, maxQueuedRequests: 32, maxSessionRequests: 10000, requestTimeoutMs: 5000 },
+  limits: { maxRequestLineBytes: 65536, maxResponseLineBytes: 1048576, maxQueuedRequests: 32, maxSessionRequests: 10000, reservedShutdownRequests: 1, requestTimeoutMs: 5000 },
 }) + '\\n');
-let profile = 'cw';
-let revision = '20000000-0000-4000-8000-000000000001';
-let sequence = 0;
+let profile = continuation?.profile ?? 'cw';
+let revision = continuation?.configurationRevision ?? '20000000-0000-4000-8000-000000000001';
+let updatedAt = continuation?.updatedAt ?? '2026-07-14T20:00:00.000Z';
+let channel = continuation?.channel ?? { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 };
+let sequence = continuation?.sequence ?? 0;
 const status = () => ({
-  kind: 'status', sessionId, configurationRevision: revision, updatedAt: '2026-07-14T20:00:00.000Z',
+  kind: 'status', sessionId, configurationRevision: revision, updatedAt,
   available: true, active: true, profile, profiles: ['cw', 'fm'],
   waveform: descriptors.find((item) => item.id === profile), catalog: descriptors,
-  channel: { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 }, capabilities, identity,
+  channel, capabilities, identity,
 });
 const reply = (request, result) => process.stdout.write(JSON.stringify({ type: 'response', contractVersion: 1, requestId: request.requestId, ok: true, result }) + '\\n');
 const base = () => ({
@@ -476,7 +540,16 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   }
   else if (request.method === 'select_profile') {
     profile = request.params.profile;
-    if (${JSON.stringify(behavior)} !== 'unchanged-profile-epoch') revision = '20000000-0000-4000-8000-000000000002';
+    if (${JSON.stringify(behavior)} !== 'unchanged-profile-epoch') {
+      revision = '20000000-0000-4000-8000-000000000002';
+      updatedAt = '2026-07-14T20:00:00.001Z';
+    }
+    reply(request, status());
+  }
+  else if (request.method === 'configure_channel') {
+    channel = request.params.channel;
+    revision = '20000000-0000-4000-8000-000000000003';
+    updatedAt = '2026-07-14T20:00:00.002Z';
     reply(request, status());
   }
   else if (request.method === 'acquire_spectrum') {

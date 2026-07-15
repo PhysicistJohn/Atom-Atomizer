@@ -95,6 +95,13 @@ interface RejectedSessionTeardown {
   disconnect(): Promise<void>;
 }
 
+interface ScheduledManagerOperation {
+  readonly operation: () => Promise<unknown>;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (reason: unknown) => void;
+  readonly admission: 'normal' | 'teardown';
+}
+
 export interface InstrumentConnectionCleanupRequirement {
   readonly driverId: InstrumentDriver['driverId'];
   readonly phase: 'driver-pending' | 'rejected-session';
@@ -106,7 +113,9 @@ const MAX_PENDING_MANAGER_OPERATIONS = 64;
 
 export class InstrumentManager {
   readonly #listeners = new Set<(event: InstrumentManagerEvent) => void>();
-  #tail: Promise<void> = Promise.resolve();
+  readonly #normalOperations: ScheduledManagerOperation[] = [];
+  #teardownOperation: ScheduledManagerOperation | undefined;
+  #operationRunning = false;
   #pendingOperations = 0;
   #pendingTeardownOperations = 0;
   #disconnectOperation: Promise<void> | undefined;
@@ -839,14 +848,38 @@ export class InstrumentManager {
     }
     if (admission === 'normal') this.#pendingOperations++;
     else this.#pendingTeardownOperations++;
-    const result = this.#tail.then(operation, operation);
-    this.#tail = result.then(() => undefined, () => undefined);
-    const releaseAdmission = () => {
-      if (admission === 'normal') this.#pendingOperations--;
-      else this.#pendingTeardownOperations--;
-    };
-    void result.then(releaseAdmission, releaseAdmission);
-    return result;
+    return new Promise<T>((resolve, reject) => {
+      const scheduled: ScheduledManagerOperation = {
+        operation,
+        resolve: (value) => resolve(value as T),
+        reject,
+        admission,
+      };
+      if (admission === 'teardown') this.#teardownOperation = scheduled;
+      else this.#normalOperations.push(scheduled);
+      this.#drainOperations();
+    });
+  }
+
+  #drainOperations(): void {
+    if (this.#operationRunning) return;
+    const scheduled = this.#teardownOperation ?? this.#normalOperations.shift();
+    if (!scheduled) return;
+    if (this.#teardownOperation === scheduled) this.#teardownOperation = undefined;
+    this.#operationRunning = true;
+    void Promise.resolve().then(scheduled.operation).then(
+      (value) => this.#settleOperation(scheduled, true, value),
+      (reason: unknown) => this.#settleOperation(scheduled, false, reason),
+    );
+  }
+
+  #settleOperation(scheduled: ScheduledManagerOperation, succeeded: boolean, value: unknown): void {
+    if (scheduled.admission === 'normal') this.#pendingOperations--;
+    else this.#pendingTeardownOperations--;
+    this.#operationRunning = false;
+    if (succeeded) scheduled.resolve(value);
+    else scheduled.reject(value);
+    this.#drainOperations();
   }
 
   #timestamp(): string { return instrumentTimestampSchema.parse(this.runtime.now().toISOString()); }
