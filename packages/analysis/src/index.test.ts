@@ -1487,6 +1487,52 @@ describe('signal analysis', () => {
       .toThrow(/coherent complete scalar sweep/);
   });
 
+  it('uses the exact frozen-origin binding without imposing later-look loose uniqueness on that origin', () => {
+    const centerHz = 98_000_000;
+    const origin = emsoSweep(centerHz, 2_000_000, 1, (frequency) => {
+      if (frequency >= centerHz - 300_000 && frequency <= centerHz) {
+        return -48 - Math.abs(frequency - (centerHz - 150_000)) / 100_000;
+      }
+      return Math.abs(frequency - (centerHz + 50_000)) <= 25_000 ? -47 : -110;
+    });
+    const later = Array.from({ length: 7 }, (_, index) => emsoSweep(
+      centerHz,
+      2_000_000,
+      index + 2,
+      (frequency) => frequency >= centerHz - 300_000 && frequency <= centerHz
+        ? -48 - Math.abs(frequency - (centerHz - 150_000)) / 100_000
+        : -110,
+    ));
+    const detector = new SignalDetector({
+      threshold: { strategy: 'noise-relative', marginDb: 10 },
+      minimumBandwidthHz: 0,
+      minimumProminenceDb: 6,
+      minimumConsecutiveSweeps: 2,
+      releaseAfterMissedSweeps: 2,
+    });
+    const originCandidates = detector.analyze(origin);
+    expect(originCandidates).toHaveLength(2);
+    const intendedOrigin = [...originCandidates].sort((left, right) => right.bandwidthHz - left.bandwidthHz)[0]!;
+    const sweeps = [origin, ...later];
+    const detection = emsoDetection('exactly-bound-ambiguous-origin', intendedOrigin.peakHz, intendedOrigin.bandwidthHz, sweeps);
+    const frozen = detection.classificationRegionObservation!;
+    const looselyCompatibleOriginCandidates = originCandidates.filter((candidate) => {
+      const overlapHz = Math.max(0, Math.min(frozen.stopHz, candidate.stopHz)
+        - Math.max(frozen.startHz, candidate.startHz));
+      const centerDistanceHz = Math.abs(frozen.peakHz - candidate.peakHz);
+      return overlapHz > 0 || centerDistanceHz <= Math.max(
+        origin.actualRbwHz * 3,
+        frozen.stopHz - frozen.startHz,
+        candidate.bandwidthHz,
+        1,
+      );
+    });
+
+    expect(detection.sweepIds).toHaveLength(8);
+    expect(looselyCompatibleOriginCandidates).toHaveLength(2);
+    expect(() => extractObservableFeatures(detection, { sweeps })).not.toThrow();
+  });
+
   it('binds the newest admitted local evidence sweep to the track last-seen timestamp', () => {
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
       Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 2_000)));

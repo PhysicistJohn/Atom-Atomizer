@@ -559,6 +559,14 @@ function localHistorySweepsReplayUniquely(
     || !origin) return false;
   try {
     return sweeps.every((sweep, index) => {
+      // The frozen origin was already replayed above against its immutable
+      // compact sweep and exact candidate geometry/Bayesian evidence.  The
+      // looser track-compatibility rule below exists only for later looks,
+      // whose individual candidate observations are not retained. Applying
+      // it to the origin can falsely reject an exactly bound candidate merely
+      // because another distinct candidate was also close enough that the
+      // live tracker could have considered it.
+      if (sweep.id === origin.sourceSweep.id) return true;
       const compatible = analyzeBayesianSweep(sweep, detection.detectorConfig).filter((candidate) =>
         candidate.detectorId === detection.detectorId
         && candidate.associationMode === 'frequency-local'
