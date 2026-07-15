@@ -676,6 +676,62 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     expect(manager.snapshot()).toBeUndefined();
   });
 
+  it('retains the exact failed event-unsubscribe lease until teardown retry succeeds', async () => {
+    const sessions: StubSession[] = [];
+    let rejectFirstUnsubscribe = true;
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => {
+        const session = new StubSession(candidate, signalLabCapabilities([]));
+        sessions.push(session);
+        if (sessions.length === 1) {
+          session.onUnsubscribe = () => {
+            if (rejectFirstUnsubscribe) throw new Error('event listener lease is still retained');
+          };
+        }
+        return session;
+      },
+    );
+    // This hook intentionally succeeds without touching the admitted
+    // session's event lease. It must not be able to clear that lease barrier.
+    driver.onPendingConnectionCleanup = async () => undefined;
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const events: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => events.push(event));
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+
+    const firstDisconnect = manager.disconnect();
+    expect(manager.disconnect()).toBe(firstDisconnect);
+    await expect(firstDisconnect).rejects.toMatchObject({ code: 'driver-contract' });
+    expect(sessions[0]!.disconnectCalls).toBe(1);
+    expect(sessions[0]!.unsubscribeCalls).toBe(1);
+    expect(manager.snapshot()).toBeUndefined();
+    expect(manager.pendingConnectionCleanup()).toEqual({
+      driverId: 'signal-lab', phase: 'rejected-session',
+    });
+    expect(driver.pendingConnectionCleanupCalls).toBe(0);
+    expect(events.map((event) => event.type)).toEqual(['discovery', 'connected', 'disconnected']);
+
+    await expect(manager.connect(candidate)).rejects.toMatchObject({ code: 'session-active' });
+    expect(driver.connectCalls).toHaveLength(1);
+    expect(driver.pendingConnectionCleanupCalls).toBe(0);
+
+    rejectFirstUnsubscribe = false;
+    const retry = manager.disconnect();
+    expect(manager.disconnect()).toBe(retry);
+    await expect(retry).resolves.toBeUndefined();
+    expect(sessions[0]!.disconnectCalls).toBe(1);
+    expect(sessions[0]!.unsubscribeCalls).toBe(2);
+    expect(driver.pendingConnectionCleanupCalls).toBe(1);
+    expect(manager.pendingConnectionCleanup()).toBeUndefined();
+    expect(events.map((event) => event.type)).toEqual(['discovery', 'connected', 'disconnected']);
+
+    await expect(manager.connect(candidate)).resolves.toMatchObject({ candidate });
+    expect(driver.connectCalls).toHaveLength(2);
+    await manager.disconnect();
+  });
+
   it('rejects unsupported configurations and measurements with false lifecycle bindings', async () => {
     const measurements: InstrumentMeasurement[] = [];
     let session: StubSession;
@@ -1760,6 +1816,7 @@ class StubSession implements InstrumentSession {
   readonly configureCalls: InstrumentConfigurationCommand[] = [];
   readonly featureCalls: InstrumentFeatureCommand[] = [];
   disconnectCalls = 0;
+  unsubscribeCalls = 0;
   private listener: ((event: InstrumentSessionEvent) => void) | undefined;
   private configuration: InstrumentConfigurationCommand | undefined;
 
@@ -1771,6 +1828,7 @@ class StubSession implements InstrumentSession {
   onFeature: (command: InstrumentFeatureCommand) => Promise<InstrumentFeatureResult> = async (command) => defaultFeatureResult(this, command);
   onDisconnect: () => Promise<void> = async () => undefined;
   onSubscribe: (listener: (event: InstrumentSessionEvent) => void) => void = () => undefined;
+  onUnsubscribe: () => void = () => undefined;
   subscribeError: Error | undefined;
 
   constructor(readonly candidate: InstrumentCandidate, readonly capabilities: InstrumentCapabilities) {
@@ -1802,7 +1860,11 @@ class StubSession implements InstrumentSession {
     if (this.subscribeError) throw this.subscribeError;
     this.listener = listener;
     this.onSubscribe(listener);
-    return () => { if (this.listener === listener) this.listener = undefined; };
+    return () => {
+      this.unsubscribeCalls++;
+      this.onUnsubscribe();
+      if (this.listener === listener) this.listener = undefined;
+    };
   }
 
   emit(event: InstrumentSessionEvent): void { this.listener?.(event); }

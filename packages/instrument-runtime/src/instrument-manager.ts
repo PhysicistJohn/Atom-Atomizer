@@ -662,13 +662,20 @@ export class InstrumentManager {
     }
     let unsubscribeFailure: unknown;
     try { active.unsubscribe(); }
-    catch (error) { unsubscribeFailure = error; }
+    catch (error) {
+      unsubscribeFailure = error;
+      // Transport ownership is already closed, but the exact event lease is
+      // still live. Retain that closure as session teardown work; a driver's
+      // pre-session cleanup hook does not own it and may legitimately no-op.
+      // Reconnect remains blocked until this same unsubscribe succeeds.
+      this.#rejectedSessionTeardown = {
+        driverId: active.driver.driverId,
+        disconnect: async () => { active.unsubscribe(); },
+      };
+    }
     if (this.#active === active) this.#active = undefined;
     this.#emit({ type: 'disconnected', sessionId: active.session.sessionId, driverId: active.driver.driverId });
     if (unsubscribeFailure !== undefined) {
-      // The transport is closed, but the driver may still retain the failed
-      // subscription lease. Keep explicit cleanup admission available.
-      this.#pendingDriverCleanupBarrier = active.driver.driverId;
       throw asManagerError(unsubscribeFailure, 'driver-contract', `Driver ${active.driver.driverId} event unsubscription failed after disconnect`);
     }
   }
