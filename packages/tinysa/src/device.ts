@@ -42,6 +42,24 @@ const REQUIRED_COMMANDS = [
   // other command is optional and appears only in derived capabilities.
   'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
 ] as const;
+const CUSTOM_RECEIVER_PROBES = [
+  ['sweep', 'sweep ?'],
+  // TinySA_Firmware cmd_scan treats one argument as a repeat count, including
+  // `?`. Five arguments take the source-proved usage branch before any scan or
+  // geometry mutation can occur.
+  ['scan', 'scan ? ? ? ? ?'],
+  ['scanraw', 'scanraw ?'],
+  ['zero', 'zero ?'],
+  ['trace', 'trace ?'],
+  ['rbw', 'rbw ?'],
+  ['attenuate', 'attenuate ?'],
+  ['sweeptime', 'sweeptime ?'],
+  ['calc', 'calc ?'],
+  ['spur', 'spur ?'],
+  ['avoid', 'avoid ?'],
+  ['lna', 'lna ?'],
+  ['trigger', 'trigger ?'],
+] as const;
 const SCREEN_BYTES = ZS407_FIRMWARE_LIMITS.screenWidth * ZS407_FIRMWARE_LIMITS.screenHeight * 2;
 const DETECTOR_COMMAND: Record<AnalyzerConfig['detector'], string> = {
   sample: 'off',
@@ -997,12 +1015,9 @@ async function customReceiverSurface(
   query: (command: string) => Promise<string>,
 ): Promise<ObservedReceiverSurface> {
   const usage = new Map<string, string>();
-  for (const command of [
-    'sweep', 'scan', 'scanraw', 'zero', 'trace', 'rbw', 'attenuate', 'sweeptime',
-    'calc', 'spur', 'avoid', 'lna', 'trigger',
-  ]) {
+  for (const [command, probe] of CUSTOM_RECEIVER_PROBES) {
     if (!commands.includes(command)) continue;
-    usage.set(command, await query(`${command} ?`));
+    usage.set(command, await query(probe));
   }
   const advertisedRbw = parseAdvertisedRange(usage.get('rbw'), 'rbw', 'kHz');
   const advertisedAttenuation = parseAdvertisedRange(usage.get('attenuate'), 'attenuate', 'dB');
@@ -1041,10 +1056,7 @@ async function customReceiverSurface(
 
   const trace = parseTraceUsage(usage.get('trace'));
   const rawSweepOffsetReadback = hasExactRawSweepOffsetUsage(usage.get('zero'));
-  const sweepSyntax = hasExactSingleLine(
-    usage.get('sweep'),
-    /^usage: sweep \{start\(Hz\)\} \[stop\(Hz\)\] \[points\]$/,
-  );
+  const sweepSyntax = hasExactSweepUsage(usage.get('sweep'));
   const traceDbm = trace?.options.includes('dBm') ?? false;
   const firmwareTraceReadback = traceDbm && (trace?.valueReadback ?? false);
   const detectors = advertisedDetectors(usage.get('calc'));
@@ -1118,8 +1130,12 @@ function parseAdvertisedRange(
 }
 
 function isExactRangeReadback(command: string, line: string): boolean {
-  // The known shell's `attenuate ?` reply includes the current value after
-  // its one usage declaration. RBW and sweeptime `?` replies do not.
+  // TinySA_Firmware 53850c4 emits a current-value line after each of these
+  // usage declarations. Its uppercase `%F` formatter dispatches to ftoaS,
+  // which inserts engineering prefixes. The advertised ZS407 ranges bound RBW
+  // to no prefix or `k`, and sweep time to seconds or milliseconds.
+  if (command === 'rbw') return /^\d+(?:\.\d+)?k?Hz$/.test(line);
+  if (command === 'sweeptime') return /^\d+(?:\.\d+)?m?s$/.test(line);
   if (command === 'attenuate') return /^\d+(?:\.\d+)?$/.test(line);
   return false;
 }
@@ -1129,8 +1145,11 @@ function advertisedDetectors(response: string | undefined): DeviceCapabilities['
     ['off', 'sample'], ['minh', 'minimum-hold'], ['maxh', 'maximum-hold'], ['maxd', 'maximum-decay'],
     ['aver4', 'average-4'], ['aver16', 'average-16'], ['aver', 'average'], ['quasi', 'quasi-peak'],
   ];
+  const lines = exactResponseLines(response);
+  if (lines.length < 1 || lines.length > 2) return [];
+  if (lines[1] !== undefined && !['OFF', 'MINH', 'MAXH', 'MAXD', 'AVER4', 'A16', 'AVER', 'QUASI'].includes(lines[1])) return [];
   const advertised = parseOptionUsage(
-    response,
+    lines[0],
     'calc',
     ['off', 'minh', 'maxh', 'maxd', 'aver4', 'aver16', 'aver', 'quasi', 'log', 'lin'] as const,
     '[{trace#}] ',
@@ -1160,12 +1179,18 @@ function parseTraceUsage(response: string | undefined): {
   readonly valueReadback: boolean;
 } | undefined {
   const lines = exactResponseLines(response);
-  if (lines.length < 1 || lines.length > 2) return undefined;
+  if (lines.length < 1 || (lines.length > 2 && lines.length !== 4)) return undefined;
   const match = lines[0]?.match(/^(?:usage: )?trace \{(dBm(?:V)?|dBuV|RAW|V|Vpp|W)(?:\|(dBm(?:V)?|dBuV|RAW|V|Vpp|W))*\}$/);
   if (!match) return undefined;
   const opening = lines[0]!.indexOf('{');
   const options = lines[0]!.slice(opening + 1, -1).split('|') as ('dBm' | 'dBmV' | 'dBuV' | 'RAW' | 'V' | 'Vpp' | 'W')[];
   if (new Set(options).size !== options.length) return undefined;
+  if (lines.length === 4) {
+    if (lines[1] !== 'trace {scale|reflevel} auto|{value}'
+      || lines[2] !== 'trace [{trace#}] value'
+      || lines[3] !== 'trace [{trace#}] {copy|freeze|subtract|view|value} {trace#}|off|on|[{index} {value}]') return undefined;
+    return { options, valueReadback: true };
+  }
   if (lines[1] !== undefined && lines[1] !== 'trace [{trace#}] value') return undefined;
   return { options, valueReadback: lines.length === 2 };
 }
@@ -1185,13 +1210,21 @@ function parseTriggerUsage(response: string | undefined): readonly ('auto' | 'no
 
 function hasExactRawSweepOffsetUsage(response: string | undefined): boolean {
   const lines = exactResponseLines(response);
-  if (lines.length !== 2 || lines[0] !== 'zero {level}' || !/^-?\d+dBm$/.test(lines[1] ?? '')) return false;
+  if (lines.length !== 2 || lines[0] !== 'usage: zero {level}' || !/^-?\d+dBm$/.test(lines[1] ?? '')) return false;
   try {
     parseRawSweepOffset(lines[1]!);
     return true;
   } catch {
     return false;
   }
+}
+
+function hasExactSweepUsage(response: string | undefined): boolean {
+  const lines = exactResponseLines(response);
+  return lines.length === 3
+    && lines[0] === 'usage: sweep {start(Hz)} [stop(Hz)] [points]'
+    && lines[1] === 'sweep {normal|precise|fast|noise|go|abort}'
+    && lines[2] === 'sweep {start|stop|center|span|cw} {freq(Hz)}';
 }
 
 function hasExactSingleLine(response: string | undefined, pattern: RegExp): boolean {

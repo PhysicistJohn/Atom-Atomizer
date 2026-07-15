@@ -2,10 +2,11 @@
 
 Status: implementation baseline
 
-Version: 2.1.0
+Version: 2.2.0
 
 Host baseline source: `c97938697b6c7485e7cab50bca9af76996b7d671`
 Observed shipped source: `c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c`
+Custom-probe reference source: `53850c4aa4f8947e4a7ab3ebef553dad1f8e770d`
 
 Target: tinySA Ultra+ ZS407 (`hwid` 103)
 
@@ -72,19 +73,52 @@ continue on a potentially desynchronized stream.
 
 ## Required command surface
 
-Atomizer requires these commands after `help` capability discovery:
+Atomizer requires only the receive-safe connection minimum after `help`
+capability discovery:
 
 | Domain | Commands |
 | --- | --- |
 | identity | `version`, `info`, `help` |
-| lifecycle | `status`, `pause`, `resume`, `abort` |
-| analyzer | `mode`, `sweep`, `scan`, `scanraw`, `zero`, `rbw`, `attenuate`, `sweeptime`, `spur`, `avoid`, `lna`, `trigger`, `calc`, `trace`, `marker` |
-| generator | `mode`, `freq`, `level`, `modulation`, `output` |
-| diagnostics | `vbat`, `deviceid`, `capture` |
-| remote panel | `touch`, `release` |
+| RF safety and receive mode | `output`, `mode` |
+| conservative readback | `sweep`, `rbw`, `attenuate`, `status` |
+| telemetry | `vbat`, `deviceid` |
 
 An absent required command is an unsupported-firmware error, not a reason to try
-an alternate spelling or older protocol.
+an alternate spelling or older protocol. `scan`, `scanraw`, `zero`, `trace`,
+`sweeptime`, `calc`, `spur`, `avoid`, `lna`, and `trigger` are optional inputs to
+the derived receiver capability. Generator, screen, remote-panel, firmware trace,
+and marker features are also optional. Source-qualified firmware receives only
+the optional features whose commands are advertised. An unqualified custom build
+receives only behavior established by the exact safe probes below; if the result
+cannot form a complete acquisition, the generic instrument connection is rejected.
+
+## Custom-firmware capability probes
+
+An unknown but syntactically valid revision with exact physical USB and ZS407
+identity remains `custom-unqualified`. Command names in `help` are not behavioral
+proof, so Atomizer sends the following closed, read-only probe set and parses the
+whole response. Extra, missing, duplicated, or prose-contaminated lines do not
+partially match.
+
+| Surface | Probe | Exact source shape used for admission |
+| --- | --- | --- |
+| sweep configuration | `sweep ?` | three lines: the start/stop/points form, sweep-mode form, and named-frequency form |
+| text scan | `scan ? ? ? ? ?` | one `usage: scan ...` line |
+| raw scan | `scanraw ?` | one `usage: scanraw ...` line |
+| raw offset | `zero ?` | `usage: zero {level}` plus one bounded integer-dBm line |
+| trace | `trace ?` | all four source lines, including unit, scale/reference, value readback, and copy/freeze/subtract/view/value forms |
+| RBW | `rbw ?` | usage range plus the current Hz/kHz value |
+| attenuation | `attenuate ?` | usage range plus the current numeric value |
+| sweep time | `sweeptime ?` | usage range plus the current seconds/milliseconds value |
+| detector | `calc ?` | usage options plus one exact current-mode token |
+| enum controls | `spur ?`, `avoid ?`, `lna ?`, `trigger ?` | each command's exact source usage lines |
+
+`scan ?` is deliberately forbidden as a probe. In firmware commit `53850c4`,
+`cmd_scan` treats any single argument as a repeat count; `?` therefore reaches
+the acquisition path and does not emit usage. Five arguments take the over-arity
+usage branch before parsing, scanning, or geometry mutation. After every custom
+probe sequence, Atomizer sends `output off`, restores `mode input`, rereads
+`sweep`, and rejects any geometry change or failed restoration.
 
 ## Identity
 
@@ -108,11 +142,16 @@ and `info` begins with exact product evidence:
 tinySA ULTRA+ ZS407
 ```
 
-Atomizer accepts only exact `0483:5740` physical USB, `tinySA4_` firmware, a
-hardware line, strict ZS407 evidence across `version` and `info`, a reported
-revision in the closed source registry, and the complete command surface. The
-registry currently resolves `c5dd31f` to the shipped full commit and `c979386`
-to the pinned OEM/host full commit. Unknown revisions fail as unsupported. The
+Atomizer accepts a physical session only with exact `0483:5740` USB,
+`tinySA4_` firmware, a hardware line, strict ZS407 evidence across `version` and
+`info`, the receive-safe command minimum, and acknowledged output-off framing.
+The closed source registry resolves `c5dd31f` to the shipped full commit and
+`c979386` to the pinned OEM/host full commit; only those entries receive
+source-qualified provenance and pinned ZS407 capability defaults. An unknown
+syntactically valid revision is warning-admitted as `custom-unqualified` only
+when its safe probes establish a usable receiver surface. It receives no source
+commit, OEM metrology qualification, generator domain, or unprobed capability.
+Malformed revisions and failed/ambiguous probes remain unsupported. The
 test-only protocol double may return the same shell identity but must preserve
 `execution=protocol-test-double`, `usbIdentityVerified=false`, and test-only
 qualification. The executable Firmware twin preserves
@@ -314,3 +353,8 @@ retried.
 - `FW-PROTO-015`: every enabled Ultra firmware trace has one unique ID in `1..4`, exact contiguous indices and the acquired point count; malformed device trace readback rejects.
 - `FW-PROTO-016`: remote press/release cannot interleave with continuous acquisition; resume occurs only after successful release and analyzer re-verification.
 - `FW-PROTO-017`: D1–D4 overlay visibility is host-only, explicit, and cannot issue a firmware trace mutation.
+- `FW-PROTO-018`: custom capability discovery accepts the complete multiline
+  replies from TinySA_Firmware `53850c4`, including the literal `usage:` prefixes
+  and state lines, while rejecting partial/prose-contaminated variants.
+- `FW-PROTO-019`: custom text-scan discovery uses only
+  `scan ? ? ? ? ?`; `scan ?` is never sent and cannot trigger an acquisition.

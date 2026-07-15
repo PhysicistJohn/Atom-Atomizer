@@ -159,7 +159,9 @@ export class FakeTinySaTransport implements ByteTransport {
         this.options.screenCaptureByteOrder ?? 'little-endian',
       );
       case 'trace': return this.#traceCommand(args);
-      case 'calc': return args[0] === '?' ? 'usage: calc [{trace#}] off|minh|maxh|maxd|aver4|aver16|aver|quasi|log|lin' : '';
+      case 'calc': return args[0] === '?'
+        ? 'usage: calc [{trace#}] off|minh|maxh|maxd|aver4|aver16|aver|quasi|log|lin\r\nOFF'
+        : '';
       case 'spur': return args[0] === '?' ? 'usage: spur off|on|auto' : '';
       case 'avoid': return args[0] === '?' ? 'usage: avoid auto|off|on|dump' : '';
       case 'lna': return args[0] === '?' ? 'usage: lna off|on' : '';
@@ -187,7 +189,10 @@ export class FakeTinySaTransport implements ByteTransport {
 
   #traceCommand(args: string[]): string {
     if (args.length === 1 && args[0] === '?') {
-      return 'trace {dBm|dBmV|dBuV|RAW|V|Vpp|W}\r\ntrace [{trace#}] value';
+      return 'trace {dBm|dBmV|dBuV|RAW|V|Vpp|W}\r\n'
+        + 'trace {scale|reflevel} auto|{value}\r\n'
+        + 'trace [{trace#}] value\r\n'
+        + 'trace [{trace#}] {copy|freeze|subtract|view|value} {trace#}|off|on|[{index} {value}]';
     }
     if (args.length === 1 && args[0] === 'dBm') return '';
     const enabled = this.options.firmwareTraceIds ?? [1];
@@ -217,6 +222,11 @@ export class FakeTinySaTransport implements ByteTransport {
 
   #sweepCommand(args: string[]): string {
     if (!args.length) return `${this.#startHz} ${this.#stopHz} ${this.#points}`;
+    if (args.length === 1 && args[0] === '?') {
+      return 'usage: sweep {start(Hz)} [stop(Hz)] [points]\r\n'
+        + '\tsweep {normal|precise|fast|noise|go|abort}\r\n'
+        + '\tsweep {start|stop|center|span|cw} {freq(Hz)}';
+    }
     if (args.length === 2 && ['start', 'stop', 'center', 'span', 'cw'].includes(args[0]!)) {
       const value = strictInteger(args[1], 'sweep frequency');
       if (args[0] === 'start') this.#startHz = value;
@@ -249,7 +259,7 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #rbwCommand(args: string[]): string {
-    if (!args.length) return `usage: rbw 0.2..850|auto\r\n${engineering(this.#actualRbwHz())}Hz`;
+    if (!args.length || args[0] === '?') return `usage: rbw 0.2..850|auto\r\n${engineering(this.#actualRbwHz())}Hz`;
     if (args[0] === 'auto') this.#rbwKhz = 'auto';
     else {
       const value = Number(args[0]);
@@ -271,7 +281,7 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #sweepTimeCommand(args: string[]): string {
-    if (!args.length) return `usage: sweeptime 0.003..60\r\n${this.#sweepTimeSeconds || 0.08}s`;
+    if (!args.length || args[0] === '?') return `usage: sweeptime 0.003..60\r\n${engineeringSeconds(this.#sweepTimeSeconds || 0.08)}s`;
     const value = Number(args[0]);
     if (!Number.isFinite(value) || value < 0 || value > 60) return 'usage: sweeptime 0.003..60';
     this.#sweepTimeSeconds = value;
@@ -320,8 +330,8 @@ export class FakeTinySaTransport implements ByteTransport {
   }
 
   #zeroCommand(args: string[]): string {
-    if (args.length === 0) return `zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
-    if (args.length !== 1 || !/^-?\d+$/.test(args[0]!)) return `zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
+    if (args.length === 0) return `usage: zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
+    if (args.length !== 1 || !/^-?\d+$/.test(args[0]!)) return `usage: zero {level}\r\n${this.#rawSweepOffsetDb}dBm`;
     this.#rawSweepOffsetDb = Number(args[0]);
     return '';
   }
@@ -391,6 +401,10 @@ function engineering(value: number): string {
   if (value >= 1_000_000) return `${value / 1_000_000}M`;
   if (value >= 1_000) return `${value / 1_000}k`;
   return String(value);
+}
+
+function engineeringSeconds(value: number): string {
+  return value < 1 ? `${Number((value * 1_000).toPrecision(3))}m` : String(Number(value.toPrecision(3)));
 }
 
 function concatenate(...parts: Uint8Array[]): Uint8Array {

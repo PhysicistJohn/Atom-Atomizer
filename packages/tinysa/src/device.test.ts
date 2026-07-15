@@ -38,6 +38,40 @@ const analyzer: AnalyzerConfig = {
   trigger: { mode: 'normal', levelDbm: -63 },
 };
 
+// Source-exact F303/ZS407 Phase 6 shell replies from sibling
+// TinySA_Firmware commit 53850c4aa4f8947e4a7ab3ebef553dad1f8e770d.
+// The usage strings come from main.c/sa_cmd.c; the help partition follows
+// cmd_help's CMD_RUN_IN_LOAD split in commands[]. State-dependent readbacks use
+// values representable by the corresponding source formatters. In particular,
+// chprintf `%F` delegates to ftoaS: 100 kHz and 0.08 s exercise its source-level
+// `k` (>1000) and `m` (<1) engineering-prefix thresholds.
+const FIRMWARE_53850C4_HELP = [
+  'commands: freq time dac nf saveconfig clearconfig zero sweep pause restart resume wait waitscan repeat status caloutput save recall trace trigger marker line usart_cfg vbat_offset color if if1 lna2 agc actual_freq freq_corr attenuate level sweeptime leveloffset levelchange modulation rbw mode spur avoid lna direct ultra load ext_gain output deviceid correction calc menu text remark',
+  'Other commands: version modern reset data frequencies scan hop scanraw abort test touchcal touchtest channel usart capture refresh touch release vbat help info selftest sd_list sd_read sd_delete threads',
+].join('\r\n');
+
+const FIRMWARE_53850C4_PROBE_REPLIES = Object.freeze({
+  help: FIRMWARE_53850C4_HELP,
+  'sweep ?': 'usage: sweep {start(Hz)} [stop(Hz)] [points]\r\n\tsweep {normal|precise|fast|noise|go|abort}\r\n\tsweep {start|stop|center|span|cw} {freq(Hz)}',
+  'scan ? ? ? ? ?': 'usage: scan {start(Hz)} {stop(Hz)} [points] [outmask]',
+  'scanraw ?': 'usage: scanraw {start(Hz)} {stop(Hz)} [points] [options]',
+  'zero ?': 'usage: zero {level}\r\n-174dBm',
+  'trace ?': 'trace {dBm|dBmV|dBuV|RAW|V|Vpp|W}\r\ntrace {scale|reflevel} auto|{value}\r\ntrace [{trace#}] value\r\ntrace [{trace#}] {copy|freeze|subtract|view|value} {trace#}|off|on|[{index} {value}]',
+  'rbw ?': 'usage: rbw 0.2..850|auto\r\n100kHz',
+  'attenuate ?': 'usage: attenuate 0..31|auto\r\n   0',
+  'sweeptime ?': 'usage: sweeptime 0.003..60\r\n  80ms',
+  'calc ?': 'usage: calc [{trace#}] off|minh|maxh|maxd|aver4|aver16|aver|quasi|log|lin\r\nOFF',
+  'spur ?': 'usage: spur off|on|auto',
+  'avoid ?': 'usage: avoid auto|off|on|dump',
+  'lna ?': 'usage: lna off|on',
+  'trigger ?': 'trigger {value}\r\ntrigger {auto|normal|single}',
+});
+
+const FIRMWARE_53850C4_PROBE_COMMANDS = [
+  'sweep ?', 'scan ? ? ? ? ?', 'scanraw ?', 'zero ?', 'trace ?', 'rbw ?', 'attenuate ?',
+  'sweeptime ?', 'calc ?', 'spur ?', 'avoid ?', 'lna ?', 'trigger ?',
+] as const;
+
 describe('device fail-loud lifecycle', () => {
   it('admits the shipped ZS407 identity from its explicit info line and resolves exact source provenance', async () => {
     const bytes = new FakeTinySaTransport({
@@ -180,6 +214,99 @@ describe('device fail-loud lifecycle', () => {
     expect(bytes.writes.slice(lastProbe + 1, lastProbe + 4)).toEqual(['output off', 'mode input', 'sweep']);
     expect(connected.generatorOutput).toBe('off');
     await service.disconnect();
+  });
+
+  it('admits the source-exact TinySA_Firmware 53850c4 multiline probe surface without executing scan', async () => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_v1.4-326-g53850c4\r\nHW Version:V0.5.4 + ZS407 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-326-g53850c4',
+      commandResponses: FIRMWARE_53850C4_PROBE_REPLIES,
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    const connected = await service.connect(transport.port);
+
+    expect(connected.identity).toMatchObject({
+      firmwareReportedRevision: '53850c4',
+      firmwareQualification: 'custom-unqualified',
+    });
+    expect(connected.identity).not.toHaveProperty('firmwareSourceCommit');
+    expect(connected.capabilities).toMatchObject({
+      rbwKhz: { min: 0.2, max: 850, step: 0.1, unit: 'kHz' },
+      attenuationDb: { min: 0, max: 31, step: 1, unit: 'dB' },
+      sweepSeconds: { min: 0.003, max: 60, step: 0.000_001, unit: 'seconds' },
+      rawSweepOffsetReadback: true,
+      firmwareTraces: true,
+      scalarReceiver: {
+        sweptSpectrum: true,
+        detectedPower: true,
+        acquisitionFormats: ['text', 'raw'],
+        resolutionBandwidthAutomatic: true,
+        attenuationAutomatic: true,
+        sweepTimeAutomatic: false,
+        detectors: ['sample', 'minimum-hold', 'maximum-hold', 'maximum-decay', 'average-4', 'average-16', 'average', 'quasi-peak'],
+        spurRejection: ['off', 'on', 'auto'],
+        lowNoiseAmplifier: ['off', 'on'],
+        avoidSpurs: ['auto', 'off', 'on'],
+        triggerModes: ['auto'],
+      },
+    });
+    expect(bytes.writes).toContain('help');
+    const firstProbe = bytes.writes.indexOf(FIRMWARE_53850C4_PROBE_COMMANDS[0]);
+    expect(bytes.writes.slice(firstProbe, firstProbe + FIRMWARE_53850C4_PROBE_COMMANDS.length))
+      .toEqual(FIRMWARE_53850C4_PROBE_COMMANDS);
+    expect(bytes.writes).not.toContain('scan ?');
+    await service.disconnect();
+  });
+
+  it('withholds capabilities when source-exact multiline probe replies are partial or contaminated', async () => {
+    const cases = [
+      {
+        command: 'sweep ?',
+        response: `${FIRMWARE_53850C4_PROBE_REPLIES['sweep ?']}\r\nnote: approximately compatible`,
+        expected: 'no-common-receiver',
+      },
+      {
+        command: 'zero ?',
+        response: 'zero {level}\r\n-174dBm',
+        expected: 'no-raw-offset',
+      },
+      {
+        command: 'trace ?',
+        response: 'trace {dBm|dBmV|dBuV|RAW|V|Vpp|W}\r\ntrace {scale|reflevel} auto|{value}\r\ntrace [{trace#}] value',
+        expected: 'no-common-receiver',
+      },
+      {
+        command: 'calc ?',
+        response: `${FIRMWARE_53850C4_PROBE_REPLIES['calc ?']}\r\npossibly OFF`,
+        expected: 'no-detectors',
+      },
+    ] as const;
+
+    for (const candidate of cases) {
+      const bytes = new FakeTinySaTransport({
+        versionResponse: 'tinySA4_v1.4-326-g53850c4\r\nHW Version:V0.5.4 + ZS407 max2871',
+        infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-326-g53850c4',
+        commandResponses: { ...FIRMWARE_53850C4_PROBE_REPLIES, [candidate.command]: candidate.response },
+      });
+      const transport = new PhysicalFixtureTransport(bytes);
+      const service = new TinySaDeviceService(transport);
+      const connected = await service.connect(transport.port);
+
+      if (candidate.expected === 'no-common-receiver') {
+        expect(connected.capabilities?.scalarReceiver).toMatchObject({ sweptSpectrum: false, detectedPower: false });
+      } else if (candidate.expected === 'no-raw-offset') {
+        expect(connected.capabilities).toMatchObject({
+          rawSweepOffsetReadback: false,
+          scalarReceiver: { acquisitionFormats: ['text'] },
+        });
+      } else {
+        expect(connected.capabilities?.scalarReceiver.detectors).toEqual([]);
+        expect(connected.capabilities?.scalarReceiver.sweptSpectrum).toBe(false);
+      }
+      await service.disconnect();
+    }
   });
 
   it('projects only the proven reduced custom-firmware receiver surface and exact advertised ranges', async () => {
