@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { logGamma, mixtureLogLikelihood, posteriorCandidates, studentTLogDensity, studentTModelTailProbability, type StudentTLikelihoodComponent } from './bayesian-predictive.js';
-import { selectObservableDecision } from './bayesian-waveform-classifier.js';
-import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable-v5.generated.js';
+import {
+  inferPosterior,
+  selectObservableDecision as selectObservableDecisionRaw,
+} from './bayesian-waveform-classifier.js';
+import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable.generated.js';
+import {
+  OBSERVABLE_EVIDENCE_VIEWS,
+  observableClassSupportsEvidenceView,
+  observableModelComponents,
+} from './observable-classifier-model.js';
+import { DETECTED_POWER_ACQUISITION_QUALIFICATION } from './observable-features.js';
 
 const unitCauchy: StudentTLikelihoodComponent = {
   id: 'unit-cauchy',
@@ -12,13 +21,35 @@ const unitCauchy: StudentTLikelihoodComponent = {
   scale: [[1]],
 };
 
+const selectObservableDecision = (
+  ...args: Parameters<typeof selectObservableDecisionRaw>
+): ReturnType<typeof selectObservableDecisionRaw> =>
+  selectObservableDecisionRaw(args[0], args[1], args[2] ?? 1);
+
+const qualifiedEnvelope = (values: Readonly<Record<string, number>>) => ({
+  values,
+  views: ['scalar-spectrum', 'detected-power-envelope'] as const,
+  zeroSpanCaptureId: 'policy-test-capture',
+  detectedPowerAcquisitionQualification: DETECTED_POWER_ACQUISITION_QUALIFICATION,
+});
+
 describe('Bayesian classifier Student-t likelihood math', () => {
   it('keeps the generated class priors and per-class mixtures normalized independently of scenario count', () => {
     expect(new Set(BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => model.id)).size).toBe(12);
     expect(BAYESIAN_OBSERVABLE_MODEL.dimensions).toHaveLength(28);
     expect(BAYESIAN_OBSERVABLE_MODEL.classModels.reduce((sum, model) => sum + Math.exp(model.logPrior), 0)).toBeCloseTo(1, 12);
     for (const model of BAYESIAN_OBSERVABLE_MODEL.classModels) {
-      expect(model.components.reduce((sum, component) => sum + Math.exp(component.logWeight), 0)).toBeCloseTo(1, 12);
+      expect(model.components).toBeUndefined();
+      for (const view of OBSERVABLE_EVIDENCE_VIEWS) {
+        const components = observableModelComponents(model, view);
+        if (observableClassSupportsEvidenceView(model.id, view)) {
+          expect(components.reduce((sum, component) =>
+            sum + Math.exp(component.logWeight), 0)).toBeCloseTo(1, 12);
+        } else {
+          expect(components).toEqual([]);
+          expect(model.tailCalibrationScoresByView?.[view]).toEqual([]);
+        }
+      }
     }
   });
 
@@ -65,6 +96,13 @@ describe('Bayesian classifier Student-t likelihood math', () => {
       id: 'invalid', logWeight: 0, degreesOfFreedom: 4,
       dimensions: ['x', 'y'], location: [0, 0], scale: [[1, 2], [2, 1]],
     })).toThrow(/positive definite/i);
+  });
+
+  it('rejects a non-positive or non-integral component fit sample count', () => {
+    expect(() => studentTLogDensity({ x: 0 }, { ...unitCauchy, fitSampleCount: 0 }))
+      .toThrow(/fit sample count/i);
+    expect(() => studentTLogDensity({ x: 0 }, { ...unitCauchy, fitSampleCount: 2.5 }))
+      .toThrow(/fit sample count/i);
   });
 
   it('canonically abstains between LTE and NR below the scalar identifiability boundary', () => {
@@ -165,14 +203,14 @@ describe('Bayesian classifier Student-t likelihood math', () => {
     });
     expect(selectObservableDecision(tdd, {
       ...observation,
-      values: { 'envelope.logTransitionRateHz': 3 },
+      ...qualifiedEnvelope({ 'envelope.logTransitionRateHz': 3 }),
     }, 1)).toEqual({ label: 'nr-tdd-like', probability: 0.9 });
 
     const fdd = [candidate('nr-fdd-like', 0.9), candidate('unknown-signal', 0.1)];
     expect(selectObservableDecision(fdd, {
       centerHz: 1_840_000_000,
       bandwidthHz: 40_000_000,
-      values: { 'envelope.logTransitionRateHz': 0 },
+      ...qualifiedEnvelope({ 'envelope.logTransitionRateHz': 0 }),
     }, 1)).toEqual({ label: 'nr-like', probability: 0.9 });
   });
 
@@ -198,22 +236,51 @@ describe('Bayesian classifier Student-t likelihood math', () => {
     }, 1).label).toBe('am-dsb-full-carrier-like');
     expect(selectObservableDecision(candidates, {
       ...base,
-      values: {
+      ...qualifiedEnvelope({
         'spectrum.centerFraction': 0.9,
         'spectrum.sidebandScore': 0,
         'envelope.rangeDb': 8,
         'envelope.standardDeviationDb': 2,
-      },
+      }),
     }, 1).label).toBe('am-dsb-full-carrier-like');
   });
 
   it('rejects an observation outside every fixed known component even when relative posterior favors a known leaf', () => {
     const candidates = [candidate('wifi-ofdm-like', 0.9), candidate('unknown-signal', 0.1)];
-    expect(selectObservableDecision(candidates, {
+    const wifiModel = BAYESIAN_OBSERVABLE_MODEL.classModels.find((model) => model.id === 'wifi-ofdm-like')!;
+    const spectrumDimensions = observableModelComponents(wifiModel, 'spectrum-only')[0]!.dimensions;
+    const values = Object.fromEntries(spectrumDimensions.map((dimension) => [dimension, 1_000]));
+    expect(selectObservableDecisionRaw(candidates, {
       centerHz: 5_180_000_000,
       bandwidthHz: 20_000_000,
-      values: { 'spectrum.logBandwidthHz': 1_000 },
+      values,
     })).toEqual({ label: 'unknown', probability: 0.1 });
+  });
+
+  it('never evaluates or assigns Bluetooth likelihood to an envelope view', () => {
+    const sourceModel = BAYESIAN_OBSERVABLE_MODEL.classModels.find(
+      (model) => model.id === 'wifi-ofdm-like',
+    )!;
+    const component = observableModelComponents(sourceModel, 'envelope-timed')[0]!;
+    const values = Object.fromEntries(component.dimensions.map(
+      (dimension, index) => [dimension, component.location[index]!],
+    ));
+    const candidates = inferPosterior({
+      ...qualifiedEnvelope(values),
+      limitations: ['frequency-agile-band-activity-association'],
+      associationEvidenceQualification: 'provenance-bound-current-promotion',
+      occupiedStartHz: 2_402_000_000,
+      occupiedStopHz: 2_480_000_000,
+      centerHz: 2_441_000_000,
+      bandwidthHz: 78_000_000,
+      binWidthHz: 100_000,
+      sweepIds: Array.from({ length: 8 }, (_, index) => `envelope-view-${index}`),
+    });
+    expect(candidates.find((candidate) => candidate.id === 'bluetooth-like')).toMatchObject({
+      probability: 0,
+      logLikelihood: Number.NEGATIVE_INFINITY,
+      logJoint: Number.NEGATIVE_INFINITY,
+    });
   });
 });
 

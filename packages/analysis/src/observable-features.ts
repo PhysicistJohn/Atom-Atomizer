@@ -1,12 +1,14 @@
 import type {
+  DetectedPowerCaptureReceipt,
   DetectedSignal,
+  LocalClassificationRegionObservation,
   Sweep,
   SweptSpectrumConfiguration,
   WaveformClassificationEvidence,
   ZeroSpanCapture,
 } from '@tinysa/contracts';
 import { instrumentTimestampSchema } from '@tinysa/contracts';
-import { isInstrumentMeasurementIdentity, sameMeasurementIdentity } from './measurement-provenance.js';
+import { sameMeasurementIdentity } from './measurement-provenance.js';
 import {
   BAYESIAN_DETECTOR_MODEL,
   analyzeBayesianSweep,
@@ -35,11 +37,25 @@ import {
   multicomponentSweptRegionAssociations,
   multicomponentSweptRegionAssociationsForGeometry,
 } from './multicomponent-swept-region.js';
-import { regularSpectralComponentAssociations } from './regular-spectral-component.js';
+import {
+  REGULAR_SPECTRAL_COMPONENT_MODEL_ID,
+  regularSpectralComponentLineagesAreCompatible,
+  regularSpectralComponentAssociations,
+} from './regular-spectral-component.js';
+import { SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID } from './observable-training-acquisition-geometry.js';
+import { assertDetectedPowerCaptureReceiptMatches } from './detected-power-capture-receipt.js';
+
+export const DETECTED_POWER_ACQUISITION_QUALIFICATION =
+  'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4' as const;
 
 export interface WaveformEvidence extends WaveformClassificationEvidence {
   /** Exact newest-first eight-sweep scalar window observed when zero span was acquired. */
   zeroSpanSpectrumSweepIds?: readonly string[];
+  /**
+   * @deprecated A policy string is never acquisition authority. It is accepted
+   * only alongside an issued detectedPowerCaptureReceipt during migration.
+   */
+  detectedPowerAcquisitionPolicyId?: typeof SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID;
 }
 
 export const BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY = {
@@ -56,12 +72,15 @@ export type ObservableEvidenceLimitation =
   | 'zero-span-tune-mismatch'
   | 'zero-span-provenance-mismatch'
   | 'zero-span-spectrum-window-mismatch'
+  | 'zero-span-capture-receipt-missing'
+  | 'zero-span-acquisition-policy-unqualified'
   | 'zero-span-timing-unqualified'
   | 'zero-span-rbw-unavailable'
   | 'zero-span-geometry-out-of-domain'
   | 'timing-rate-aliased'
   | 'timing-window-too-short'
   | 'frequency-agile-band-activity-association'
+  | 'frequency-agile-fixed-tune-envelope-censored'
   | 'regular-spectral-component-activity-association'
   | 'multicomponent-swept-region-activity-association'
   | 'zero-span-local-member-of-nonidentity-regional-association';
@@ -76,9 +95,30 @@ export interface ObservableFeatureObservation {
   binWidthHz: number;
   sweepIds: readonly string[];
   zeroSpanCaptureId?: string;
+  /** Runtime proof that detected-power features use the model's calibrated acquisition policy. */
+  detectedPowerAcquisitionQualification?: typeof DETECTED_POWER_ACQUISITION_QUALIFICATION;
   views: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
   /** Set only after the extractor recomputes the current agile promotion and binds every cited opportunity sweep. */
   associationEvidenceQualification?: 'provenance-bound-current-promotion';
+}
+
+/**
+ * A valid detector/track can still lack a uniquely replayable classifier
+ * window. This is an expected insufficient-evidence outcome, distinct from a
+ * malformed or contradictory provenance object, which must continue to throw.
+ */
+export class ObservableEvidenceUnavailableError extends Error {
+  override readonly name = 'ObservableEvidenceUnavailableError';
+
+  constructor(
+    readonly code:
+      | 'local-history-not-uniquely-replayable'
+      | 'insufficient-roi-bins'
+      | 'insufficient-spectrum-history',
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 interface SweepObservation {
@@ -104,11 +144,32 @@ interface SweepObservation {
 }
 
 export function extractObservableFeatures(detection: DetectedSignal, evidence: WaveformEvidence): ObservableFeatureObservation {
+  if (evidence.detectedPowerAcquisitionPolicyId !== undefined
+    && evidence.detectedPowerAcquisitionPolicyId !== SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID) {
+    throw new Error(`Observable classification rejects unknown detected-power acquisition policy ${String(evidence.detectedPowerAcquisitionPolicyId)}`);
+  }
+  if (evidence.detectedPowerCaptureReceipt !== undefined && evidence.zeroSpan === undefined) {
+    throw new Error('Observable classification rejects detected-power capture receipt without its capture');
+  }
+  if (evidence.detectedPowerAcquisitionPolicyId !== undefined
+    && evidence.detectedPowerCaptureReceipt === undefined) {
+    throw new Error(
+      'Observable classification rejects self-attested detected-power acquisition policy without an issued capture receipt',
+    );
+  }
+  if (evidence.sweeps.length === 0) {
+    throw new ObservableEvidenceUnavailableError(
+      'insufficient-spectrum-history',
+      'Observable classification requires at least one scalar sweep',
+    );
+  }
   // The fitted/calibrated model uses an exact eight-admission window. A fixed
   // window avoids treating look-count-dependent maxima, spans and variances as
   // exchangeable across arbitrary 3..64-look histories.
   const sweeps = coherentSweeps(detection, evidence.sweeps).slice(0, 8);
-  if (!sweeps.length) throw new Error('Observable classification requires at least one coherent complete scalar sweep');
+  if (!sweeps.length) {
+    throw new Error('Observable classification requires at least one coherent complete scalar sweep');
+  }
   const observations = sweeps.map((sweep) => observeSweep(detection, sweep));
   // A DetectedSignal's sweepIds are the detector/track admission record: the
   // runtime tracker appends only sweeps in which that event was independently
@@ -158,19 +219,50 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
     limitations.add('partial-span-boundary-censoring');
   }
   if (sweeps.length < 3) limitations.add('insufficient-spectrum-history');
-  const zeroSpanProvenanceMatched = !!evidence.zeroSpan
-    && zeroSpanProvenanceMatches(detection, sweeps[0]!, evidence.zeroSpan);
-  const zeroSpanSpectrumWindowMatched = zeroSpanWindowMatches(
+  let receiptVerifiedZeroSpan: ZeroSpanCapture | undefined;
+  if (evidence.detectedPowerCaptureReceipt && evidence.zeroSpan) {
+    receiptVerifiedZeroSpan = assertDetectedPowerCaptureReceiptMatches({
+      receipt: evidence.detectedPowerCaptureReceipt,
+      detection,
+      capture: evidence.zeroSpan,
+      spectrumSweepIds: evidence.zeroSpanSpectrumSweepIds ?? [],
+    });
+    // Receipt verification returns the authority-owned immutable snapshot.
+    // Never consume the caller-owned graph after this boundary: a Proxy could
+    // otherwise return one payload while hashing and another during features.
+    validateZeroSpan(receiptVerifiedZeroSpan);
+  }
+  const zeroSpanAcquisitionPolicyQualified =
+    evidence.detectedPowerCaptureReceipt !== undefined;
+  const zeroSpanProvenanceMatched = zeroSpanAcquisitionPolicyQualified
+    && receiptVerifiedZeroSpan !== undefined
+    && zeroSpanProvenanceMatches(
+      detection,
+      sweeps[0]!,
+      receiptVerifiedZeroSpan,
+      evidence.detectedPowerCaptureReceipt,
+    );
+  const zeroSpanSpectrumWindowMatched = zeroSpanAcquisitionPolicyQualified && zeroSpanWindowMatches(
     sweeps,
     evidence.zeroSpanSpectrumSweepIds,
-    sweeps[0]!,
   );
   const provenanceMatchedZeroSpan = zeroSpanSpectrumWindowMatched
-    ? matchingZeroSpan(detection, binWidthHz, sweeps[0]!, evidence.zeroSpan)
+    ? matchingZeroSpan(
+      detection,
+      binWidthHz,
+      sweeps[0]!,
+      receiptVerifiedZeroSpan,
+      evidence.detectedPowerCaptureReceipt,
+    )
     : undefined;
   const zeroSpan = provenanceMatchedZeroSpan && supportedZeroSpanGeometry(provenanceMatchedZeroSpan) ? provenanceMatchedZeroSpan : undefined;
   if (evidence.zeroSpan && !provenanceMatchedZeroSpan) {
-    limitations.add(!zeroSpanProvenanceMatched
+    if (!evidence.detectedPowerCaptureReceipt) {
+      limitations.add('zero-span-capture-receipt-missing');
+    }
+    limitations.add(!zeroSpanAcquisitionPolicyQualified
+      ? 'zero-span-acquisition-policy-unqualified'
+      : !zeroSpanProvenanceMatched
       ? 'zero-span-provenance-mismatch'
       : !zeroSpanSpectrumWindowMatched
         ? 'zero-span-spectrum-window-mismatch'
@@ -178,11 +270,18 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
   }
   if (provenanceMatchedZeroSpan && !zeroSpan) limitations.add('zero-span-geometry-out-of-domain');
   if (!zeroSpan) limitations.add('zero-span-missing');
-  if (zeroSpan) {
+  const frequencyAgileFixedTuneEnvelopeCensored = zeroSpanAcquisitionPolicyQualified
+    && receiptVerifiedZeroSpan !== undefined
+    && detection.associationMode === 'frequency-agile-2g4-activity';
+  if (frequencyAgileFixedTuneEnvelopeCensored) {
+    limitations.add('frequency-agile-fixed-tune-envelope-censored');
+  }
+  const classifierZeroSpan = frequencyAgileFixedTuneEnvelopeCensored ? undefined : zeroSpan;
+  if (classifierZeroSpan) {
     if (detection.associationMode === 'multicomponent-swept-region-activity') {
       limitations.add('zero-span-local-member-of-nonidentity-regional-association');
     }
-    observeEnvelope(zeroSpan, detection, values, limitations);
+    observeEnvelope(classifierZeroSpan, detection, values, limitations);
   }
 
   return {
@@ -194,8 +293,13 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
     bandwidthHz,
     binWidthHz,
     sweepIds: observations.map((item) => item.id),
-    ...(zeroSpan ? { zeroSpanCaptureId: zeroSpan.id } : {}),
-    views: zeroSpan ? ['scalar-spectrum', 'detected-power-envelope'] : ['scalar-spectrum'],
+    ...(classifierZeroSpan ? { zeroSpanCaptureId: classifierZeroSpan.id } : {}),
+    ...(classifierZeroSpan ? {
+      detectedPowerAcquisitionQualification: DETECTED_POWER_ACQUISITION_QUALIFICATION,
+    } : {}),
+    views: classifierZeroSpan
+      ? ['scalar-spectrum', 'detected-power-envelope']
+      : ['scalar-spectrum'],
     ...(detection.associationMode === 'frequency-agile-2g4-activity'
       ? { associationEvidenceQualification: 'provenance-bound-current-promotion' as const }
       : {}),
@@ -278,7 +382,8 @@ function coherentSweeps(detection: DetectedSignal, values: readonly Sweep[]): Sw
       detection,
       reference,
       originatingEvidenceSweep,
-    ) || !localHistorySweepsReplayUniquely(detection, coherentCandidates.slice(0, 8))) return [];
+    )) return [];
+    assertLocalHistorySweepsReplayUniquely(detection, coherentCandidates.slice(0, 8));
   }
   return coherentCandidates;
 }
@@ -405,8 +510,28 @@ function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation
   const binWidthHz = nominalBinWidth(sweep);
   const spanHz = sweep.actualStopHz - sweep.actualStartHz;
   const useAssociationRegion = hasCompleteAssociationRegion(detection);
-  const selectedStartHz = useAssociationRegion ? detection.associationRegionStartHz : detection.classificationRegionStartHz;
-  const selectedStopHz = useAssociationRegion ? detection.associationRegionStopHz : detection.classificationRegionStopHz;
+  // A regular-line lineage may survive exact current-member and outer-line
+  // churn. Its public hull therefore describes only the latest admitted look;
+  // applying that latest hull retroactively to every historical sweep can
+  // discard a previously resolved sideband and falsify the replayed shape.
+  // Use each immutable observation's own exact hull while extracting that
+  // sweep. Provenance validation has already replayed the same observation
+  // against this source sweep and rejected missing, duplicate, or forged
+  // members.
+  const regularObservation = detection.associationMode
+      === 'regular-spectral-component-activity'
+    ? detection.regularComponentAssociationObservations?.find(
+        (observation) => observation.sourceSweep.id === sweep.id,
+      )
+    : undefined;
+  const selectedStartHz = regularObservation?.observedRegionStartHz
+    ?? (useAssociationRegion
+      ? detection.associationRegionStartHz
+      : detection.classificationRegionStartHz);
+  const selectedStopHz = regularObservation?.observedRegionStopHz
+    ?? (useAssociationRegion
+      ? detection.associationRegionStopHz
+      : detection.classificationRegionStopHz);
   const hasSelectedRegion = selectedStartHz !== undefined && selectedStopHz !== undefined && selectedStopHz >= selectedStartHz;
   const selectedRegionPaddingHz = Math.max(sweep.actualRbwHz * 2, binWidthHz * 2);
   const halfWidthHz = Math.min(spanHz / 2, Math.max(detection.bandwidthHz * 0.85, sweep.actualRbwHz * 4, binWidthHz * 5));
@@ -414,7 +539,12 @@ function observeSweep(detection: DetectedSignal, sweep: Sweep): SweepObservation
     .filter(({ frequency }) => hasSelectedRegion
       ? frequency >= selectedStartHz - selectedRegionPaddingHz && frequency <= selectedStopHz + selectedRegionPaddingHz
       : Math.abs(frequency - detection.peakHz) <= halfWidthHz);
-  if (selected.length < 3) throw new Error('Observable classification requires at least three bins around a detection');
+  if (selected.length < 3) {
+    throw new ObservableEvidenceUnavailableError(
+      'insufficient-roi-bins',
+      'Observable classification requires at least three bins around a detection',
+    );
+  }
   const selectedIndices = selected.map((item) => item.index);
   const firstSelected = selectedIndices[0]!;
   const lastSelected = selectedIndices.at(-1)!;
@@ -540,68 +670,154 @@ function localClassificationRegionProvenanceIsValid(
 
 /**
  * A track's sweepIds are claims that the local detector independently admitted
- * that event on every cited look. Only the first admission has a compact frozen
- * observation, so replay every later scalar look before using it as classifier
- * evidence. The immutable classification ROI is the scope of the scalar
- * features; a detector result outside it cannot support those features even if
- * a live tracker could have followed gradual motion through omitted looks.
+ * that event on every cited look. Replay the exact bounded admission ledger,
+ * including its causal frequency-local chain, before using any selected sweep
+ * as classifier evidence. The immutable classification ROI remains the feature
+ * scope; a valid track that has moved beyond it is typed insufficient evidence,
+ * while a fabricated admission, unrelated jump, or malformed ledger is an
+ * integrity failure and throws an ordinary error.
  */
-function localHistorySweepsReplayUniquely(
+function assertLocalHistorySweepsReplayUniquely(
   detection: DetectedSignal,
   sweeps: readonly Sweep[],
-): boolean {
+): void {
   const frozenStartHz = detection.classificationRegionStartHz;
   const frozenStopHz = detection.classificationRegionStopHz;
   const origin = detection.classificationRegionObservation;
   if (frozenStartHz === undefined
     || frozenStopHz === undefined
     || frozenStopHz < frozenStartHz
-    || !origin) return false;
-  try {
-    return sweeps.every((sweep, index) => {
-      // The frozen origin was already replayed above against its immutable
-      // compact sweep and exact candidate geometry/Bayesian evidence.  The
-      // looser track-compatibility rule below exists only for later looks,
-      // whose individual candidate observations are not retained. Applying
-      // it to the origin can falsely reject an exactly bound candidate merely
-      // because another distinct candidate was also close enough that the
-      // live tracker could have considered it.
-      // A one-look history has the origin as its newest look; in that case the
-      // normal branch must still bind the public current-track fields to the
-      // detector replay. With two or more looks the causal ordering places
-      // the retained origin behind index zero, so only redundant loose
-      // uniqueness is skipped.
-      if (sweep.id === origin.sourceSweep.id && index !== 0) return true;
-      const compatible = analyzeBayesianSweep(sweep, detection.detectorConfig).filter((candidate) =>
-        candidate.detectorId === detection.detectorId
-        && candidate.associationMode === 'frequency-local'
-        && candidate.sweepIds.length === 1
-        && candidate.sweepIds[0] === sweep.id
-        && candidate.classificationRegionStartHz !== undefined
-        && candidate.classificationRegionStopHz !== undefined
-        && candidate.classificationRegionStartHz <= frozenStopHz
-        && candidate.classificationRegionStopHz >= frozenStartHz
-        && candidate.startHz <= frozenStopHz
-        && candidate.stopHz >= frozenStartHz
-        && candidate.peakHz >= frozenStartHz
-        && candidate.peakHz <= frozenStopHz
-        && localDetectorCandidateIsTrackCompatible(origin, candidate, sweep));
-      return compatible.length === 1
-        && (index !== 0 || latestLocalCandidateMatchesCurrentTrack(detection, compatible[0]!));
-    });
-  } catch {
-    return false;
+    || !origin) {
+    throw new Error('Observable classification rejects incomplete local-history provenance');
   }
+  const retainedSweepIds = detection.sweepIds;
+  const ledger = detection.localClassificationObservations
+    ?? (retainedSweepIds.length === 1 && origin.sourceSweep.id === retainedSweepIds[0]
+      ? [origin]
+      : undefined);
+  if (!ledger
+    || ledger.length === 0
+    || ledger.length > 64
+    || retainedSweepIds.length !== ledger.length
+    || retainedSweepIds.length > 64
+    || new Set(retainedSweepIds).size !== retainedSweepIds.length
+    || ledger.some((observation, index) => observation.sourceSweep.id !== retainedSweepIds[index])) {
+    throw new Error('Observable classification rejects an incomplete or misaligned local-admission ledger');
+  }
+  const originIndex = retainedSweepIds.indexOf(origin.sourceSweep.id);
+  if (originIndex >= 0 && !localClassificationObservationsMatch(ledger[originIndex]!, origin)) {
+    throw new Error('Observable classification rejects a local-admission ledger that contradicts its frozen origin');
+  }
+
+  const externalSweepById = new Map(sweeps.map((sweep) => [sweep.id, sweep] as const));
+  if (externalSweepById.size !== sweeps.length) {
+    throw new Error('Observable classification rejects duplicate local-history evidence sweeps');
+  }
+  const replayedBySweepId = new Map<string, DetectedSignal>();
+  let previousAdmission: DetectedSignal | undefined;
+  let previousSequence = Number.NEGATIVE_INFINITY;
+  let previousCaptureTime = Number.NEGATIVE_INFINITY;
+  for (const observation of ledger) {
+    const sourceSweep = observation.sourceSweep;
+    validateSweep(sourceSweep);
+    const captureTime = Date.parse(sourceSweep.capturedAt);
+    if (sourceSweep.sequence <= previousSequence || captureTime <= previousCaptureTime) {
+      throw new Error('Observable classification rejects a non-causal local-admission ledger');
+    }
+    previousSequence = sourceSweep.sequence;
+    previousCaptureTime = captureTime;
+    const externalSweep = externalSweepById.get(sourceSweep.id);
+    if (externalSweep && !detectorSweepInputsMatch(sourceSweep, externalSweep)) {
+      throw new Error(`Observable classification rejects substituted detector inputs for local-history sweep ${sourceSweep.id}`);
+    }
+    const admission = replayLocalClassificationObservation(detection, observation);
+    if (previousAdmission && !localDetectorCandidatesAreTrackCompatible(previousAdmission, admission, sourceSweep)) {
+      throw new Error(`Observable classification rejects unrelated local-history admission ${sourceSweep.id}`);
+    }
+    previousAdmission = admission;
+    replayedBySweepId.set(sourceSweep.id, admission);
+  }
+  if (ledger.at(-1)!.sourceSweep.capturedAt !== detection.lastSeenAt) {
+    throw new Error('Observable classification rejects a local-admission ledger detached from the track last-seen time');
+  }
+
+  for (const [index, sweep] of sweeps.entries()) {
+    const admission = replayedBySweepId.get(sweep.id);
+    if (!admission) {
+      throw new Error(`Observable classification rejects local-history sweep ${sweep.id} without an exact admission observation`);
+    }
+    if (!localAdmissionSupportsFrozenRegion(admission, frozenStartHz, frozenStopHz)) {
+      throw new ObservableEvidenceUnavailableError(
+        'local-history-not-uniquely-replayable',
+        `Observable classification local-history sweep ${sweep.id} no longer supports the frozen classifier region`,
+      );
+    }
+    if (index === 0 && !latestLocalCandidateMatchesCurrentTrack(detection, admission)) {
+      throw new Error(`Observable classification rejects local-history sweep ${sweep.id} that contradicts the current track state`);
+    }
+  }
+}
+
+function replayLocalClassificationObservation(
+  detection: DetectedSignal,
+  observation: LocalClassificationRegionObservation,
+): DetectedSignal {
+  if (observation.detectorId !== detection.detectorId
+    || observation.detectorId !== BAYESIAN_DETECTOR_MODEL.id) {
+    throw new Error(`Observable classification rejects detector identity for local-history sweep ${observation.sourceSweep.id}`);
+  }
+  const exactAdmissions = analyzeBayesianSweep(observation.sourceSweep, detection.detectorConfig).filter((candidate) =>
+    candidate.associationMode === 'frequency-local'
+    && candidate.sweepIds.length === 1
+    && candidate.sweepIds[0] === observation.sourceSweep.id
+    && candidate.startHz === observation.startHz
+    && candidate.stopHz === observation.stopHz
+    && candidate.peakHz === observation.peakHz
+    && candidate.detectorId === observation.detectorId
+    && bayesianDetectionEvidenceMatches(candidate.bayesianEvidence, observation.localBayesianEvidence));
+  if (exactAdmissions.length !== 1) {
+    throw new Error(`Observable classification rejects local-history sweep ${observation.sourceSweep.id} without its exact claimed detector admission`);
+  }
+  return exactAdmissions[0]!;
+}
+
+function localClassificationObservationsMatch(
+  left: LocalClassificationRegionObservation,
+  right: LocalClassificationRegionObservation,
+): boolean {
+  return left.startHz === right.startHz
+    && left.stopHz === right.stopHz
+    && left.peakHz === right.peakHz
+    && left.detectorId === right.detectorId
+    && bayesianDetectionEvidenceMatches(left.localBayesianEvidence, right.localBayesianEvidence)
+    && detectorSweepInputsMatch(left.sourceSweep, right.sourceSweep);
+}
+
+function localAdmissionSupportsFrozenRegion(
+  admission: DetectedSignal,
+  frozenStartHz: number,
+  frozenStopHz: number,
+): boolean {
+  return admission.classificationRegionStartHz !== undefined
+    && admission.classificationRegionStopHz !== undefined
+    && admission.classificationRegionStartHz <= frozenStopHz
+    && admission.classificationRegionStopHz >= frozenStartHz
+    && admission.startHz <= frozenStopHz
+    && admission.stopHz >= frozenStartHz
+    && admission.peakHz >= frozenStartHz
+    && admission.peakHz <= frozenStopHz;
 }
 
 function latestLocalCandidateMatchesCurrentTrack(
   track: DetectedSignal,
   candidate: DetectedSignal,
 ): boolean {
-  return track.startHz === candidate.startHz
+  return track.missedSweeps === 0
+    && track.startHz === candidate.startHz
     && track.stopHz === candidate.stopHz
     && track.peakHz === candidate.peakHz
     && track.peakDbm === candidate.peakDbm
+    && track.prominenceThresholdDb === candidate.prominenceThresholdDb
     && track.bandwidthHz === candidate.bandwidthHz
     && track.thresholdDbm === candidate.thresholdDbm
     && track.noiseFloorDbm === candidate.noiseFloorDbm
@@ -618,24 +834,27 @@ function latestLocalCandidateMatchesCurrentTrack(
     && track.bayesianEvidence.qualification === candidate.bayesianEvidence.qualification;
 }
 
-function localDetectorCandidateIsTrackCompatible(
-  origin: NonNullable<DetectedSignal['classificationRegionObservation']>,
+function localDetectorCandidatesAreTrackCompatible(
+  previous: DetectedSignal,
   candidate: DetectedSignal,
   sweep: Sweep,
 ): boolean {
-  const overlapHz = Math.max(0, Math.min(origin.stopHz, candidate.stopHz)
-    - Math.max(origin.startHz, candidate.startHz));
-  // Mirror the live tracker's local-match eligibility scale exactly while
-  // anchoring it to the immutable first admission.
+  const overlapHz = Math.max(0, Math.min(previous.stopHz, candidate.stopHz)
+    - Math.max(previous.startHz, candidate.startHz));
+  const unionHz = Math.max(previous.stopHz, candidate.stopHz)
+    - Math.min(previous.startHz, candidate.startHz);
+  const intersectionOverUnion = unionHz > 0
+    ? overlapHz / unionHz
+    : previous.peakHz === candidate.peakHz ? 1 : 0;
   const binWidthHz = Math.abs(sweep.frequencyHz[1]! - sweep.frequencyHz[0]!);
-  const centerDistanceHz = Math.abs(origin.peakHz - candidate.peakHz);
+  const centerDistanceHz = Math.abs(previous.peakHz - candidate.peakHz);
   const toleranceHz = Math.max(
     binWidthHz * 3,
-    origin.stopHz - origin.startHz,
+    previous.bandwidthHz,
     candidate.bandwidthHz,
     1,
   );
-  return overlapHz > 0 || centerDistanceHz <= toleranceHz;
+  return intersectionOverUnion > 0 || centerDistanceHz <= toleranceHz;
 }
 
 function regularAssociationProvenanceIsValid(
@@ -646,7 +865,7 @@ function regularAssociationProvenanceIsValid(
   const sweepIds = detection.associationRegionSweepIds;
   const currentMembers = detection.associationMemberTrackIds;
   if (!observations?.length
-    || observations.length > 64
+    || observations.length > 8
     || !sweepIds
     || sweepIds.length !== observations.length
     || !currentMembers
@@ -656,8 +875,8 @@ function regularAssociationProvenanceIsValid(
     || observations.some((observation, index) => observation.sourceSweep.id !== sweepIds[index])) return false;
   const first = observations[0]!;
   const latest = observations.at(-1)!;
-  if (detection.associationRegionStartHz !== first.observedRegionStartHz
-    || detection.associationRegionStopHz !== first.observedRegionStopHz
+  if (detection.associationRegionStartHz !== latest.observedRegionStartHz
+    || detection.associationRegionStopHz !== latest.observedRegionStopHz
     || !detection.sweepIds.includes(latest.sourceSweep.id)
     || latest.sourceSweep.capturedAt !== detection.lastSeenAt) return false;
   const externalById = externalSweeps === undefined
@@ -665,6 +884,7 @@ function regularAssociationProvenanceIsValid(
     : new Map(externalSweeps.map((sweep) => [sweep.id, sweep] as const));
   if (externalById && externalById.size !== externalSweeps!.length) return false;
   let previousSequence = Number.NEGATIVE_INFINITY;
+  let previousCaptureTime = Number.NEGATIVE_INFINITY;
   for (const observation of observations) {
     const sourceSweep = observation.sourceSweep;
     try {
@@ -672,15 +892,49 @@ function regularAssociationProvenanceIsValid(
     } catch {
       return false;
     }
+    const captureTime = Date.parse(sourceSweep.capturedAt);
     if (sourceSweep.sequence <= previousSequence
+      || captureTime <= previousCaptureTime
       || !sweepAcquisitionGeometryMatches(first.sourceSweep, sourceSweep)) return false;
     previousSequence = sourceSweep.sequence;
+    previousCaptureTime = captureTime;
     const external = externalById?.get(sourceSweep.id);
     if (external && !detectorSweepInputsMatch(sourceSweep, external)) return false;
     const memberIds = observation.members.map((member) => member.trackId);
-    if (memberIds.length !== currentMembers.length
+    const sortedMemberIds = [...memberIds].sort();
+    if (memberIds.length < 3
       || new Set(memberIds).size !== memberIds.length
-      || memberIds.some((memberId, index) => memberId !== currentMembers[index])) return false;
+      || memberIds.some((memberId, index) =>
+        !memberId || memberId !== sortedMemberIds[index])
+      || !Number.isFinite(observation.spacingHz)
+      || observation.spacingHz <= 0
+      || !Number.isFinite(observation.latticeAnchorHz)
+      || observation.observedRegionStartHz
+        !== Math.min(...observation.members.map((member) => member.startHz))
+      || observation.observedRegionStopHz
+        !== Math.max(...observation.members.map((member) => member.stopHz))
+      || !regularSpectralComponentLineagesAreCompatible(
+        {
+          startHz: observation.observedRegionStartHz,
+          stopHz: observation.observedRegionStopHz,
+          spacingHz: observation.spacingHz,
+          latticeAnchorHz: observation.latticeAnchorHz,
+          memberCentersHz: observation.members.map(
+            (member) => (member.startHz + member.stopHz) / 2,
+          ),
+        },
+        {
+          startHz: latest.observedRegionStartHz,
+          stopHz: latest.observedRegionStopHz,
+          spacingHz: latest.spacingHz,
+          latticeAnchorHz: latest.latticeAnchorHz,
+          memberCentersHz: latest.members.map(
+            (member) => (member.startHz + member.stopHz) / 2,
+          ),
+        },
+        sourceSweep.actualRbwHz,
+        nominalBinWidth(sourceSweep),
+      )) return false;
     let candidates: readonly DetectedSignal[];
     try {
       candidates = analyzeBayesianSweep(sourceSweep, detection.detectorConfig);
@@ -705,11 +959,15 @@ function regularAssociationProvenanceIsValid(
     const associations = regularSpectralComponentAssociations(candidates, sourceSweep).filter((association) =>
       association.startHz === observation.observedRegionStartHz
       && association.stopHz === observation.observedRegionStopHz
+      && association.spacingHz === observation.spacingHz
+      && association.latticeAnchorHz === observation.latticeAnchorHz
       && association.candidateIndices.length === expectedIndices.length
       && association.candidateIndices.every((candidateIndex, index) => candidateIndex === expectedIndices[index]));
     if (associations.length !== 1) return false;
   }
-  return true;
+  const latestMemberIds = latest.members.map((member) => member.trackId);
+  return currentMembers.length === latestMemberIds.length
+    && currentMembers.every((memberId, index) => memberId === latestMemberIds[index]);
 }
 
 function sweepAcquisitionGeometryMatches(left: Sweep, right: Sweep): boolean {
@@ -833,8 +1091,8 @@ function hasCompleteAssociationRegion(detection: DetectedSignal): detection is D
   if (detection.associationMode === 'regular-spectral-component-activity') {
     return members.length >= 3
       && detection.multicomponentAssociationObservations === undefined
-      && detection.associationModelId === 'simultaneous-regular-components-v1'
-      && detection.associationId === `regular-lines:${members.join(',')}`
+      && detection.associationModelId === REGULAR_SPECTRAL_COMPONENT_MODEL_ID
+      && /^regular-spectral-component-lineage-\d{4,}$/.test(detection.associationId!)
       && regularAssociationProvenanceIsValid(detection);
   }
   return detection.associationMode === 'multicomponent-swept-region-activity'
@@ -1160,28 +1418,40 @@ function observeEnvelope(
   }
 }
 
-function matchingZeroSpan(detection: DetectedSignal, binWidthHz: number, referenceSweep: Sweep, capture?: ZeroSpanCapture): ZeroSpanCapture | undefined {
+function matchingZeroSpan(
+  detection: DetectedSignal,
+  binWidthHz: number,
+  referenceSweep: Sweep,
+  capture?: ZeroSpanCapture,
+  receipt?: DetectedPowerCaptureReceipt,
+): ZeroSpanCapture | undefined {
   if (!capture) return undefined;
-  if (!zeroSpanProvenanceMatches(detection, referenceSweep, capture)) return undefined;
+  if (!zeroSpanProvenanceMatches(detection, referenceSweep, capture, receipt)) return undefined;
   const toleranceHz = Math.max(detection.bandwidthHz / 2, binWidthHz * 3, (capture.actualRbwHz ?? 0) * 2);
   return Math.abs(capture.frequencyHz - detection.peakHz) <= toleranceHz ? capture : undefined;
 }
 
-function zeroSpanProvenanceMatches(detection: DetectedSignal, referenceSweep: Sweep, capture: ZeroSpanCapture): boolean {
-  return capture.targetDetectionId === detection.id
+function zeroSpanProvenanceMatches(
+  detection: DetectedSignal,
+  referenceSweep: Sweep,
+  capture: ZeroSpanCapture,
+  receipt?: DetectedPowerCaptureReceipt,
+): boolean {
+  return receipt !== undefined
+    && receipt.selection.rawTargetId === capture.targetDetectionId
+    && receipt.selection.projectedRepresentativeId === detection.id
     && sameMeasurementIdentity(capture.identity, referenceSweep.identity);
 }
 
 function zeroSpanWindowMatches(
   sweeps: readonly Sweep[],
   boundSweepIds: readonly string[] | undefined,
-  referenceSweep: Sweep,
 ): boolean {
-  // Historical offline fixtures used legacy device identities before this
-  // binding existed. Live instrument-session evidence must always carry the
-  // exact eight-look classification window captured with zero span.
-  if (boundSweepIds === undefined) return !isInstrumentMeasurementIdentity(referenceSweep.identity);
-  return boundSweepIds.length === 8
+  // The fitted envelope view is a causal acquisition, not merely a compatible
+  // waveform. Legacy/offline identities therefore require the same explicit
+  // exact eight-look binding as live instrument sessions.
+  return boundSweepIds !== undefined
+    && boundSweepIds.length === 8
     && sweeps.length === 8
     && new Set(boundSweepIds).size === boundSweepIds.length
     && boundSweepIds.every((sweepId, index) => sweepId === sweeps[index]!.id);
@@ -1217,12 +1487,44 @@ function periodicEnvelopeEnergy(values: readonly number[], samplePeriodSeconds: 
 }
 
 function mirroredSidebandScore(peaks: readonly number[], frequencyHz: readonly number[], powerDbm: readonly number[], centerHz: number, binWidthHz: number): number {
-  const left = peaks.filter((index) => frequencyHz[index]! < centerHz - binWidthHz).sort((a, b) => powerDbm[b]! - powerDbm[a]!)[0];
-  const right = peaks.filter((index) => frequencyHz[index]! > centerHz + binWidthHz).sort((a, b) => powerDbm[b]! - powerDbm[a]!)[0];
-  if (left === undefined || right === undefined) return 0;
-  const separationMismatch = Math.abs((centerHz - frequencyHz[left]!) - (frequencyHz[right]! - centerHz));
-  const powerMismatchDb = Math.abs(powerDbm[left]! - powerDbm[right]!);
-  return Math.exp(-separationMismatch / Math.max(binWidthHz * 2, Math.abs(frequencyHz[right]! - frequencyHz[left]!) * 0.08)) * Math.exp(-powerMismatchDb / 6);
+  const leftPeaks = peaks.filter((index) => frequencyHz[index]! < centerHz - binWidthHz);
+  const rightPeaks = peaks.filter((index) => frequencyHz[index]! > centerHz + binWidthHz);
+  if (!leftPeaks.length || !rightPeaks.length) return 0;
+  const strongestLeftDbm = Math.max(...leftPeaks.map((index) => powerDbm[index]!));
+  const strongestRightDbm = Math.max(...rightPeaks.map((index) => powerDbm[index]!));
+  const tiedPowerToleranceDb = 1e-9;
+  const left = leftPeaks.filter(
+    (index) => strongestLeftDbm - powerDbm[index]! <= tiedPowerToleranceDb,
+  );
+  const right = rightPeaks.filter(
+    (index) => strongestRightDbm - powerDbm[index]! <= tiedPowerToleranceDb,
+  );
+  let best = 0;
+  // Preserve the original strongest-sideband meaning, but resolve exact
+  // strongest-power ties jointly. Picking the first equal-power peak on each
+  // side makes a comb depend on array order and can pair a far-left edge with
+  // a near-right line even when an exact symmetric strongest pair is present.
+  // Restricting the search to strongest-power ties avoids an optimistic
+  // all-pairs search over dense OFDM/noise peaks.
+  for (const leftIndex of left) {
+    for (const rightIndex of right) {
+      const separationMismatch = Math.abs(
+        (centerHz - frequencyHz[leftIndex]!)
+          - (frequencyHz[rightIndex]! - centerHz),
+      );
+      const powerMismatchDb = Math.abs(
+        powerDbm[leftIndex]! - powerDbm[rightIndex]!,
+      );
+      const score = Math.exp(
+        -separationMismatch / Math.max(
+          binWidthHz * 2,
+          Math.abs(frequencyHz[rightIndex]! - frequencyHz[leftIndex]!) * 0.08,
+        ),
+      ) * Math.exp(-powerMismatchDb / 6);
+      best = Math.max(best, score);
+    }
+  }
+  return best;
 }
 
 function symmetryAroundCenter(frequencyHz: readonly number[], weights: readonly number[], centerHz: number): number {

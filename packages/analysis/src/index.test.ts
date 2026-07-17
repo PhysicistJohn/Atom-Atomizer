@@ -1,24 +1,44 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   SignalDetector,
-  SIGNAL_LAB_EMSO_MODEL,
-  SignalLabBayesianClassifier,
   SignalTracker,
   SpectralMorphologyClassifier,
   TraceAccumulator,
   UnknownClassifier,
   autoScaleSpectrum,
   calculateSweepMetrics,
+  CLASSIFICATION_CAPTURE_TARGET_SELECTION_POLICY_ID,
+  classificationCaptureTargetProjections,
+  classificationCaptureTargetRepresentatives,
+  classificationRepresentativeKey,
   classificationRepresentatives,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
+  createDetectedPowerCaptureReceipt,
+  currentVisiblePhysicalClassificationRows,
   extractObservableFeatures,
   measureChannel,
   measureOccupiedBandwidth,
+  ObservableEvidenceUnavailableError,
   observableAssociationEvidenceIsCurrentlyQualified,
   readMarkers,
   searchMarker,
+  SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID,
 } from './index.js';
+import {
+  SIGNAL_LAB_EMSO_MODEL,
+  SignalLabBayesianClassifier,
+} from './signal-lab-classifier.js';
+import {
+  inferPosterior,
+  knownModelSupportRank,
+  selectObservableDecision,
+} from './bayesian-waveform-classifier.js';
+import {
+  assertDetectedPowerCaptureReceiptMatches,
+  canonicalDetectedPowerCapturePayload,
+} from './detected-power-capture-receipt.js';
 import { FIRMWARE_SOURCE_COMMIT } from '@tinysa/contracts';
 import type {
   AnalyzerConfig,
@@ -34,6 +54,18 @@ import type {
   TraceFrame,
   ZeroSpanCapture,
 } from '@tinysa/contracts';
+import {
+  MULTICOMPONENT_SWEPT_REGION_MODEL_ID,
+  multicomponentSweptRegionLineagesAreCompatible,
+} from './multicomponent-swept-region.js';
+import {
+  REGULAR_SPECTRAL_COMPONENT_MODEL_ID,
+  regularSpectralComponentLineageId,
+  regularSpectralComponentLineagesAreCompatible,
+  regularSpectralComponentAssociations,
+} from './regular-spectral-component.js';
+import { frequencyAgileSequentialOpportunity } from './frequency-agile-geometry.js';
+import { synthesizeCanonicalObservation } from '../../../../TinySA_SignalLab/src/classification-corpus.js';
 
 const identity: DeviceIdentity = {
   model: 'tinySA Ultra+ ZS407',
@@ -299,6 +331,8 @@ describe('signal analysis', () => {
     expect(tracks).toHaveLength(5);
     expect(tracks.every((track) => track.bandwidthHz === 2_000)).toBe(true);
     expect(tracks.every((track) => track.associationMode === 'regular-spectral-component-activity')).toBe(true);
+    expect(tracks.every((track) =>
+      track.associationModelId === REGULAR_SPECTRAL_COMPONENT_MODEL_ID)).toBe(true);
     expect(tracks.every((track) => track.associationRegionStartHz === 199_000 && track.associationRegionStopHz === 301_000)).toBe(true);
     expect(tracks.every((track) => track.associationRegionSweepIds?.length === 8)).toBe(true);
     expect(tracks.every((track) => track.associationMemberTrackIds?.length === 5)).toBe(true);
@@ -311,7 +345,175 @@ describe('signal analysis', () => {
     }, { sweeps })).toThrow(/coherent complete scalar sweep/);
   });
 
-  it('updates regular-component association provenance atomically when membership changes', () => {
+  it('retains eight exact regular-line looks across outer-member track replacement', () => {
+    const frequencyHz = Array.from({ length: 501 }, (_, index) => index * 1_000);
+    const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
+    const centerSets = [
+      [175_000, 200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+      [200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+      [200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+      [200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+      [175_000, 200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+      [175_000, 200_000, 225_000, 250_000, 275_000, 300_000],
+      [175_000, 200_000, 225_000, 250_000, 275_000, 300_000],
+      [175_000, 200_000, 225_000, 250_000, 275_000, 300_000, 325_000],
+    ] as const;
+    const sweeps = centerSets.map((centersHz, index) => makeSweep({
+      id: `regular-churn-${index + 1}`,
+      sequence: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 1, index + 1)).toISOString(),
+      frequencyHz,
+      powerDbm: powerFor(centersHz),
+      actualStartHz: 0,
+      actualStopHz: 500_000,
+      actualRbwHz: 2_000,
+    }));
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    let tracks: readonly DetectedSignal[] = [];
+    let initialLeftTrackId: string | undefined;
+    for (const [index, sweep] of sweeps.entries()) {
+      tracks = tracker.update(sweep, detector.analyze(sweep));
+      if (index === 0) {
+        initialLeftTrackId = tracks.find((track) => track.startHz === 174_000)!.id;
+      }
+    }
+    const current = tracks.filter((track) => track.missedSweeps === 0);
+    const representative = classificationRepresentatives(current)[0]!;
+    const latestMembers = representative.regularComponentAssociationObservations?.at(-1)?.members
+      .map((member) => member.trackId);
+
+    expect(current).toHaveLength(7);
+    expect(representative.associationId).toBe(regularSpectralComponentLineageId(1));
+    expect(representative.associationModelId).toBe(REGULAR_SPECTRAL_COMPONENT_MODEL_ID);
+    expect(representative.associationRegionSweepIds).toEqual(sweeps.map((sweep) => sweep.id));
+    expect(representative.regularComponentAssociationObservations).toHaveLength(8);
+    expect(representative.associationMemberTrackIds).toEqual(latestMembers);
+    expect(latestMembers).not.toContain(initialLeftTrackId);
+    expect(latestMembers).toContain(current.find((track) => track.startHz === 174_000)!.id);
+    const observation = extractObservableFeatures(representative, { sweeps });
+    expect(observation.sweepIds).toEqual(sweeps.map((sweep) => sweep.id).reverse());
+    expect(observation.values['spectrum.sidebandScore']).toBeGreaterThanOrEqual(0.2);
+
+    const tampered: DetectedSignal = {
+      ...representative,
+      regularComponentAssociationObservations:
+        representative.regularComponentAssociationObservations?.map((item, index) =>
+          index === 2 ? { ...item, spacingHz: item.spacingHz * 1.1 } : item),
+    };
+    expect(() => extractObservableFeatures(tampered, { sweeps }))
+      .toThrow(/coherent complete scalar sweep/i);
+  });
+
+  it('retains a regular lineage across two morphology-missed looks within hysteresis', () => {
+    const frequencyHz = Array.from({ length: 501 }, (_, index) => index * 1_000);
+    const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
+    const centerSets = [
+      [200_000, 225_000, 250_000, 275_000, 300_000],
+      [200_000, 300_000],
+      [200_000, 300_000],
+      [200_000, 225_000, 250_000, 275_000, 300_000],
+    ] as const;
+    const sweeps = centerSets.map((centersHz, index) => makeSweep({
+      id: `regular-hysteresis-${index + 1}`,
+      sequence: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 2, index + 1)).toISOString(),
+      frequencyHz,
+      powerDbm: powerFor(centersHz),
+      actualStartHz: 0,
+      actualStopHz: 500_000,
+      actualRbwHz: 2_000,
+    }));
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const initial = tracker.update(sweeps[0]!, detector.analyze(sweeps[0]!));
+    const associationId = initial[0]!.associationId;
+
+    const firstMiss = tracker.update(sweeps[1]!, detector.analyze(sweeps[1]!));
+    expect(firstMiss.filter((track) => track.missedSweeps === 0)
+      .every((track) => track.associationMissedSweeps === 1)).toBe(true);
+    const secondMiss = tracker.update(sweeps[2]!, detector.analyze(sweeps[2]!));
+    expect(secondMiss.filter((track) => track.missedSweeps === 0)
+      .every((track) => track.associationMissedSweeps === 2)).toBe(true);
+
+    const reappeared = tracker.update(sweeps[3]!, detector.analyze(sweeps[3]!))
+      .filter((track) => track.missedSweeps === 0);
+    expect(associationId).toBe(regularSpectralComponentLineageId(1));
+    expect(reappeared).toHaveLength(5);
+    expect(reappeared.every((track) =>
+      track.associationId === associationId
+      && track.associationMissedSweeps === 0)).toBe(true);
+    expect(reappeared[0]!.associationRegionSweepIds)
+      .toEqual([sweeps[0]!.id, sweeps[3]!.id]);
+  });
+
+  it('extracts each regular-line look through its own exact historical hull', () => {
+    const frequencyHz = Array.from({ length: 501 }, (_, index) => index * 1_000);
+    const fullComponents = new Map([
+      [100_000, -50],
+      [150_000, -42],
+      [200_000, -32],
+      [250_000, -42],
+      [300_000, -50],
+    ]);
+    const truncatedComponents = new Map([
+      [200_000, -32],
+      [250_000, -42],
+      [300_000, -50],
+    ]);
+    const powerFor = (components: ReadonlyMap<number, number>) =>
+      frequencyHz.map((frequency) => {
+        for (const [centerHz, peakDbm] of components) {
+          if (Math.abs(frequency - centerHz) <= 1_000) return peakDbm;
+        }
+        return -110;
+      });
+    const sweeps = Array.from({ length: 8 }, (_, index) => makeSweep({
+      id: `regular-exact-hull-${index + 1}`,
+      sequence: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 3, index + 1)).toISOString(),
+      frequencyHz,
+      powerDbm: powerFor(index === 7 ? truncatedComponents : fullComponents),
+      actualStartHz: 0,
+      actualStopHz: 500_000,
+      actualRbwHz: 2_000,
+    }));
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    let tracks: readonly DetectedSignal[] = [];
+    for (const sweep of sweeps) tracks = tracker.update(sweep, detector.analyze(sweep));
+    const current = tracks.filter((track) => track.missedSweeps === 0);
+    const representative = classificationRepresentatives(current)[0]!;
+
+    expect(representative.associationRegionStartHz).toBe(199_000);
+    expect(representative.associationRegionStopHz).toBe(301_000);
+    expect(representative.regularComponentAssociationObservations?.slice(0, 7)
+      .every((observation) =>
+        observation.observedRegionStartHz === 99_000
+        && observation.observedRegionStopHz === 301_000)).toBe(true);
+    const observation = extractObservableFeatures(representative, { sweeps });
+    expect(observation.sweepIds).toEqual(sweeps.map((sweep) => sweep.id).reverse());
+    expect(observation.values['spectrum.sidebandScore']).toBeGreaterThan(0.6);
+  });
+
+  it('retains a regular-component lineage while publishing the exact latest member set', () => {
     const frequencyHz = Array.from({ length: 501 }, (_, index) => index * 1_000);
     const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
       centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
@@ -327,7 +529,8 @@ describe('signal analysis', () => {
       actualRbwHz: 2_000,
     });
     const initial = tracker.update(first, detector.analyze(first));
-    const initialAssociation = new Map(initial.map((track) => [track.id, track.associationMemberTrackIds]));
+    const initialAssociationId = initial[0]!.associationId;
+    const initialMemberTrackIds = initial[0]!.associationMemberTrackIds;
 
     const second = makeSweep({
       id: 'regular-membership-second',
@@ -341,14 +544,90 @@ describe('signal analysis', () => {
     });
     const updated = tracker.update(second, detector.analyze(second));
     const replacement = updated.find((track) => track.startHz === 324_000)!;
+    const current = updated.filter((track) => track.missedSweeps === 0);
 
-    expect(replacement.associationMode).toBe('frequency-local');
-    expect(updated.every((track) => !track.associationRegionSweepIds?.includes(second.id))).toBe(true);
-    for (const track of updated.filter((item) => initialAssociation.has(item.id))) {
-      expect(track.associationMode).toBe('regular-spectral-component-activity');
-      expect(track.associationRegionSweepIds).toEqual([first.id]);
-      expect(track.associationMemberTrackIds).toEqual(initialAssociation.get(track.id));
-    }
+    expect(initialAssociationId).toBe(regularSpectralComponentLineageId(1));
+    expect(replacement.associationMode).toBe('regular-spectral-component-activity');
+    expect(current).toHaveLength(5);
+    expect(current.every((track) =>
+      track.associationModelId === REGULAR_SPECTRAL_COMPONENT_MODEL_ID
+      && track.associationId === initialAssociationId)).toBe(true);
+    expect(current.every((track) =>
+      track.associationRegionSweepIds?.join(',') === [first.id, second.id].join(','))).toBe(true);
+    expect(current.every((track) =>
+      track.associationMemberTrackIds?.join(',') === current[0]!.associationMemberTrackIds?.join(','))).toBe(true);
+    expect(current[0]!.associationMemberTrackIds).not.toEqual(initialMemberTrackIds);
+    expect(current[0]!.regularComponentAssociationObservations?.map(
+      (observation) => observation.members.map((member) => member.trackId),
+    )).toEqual([
+      initialMemberTrackIds,
+      current[0]!.associationMemberTrackIds,
+    ]);
+    expect(() => extractObservableFeatures(current[0]!, { sweeps: [first, second] })).not.toThrow();
+  });
+
+  it('allocates a new lineage when overlapping hulls share no resolved component', () => {
+    const frequencyHz = Array.from({ length: 251 }, (_, index) => index * 1_000);
+    const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const first = makeSweep({
+      id: 'regular-no-shared-member-first',
+      frequencyHz,
+      powerDbm: powerFor([50_000, 75_000, 100_000, 150_000]),
+      actualStartHz: 0,
+      actualStopHz: 250_000,
+      actualRbwHz: 2_000,
+    });
+    const initial = tracker.update(first, detector.analyze(first));
+    const initialRepresentative = classificationRepresentatives(initial)[0]!;
+    const initialAssociationId = initialRepresentative.associationId;
+    const initialObservation =
+      initialRepresentative.regularComponentAssociationObservations![0]!;
+    const second = makeSweep({
+      id: 'regular-no-shared-member-second',
+      sequence: 2,
+      capturedAt: '2026-01-01T00:00:01.000Z',
+      frequencyHz,
+      powerDbm: powerFor([125_000, 175_000, 200_000]),
+      actualStartHz: 0,
+      actualStopHz: 250_000,
+      actualRbwHz: 2_000,
+    });
+    const updated = tracker.update(second, detector.analyze(second));
+    const current = updated.filter((track) => track.missedSweeps === 0);
+    const currentRepresentative = classificationRepresentatives(current)[0]!;
+    const currentObservation =
+      currentRepresentative.regularComponentAssociationObservations![0]!;
+
+    expect(initialAssociationId).toBe(regularSpectralComponentLineageId(1));
+    expect(currentRepresentative.associationId)
+      .toBe(regularSpectralComponentLineageId(2));
+    expect(currentRepresentative.associationRegionSweepIds).toEqual([second.id]);
+    expect(() => extractObservableFeatures(
+      currentRepresentative,
+      { sweeps: [first, second] },
+    )).not.toThrow();
+
+    const forgedCarryover: DetectedSignal = {
+      ...currentRepresentative,
+      associationId: initialAssociationId,
+      associationRegionSweepIds: [first.id, second.id],
+      regularComponentAssociationObservations: [
+        initialObservation,
+        currentObservation,
+      ],
+    };
+    expect(() => extractObservableFeatures(
+      forgedCarryover,
+      { sweeps: [first, second] },
+    )).toThrow(/coherent complete scalar sweep/i);
   });
 
   it('does not merge a two-tone observation into the regular multi-component association', () => {
@@ -411,22 +690,383 @@ describe('signal analysis', () => {
     expect(tracks.every((track) => track.associationMode === 'frequency-local')).toBe(true);
   });
 
-  it('keeps two disjoint regular-component associations separate', () => {
+  it('does not merge nearby independent same-spacing comb lineages during member churn', () => {
     const frequencyHz = Array.from({ length: 501 }, (_, index) => index * 1_000);
-    const centersHz = [50_000, 75_000, 100_000, 125_000, 300_000, 325_000, 350_000, 375_000];
-    const powerDbm = frequencyHz.map((frequency) => centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
-    const sweep = makeSweep({ frequencyHz, powerDbm, actualStartHz: 0, actualStopHz: 500_000, actualRbwHz: 2_000 });
+    const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 1_000) ? -42 : -110);
     const config = { ...detectionConfig, minimumConsecutiveSweeps: 1 };
     const detector = new SignalDetector(config);
-    const tracks = new SignalTracker(config).update(sweep, detector.analyze(sweep));
+    const tracker = new SignalTracker(config);
+    const first = makeSweep({
+      id: 'two-combs-first',
+      frequencyHz,
+      powerDbm: powerFor([
+        50_000, 75_000, 100_000, 125_000,
+        250_000, 275_000, 300_000, 325_000,
+      ]),
+      actualStartHz: 0,
+      actualStopHz: 500_000,
+      actualRbwHz: 2_000,
+    });
+    const firstCandidates = detector.analyze(first);
+    const firstAssociations =
+      regularSpectralComponentAssociations(firstCandidates, first);
+    expect(firstAssociations).toHaveLength(2);
+    expect(firstAssociations.map((association) => association.spacingHz))
+      .toEqual([25_000, 25_000]);
+    const initial = tracker.update(first, firstCandidates);
+    const initialLeftId = initial.find((track) => track.startHz === 49_000)!.associationId;
+    const initialRightId = initial.find((track) => track.startHz === 249_000)!.associationId;
+    const second = makeSweep({
+      id: 'two-combs-second',
+      sequence: 2,
+      capturedAt: '2026-01-01T00:00:01.000Z',
+      frequencyHz,
+      powerDbm: powerFor([
+        75_000, 100_000, 125_000, 150_000,
+        225_000, 250_000, 275_000, 300_000,
+      ]),
+      actualStartHz: 0,
+      actualStopHz: 500_000,
+      actualRbwHz: 2_000,
+    });
+    const secondCandidates = detector.analyze(second);
+    const secondAssociations =
+      regularSpectralComponentAssociations(secondCandidates, second);
+    expect(secondAssociations).toHaveLength(2);
+    expect(secondAssociations.map((association) => association.spacingHz))
+      .toEqual([25_000, 25_000]);
+    const tracks = tracker.update(second, secondCandidates)
+      .filter((track) => track.missedSweeps === 0);
     const associationIds = new Set(tracks.map((track) => track.associationId));
 
     expect(tracks).toHaveLength(8);
-    expect(tracks.every((track) => track.associationMode === 'regular-spectral-component-activity')).toBe(true);
+    expect(
+      tracks.every((track) => track.associationMode === 'regular-spectral-component-activity'),
+      JSON.stringify(tracks.map((track) => ({
+        startHz: track.startHz,
+        associationMode: track.associationMode,
+        associationId: track.associationId,
+      }))),
+    ).toBe(true);
     expect(associationIds.size).toBe(2);
+    expect(tracks.find((track) => track.startHz === 74_000)!.associationId).toBe(initialLeftId);
+    expect(tracks.find((track) => track.startHz === 224_000)!.associationId).toBe(initialRightId);
     for (const associationId of associationIds) {
       expect(tracks.filter((track) => track.associationId === associationId)).toHaveLength(4);
     }
+    expect(regularSpectralComponentLineagesAreCompatible(
+      {
+        startHz: 49_000,
+        stopHz: 126_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 50_000,
+        memberCentersHz: [50_000, 75_000, 100_000, 125_000],
+      },
+      {
+        startHz: 74_000,
+        stopHz: 151_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 75_000,
+        memberCentersHz: [75_000, 100_000, 125_000, 150_000],
+      },
+      2_000,
+      1_000,
+    )).toBe(true);
+    expect(regularSpectralComponentLineagesAreCompatible(
+      {
+        startHz: 74_000,
+        stopHz: 151_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 75_000,
+        memberCentersHz: [75_000, 100_000, 125_000, 150_000],
+      },
+      {
+        startHz: 224_000,
+        stopHz: 301_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 225_000,
+        memberCentersHz: [225_000, 250_000, 275_000, 300_000],
+      },
+      2_000,
+      1_000,
+    )).toBe(false);
+    expect(regularSpectralComponentLineagesAreCompatible(
+      {
+        startHz: 49_000,
+        stopHz: 151_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 50_000,
+        memberCentersHz: [50_000, 75_000, 100_000, 150_000],
+      },
+      {
+        startHz: 124_000,
+        stopHz: 201_000,
+        spacingHz: 25_000,
+        latticeAnchorHz: 125_000,
+        memberCentersHz: [125_000, 175_000, 200_000],
+      },
+      2_000,
+      1_000,
+    )).toBe(false);
+  });
+
+  it('keeps separately allocated regular lineages distinct regardless of member spelling', () => {
+    const base = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 })
+      .analyze(makeSweep())[0]!;
+    const firstMembers = ['a,b', 'c'] as const;
+    const secondMembers = ['a', 'b,c'] as const;
+    const representatives: readonly DetectedSignal[] = [
+      {
+        ...base,
+        id: firstMembers[0],
+        associationMode: 'regular-spectral-component-activity',
+        associationId: regularSpectralComponentLineageId(1),
+        associationMemberTrackIds: firstMembers,
+        associationMissedSweeps: 0,
+      },
+      {
+        ...base,
+        id: secondMembers[0],
+        associationMode: 'regular-spectral-component-activity',
+        associationId: regularSpectralComponentLineageId(2),
+        associationMemberTrackIds: secondMembers,
+        associationMissedSweeps: 0,
+      },
+    ];
+
+    expect(representatives.map((signal) => signal.associationId)).toEqual([
+      'regular-spectral-component-lineage-0001',
+      'regular-spectral-component-lineage-0002',
+    ]);
+    expect(classificationRepresentatives(representatives)).toEqual([
+      representatives[0],
+      representatives[1],
+    ]);
+    expect(classificationRepresentatives([...representatives].reverse())).toEqual([
+      representatives[0],
+      representatives[1],
+    ]);
+  });
+
+  it('selects a capture target from raw tracker strength instead of lexical or association-center order', () => {
+    const base = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 })
+      .analyze(makeSweep())[0]!;
+    const associationMembers = ['signal-0002', 'signal-0010', 'signal-0018'] as const;
+    const associated = (
+      id: typeof associationMembers[number],
+      startHz: number,
+      peakDbm: number,
+    ): DetectedSignal => ({
+      ...base,
+      id,
+      startHz,
+      stopHz: startHz,
+      peakHz: startHz,
+      peakDbm,
+      missedSweeps: 0,
+      associationMode: 'regular-spectral-component-activity',
+      associationId: regularSpectralComponentLineageId(7),
+      associationRegionStartHz: 100,
+      associationRegionStopHz: 300,
+      associationMemberTrackIds: associationMembers,
+      associationMissedSweeps: 0,
+    });
+    const left = associated('signal-0002', 100, -72);
+    const center = associated('signal-0010', 200, -61);
+    const strongestRight = associated('signal-0018', 300, -40);
+    const local: DetectedSignal = {
+      ...base,
+      id: 'signal-0001',
+      peakDbm: -50,
+      associationMode: 'frequency-local',
+    };
+    const signals = [left, center, strongestRight, local];
+
+    expect(CLASSIFICATION_CAPTURE_TARGET_SELECTION_POLICY_ID)
+      .toBe('preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3');
+    expect(classificationRepresentatives(signals).map((signal) => signal.id))
+      .toEqual(['signal-0001', 'signal-0010']);
+    expect(classificationCaptureTargetRepresentatives(signals)[0]?.id)
+      .toBe('signal-0018');
+    expect(classificationCaptureTargetRepresentatives(signals, left.id).map(
+      (signal) => signal.id,
+    )).toEqual([left.id]);
+
+    const tiedLocal: DetectedSignal = {
+      ...local,
+      id: 'signal-tied-local',
+      peakDbm: -35,
+    };
+    const strongerAgile: DetectedSignal = {
+      ...tiedLocal,
+      id: 'frequency-agile-2g4-activity-0001',
+      peakDbm: -20,
+      associationMode: 'frequency-agile-2g4-activity',
+      associationId: 'frequency-agile-2g4-activity-0001',
+      associationModelId: 'frequency-agile-2g4-activity-v3',
+      associationRegionStartHz: 2_402_000_000,
+      associationRegionStopHz: 2_480_000_000,
+      associationRegionSweepIds: tiedLocal.sweepIds,
+      associationMemberTrackIds: [tiedLocal.id],
+      associationMissedSweeps: 0,
+    };
+    expect(currentVisiblePhysicalClassificationRows([
+      tiedLocal,
+      strongerAgile,
+    ]).map((signal) => signal.id)).toEqual([tiedLocal.id]);
+    expect(classificationCaptureTargetRepresentatives(
+      [tiedLocal, strongerAgile],
+    )[0]?.id).toBe(tiedLocal.id);
+    expect(classificationCaptureTargetRepresentatives(
+      [tiedLocal, strongerAgile],
+      strongerAgile.id,
+    )).toEqual([]);
+  });
+
+  it('projects only the exact current agile member to its qualified multi-look evidence', () => {
+    const config: SignalDetectionConfig = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 2,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const centersHz = [2_402, 2_410, 2_418, 2_426, 2_434, 2_442, 2_450, 2_480]
+      .map((value) => value * 1_000_000);
+    const sweeps = centersHz.map((centerHz, index) =>
+      agileSweep(index + 1, centerHz, 84_000_000));
+    let tracks: readonly DetectedSignal[] = [];
+    for (const sweep of sweeps) {
+      tracks = tracker.update(sweep, detector.analyze(sweep));
+    }
+    const activity = tracks.find((track) =>
+      track.associationMode === 'frequency-agile-2g4-activity')!;
+    const rawTarget = tracks.find((track) =>
+      track.id === activity.associationObservations?.at(-1)?.trackId)!;
+    const projections = classificationCaptureTargetProjections(tracks);
+
+    expect(rawTarget).toMatchObject({ state: 'candidate', missedSweeps: 0 });
+    expect(currentVisiblePhysicalClassificationRows(tracks)).toEqual([]);
+    expect(projections).toHaveLength(1);
+    expect(projections[0]).toMatchObject({
+      rawTarget: { id: rawTarget.id, state: 'candidate' },
+      projectedRepresentative: { id: activity.id },
+      projectionKind: 'current-qualified-agile-latest-member',
+    });
+    expect(classificationCaptureTargetRepresentatives(tracks)).toEqual([activity]);
+    expect(classificationCaptureTargetProjections(tracks, rawTarget.id)).toEqual(projections);
+    expect(classificationCaptureTargetProjections(tracks, activity.id)).toEqual([]);
+    expect(classificationCaptureTargetProjections([rawTarget])).toEqual([]);
+
+    const staleActivity = { ...activity, associationMissedSweeps: 1 };
+    expect(classificationCaptureTargetProjections([
+      ...tracks.filter((track) => track.id !== activity.id),
+      staleActivity,
+    ])).toEqual([]);
+    const mutatedRawTarget = structuredClone(rawTarget);
+    mutatedRawTarget.localClassificationObservations =
+      mutatedRawTarget.localClassificationObservations?.map((observation, index, values) =>
+        index === values.length - 1
+          ? { ...observation, peakHz: observation.peakHz + 1 }
+          : observation);
+    expect(classificationCaptureTargetProjections([
+      ...tracks.filter((track) => track.id !== rawTarget.id),
+      mutatedRawTarget,
+    ])).toEqual([]);
+
+    const spectrumObservation = extractObservableFeatures(activity, { sweeps });
+    const zeroSpan: ZeroSpanCapture = {
+      kind: 'zero-span',
+      id: 'qualified-agile-member-zero-span',
+      sequence: 9,
+      capturedAt: new Date(Date.UTC(2026, 0, 1) + 9 * 50).toISOString(),
+      elapsedMilliseconds: 50,
+      frequencyHz: rawTarget.peakHz,
+      samplePeriodSeconds: 1 / 9_000,
+      targetDetectionId: rawTarget.id,
+      powerDbm: Array.from(
+        { length: 450 },
+        (_, index) => index % 10 < 4 ? -45 : -90,
+      ),
+      requested: admittedDetectedPower(rawTarget.peakHz, 450, 0.05, 20),
+      actualRbwHz: 20_000,
+      actualAttenuationDb: 0,
+      source: 'scan-text',
+      complete: true,
+      identity,
+      timingQualification: 'wall-clock-derived',
+    };
+    const receipt = createDetectedPowerCaptureReceipt({
+      activeSignals: tracks,
+      evidenceSweeps: sweeps,
+      capture: zeroSpan,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    });
+
+    expect(receipt).toMatchObject({
+      schemaVersion: 3,
+      selection: {
+        rawTargetId: rawTarget.id,
+        projectedRepresentativeId: activity.id,
+      },
+      candidates: [{
+        rawTargetId: rawTarget.id,
+        state: 'candidate',
+        projectionKind: 'current-qualified-agile-latest-member',
+        projectedRepresentativeId: activity.id,
+        runtimeAdmission: { status: 'admitted' },
+      }],
+    });
+    const censoredObservation = extractObservableFeatures(activity, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    });
+    expect(censoredObservation).toMatchObject({
+      associationEvidenceQualification: 'provenance-bound-current-promotion',
+      views: ['scalar-spectrum'],
+      limitations: expect.arrayContaining([
+        'frequency-agile-band-activity-association',
+        'frequency-agile-fixed-tune-envelope-censored',
+      ]),
+    });
+    expect(censoredObservation.values).toEqual(spectrumObservation.values);
+    expect(censoredObservation.zeroSpanCaptureId).toBeUndefined();
+    expect(censoredObservation.detectedPowerAcquisitionQualification).toBeUndefined();
+    expect(Object.keys(censoredObservation.values).some((name) => name.startsWith('envelope.')))
+      .toBe(false);
+
+    const unissuedReceipt = structuredClone(receipt);
+    expect(() => extractObservableFeatures(activity, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: unissuedReceipt,
+    })).toThrow(/receipt not issued/i);
+    expect(() => extractObservableFeatures(activity, {
+      sweeps,
+      zeroSpan: {
+        ...zeroSpan,
+        powerDbm: zeroSpan.powerDbm.map((value, index) => index === 0 ? Number.NaN : value),
+      },
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/finite samples/i);
+
+    expect(inferPosterior(censoredObservation)).toEqual(inferPosterior(spectrumObservation));
+    expect(knownModelSupportRank(censoredObservation))
+      .toBe(knownModelSupportRank(spectrumObservation));
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: tracks,
+      evidenceSweeps: sweeps,
+      preferredDetectionId: activity.id,
+      capture: { ...zeroSpan, targetDetectionId: activity.id },
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/cannot runtime-admit preferred tracker target/i);
   });
 
   it('retains periodic swept components locally while classifying their complete observed region once', () => {
@@ -460,6 +1100,8 @@ describe('signal analysis', () => {
 
     expect(tracks).toHaveLength(5);
     expect(tracks.every((track) => track.associationMode === 'multicomponent-swept-region-activity')).toBe(true);
+    expect(tracks.every((track) =>
+      track.associationModelId === MULTICOMPONENT_SWEPT_REGION_MODEL_ID)).toBe(true);
     expect(tracks.every((track) => track.associationMemberTrackIds?.length === 5)).toBe(true);
     expect(tracks.every((track) => track.associationRegionStartHz === 5_650_000
       && track.associationRegionStopHz === 14_350_000)).toBe(true);
@@ -486,12 +1128,33 @@ describe('signal analysis', () => {
       actualRbwHz: 50_000, actualAttenuationDb: 0,
       source: 'scan-text', complete: true, identity, timingQualification: 'simulation-exact',
     };
-    const envelopeObservation = extractObservableFeatures(representatives[0]!, { sweeps, zeroSpan });
+    const envelopeObservation = extractObservableFeatures(representatives[0]!, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: observation.sweepIds,
+      detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+        activeSignals: tracks.filter((track) => track.state === 'active'),
+        evidenceSweeps: sweeps,
+        preferredDetectionId: representatives[0]!.id,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpan.frequencyHz,
+        spectrumSweepIds: observation.sweepIds,
+      }),
+    });
     expect(envelopeObservation.limitations)
       .toContain('zero-span-local-member-of-nonidentity-regional-association');
+    expect(envelopeObservation.detectedPowerAcquisitionQualification)
+      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
     const malformed = { ...representatives[0]!, associationModelId: 'unreviewed-periodic-model' };
+    const staleV1 = {
+      ...representatives[0]!,
+      associationModelId: 'multicomponent-swept-region-v1',
+    };
     expect(observableAssociationEvidenceIsCurrentlyQualified(malformed)).toBe(false);
+    expect(observableAssociationEvidenceIsCurrentlyQualified(staleV1)).toBe(false);
     expect(() => extractObservableFeatures(malformed, { sweeps }))
+      .toThrow(/coherent complete scalar sweep/);
+    expect(() => extractObservableFeatures(staleV1, { sweeps }))
       .toThrow(/coherent complete scalar sweep/);
 
     const provenance = representatives[0]!.multicomponentAssociationObservations!;
@@ -721,20 +1384,205 @@ describe('signal analysis', () => {
     expect(shiftedRepresentative.multicomponentAssociationObservations?.map((item) => item.sweepId))
       .toEqual([edgeMissing.id, oppositeEdgeAdded.id]);
 
-    const blank = makeRegionalSweep('stable-hull-unqualified-gap', 5, []);
-    tracker.update(blank, detector.analyze(blank));
+    const firstBlank = makeRegionalSweep('stable-hull-unqualified-gap-1', 5, []);
+    const firstMiss = tracker.update(firstBlank, detector.analyze(firstBlank));
+    const retainedDuringFirstMiss = firstMiss.find((track) =>
+      track.associationId === firstAssociationId)!;
+    expect(retainedDuringFirstMiss.associationMissedSweeps).toBe(1);
+    expect(observableAssociationEvidenceIsCurrentlyQualified(retainedDuringFirstMiss))
+      .toBe(false);
+    const secondBlank = makeRegionalSweep('stable-hull-unqualified-gap-2', 6, []);
+    const secondMiss = tracker.update(secondBlank, detector.analyze(secondBlank));
+    const retainedDuringSecondMiss = secondMiss.find((track) =>
+      track.associationId === firstAssociationId)!;
+    expect(retainedDuringSecondMiss.associationMissedSweeps).toBe(2);
+    expect(observableAssociationEvidenceIsCurrentlyQualified(retainedDuringSecondMiss))
+      .toBe(false);
     const reappeared = makeRegionalSweep(
       'stable-hull-after-unqualified-gap',
-      6,
+      7,
       [8_000_000, 10_000_000, 12_000_000, 14_000_000, 16_000_000],
     );
     tracks = tracker.update(reappeared, detector.analyze(reappeared));
     const restartedRepresentative = classificationRepresentatives(
       tracks.filter((track) => track.missedSweeps === 0),
     )[0]!;
-    expect(restartedRepresentative.associationId).not.toBe(firstAssociationId);
-    expect(restartedRepresentative.associationRegionSweepIds).toEqual([reappeared.id]);
-    expect(restartedRepresentative.multicomponentAssociationObservations).toHaveLength(1);
+    expect(restartedRepresentative.associationId).toBe(firstAssociationId);
+    expect(restartedRepresentative.associationRegionSweepIds)
+      .toEqual([edgeMissing.id, oppositeEdgeAdded.id, reappeared.id]);
+    expect(restartedRepresentative.multicomponentAssociationObservations)
+      .toHaveLength(3);
+    expect(observableAssociationEvidenceIsCurrentlyQualified(restartedRepresentative))
+      .toBe(true);
+  });
+
+  it('requires geometry, padded hull overlap, and a shared resolved center for multicomponent lineage continuity', () => {
+    const baseline = {
+      geometryId: 'geometry-a',
+      startHz: 5_500_000,
+      stopHz: 14_500_000,
+      rbwHz: 50_000,
+      binWidthHz: 50_000,
+      memberCentersHz: [6_000_000, 8_000_000, 10_000_000, 12_000_000, 14_000_000],
+    };
+
+    expect(multicomponentSweptRegionLineagesAreCompatible(baseline, {
+      ...baseline,
+      startHz: 5_700_000,
+      stopHz: 14_700_000,
+      memberCentersHz: [6_200_000, 8_200_000, 10_200_000, 12_200_000, 14_200_000],
+    })).toBe(true);
+    expect(multicomponentSweptRegionLineagesAreCompatible(baseline, {
+      ...baseline,
+      geometryId: 'geometry-b',
+    })).toBe(false);
+    expect(multicomponentSweptRegionLineagesAreCompatible(baseline, {
+      ...baseline,
+      startHz: 12_000_000,
+      stopHz: 19_000_000,
+      memberCentersHz: [12_000_000, 14_000_000, 16_000_000, 18_000_000],
+    })).toBe(false);
+    // Broadly overlapping hulls are still ambiguous unrelated morphology
+    // unless at least one independently resolved component persists.
+    expect(multicomponentSweptRegionLineagesAreCompatible(baseline, {
+      ...baseline,
+      memberCentersHz: [6_500_000, 8_500_000, 10_500_000, 12_500_000, 14_500_000],
+    })).toBe(false);
+  });
+
+  it('retains only the immutable latest eight multicomponent observations', () => {
+    const frequencyHz = Array.from({ length: 401 }, (_, index) => index * 50_000);
+    const centersHz = [6_000_000, 8_000_000, 10_000_000, 12_000_000, 14_000_000];
+    const powerDbm = frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 350_000) ? -42 : -110);
+    const requested = admittedSpectrum({
+      ...analyzer,
+      startHz: 0,
+      stopHz: 20_000_000,
+      points: frequencyHz.length,
+      sweepTimeSeconds: 0.05,
+    });
+    const sweeps = Array.from({ length: 10 }, (_, index) => makeSweep({
+      id: `multicomponent-exact-eight-${index + 1}`,
+      sequence: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 1, index + 1)).toISOString(),
+      frequencyHz,
+      powerDbm,
+      requested,
+      actualStartHz: 0,
+      actualStopHz: 20_000_000,
+      actualRbwHz: 50_000,
+    }));
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    let tracks: readonly DetectedSignal[] = [];
+    for (const sweep of sweeps) {
+      tracks = tracker.update(sweep, detector.analyze(sweep));
+    }
+    const representative = classificationRepresentatives(
+      tracks.filter((track) => track.missedSweeps === 0),
+    )[0]!;
+    const expectedSweepIds = sweeps.slice(-8).map((sweep) => sweep.id);
+
+    expect(representative.associationModelId)
+      .toBe(MULTICOMPONENT_SWEPT_REGION_MODEL_ID);
+    expect(representative.associationRegionSweepIds).toEqual(expectedSweepIds);
+    expect(representative.multicomponentAssociationObservations?.map(
+      (observation) => observation.sweepId,
+    )).toEqual(expectedSweepIds);
+    expect(extractObservableFeatures(representative, { sweeps }).sweepIds)
+      .toEqual([...expectedSweepIds].reverse());
+  });
+
+  it('expires multicomponent provenance and rejects a disjoint reappearance', () => {
+    const frequencyHz = Array.from({ length: 401 }, (_, index) => index * 50_000);
+    const powerFor = (centersHz: readonly number[]) => frequencyHz.map((frequency) =>
+      centersHz.some((center) => Math.abs(frequency - center) <= 350_000) ? -42 : -110);
+    const requested = admittedSpectrum({
+      ...analyzer,
+      startHz: 0,
+      stopHz: 20_000_000,
+      points: frequencyHz.length,
+      sweepTimeSeconds: 0.05,
+    });
+    const regionalSweep = (
+      id: string,
+      sequence: number,
+      centersHz: readonly number[],
+    ) => makeSweep({
+      id,
+      sequence,
+      capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 2, sequence)).toISOString(),
+      frequencyHz,
+      powerDbm: powerFor(centersHz),
+      requested,
+      actualStartHz: 0,
+      actualStopHz: 20_000_000,
+      actualRbwHz: 50_000,
+    });
+    const config = {
+      ...detectionConfig,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    };
+    const detector = new SignalDetector(config);
+
+    const expiryTracker = new SignalTracker(config);
+    const initial = regionalSweep(
+      'multicomponent-expiry-initial',
+      1,
+      [6_000_000, 8_000_000, 10_000_000, 12_000_000, 14_000_000],
+    );
+    let expiryTracks = expiryTracker.update(initial, detector.analyze(initial));
+    const expiredAssociationId = expiryTracks[0]!.associationId;
+    for (let sequence = 2; sequence <= 4; sequence += 1) {
+      const single = regionalSweep(
+        `multicomponent-expiry-single-${sequence}`,
+        sequence,
+        [10_000_000],
+      );
+      expiryTracks = expiryTracker.update(single, detector.analyze(single));
+    }
+    const survivingLocal = expiryTracks.find((track) =>
+      track.missedSweeps === 0)!;
+    expect(survivingLocal.associationMode).toBe('frequency-local');
+    expect(survivingLocal.associationId).toBeUndefined();
+    const afterExpiry = regionalSweep(
+      'multicomponent-expiry-reappeared',
+      5,
+      [6_000_000, 8_000_000, 10_000_000, 12_000_000, 14_000_000],
+    );
+    expiryTracks = expiryTracker.update(afterExpiry, detector.analyze(afterExpiry));
+    expect(classificationRepresentatives(
+      expiryTracks.filter((track) => track.missedSweeps === 0),
+    )[0]!.associationId).not.toBe(expiredAssociationId);
+
+    const disjointTracker = new SignalTracker(config);
+    const left = regionalSweep(
+      'multicomponent-disjoint-left',
+      1,
+      [2_000_000, 4_000_000, 6_000_000, 8_000_000],
+    );
+    let disjointTracks = disjointTracker.update(left, detector.analyze(left));
+    const leftAssociationId = disjointTracks[0]!.associationId;
+    const blank = regionalSweep('multicomponent-disjoint-blank', 2, []);
+    disjointTracker.update(blank, detector.analyze(blank));
+    const right = regionalSweep(
+      'multicomponent-disjoint-right',
+      3,
+      [12_000_000, 14_000_000, 16_000_000, 18_000_000],
+    );
+    disjointTracks = disjointTracker.update(right, detector.analyze(right));
+    const rightRepresentative = classificationRepresentatives(
+      disjointTracks.filter((track) => track.missedSweeps === 0),
+    )[0]!;
+    expect(rightRepresentative.associationId).not.toBe(leftAssociationId);
+    expect(rightRepresentative.associationRegionSweepIds).toEqual([right.id]);
   });
 
   it('does not associate a wide-spaced irregular carrier set as periodic swept activity', () => {
@@ -864,8 +1712,14 @@ describe('signal analysis', () => {
     const detector = new SignalDetector(config);
     const associated = new SignalTracker(config).update(sweep, detector.analyze(sweep))[0]!;
     const malformed: DetectedSignal = { ...associated, associationModelId: 'unreviewed-grid-model' };
+    const staleV1: DetectedSignal = {
+      ...associated,
+      associationModelId: 'simultaneous-regular-components-v1',
+    };
 
     expect(() => extractObservableFeatures(malformed, { sweeps: [sweep] }))
+      .toThrow(/at least one coherent complete scalar sweep/i);
+    expect(() => extractObservableFeatures(staleV1, { sweeps: [sweep] }))
       .toThrow(/at least one coherent complete scalar sweep/i);
   });
 
@@ -959,6 +1813,10 @@ describe('signal analysis', () => {
     expect(updated.classificationRegionStartHz).toBe(firstTrack.classificationRegionStartHz);
     expect(updated.classificationRegionStopHz).toBe(firstTrack.classificationRegionStopHz);
     expect(updated.classificationRegionSweepIds).toEqual(firstTrack.classificationRegionSweepIds);
+    expect(updated.localClassificationObservations?.map((observation) => observation.sourceSweep.id))
+      .toEqual([firstSweep.id, secondSweep.id]);
+    expect(updated.localClassificationObservations?.at(-1)?.sourceSweep.powerDbm)
+      .toEqual(secondSweep.powerDbm);
   });
 
   it('promotes only Bayesian multi-look 2.4 GHz activity without inflating local detector evidence', () => {
@@ -1006,7 +1864,12 @@ describe('signal analysis', () => {
     expect(activity.associationBayesianEvidence!.posteriorAgileDynamicsProbability).toBeGreaterThanOrEqual(0.99);
     expect(activity.bayesianEvidence.looks).toBe(1);
     expect(activity.bayesianEvidence.posteriorScope).toBe('selected-local-region');
-    const activeInputIds = tracks.filter((track) => track.state === 'active').map((track) => track.id);
+    const activeInputIds = tracks
+      .filter((track) => track.state === 'active')
+      .sort((left, right) => classificationRepresentativeKey(left).localeCompare(
+        classificationRepresentativeKey(right),
+      ))
+      .map((track) => track.id);
     expect(classificationRepresentatives(tracks.filter((track) => track.state === 'active')).map((track) => track.id))
       .toEqual(activeInputIds);
     expect(extractObservableFeatures(activity, { sweeps })).toMatchObject({
@@ -1015,31 +1878,20 @@ describe('signal analysis', () => {
     });
   });
 
-  it('uses the exact SignalLab source clock without admitting fast physical wall-clock sweeps', () => {
-    const config: SignalDetectionConfig = { ...detectionConfig, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 2 };
-    const detector = new SignalDetector(config);
-    const centersHz = [2_402, 2_410, 2_418, 2_426, 2_434, 2_442, 2_450, 2_480]
-      .map((value) => value * 1_000_000);
+  it('admits sub-25 ms cadence only for the exact SignalLab simulation provenance contract', () => {
+    const signalLabPrevious = signalLabCadenceContractSweep(1);
+    const signalLabCandidate = signalLabCadenceContractSweep(2);
+    expect(frequencyAgileSequentialOpportunity(signalLabPrevious, signalLabCandidate)).toBe(true);
 
-    const signalLabTracker = new SignalTracker(config);
-    let signalLabTracks: readonly DetectedSignal[] = [];
-    for (const [index, centerHz] of centersHz.entries()) {
-      const sweep = signalLabAgileSweep(index + 1, centerHz, 84_000_000);
-      signalLabTracks = signalLabTracker.update(sweep, detector.analyze(sweep));
-    }
-    expect(signalLabTracks.some((track) => track.associationMode === 'frequency-agile-2g4-activity')).toBe(true);
-
-    const physicalTracker = new SignalTracker(config);
-    let physicalTracks: readonly DetectedSignal[] = [];
-    for (const [index, centerHz] of centersHz.entries()) {
-      const sweep = agileSweep(index + 1, centerHz, 84_000_000);
-      const fastPhysicalSweep: Sweep = {
-        ...sweep,
-        capturedAt: new Date(Date.UTC(2026, 0, 1) + index + 1).toISOString(),
-      };
-      physicalTracks = physicalTracker.update(fastPhysicalSweep, detector.analyze(fastPhysicalSweep));
-    }
-    expect(physicalTracks.some((track) => track.associationMode === 'frequency-agile-2g4-activity')).toBe(false);
+    const fastPhysicalPrevious = {
+      ...agileSweep(1, 2_402_000_000, 84_000_000),
+      capturedAt: new Date(Date.UTC(2026, 0, 1) + 1).toISOString(),
+    };
+    const fastPhysicalCandidate = {
+      ...agileSweep(2, 2_410_000_000, 84_000_000),
+      capturedAt: new Date(Date.UTC(2026, 0, 1) + 2).toISOString(),
+    };
+    expect(frequencyAgileSequentialOpportunity(fastPhysicalPrevious, fastPhysicalCandidate)).toBe(false);
   });
 
   it('does not leak regular-component provenance into later agile activity', () => {
@@ -1180,6 +2032,43 @@ describe('signal analysis', () => {
     expect(after.associationBayesianEvidence).toMatchObject({ positiveObservationCount: 8, opportunityCount: 9 });
   });
 
+  it('keeps agile opportunity replay independent of stale regional track provenance', () => {
+    const config: SignalDetectionConfig = { ...detectionConfig, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 2 };
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const initial = [2_402, 2_410, 2_418, 2_426, 2_434, 2_442, 2_450, 2_480]
+      .map((value, index) => agileSweep(index + 1, value * 1_000_000, 84_000_000));
+    let tracks: readonly DetectedSignal[] = [];
+    for (const sweep of initial) tracks = tracker.update(sweep, detector.analyze(sweep));
+
+    const regionCentersHz = [2_410_000_000, 2_420_000_000, 2_430_000_000, 2_440_000_000];
+    const regional = emsoSweep(2_441_000_000, 84_000_000, 9, (frequency) =>
+      regionCentersHz.some((center) => Math.abs(frequency - center) <= 300_000) ? -45 : -110);
+    const regionalCandidates = detector.analyze(regional);
+    expect(regionalCandidates).toHaveLength(4);
+    tracks = tracker.update(regional, regionalCandidates);
+    expect(tracks.filter((track) => track.associationMode === 'multicomponent-swept-region-activity'))
+      .toHaveLength(4);
+
+    const exact = agileSweep(10, regionCentersHz[1]!, 84_000_000);
+    expect(detector.analyze(exact)).toHaveLength(1);
+    tracks = tracker.update(exact, detector.analyze(exact));
+    const retainedRegionalTrack = tracks.find((track) =>
+      track.associationMode === 'multicomponent-swept-region-activity'
+      && track.missedSweeps === 0)!;
+    expect(retainedRegionalTrack.associationMissedSweeps).toBe(1);
+
+    const activity = tracks.find((track) => track.associationMode === 'frequency-agile-2g4-activity')!;
+    expect(activity.associationOpportunities?.at(-1)).toEqual({
+      sweepId: exact.id,
+      outcome: 'exactly-one',
+    });
+    expect(activity.associationObservations?.at(-1)?.sweepId).toBe(exact.id);
+    expect(() => extractObservableFeatures(activity, {
+      sweeps: [...initial, regional, exact],
+    })).not.toThrow();
+  });
+
   it('rejects reordered or duplicated provenance and resets an off-cadence agile window', () => {
     const config: SignalDetectionConfig = { ...detectionConfig, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 2 };
     const detector = new SignalDetector(config);
@@ -1312,8 +2201,8 @@ describe('signal analysis', () => {
 
   it('keeps model provenance while rejecting a hand-built narrow line outside calibrated synthetic support', async () => {
     expect(SIGNAL_LAB_EMSO_MODEL).toMatchObject({
-      id: 'bayesian-observable-equivalence-v5', producer: 'tinysa-signal-lab', observableClassCount: 12,
-      preprocessing: 'scalar-observable-features-v6', priorId: 'engineering-design-class-weights-v1',
+      id: 'bayesian-observable-equivalence-v8', producer: 'tinysa-signal-lab', observableClassCount: 12,
+      preprocessing: 'scalar-observable-features-v7', priorId: 'engineering-design-class-weights-v1',
     });
     expect(SIGNAL_LAB_EMSO_MODEL).not.toHaveProperty('taxonomySize');
     expect(SIGNAL_LAB_EMSO_MODEL).not.toHaveProperty('legacyProfileTaxonomySize');
@@ -1325,7 +2214,7 @@ describe('signal analysis', () => {
     const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
     expect(result).toMatchObject({
       label: 'unknown', decisionLevel: 'unknown', qualification: 'bayesian-observable-equivalence', scoreKind: 'model-posterior',
-      modelId: 'bayesian-observable-equivalence-v5',
+      modelId: 'bayesian-observable-equivalence-v8',
       unknownReason: 'out-of-domain', decisionSupport: { kind: 'synthetic-support-rank' },
     });
     expect(result.decisionSupport!.threshold).toBeDefined();
@@ -1401,6 +2290,95 @@ describe('signal analysis', () => {
     });
   });
 
+  it('retains an exact oldest-to-newest admission ledger aligned with the bounded track history', () => {
+    const sweeps = Array.from({ length: 70 }, (_, index) => emsoSweep(
+      98_000_000,
+      2_000_000,
+      index + 1,
+      (frequency) => Math.abs(frequency - 98_000_000) <= 10_000 ? -45 : -110,
+    ));
+    const detection = emsoDetection('bounded-exact-ledger', 98_000_000, 20_000, sweeps);
+    const retainedSweeps = sweeps.slice(-64);
+
+    expect(detection.sweepIds).toEqual(retainedSweeps.map((sweep) => sweep.id));
+    expect(detection.localClassificationObservations).toHaveLength(64);
+    expect(detection.localClassificationObservations?.map((observation) => observation.sourceSweep.id))
+      .toEqual(detection.sweepIds);
+    expect(detection.localClassificationObservations?.map((observation) => observation.sourceSweep.sequence))
+      .toEqual(retainedSweeps.map((sweep) => sweep.sequence));
+    expect(detection.classificationRegionObservation?.sourceSweep.id).toBe(sweeps[0]!.id);
+    expect(detection.sweepIds).not.toContain(sweeps[0]!.id);
+    expect(() => extractObservableFeatures(detection, { sweeps: retainedSweeps.slice(-8) })).not.toThrow();
+  });
+
+  it('treats a causally valid gradual track drift beyond the frozen ROI as typed insufficient evidence', () => {
+    const centerHz = 98_000_000;
+    const sweeps = Array.from({ length: 8 }, (_, index) => {
+      const activeCenterHz = centerHz + index * 10_000;
+      return emsoSweep(centerHz, 2_000_000, index + 1, (frequency) =>
+        Math.abs(frequency - activeCenterHz) <= 10_000 ? -45 : -110);
+    });
+    const detection = emsoDetection('gradual-roi-drift', centerHz + 70_000, 20_000, sweeps);
+
+    expect(detection.localClassificationObservations).toHaveLength(8);
+    expect(detection.localClassificationObservations?.map((observation) => observation.peakHz))
+      .toEqual(sweeps.map((_sweep, index) => centerHz - 10_000 + index * 10_000));
+    expect(detection.peakHz).toBeGreaterThan(detection.classificationRegionStopHz!);
+    expect(() => extractObservableFeatures(detection, { sweeps }))
+      .toThrow(ObservableEvidenceUnavailableError);
+    try {
+      extractObservableFeatures(detection, { sweeps });
+      throw new Error('Expected gradual drift to be typed unavailable');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'local-history-not-uniquely-replayable' });
+    }
+  });
+
+  it('rejects an exact but unrelated detector candidate substituted into the admission ledger', () => {
+    const centerHz = 98_000_000;
+    const leftHz = centerHz - 400_000;
+    const rightHz = centerHz + 400_000;
+    const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(centerHz, 2_000_000, index + 1, (frequency) =>
+      Math.abs(frequency - leftHz) <= 10_000 || Math.abs(frequency - rightHz) <= 10_000 ? -45 : -110));
+    const detection = emsoDetection('unrelated-ledger-substitution', leftHz, 20_000, sweeps);
+    const substitutionIndex = 4;
+    const unrelated = new SignalDetector(detection.detectorConfig).analyze(sweeps[substitutionIndex]!)
+      .find((candidate) => candidate.peakHz > centerHz)!;
+    expect(unrelated.classificationRegionObservation).toBeDefined();
+    const tampered: DetectedSignal = {
+      ...detection,
+      localClassificationObservations: detection.localClassificationObservations?.map((observation, index) =>
+        index === substitutionIndex ? unrelated.classificationRegionObservation! : observation),
+    };
+
+    expect(() => extractObservableFeatures(tampered, { sweeps }))
+      .toThrow(/unrelated local-history admission/);
+  });
+
+  it('rejects mutated Bayesian evidence in an otherwise aligned exact admission ledger', () => {
+    const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
+      Math.abs(frequency - 98_000_000) <= 10_000 ? -45 : -110));
+    const detection = emsoDetection('mutated-ledger-evidence', 98_000_000, 20_000, sweeps);
+    const mutationIndex = 3;
+    const tampered: DetectedSignal = {
+      ...detection,
+      localClassificationObservations: detection.localClassificationObservations?.map((observation, index) =>
+        index === mutationIndex
+          ? {
+              ...observation,
+              localBayesianEvidence: {
+                ...observation.localBayesianEvidence,
+                posteriorPredictiveNullProbability:
+                  observation.localBayesianEvidence.posteriorPredictiveNullProbability / 2,
+              },
+            }
+          : observation),
+    };
+
+    expect(() => extractObservableFeatures(tampered, { sweeps }))
+      .toThrow(/without its exact claimed detector admission/);
+  });
+
   it('rejects duplicated sweep objects as independent classifier admissions', () => {
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
       Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 2_000)));
@@ -1424,7 +2402,7 @@ describe('signal analysis', () => {
     })).toThrow(/coherent complete scalar sweep/);
   });
 
-  it('rejects a fabricated all-floor look appended to local classifier history', () => {
+  it('rejects a fabricated all-floor look appended to local classifier history at the runtime boundary', async () => {
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
       Math.max(-110, -48 - Math.abs(frequency - 98_000_000) / 2_000)));
     const detection = emsoDetection('fabricated-later-look', 98_000_000, 20_000, sweeps);
@@ -1444,10 +2422,13 @@ describe('signal analysis', () => {
 
     expect(new SignalDetector(detection.detectorConfig).analyze(fabricated)).toEqual([]);
     expect(() => extractObservableFeatures(tampered, { sweeps: [...sweeps, fabricated] }))
-      .toThrow(/coherent complete scalar sweep/);
+      .toThrow(/local-admission ledger/);
+    await expect(new SignalLabBayesianClassifier().classify(tampered, {
+      sweeps: [...sweeps, fabricated],
+    })).rejects.toThrow();
   });
 
-  it('rejects an ambiguous later local look with two ROI-compatible detector candidates', () => {
+  it('rejects substituting an ambiguous detector input for a cited exact local admission', async () => {
     const centerHz = 98_000_000;
     const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(centerHz, 2_000_000, index + 1, (frequency) =>
       Math.abs(frequency - centerHz) <= 100_000 ? -48 : -110));
@@ -1465,9 +2446,11 @@ describe('signal analysis', () => {
       && candidate.peakHz <= detection.classificationRegionStopHz!);
 
     expect(replayed).toHaveLength(2);
-    expect(() => extractObservableFeatures(detection, {
-      sweeps: [...sweeps.slice(0, -1), ambiguous],
-    })).toThrow(/coherent complete scalar sweep/);
+    const evidenceSweeps = [...sweeps.slice(0, -1), ambiguous];
+    expect(() => extractObservableFeatures(detection, { sweeps: evidenceSweeps }))
+      .toThrow(/substituted detector inputs/);
+    await expect(new SignalLabBayesianClassifier().classify(detection, { sweeps: evidenceSweeps }))
+      .rejects.toThrow();
   });
 
   it('rejects replacing the frozen local origin with a valid later detector sweep', () => {
@@ -1540,8 +2523,8 @@ describe('signal analysis', () => {
     expect(() => extractObservableFeatures(detection, { sweeps: [sweep] })).not.toThrow();
     expect(() => extractObservableFeatures({
       ...detection,
-      peakDbm: detection.peakDbm + 1,
-    }, { sweeps: [sweep] })).toThrow(/coherent complete scalar sweep/);
+      missedSweeps: detection.missedSweeps + 1,
+    }, { sweeps: [sweep] })).toThrow(/contradicts the current track state/);
   });
 
   it('binds the newest admitted local evidence sweep to the track last-seen timestamp', () => {
@@ -1632,21 +2615,22 @@ describe('signal analysis', () => {
 
     expect(() => extractObservableFeatures(frozen, { sweeps })).not.toThrow();
     expect(() => extractObservableFeatures(moved, { sweeps }))
-      .toThrow(/coherent complete scalar sweep/);
+      .toThrow(/contradicts the current track state/);
     expect(() => extractObservableFeatures({
       ...frozen,
       bayesianEvidence: {
         ...frozen.bayesianEvidence,
         testedRegionStartHz: frozen.bayesianEvidence.testedRegionStartHz + 1,
       },
-    }, { sweeps })).toThrow(/coherent complete scalar sweep/);
+    }, { sweeps })).toThrow(/contradicts the current track state/);
   });
 
   it('rejects zero-span evidence bound to another detection or device provenance', () => {
-    const sweeps = Array.from({ length: 3 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => {
+    const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => {
       return Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000);
     }));
     const detection = emsoDetection('zero-span-owner', 98_000_000, 20_000, sweeps);
+    const spectrumObservation = extractObservableFeatures(detection, { sweeps });
     const matchingCapture: ZeroSpanCapture = {
       kind: 'zero-span', id: 'bound-zero-span', sequence: 1, capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 10,
       frequencyHz: 98_000_000, samplePeriodSeconds: 0.0001,
@@ -1664,24 +2648,28 @@ describe('signal analysis', () => {
         identity: { ...identity, port: { ...identity.port, id: 'simulator:other-device' } },
       },
     ];
+    const receipt = createDetectedPowerCaptureReceipt({
+      activeSignals: [detection],
+      evidenceSweeps: sweeps,
+      capture: matchingCapture,
+      admittedTargetTuneHz: matchingCapture.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    });
 
     for (const zeroSpan of mismatchedCaptures) {
-      const observation = extractObservableFeatures(detection, { sweeps, zeroSpan });
-      expect(observation.zeroSpanCaptureId).toBeUndefined();
-      expect(observation.views).toEqual(['scalar-spectrum']);
-      expect(observation.limitations).toContain('zero-span-provenance-mismatch');
-      expect(observation.limitations).toContain('zero-span-missing');
-      expect(observation.limitations).not.toContain('zero-span-tune-mismatch');
-      expect(Object.keys(observation.values).some((key) => key.startsWith('envelope.'))).toBe(false);
+      expect(() => extractObservableFeatures(detection, {
+        sweeps,
+        zeroSpan,
+        zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+        detectedPowerCaptureReceipt: receipt,
+      })).toThrow(/different or mutated capture/i);
     }
   });
 
   it('binds live zero-span evidence to the exact newest-first eight-sweep window', () => {
-    const sweeps = Array.from({ length: 8 }, (_, index) => ({
-      ...emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
-        Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)),
-      identity: signalLabIdentity,
-    }));
+    const sweeps = Array.from({ length: 8 }, (_, index) =>
+      emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
+        Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
     const detection = emsoDetection('live-window-owner', 98_000_000, 20_000, sweeps);
     const zeroSpan: ZeroSpanCapture = {
       kind: 'zero-span', id: 'live-window-zs', sequence: 9,
@@ -1691,16 +2679,66 @@ describe('signal analysis', () => {
       powerDbm: Array.from({ length: 450 }, (_, index) => index % 10 < 4 ? -45 : -90),
       requested: admittedDetectedPower(detection.peakHz, 450, 0.05, 20),
       actualRbwHz: 20_000, actualAttenuationDb: 0, source: 'scan-text', complete: true,
-      identity: signalLabIdentity, timingQualification: 'simulation-exact',
+      identity, timingQualification: 'wall-clock-derived',
     };
     const exactIds = [...sweeps].sort((left, right) => right.sequence - left.sequence).map((sweep) => sweep.id);
     const admitted = extractObservableFeatures(detection, {
       sweeps,
       zeroSpan,
       zeroSpanSpectrumSweepIds: exactIds,
+      detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+        activeSignals: [detection],
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpan.frequencyHz,
+        spectrumSweepIds: exactIds,
+      }),
     });
     expect(admitted.zeroSpanCaptureId).toBe(zeroSpan.id);
+    expect(admitted.detectedPowerAcquisitionQualification)
+      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
 
+    const spectrumOnly = extractObservableFeatures(detection, { sweeps });
+    const unqualified = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: exactIds,
+    });
+    expect(unqualified.values).toEqual(spectrumOnly.values);
+    expect(unqualified.views).toEqual(spectrumOnly.views);
+    expect(unqualified.zeroSpanCaptureId).toBeUndefined();
+    expect(unqualified.detectedPowerAcquisitionQualification).toBeUndefined();
+    expect(unqualified.limitations).toContain('zero-span-capture-receipt-missing');
+    expect(unqualified.limitations).toContain('zero-span-acquisition-policy-unqualified');
+    const spectrumCandidates = inferPosterior(spectrumOnly);
+    const unqualifiedCandidates = inferPosterior(unqualified);
+    expect(unqualifiedCandidates).toEqual(spectrumCandidates);
+    const spectrumSupport = knownModelSupportRank(spectrumOnly);
+    const unqualifiedSupport = knownModelSupportRank(unqualified);
+    expect(unqualifiedSupport).toBe(spectrumSupport);
+    expect(selectObservableDecision(unqualifiedCandidates, unqualified, unqualifiedSupport))
+      .toEqual(selectObservableDecision(spectrumCandidates, spectrumOnly, spectrumSupport));
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: exactIds,
+      detectedPowerAcquisitionPolicyId: 'unreviewed-capture-policy' as typeof SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID,
+    })).toThrow(/unknown detected-power acquisition policy/i);
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: exactIds,
+      detectedPowerAcquisitionPolicyId:
+        SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID,
+    })).toThrow(/self-attested detected-power acquisition policy/i);
+
+    const exactReceipt = createDetectedPowerCaptureReceipt({
+      activeSignals: [detection],
+      evidenceSweeps: sweeps,
+      capture: zeroSpan,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: exactIds,
+    });
     const rejectedBindings = [
       exactIds.slice(0, 7),
       [exactIds[1]!, exactIds[0]!, ...exactIds.slice(2)],
@@ -1708,15 +2746,432 @@ describe('signal analysis', () => {
       ['stale-sweep', ...exactIds.slice(0, 7)],
     ];
     for (const zeroSpanSpectrumSweepIds of rejectedBindings) {
-      const rejected = extractObservableFeatures(detection, {
+      expect(() => extractObservableFeatures(detection, {
         sweeps,
         zeroSpan,
         zeroSpanSpectrumSweepIds,
-      });
-      expect(rejected.zeroSpanCaptureId).toBeUndefined();
-      expect(rejected.limitations).toContain('zero-span-spectrum-window-mismatch');
-      expect(rejected.limitations).toContain('zero-span-missing');
+        detectedPowerCaptureReceipt: exactReceipt,
+      })).toThrow(/different scalar evidence window/i);
     }
+  });
+
+  it('admits only an opaque strongest-target snapshot receipt and rejects payload, cadence, or object-graph substitution', () => {
+    const sweeps = Array.from({ length: 8 }, (_, index) =>
+      emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
+        Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
+    const detection = emsoDetection('receipt-owner', 98_000_000, 20_000, sweeps);
+    const unreadySweeps = Array.from({ length: 2 }, (_, index) =>
+      emsoSweep(99_500_000, 500_000, index + 20, (frequency) =>
+        Math.max(-110, -25 - Math.abs(frequency - 99_500_000) / 2_000)));
+    const unreadyStrongest = emsoDetection(
+      'receipt-unready',
+      99_500_000,
+      20_000,
+      unreadySweeps,
+    );
+    const excludedRetainedMiss: DetectedSignal = {
+      ...unreadyStrongest,
+      id: 'receipt-retained-miss',
+      peakDbm: -5,
+      missedSweeps: 1,
+    };
+    const excludedAgileSummary: DetectedSignal = {
+      ...unreadyStrongest,
+      id: 'receipt-agile-summary',
+      peakDbm: -1,
+      associationMode: 'frequency-agile-2g4-activity',
+      associationId: 'receipt-agile-association',
+      associationModelId: 'frequency-agile-2g4-activity-v3',
+      associationRegionStartHz: 2_402_000_000,
+      associationRegionStopHz: 2_480_000_000,
+      associationRegionSweepIds: unreadyStrongest.sweepIds,
+      associationMemberTrackIds: [unreadyStrongest.id],
+      associationMissedSweeps: 0,
+    };
+    const receiptInputSignals = [
+      detection,
+      unreadyStrongest,
+      excludedRetainedMiss,
+      excludedAgileSummary,
+    ];
+    const spectrumObservation = extractObservableFeatures(detection, { sweeps });
+    const zeroSpan: ZeroSpanCapture = {
+      kind: 'zero-span',
+      id: 'receipt-bound-capture',
+      sequence: 9,
+      capturedAt: '2026-01-01T00:00:09.000Z',
+      elapsedMilliseconds: 50,
+      frequencyHz: detection.peakHz,
+      samplePeriodSeconds: 0.05 / 449,
+      targetDetectionId: detection.id,
+      powerDbm: Array.from(
+        { length: 450 },
+        (_, index) => index % 10 < 4 ? -45 : -90,
+      ),
+      requested: admittedDetectedPower(detection.peakHz, 450, 0.05, 20),
+      actualRbwHz: 20_000,
+      actualAttenuationDb: 0,
+      source: 'scan-text',
+      complete: true,
+      identity,
+      timingQualification: 'simulation-exact',
+    };
+    const receipt = createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: zeroSpan,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    });
+
+    expect(receipt.schemaVersion).toBe(3);
+    expect(receipt.selection).toEqual({
+      mode: 'strongest-current',
+      rawTargetId: detection.id,
+      projectedRepresentativeId: detection.id,
+    });
+    expect(receipt.candidates.map((candidate) => candidate.rawTargetId))
+      .toEqual([unreadyStrongest.id, detection.id]);
+    expect(receipt.candidates.map((candidate) => candidate.inputOrdinal))
+      .toEqual([1, 0]);
+    expect(receipt.candidates.map((candidate) => candidate.projectionKind))
+      .toEqual([
+        'current-active-physical-representative',
+        'current-active-physical-representative',
+      ]);
+    expect(receipt.candidates[0]!.runtimeAdmission).toEqual({
+      status: 'unavailable',
+      reason: 'insufficient-spectrum-history',
+    });
+    expect(receipt.candidates[1]!.runtimeAdmission).toEqual({
+      status: 'admitted',
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    });
+    expect(receipt.capture).toMatchObject({
+      id: zeroSpan.id,
+      targetDetectionId: detection.id,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      frequencyHz: zeroSpan.frequencyHz,
+      requestedCenterHz: zeroSpan.requested.centerHz,
+      payloadBinding: {
+        algorithm: 'sha256',
+        canonicalization: 'zero-span-capture-canonical-json-v1',
+        sha256: createHash('sha256')
+          .update(`tinysa-detected-power-capture-payload-v1\0${canonicalDetectedPowerCapturePayload(zeroSpan)}`)
+          .digest('hex'),
+      },
+    });
+    expect(Object.isFrozen(receipt)).toBe(true);
+    expect(Object.isFrozen(receipt.candidates)).toBe(true);
+    expect(Object.isFrozen(receipt.candidates[0])).toBe(true);
+    expect(Object.isFrozen(receipt.candidates[0]!.runtimeAdmission)).toBe(true);
+
+    const callerOwnedEqualCapture = structuredClone(zeroSpan);
+    const authorityOwnedSnapshot = assertDetectedPowerCaptureReceiptMatches({
+      receipt,
+      detection,
+      capture: callerOwnedEqualCapture,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    });
+    expect(authorityOwnedSnapshot).not.toBe(zeroSpan);
+    expect(authorityOwnedSnapshot).not.toBe(callerOwnedEqualCapture);
+    expect(authorityOwnedSnapshot).toEqual(zeroSpan);
+    expect(Object.isFrozen(authorityOwnedSnapshot)).toBe(true);
+    expect(Object.isFrozen(authorityOwnedSnapshot.powerDbm)).toBe(true);
+    expect(Object.isFrozen(authorityOwnedSnapshot.requested)).toBe(true);
+
+    const admitted = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    });
+    expect(admitted.zeroSpanCaptureId).toBe(zeroSpan.id);
+    expect(admitted.detectedPowerAcquisitionQualification)
+      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: zeroSpan,
+      admittedTargetTuneHz: zeroSpan.frequencyHz + 1,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/does not match controller-admitted target tune/i);
+
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      preferredDetectionId: unreadyStrongest.id,
+      capture: { ...zeroSpan, targetDetectionId: unreadyStrongest.id },
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/cannot runtime-admit preferred tracker target/i);
+
+    const tamperedReceipt = structuredClone(receipt);
+    (tamperedReceipt.candidates[0] as { currentPeakDbm: number }).currentPeakDbm -= 1;
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: tamperedReceipt,
+    })).toThrow(/not issued by the analysis selection boundary/i);
+
+    expect(() => extractObservableFeatures({
+      ...detection,
+      id: 'member-substituted-detection',
+    }, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/different or mutated representative|member substitution/i);
+
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: {
+        ...zeroSpan,
+        frequencyHz: zeroSpan.frequencyHz + 1,
+        requested: {
+          ...zeroSpan.requested,
+          centerHz: zeroSpan.requested.centerHz + 1,
+        },
+      },
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/different or mutated capture/i);
+
+    const finiteSampleSubstitution: ZeroSpanCapture = {
+      ...zeroSpan,
+      powerDbm: zeroSpan.powerDbm.map((value, index) =>
+        index === 17 ? value + 0.125 : value),
+    };
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: finiteSampleSubstitution,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/canonical payload digest.*samples/i);
+
+    for (const classificationRelevantPayloadSubstitution of [
+      {
+        ...zeroSpan,
+        samplePeriodSeconds: zeroSpan.samplePeriodSeconds + 1e-9,
+      },
+      {
+        ...zeroSpan,
+        timingQualification: 'measured-calibrated' as const,
+      },
+      {
+        ...zeroSpan,
+        requested: {
+          ...zeroSpan.requested,
+          sweepTimeSeconds: zeroSpan.requested.sweepTimeSeconds + 1e-6,
+        },
+      },
+      {
+        ...zeroSpan,
+        requested: {
+          ...zeroSpan.requested,
+          sampleCount: zeroSpan.requested.sampleCount + 1,
+        },
+      },
+      {
+        ...zeroSpan,
+        requested: {
+          ...zeroSpan.requested,
+          controls: zeroSpan.requested.controls.model === 'receiver'
+            ? {
+              ...zeroSpan.requested.controls,
+              resolutionBandwidthKhz: 21 as const,
+            }
+            : zeroSpan.requested.controls,
+        },
+      },
+      {
+        ...zeroSpan,
+        actualRbwHz: zeroSpan.actualRbwHz! + 1,
+      },
+      {
+        ...zeroSpan,
+        actualAttenuationDb: zeroSpan.actualAttenuationDb! + 1,
+      },
+      {
+        ...zeroSpan,
+        resolutionBandwidthQualification: 'device-observed' as const,
+      },
+      {
+        ...zeroSpan,
+        elapsedMilliseconds: zeroSpan.elapsedMilliseconds + 1,
+      },
+      {
+        ...zeroSpan,
+        source: 'renode-executable-state' as const,
+      },
+      {
+        ...zeroSpan,
+        identity: {
+          ...identity,
+          port: { ...identity.port, path: 'simulator://same-key-different-provenance' },
+        },
+      },
+    ] satisfies readonly ZeroSpanCapture[]) {
+      expect(() => extractObservableFeatures(detection, {
+        sweeps,
+        zeroSpan: classificationRelevantPayloadSubstitution,
+        zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+        detectedPowerCaptureReceipt: receipt,
+      })).toThrow(/canonical payload digest.*cadence.*geometry|requested sample count/i);
+    }
+
+    const proxySamples = new Proxy([...zeroSpan.powerDbm], {
+      get(target, property, receiver) {
+        if (property === '17') return target[17]! + 6;
+        return Reflect.get(target, property, receiver);
+      },
+      getOwnPropertyDescriptor(target, property) {
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const proxyCaptures: readonly ZeroSpanCapture[] = [
+      new Proxy(zeroSpan, {
+        get(target, property, receiver) {
+          return Reflect.get(target, property, receiver);
+        },
+      }),
+      { ...zeroSpan, powerDbm: proxySamples },
+      {
+        ...zeroSpan,
+        requested: new Proxy(zeroSpan.requested, {
+          get(target, property, receiver) {
+            return Reflect.get(target, property, receiver);
+          },
+        }),
+      },
+    ];
+    for (const proxyCapture of proxyCaptures) {
+      expect(() => extractObservableFeatures(detection, {
+        sweeps,
+        zeroSpan: proxyCapture,
+        zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+        detectedPowerCaptureReceipt: receipt,
+      })).toThrow(/plain cloneable capture snapshot.*Proxy/i);
+    }
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: new Proxy(zeroSpan, {}),
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/plain cloneable capture snapshot.*Proxy/i);
+
+    class AdversarialPowerArray extends Array<number> {}
+    const arraySubclassCapture: ZeroSpanCapture = {
+      ...zeroSpan,
+      powerDbm: AdversarialPowerArray.from(zeroSpan.powerDbm),
+    };
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: arraySubclassCapture,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/Array subclass/i);
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: arraySubclassCapture,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/Array subclass/i);
+
+    const nonEnumerableRequiredField = { ...zeroSpan };
+    Object.defineProperty(nonEnumerableRequiredField, 'samplePeriodSeconds', {
+      value: zeroSpan.samplePeriodSeconds,
+      enumerable: false,
+      configurable: true,
+    });
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: nonEnumerableRequiredField,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/enumerable own data property/i);
+
+    const { powerDbm: _omittedPowerDbm, ...missingRequiredField } = zeroSpan;
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: missingRequiredField as ZeroSpanCapture,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/exact enumerable own typed fields.*powerDbm/i);
+
+    const nestedNonEnumerableRequested = { ...zeroSpan.requested };
+    Object.defineProperty(nestedNonEnumerableRequested, 'centerHz', {
+      value: zeroSpan.requested.centerHz,
+      enumerable: false,
+      configurable: true,
+    });
+    expect(() => extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan: { ...zeroSpan, requested: nestedNonEnumerableRequested },
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    })).toThrow(/enumerable own data property/i);
+
+    expect(() => createDetectedPowerCaptureReceipt({
+      activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: {
+        ...zeroSpan,
+        powerDbm: zeroSpan.powerDbm.map((value, index) =>
+          index === 0 ? Number.NaN : value),
+      },
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/finite samples.*powerDbm\[0\]/i);
+  });
+
+  it('rejects forged or internally inconsistent detected-power model observations', () => {
+    const scalarObservation = {
+      values: {},
+      limitations: ['sweep-time-frequency-skew'] as const,
+      occupiedStartHz: 97_990_000,
+      occupiedStopHz: 98_010_000,
+      centerHz: 98_000_000,
+      bandwidthHz: 20_000,
+      binWidthHz: 5_000,
+      sweepIds: Array.from({ length: 8 }, (_, index) => `policy-invariant-${index}`),
+      views: ['scalar-spectrum'] as const,
+    };
+    expect(() => inferPosterior({
+      ...scalarObservation,
+      values: { 'envelope.rangeDb': 20 },
+    })).toThrow(/not acquisition-policy qualified/i);
+    expect(() => knownModelSupportRank({
+      ...scalarObservation,
+      views: ['scalar-spectrum', 'detected-power-envelope'],
+    })).toThrow(/not acquisition-policy qualified/i);
+    expect(() => selectObservableDecision([], {
+      ...scalarObservation,
+      zeroSpanCaptureId: 'forged-capture',
+    }, 1)).toThrow(/not acquisition-policy qualified/i);
+    expect(() => knownModelSupportRank({
+      ...scalarObservation,
+      detectedPowerAcquisitionQualification:
+        'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+    })).toThrow(/contradicts its envelope evidence/i);
+    expect(() => knownModelSupportRank({
+      ...scalarObservation,
+      detectedPowerAcquisitionQualification:
+        'unreviewed-envelope-qualification' as 'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+    })).toThrow(/unknown acquisition qualification/i);
+    expect(() => knownModelSupportRank({
+      ...scalarObservation,
+      values: { 'envelope.logTransitionRateHz': Number.NaN },
+      views: ['scalar-spectrum', 'detected-power-envelope'],
+      zeroSpanCaptureId: 'non-finite-envelope',
+      detectedPowerAcquisitionQualification:
+        'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+    })).toThrow(/contradicts its envelope evidence/i);
   });
 
   it('rejects admitted sweeps with mismatched frequency grids or analyzer configuration', () => {
@@ -1801,8 +3256,9 @@ describe('signal analysis', () => {
   });
 
   it('marginalizes every cadence-rate feature when physical zero-span timing is unqualified', () => {
-    const sweeps = Array.from({ length: 3 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
+    const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
     const detection = emsoDetection('unqualified-time', 98_000_000, 20_000, sweeps);
+    const spectrumObservation = extractObservableFeatures(detection, { sweeps });
     const powerDbm = Array.from({ length: 450 }, (_, index) => index % 10 < 4 ? -45 : -90);
     const zeroSpan: ZeroSpanCapture = {
       kind: 'zero-span', id: 'unqualified-time-zs', sequence: 1, capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 50,
@@ -1813,7 +3269,28 @@ describe('signal analysis', () => {
       timingQualification: 'wall-clock-derived',
     };
 
-    const observation = extractObservableFeatures(detection, { sweeps, zeroSpan });
+    const legacyWithoutExplicitWindow = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+    });
+    expect(legacyWithoutExplicitWindow.zeroSpanCaptureId).toBeUndefined();
+    expect(legacyWithoutExplicitWindow.limitations)
+      .toContain('zero-span-capture-receipt-missing');
+    expect(legacyWithoutExplicitWindow.limitations)
+      .toContain('zero-span-acquisition-policy-unqualified');
+
+    const observation = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+        activeSignals: [detection],
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpan.frequencyHz,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+      }),
+    });
 
     expect(observation.views).toContain('detected-power-envelope');
     expect(observation.limitations).toContain('zero-span-timing-unqualified');
@@ -1823,33 +3300,89 @@ describe('signal analysis', () => {
   });
 
   it('discloses synthetic spectrum resolution and unavailable SignalLab RF RBW without inventing values', () => {
-    const sweeps = Array.from({ length: 3 }, (_, index) => ({
-      ...emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)),
+    const canonicalObservations = Array.from({ length: 9 }, (_, index) =>
+      synthesizeCanonicalObservation('cw-rbw-line', {
+        lookIndex: index,
+        actualRbwHz: 500_000 / (450 - 1),
+        noiseFloorDbm: -130,
+        snrDb: 55,
+        seed: 119,
+      }));
+    const sweeps: Sweep[] = canonicalObservations.slice(0, 8).map((observation, index) => ({
+      kind: 'spectrum',
+      id: `signal-lab-cw-${index + 1}`,
+      sequence: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 0, 1) + (index + 1) * 50).toISOString(),
+      elapsedMilliseconds: observation.sweepTimeSeconds * 1_000,
+      frequencyHz: observation.frequencyHz,
+      powerDbm: observation.powerDbm,
+      requested: {
+        kind: 'swept-spectrum',
+        startHz: observation.frequencyHz[0]!,
+        stopHz: observation.frequencyHz.at(-1)!,
+        points: observation.frequencyHz.length,
+        sweepTimeSeconds: observation.sweepTimeSeconds,
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
+      },
+      actualStartHz: observation.frequencyHz[0]!,
+      actualStopHz: observation.frequencyHz.at(-1)!,
+      actualRbwHz: observation.actualRbwHz,
       actualAttenuationDb: null,
-      resolutionBandwidthQualification: 'synthetic-grid-equivalent' as const,
-      attenuationQualification: 'not-applicable' as const,
-      source: 'signal-lab-synthetic' as const,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      attenuationQualification: 'not-applicable',
+      source: 'signal-lab-synthetic',
+      complete: true,
+      identity: signalLabIdentity,
     }));
     const detection = emsoDetection('signal-lab-unavailable-rbw', 98_000_000, 20_000, sweeps);
-    const tunedFrequencyHz = detection.peakHz + 10_000;
+    const spectrumObservation = extractObservableFeatures(detection, { sweeps });
+    const tunedFrequencyHz = Math.round(
+      detection.peakHz + sweeps[0]!.actualRbwHz / 10,
+    );
+    const canonicalZeroSpan = synthesizeCanonicalObservation('cw-rbw-line', {
+      lookIndex: 8,
+      zeroSpanFrequencyHz: tunedFrequencyHz,
+      actualRbwHz: 500_000 / (450 - 1),
+      noiseFloorDbm: -130,
+      snrDb: 55,
+      seed: 119,
+    });
     const zeroSpan: ZeroSpanCapture = {
-      kind: 'zero-span', id: 'signal-lab-unavailable-rbw-zs', sequence: 1,
-      capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 50,
-      frequencyHz: tunedFrequencyHz, samplePeriodSeconds: 1 / 9_000,
+      kind: 'zero-span', id: 'signal-lab-unavailable-rbw-zs', sequence: 9,
+      capturedAt: new Date(Date.UTC(2026, 0, 1) + 9 * 50).toISOString(),
+      elapsedMilliseconds: 50,
+      frequencyHz: tunedFrequencyHz,
+      samplePeriodSeconds: canonicalZeroSpan.zeroSpanSamplePeriodSeconds,
       targetDetectionId: detection.id,
-      powerDbm: Array.from({ length: 450 }, (_, index) => index % 10 < 4 ? -45 : -90),
-      requested: admittedSyntheticDetectedPower(tunedFrequencyHz, 450, 0.05),
+      powerDbm: canonicalZeroSpan.zeroSpanPowerDbm,
+      requested: admittedSyntheticDetectedPower(
+        tunedFrequencyHz,
+        canonicalZeroSpan.zeroSpanPowerDbm.length,
+        canonicalZeroSpan.zeroSpanPowerDbm.length
+          * canonicalZeroSpan.zeroSpanSamplePeriodSeconds,
+      ),
       actualRbwHz: null,
       actualAttenuationDb: null,
       resolutionBandwidthQualification: 'unavailable',
       attenuationQualification: 'not-applicable',
       source: 'signal-lab-synthetic',
       complete: true,
-      identity,
+      identity: signalLabIdentity,
       timingQualification: 'simulation-exact',
     };
 
-    const observation = extractObservableFeatures(detection, { sweeps, zeroSpan });
+    const observation = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+        activeSignals: [detection],
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpan.frequencyHz,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+      }),
+    });
 
     expect(observation.views).toContain('detected-power-envelope');
     expect(observation.limitations).toContain('synthetic-grid-equivalent-resolution');
@@ -1862,8 +3395,9 @@ describe('signal analysis', () => {
   });
 
   it('rejects otherwise matching zero-span evidence outside the calibrated acquisition geometry', () => {
-    const sweeps = Array.from({ length: 3 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
+    const sweeps = Array.from({ length: 8 }, (_, index) => emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) => Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
     const detection = emsoDetection('geometry-owner', 98_000_000, 20_000, sweeps);
+    const spectrumObservation = extractObservableFeatures(detection, { sweeps });
     const zeroSpan: ZeroSpanCapture = {
       kind: 'zero-span', id: 'unsupported-geometry', sequence: 1, capturedAt: '2026-01-01T00:00:00.000Z', elapsedMilliseconds: 10,
       frequencyHz: detection.peakHz, samplePeriodSeconds: 0.0001, targetDetectionId: detection.id,
@@ -1873,7 +3407,18 @@ describe('signal analysis', () => {
       timingQualification: 'simulation-exact',
     };
 
-    const observation = extractObservableFeatures(detection, { sweeps, zeroSpan });
+    const observation = extractObservableFeatures(detection, {
+      sweeps,
+      zeroSpan,
+      zeroSpanSpectrumSweepIds: spectrumObservation.sweepIds,
+      detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+        activeSignals: [detection],
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpan.frequencyHz,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+      }),
+    });
 
     expect(observation.zeroSpanCaptureId).toBeUndefined();
     expect(observation.limitations).toContain('zero-span-geometry-out-of-domain');
@@ -1932,18 +3477,128 @@ describe('signal analysis', () => {
     expect(accumulator.frames().some((frame) => frame.traceId === 2)).toBe(false);
   });
 
+  it('resets every accumulating trace when RBW value or qualification changes on the same frequency grid', () => {
+    const configuration: TraceBankConfiguration = [
+      { id: 1, mode: 'clear-write', averageCount: 4 },
+      { id: 2, mode: 'max-hold', averageCount: 4 },
+      { id: 3, mode: 'min-hold', averageCount: 4 },
+      { id: 4, mode: 'average', averageCount: 4 },
+    ];
+    const accumulator = new TraceAccumulator(configuration);
+    const first = makeSweep({
+      id: 'rbw-first',
+      actualRbwHz: 10_000,
+      resolutionBandwidthQualification: 'device-observed',
+      powerDbm: Array(20).fill(-40),
+    });
+    accumulator.update(first);
+    const changedValue = makeSweep({
+      id: 'rbw-value-changed',
+      actualRbwHz: 20_000,
+      resolutionBandwidthQualification: 'device-observed',
+      powerDbm: Array(20).fill(-90),
+    });
+    const afterValueChange = accumulator.update(changedValue);
+    for (const frame of afterValueChange) {
+      expect(frame).toMatchObject({
+        actualRbwHz: 20_000,
+        resolutionBandwidthQualification: 'device-observed',
+        sourceSweepId: 'rbw-value-changed',
+        sweepCount: 1,
+      });
+      expect(frame.powerDbm).toEqual(Array(20).fill(-90));
+    }
+
+    const changedQualification = makeSweep({
+      id: 'rbw-qualification-changed',
+      actualRbwHz: 20_000,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      powerDbm: Array(20).fill(-70),
+    });
+    const afterQualificationChange = accumulator.update(changedQualification);
+    for (const frame of afterQualificationChange) {
+      expect(frame).toMatchObject({
+        actualRbwHz: 20_000,
+        resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+        sourceSweepId: 'rbw-qualification-changed',
+        sweepCount: 1,
+      });
+      expect(frame.powerDbm).toEqual(Array(20).fill(-70));
+    }
+  });
+
+  it('preserves a frozen VIEW frame with its own RBW provenance and resets before resuming accumulation', () => {
+    const configuration: TraceBankConfiguration = [
+      { id: 1, mode: 'clear-write', averageCount: 4 },
+      { id: 2, mode: 'max-hold', averageCount: 4 },
+      { id: 3, mode: 'blank', averageCount: 4 },
+      { id: 4, mode: 'blank', averageCount: 4 },
+    ];
+    const accumulator = new TraceAccumulator(configuration);
+    const first = makeSweep({
+      id: 'view-rbw-first',
+      actualRbwHz: 10_000,
+      resolutionBandwidthQualification: 'device-observed',
+      powerDbm: Array.from({ length: 20 }, (_, index) => index === 10 ? -40 : -90),
+    });
+    accumulator.update(first);
+    accumulator.configure(configuration.map((trace) => trace.id === 2
+      ? { ...trace, mode: 'view' as const }
+      : trace));
+    const second = makeSweep({
+      id: 'view-rbw-second',
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      powerDbm: Array(20).fill(-20),
+    });
+    accumulator.update(second);
+    const frozen = accumulator.frames().find((frame) => frame.traceId === 2);
+    expect(frozen).toMatchObject({
+      mode: 'view',
+      actualRbwHz: 10_000,
+      resolutionBandwidthQualification: 'device-observed',
+      sourceSweepId: 'view-rbw-first',
+      sweepCount: 1,
+    });
+    const density = readMarkers([{
+      id: 1,
+      enabled: true,
+      traceId: 2,
+      mode: 'noise-density',
+      frequencyHz: first.frequencyHz[10]!,
+      tracking: 'fixed',
+    }], accumulator.frames())[0];
+    expect(density?.noiseDensityDbmHz).toBe(-80);
+
+    accumulator.configure(configuration);
+    const resumed = accumulator.update(makeSweep({
+      id: 'view-rbw-resumed',
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      powerDbm: Array(20).fill(-75),
+    })).find((frame) => frame.traceId === 2);
+    expect(resumed).toMatchObject({
+      mode: 'max-hold',
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+      sourceSweepId: 'view-rbw-resumed',
+      sweepCount: 1,
+    });
+    expect(resumed?.powerDbm).toEqual(Array(20).fill(-75));
+  });
+
   it('reads normal, delta, noise-density, peak-tracking markers and performs bounded peak searches', () => {
     const sweep = makeSweep();
-    const frame: TraceFrame = { traceId: 1, mode: 'clear-write', frequencyHz: sweep.frequencyHz, powerDbm: sweep.powerDbm, sweepCount: 1, sourceSweepId: sweep.id, evidence: 'host-derived' };
+    const frame: TraceFrame = { traceId: 1, mode: 'clear-write', frequencyHz: sweep.frequencyHz, powerDbm: sweep.powerDbm, actualRbwHz: sweep.actualRbwHz, sweepCount: 1, sourceSweepId: sweep.id, evidence: 'host-derived' };
     const markers: readonly MarkerConfiguration[] = [
       { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 900, tracking: 'peak' },
       { id: 2, enabled: true, traceId: 1, mode: 'delta', frequencyHz: 1_100, tracking: 'fixed', referenceMarkerId: 1 },
       { id: 3, enabled: true, traceId: 1, mode: 'noise-density', frequencyHz: 100, tracking: 'fixed' },
     ];
-    const readings = readMarkers(markers, [frame], 10_000);
+    const readings = readMarkers(markers, [frame]);
     expect(readings[0]).toMatchObject({ markerId: 1, frequencyHz: 1_000, powerDbm: -48, evidence: 'host-derived' });
     expect(readings[1]).toMatchObject({ deltaFrequencyHz: 100, deltaPowerDb: -6 });
-    expect(readings[2]?.noiseDensityDbmHz).toBe(-130);
+    expect(readings[2]?.noiseDensityDbmHz).toBe(-110);
     expect(searchMarker(frame, 500, 'peak', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toBe(1_000);
     expect(searchMarker(frame, 500, 'next-right', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toBe(1_000);
     expect(() => searchMarker(frame, 1_500, 'next-right', { minimumLevelDbm: -80, minimumExcursionDb: 3 })).toThrow(/No qualifying peak/i);
@@ -1983,13 +3638,14 @@ function agileSweep(sequence: number, activeFrequencyHz: number, spanHz: number)
   return emsoSweep(centerHz, spanHz, sequence, (frequency) => Math.abs(frequency - activeFrequencyHz) <= 300_000 ? -45 : -110);
 }
 
-function signalLabAgileSweep(sequence: number, activeFrequencyHz: number, spanHz: number): Sweep {
-  const sweep = agileSweep(sequence, activeFrequencyHz, spanHz);
+function signalLabCadenceContractSweep(sequence: number): Sweep {
+  const sweep = agileSweep(sequence, 2_402_000_000, 84_000_000);
   return {
     ...sweep,
-    id: `signal-lab-agile-${sequence}`,
+    id: `signal-lab-cadence-contract-${sequence}`,
     capturedAt: new Date(Date.UTC(2026, 0, 1) + sequence).toISOString(),
     elapsedMilliseconds: 1,
+    powerDbm: sweep.powerDbm.map(() => -110),
     requested: {
       ...sweep.requested,
       controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },

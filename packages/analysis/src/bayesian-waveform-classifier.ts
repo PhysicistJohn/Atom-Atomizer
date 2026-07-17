@@ -1,21 +1,52 @@
 import type { DetectedSignal, WaveformClassification } from '@tinysa/contracts';
-import { mixtureLogLikelihood, logSumExp, studentTModelTailProbability, type PosteriorCandidate } from './bayesian-predictive.js';
-import { extractObservableFeatures, type ObservableFeatureObservation, type WaveformEvidence } from './observable-features.js';
 import {
+  assertStudentTLikelihoodComponent,
+  mixtureLogLikelihood,
+  logSumExp,
+  studentTModelTailProbability,
+  type PosteriorCandidate,
+} from './bayesian-predictive.js';
+import {
+  DETECTED_POWER_ACQUISITION_QUALIFICATION,
+  extractObservableFeatures,
+  ObservableEvidenceUnavailableError,
+  type ObservableFeatureObservation,
+  type WaveformEvidence,
+} from './observable-features.js';
+import {
+  OBSERVABLE_EVIDENCE_CENSORING_POLICY,
+  OBSERVABLE_EVIDENCE_VIEWS,
+  OBSERVABLE_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY,
   OBSERVABLE_LEAF_CLASSES,
+  observableClassSupportsEvidenceView,
+  observableModelComponents,
+  observableModelView,
+  type ObservableClassifierModelAsset,
   type ObservableDecisionClass,
+  type ObservableEvidenceView,
   type ObservableLeafClass,
 } from './observable-classifier-model.js';
-import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable-v5.generated.js';
-import { BAYESIAN_OBSERVABLE_MODEL_SHA256 } from './models/bayesian-observable-v5.manifest.generated.js';
+import {
+  BAYESIAN_OBSERVABLE_MODEL,
+  BAYESIAN_OBSERVABLE_MODEL_CONTENT_SHA256 as EMBEDDED_MODEL_CONTENT_SHA256,
+} from './models/bayesian-observable.generated.js';
+import {
+  BAYESIAN_OBSERVABLE_MODEL_SHA256,
+  BAYESIAN_OBSERVABLE_MODEL_CONTENT_SHA256 as MANIFEST_MODEL_CONTENT_SHA256,
+} from './models/bayesian-observable.manifest.generated.js';
 import { observableRepresentativeIsInClassDomain } from './observable-hypothesis-domain.js';
 import {
-  OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE,
   OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY,
   SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY,
   SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA,
-  SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES,
+  SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULE_PAIRS,
 } from './observable-training-acquisition-geometry.js';
+
+const EXPECTED_TRAINING_RUNTIME_IDENTITY = Object.freeze({
+  policyId: 'exact-repository-node-version-v1',
+  nodeVersion: '22.23.1',
+  v8Version: '12.4.254.21-node.56',
+});
 
 export const BAYESIAN_WAVEFORM_MODEL = {
   id: BAYESIAN_OBSERVABLE_MODEL.id,
@@ -23,10 +54,14 @@ export const BAYESIAN_WAVEFORM_MODEL = {
   sourceCommit: BAYESIAN_OBSERVABLE_MODEL.sourceCommit,
   corpusSha256: BAYESIAN_OBSERVABLE_MODEL.corpusSha256,
   modelAssetSha256: BAYESIAN_OBSERVABLE_MODEL_SHA256,
+  attemptSamplingWorkerRuntimeSha256:
+    BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.attemptSamplingWorkerRuntimeSha256,
+  trainingRuntimeIdentity:
+    BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.trainingRuntimeIdentity,
   preprocessing: BAYESIAN_OBSERVABLE_MODEL.preprocessing,
   priorId: BAYESIAN_OBSERVABLE_MODEL.priorId,
   calibrationId: BAYESIAN_OBSERVABLE_MODEL.calibrationId,
-  decisionPolicyId: 'observable-open-set-decision-v9',
+  decisionPolicyId: 'observable-open-set-decision-v10',
   classCount: OBSERVABLE_LEAF_CLASSES.length,
   minimumSpectrumSweeps: 8,
   minimumKnownPosterior: 0.55,
@@ -61,7 +96,16 @@ export class BayesianWaveformClassifier {
     try {
       observation = extractObservableFeatures(detection, evidence);
     } catch (error) {
-      if (error instanceof Error && /at least one coherent|no active spectral/i.test(error.message)) return unavailableEvidence(detection, 'insufficient-evidence');
+      // Only observation-domain scarcity is an expected runtime unknown. A
+      // coherent-provenance failure can encode malformed, substituted, or
+      // contradictory evidence and must remain fail-closed instead of being
+      // laundered into an ordinary low-information classification.
+      if (error instanceof ObservableEvidenceUnavailableError
+        && (error.code === 'local-history-not-uniquely-replayable'
+          || error.code === 'insufficient-roi-bins'
+          || error.code === 'insufficient-spectrum-history')) {
+        return unavailableEvidence(detection, 'insufficient-evidence');
+      }
       throw error;
     }
     signal?.throwIfAborted();
@@ -112,6 +156,9 @@ export class BayesianWaveformClassifier {
         peakDbm: detection.peakDbm,
         sweepIds: observation.sweepIds,
         ...(observation.zeroSpanCaptureId ? { zeroSpanCaptureId: observation.zeroSpanCaptureId } : {}),
+        ...(observation.detectedPowerAcquisitionQualification ? {
+          detectedPowerAcquisitionQualification: observation.detectedPowerAcquisitionQualification,
+        } : {}),
         views: observation.views,
         features: { ...observation.values, 'model.maximumKnownSyntheticSupportRank': knownSupportRank },
         limitations: observation.limitations,
@@ -121,12 +168,27 @@ export class BayesianWaveformClassifier {
 }
 
 export function inferPosterior(observation: ObservableFeatureObservation): readonly PosteriorCandidate[] {
+  assertDetectedPowerEvidenceIsConsistent(observation);
   assertGeneratedModel();
+  const view = observableModelView(observation);
+  assertObservationMatchesModelView(observation, view);
   const values = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => {
-    const logLikelihood = mixtureLogLikelihood(observation.values, model.components);
-    const context = observableRepresentativeIsInClassDomain(model.id, observation)
-      ? frequencyContextLogEvidence(model.id, observation)
-      : Number.NEGATIVE_INFINITY;
+    // Domain and structural-view eligibility are logical support boundaries,
+    // not low likelihoods. Apply them before touching a component array so an
+    // intentionally empty class/view population is never evaluated.
+    if (!observableClassSupportsEvidenceView(model.id, view)
+      || !observableRepresentativeIsInClassDomain(model.id, observation)) {
+      return {
+        id: model.id,
+        logLikelihood: Number.NEGATIVE_INFINITY,
+        logJoint: Number.NEGATIVE_INFINITY,
+      };
+    }
+    const logLikelihood = mixtureLogLikelihood(
+      observation.values,
+      observableModelComponents(model, view),
+    );
+    const context = frequencyContextLogEvidence(model.id, observation);
     return { id: model.id, logLikelihood, logJoint: model.logPrior + context + logLikelihood };
   });
   const normalization = logSumExp(values.map((value) => value.logJoint));
@@ -138,41 +200,140 @@ export function inferPosterior(observation: ObservableFeatureObservation): reado
 }
 
 type DecisionObservation = Pick<ObservableFeatureObservation, 'centerHz' | 'bandwidthHz' | 'values'>
-  & Partial<Pick<ObservableFeatureObservation, 'occupiedStartHz' | 'occupiedStopHz'>>
-  & Partial<Pick<ObservableFeatureObservation, 'limitations'>>;
+  & Partial<Pick<ObservableFeatureObservation,
+    | 'occupiedStartHz'
+    | 'occupiedStopHz'
+    | 'limitations'
+    | 'views'
+    | 'zeroSpanCaptureId'
+    | 'detectedPowerAcquisitionQualification'>>;
 
 export function selectObservableDecision(
   candidates: readonly PosteriorCandidate[],
   observation?: DecisionObservation,
   knownSupportRank?: number,
 ): { label: ObservableDecisionClass | 'unknown'; probability: number } {
+  if (observation) assertDetectedPowerEvidenceIsConsistent(observation);
   const decision = selectDecision(candidates, observation, knownSupportRank ?? (observation ? knownModelSupportRank(observation) : 1));
   return { label: decision.label, probability: decision.probability };
 }
 
 export function knownModelSupportRank(
   observation: Pick<ObservableFeatureObservation, 'values'>
-    & Partial<Pick<ObservableFeatureObservation, 'occupiedStartHz' | 'occupiedStopHz' | 'centerHz' | 'bandwidthHz' | 'limitations'>>,
+    & Partial<Pick<ObservableFeatureObservation,
+      | 'occupiedStartHz'
+      | 'occupiedStopHz'
+      | 'centerHz'
+      | 'bandwidthHz'
+      | 'limitations'
+      | 'views'
+      | 'zeroSpanCaptureId'
+      | 'detectedPowerAcquisitionQualification'>>,
 ): number {
+  assertDetectedPowerEvidenceIsConsistent(observation);
   assertGeneratedModel();
-  const view = observation.values['envelope.logTransitionRateHz'] !== undefined
-    ? 'envelope-timed'
-    : Object.keys(observation.values).some((name) => name.startsWith('envelope.'))
-      ? 'envelope-untimed'
-      : 'spectrum-only';
+  const view = observableModelView(observation);
+  assertObservationMatchesModelView(observation, view);
   return Math.max(0, ...BAYESIAN_OBSERVABLE_MODEL.classModels
     // A tail score answers whether the measured shape is supported by an
     // eligible known hypothesis. Letting an ineligible, broad component win
     // this maximum defeats open-set rejection even though its posterior is
     // structurally zero (notably a stationary 2.4 GHz hard negative versus
     // the frequency-agile Bluetooth activity hypothesis).
-    .filter((model) => model.id !== 'unknown-signal' && observableRepresentativeIsInClassDomain(model.id, observation))
+    .filter((model) => model.id !== 'unknown-signal'
+      && observableClassSupportsEvidenceView(model.id, view)
+      && observableRepresentativeIsInClassDomain(model.id, observation))
     .map((model) => {
-      const rawTailScore = Math.max(...model.components.map((component) => studentTModelTailProbability(observation.values, component)));
+      const rawTailScore = Math.max(...observableModelComponents(model, view)
+        .map((component) => studentTModelTailProbability(observation.values, component)));
       const calibration = model.tailCalibrationScoresByView?.[view];
       if (!calibration?.length) throw new Error(`Known class ${model.id} has no ${view} synthetic support calibration`);
       return empiricalSyntheticSupportRank(rawTailScore, calibration);
     }));
+}
+
+type DetectedPowerQualificationObservation = Pick<ObservableFeatureObservation, 'values'>
+  & Partial<Pick<ObservableFeatureObservation,
+    | 'limitations'
+    | 'views'
+    | 'zeroSpanCaptureId'
+    | 'detectedPowerAcquisitionQualification'>>;
+
+/**
+ * Envelope dimensions were calibrated only for the production causal capture
+ * policy. These package-internal inference helpers reject inconsistent
+ * structures; the exported classifier remains the trust boundary that derives
+ * observations from provenance-bound measurement evidence.
+ */
+function assertDetectedPowerEvidenceIsConsistent(
+  observation: DetectedPowerQualificationObservation,
+): void {
+  const envelopeFeatureNames = Object.keys(observation.values)
+    .filter((name) => name.startsWith('envelope.'));
+  const hasEnvelopeFeatures = envelopeFeatureNames.length > 0;
+  const envelopeFeaturesAreFinite = envelopeFeatureNames.every((name) =>
+    Number.isFinite(observation.values[name]));
+  const hasEnvelopeView = observation.views?.includes('detected-power-envelope') ?? false;
+  const carriesCaptureId = observation.zeroSpanCaptureId !== undefined;
+  const hasValidCaptureId = typeof observation.zeroSpanCaptureId === 'string'
+    && observation.zeroSpanCaptureId.length > 0;
+  const qualified = observation.detectedPowerAcquisitionQualification
+    === DETECTED_POWER_ACQUISITION_QUALIFICATION;
+
+  if (observation.detectedPowerAcquisitionQualification !== undefined && !qualified) {
+    throw new Error('Observable detected-power evidence carries an unknown acquisition qualification');
+  }
+  if (!qualified) {
+    if (hasEnvelopeFeatures || hasEnvelopeView || carriesCaptureId) {
+      throw new Error('Observable detected-power evidence is not acquisition-policy qualified');
+    }
+    return;
+  }
+
+  const exactQualifiedViews = observation.views?.length === 2
+    && observation.views[0] === 'scalar-spectrum'
+    && observation.views[1] === 'detected-power-envelope';
+  const contradictoryLimitation = observation.limitations?.some((limitation) =>
+    limitation === 'zero-span-missing'
+    || limitation === 'zero-span-tune-mismatch'
+    || limitation === 'zero-span-provenance-mismatch'
+    || limitation === 'zero-span-spectrum-window-mismatch'
+    || limitation === 'zero-span-acquisition-policy-unqualified'
+    || limitation === 'zero-span-geometry-out-of-domain') ?? false;
+  if (!hasEnvelopeFeatures
+    || !envelopeFeaturesAreFinite
+    || !exactQualifiedViews
+    || !hasValidCaptureId
+    || contradictoryLimitation) {
+    throw new Error('Observable detected-power acquisition qualification contradicts its envelope evidence');
+  }
+}
+
+function assertObservationMatchesModelView(
+  observation: Pick<ObservableFeatureObservation, 'values'>,
+  view: ObservableEvidenceView,
+): void {
+  const observedDimensions = Object.keys(observation.values).sort();
+  if (observedDimensions.length === 0
+    || observedDimensions.some((dimension) => !Number.isFinite(observation.values[dimension]))) {
+    throw new Error(`Observable ${view} evidence must contain only finite fitted feature values`);
+  }
+  let expectedDimensions: readonly string[] | undefined;
+  for (const model of BAYESIAN_OBSERVABLE_MODEL.classModels) {
+    if (!observableClassSupportsEvidenceView(model.id, view)) continue;
+    for (const component of observableModelComponents(model, view)) {
+      if (expectedDimensions === undefined) expectedDimensions = component.dimensions;
+      if (component.dimensions.length !== expectedDimensions.length
+        || component.dimensions.some((dimension, index) => dimension !== expectedDimensions![index])) {
+        throw new Error(`Observable ${view} likelihood components do not share one exact feature order`);
+      }
+    }
+  }
+  if (!expectedDimensions
+    || observedDimensions.length !== expectedDimensions.length
+    || observedDimensions.some((dimension, index) => dimension !== expectedDimensions![index])) {
+    throw new Error(`Observable ${view} evidence does not match the fitted feature population`);
+  }
 }
 
 /**
@@ -342,14 +503,18 @@ export type { WaveformEvidence } from './observable-features.js';
 export { observableClassDefinitions } from './observable-classifier-model.js';
 
 function assertGeneratedModel(): void {
+  if (EMBEDDED_MODEL_CONTENT_SHA256 !== MANIFEST_MODEL_CONTENT_SHA256) {
+    throw new Error('Observable model and manifest content identities do not match');
+  }
   const expectedAcquisitionRegimeIds = [
     ...[12, 20, 35, 55, 80, 120].map((rbwDivisor) =>
-      `occupied-bandwidth-rbw-divisor:${rbwDivisor}/${OBSERVABLE_TRAINING_BASELINE_TEMPORAL_SCHEDULE.id}`),
-    ...SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES.map((temporalSchedule) =>
-      `${SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY.id}/${temporalSchedule.id}`),
+      `occupied-bandwidth-rbw-divisor:${rbwDivisor}/independent-production-branch-baselines-v1`),
+    ...SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULE_PAIRS.map((temporalSchedulePair) =>
+      `${SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY.id}/${temporalSchedulePair.id}`),
   ];
-  if (BAYESIAN_OBSERVABLE_MODEL.id !== 'bayesian-observable-equivalence-v5'
-    || BAYESIAN_OBSERVABLE_MODEL.sourceCommit !== 'c036e063bce6c6cc1515750a4d5614f1c2ab5df8'
+  const trainingMatrixContract = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix as ObservableClassifierModelAsset['trainingMatrix'];
+  if (BAYESIAN_OBSERVABLE_MODEL.id !== 'bayesian-observable-equivalence-v8'
+    || BAYESIAN_OBSERVABLE_MODEL.sourceCommit !== '03bc13eb9d5efcfc5f2f9c1792042f670b71ef9a'
     || BAYESIAN_OBSERVABLE_MODEL.corpusSha256 !== '38288f0e0437dbb687674308afecb4f30adadc9e93ea7abad3b8bf13d80ec918'
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.corpusSourceManifest?.artifacts.map((artifact) => artifact.path)) !== JSON.stringify([
       'package-lock.json',
@@ -361,17 +526,31 @@ function assertGeneratedModel(): void {
       'src/source-provenance.ts',
       'src/waveforms.ts',
     ])
-    || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v6'
+    || BAYESIAN_OBSERVABLE_MODEL.preprocessing !== 'scalar-observable-features-v7'
     || BAYESIAN_OBSERVABLE_MODEL.priorId !== 'engineering-design-class-weights-v1'
-    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-view-matched-stratified-online-attempt-min-support-rank-detector-conditioned-physical-uncalibrated-v10'
+    || BAYESIAN_OBSERVABLE_MODEL.calibrationId !== 'synthetic-independent-branch-view-matched-causal-acquisition-support-rank-detector-conditioned-physical-uncalibrated-v19'
+    || !/^[a-f0-9]{64}$/.test(
+      BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.attemptSamplingWorkerRuntimeSha256,
+    )
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.trainingRuntimeIdentity)
+      !== JSON.stringify(EXPECTED_TRAINING_RUNTIME_IDENTITY)
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.signalLabProductionAcquisitionRegime)
       !== JSON.stringify(SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA)
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerSynthesisFilterPolicy)
       !== JSON.stringify(OBSERVABLE_TRAINING_DETECTED_POWER_SYNTHESIS_FILTER_POLICY)
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.productionAcquisitionRegimeHighSnrSeedCoveragePolicy)
       !== JSON.stringify({
-        id: 'detector-conditioned-production-regime-presence-v1',
-        minimumDistinctSeedsPerHighSnrCell: 1,
+        id: 'branch-conditional-production-regime-presence-v2',
+        spectrumOnly: {
+          minimumDistinctObservationDomainEligibleSeedsPerHighSnrCell: 1,
+        },
+        qualifiedEnvelope: {
+          minimumDistinctPhysicalCaptureSeedsPerHighSnrCell: 1,
+          observationDomainEligibilityPolicy:
+            'pooled-by-scenario-and-view-after-causal-capture-v1',
+          outOfDomainCapturePolicy:
+            'honest-abstention-excluded-from-envelope-likelihood-v1',
+        },
         globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1',
       })
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.fittingAcquisitionRegimeIds)
@@ -379,17 +558,167 @@ function assertGeneratedModel(): void {
     || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAcquisitionRegimeIds)
       !== JSON.stringify(expectedAcquisitionRegimeIds)
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.classificationSweeps !== 8
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons?.standard !== 24
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons?.standard !== 32
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.observationOpportunityHorizons.fullBand2g4 !== 96
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.selectionPolicy !== 'online-first-ready-all-representatives-v3'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy !== 'equal-weight-per-first-ready-production-representative-v2'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.acquisitionBranchPolicy
+      !== 'independent-no-auto-spectrum-and-qualified-first-admitted-envelope-sessions-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.selectionPolicy
+      !== 'independent-consecutive-spectrum-and-strongest-first-admission-qualified-envelope-branches-v8'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy !== 'view-matched-spectrum-event-envelope-causal-attempt-weighting-v4'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeEligibilityPolicy !== 'observation-only-hypothesis-domain-v5'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit !== 'one-score-per-observation-domain-eligible-acquisition-attempt-v2'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy !== 'online-all-ready-representatives-v1'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy !== 'minimum-support-across-observation-domain-eligible-online-representatives-v3'
-    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy !== 'single-representative-rank-dominates-attempt-min-rank-v1'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.likelihoodPopulationPolicy
+      !== 'independent-branch-view-matched-runtime-event-populations-v3'
+    || JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.likelihoodComponentDecompositionPolicy)
+      !== JSON.stringify(OBSERVABLE_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY)
+    || JSON.stringify(trainingMatrixContract.frequencyAgileFixedTuneEnvelopeCensoringPolicy)
+      !== JSON.stringify(OBSERVABLE_EVIDENCE_CENSORING_POLICY)
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerAcquisitionQualification
+      !== DETECTED_POWER_ACQUISITION_QUALIFICATION
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit
+      !== 'one-independent-branch-acquisition-attempt-score-per-evidence-view-v4'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy
+      !== 'consecutive-spectrum-all-runtime-representatives-and-independent-qualified-envelope-sole-capture-v4'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy
+      !== 'consecutive-spectrum-branch-minimum-qualified-envelope-branch-sole-capture-v5'
+    || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy
+      !== 'spectrum-member-dominates-independent-branch-attempt-min-envelope-is-independent-sole-capture-v3'
     || BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation !== 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1') {
-    throw new Error('Observable model asset does not match the v5 production admission contract');
+    throw new Error('Observable model asset does not match the v8 production admission contract');
+  }
+  const samplingAudit = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.causalSamplingAudit;
+  const fittingCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.fittingCapturedEnvelopeCountsByScenario;
+  const fittingCountsByView =
+    BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.fittingRepresentativeCountsByScenarioByView;
+  const calibrationCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAttemptCountsByScenarioByView;
+  const censoredCaptureCounts =
+    trainingMatrixContract.censoredFrequencyAgileFixedTuneCaptureCountsByScenario;
+  const bluetoothScenarioIds = [
+    'bluetooth-classic-connected',
+    'bluetooth-le-advertising',
+  ] as const;
+  const envelopeViews = ['envelope-untimed', 'envelope-timed'] as const;
+  const censoredCaptureCountsAreValid = (
+    counts: Readonly<Record<string, number>> | undefined,
+  ): counts is Readonly<Record<string, number>> => counts !== undefined
+    && Object.keys(counts).length === bluetoothScenarioIds.length
+    && Object.values(counts).every((count) => Number.isSafeInteger(count) && count > 0)
+    && bluetoothScenarioIds.every((scenarioId) =>
+      Number.isSafeInteger(counts[scenarioId]) && counts[scenarioId]! > 0);
+  const partitionAuditIsValid = (
+    partition: NonNullable<typeof samplingAudit>['fitting'],
+  ): boolean => {
+    const spectrum = partition.runtimeBranches.consecutiveSpectrum;
+    const envelope = partition.runtimeBranches.qualifiedEnvelope;
+    return partition.pairedNuisanceCellCount > 0
+      && spectrum.detectedPowerCapturePolicyId === 'no-automatic-detected-power-capture-v1'
+      && envelope.detectedPowerCapturePolicyId
+        === 'capture-once-after-first-runtime-admitted-strongest-current-target-v2'
+      && spectrum.attemptCount === partition.pairedNuisanceCellCount
+      && envelope.attemptCount === partition.pairedNuisanceCellCount
+      && spectrum.physicalDetectedPowerCaptureCount === 0
+      && spectrum.postCaptureProvenanceUnavailableWindowCount === 0
+      && spectrum.detectedPowerCaptureSampleCount === 0
+      && spectrum.censoredFrequencyAgileFixedTuneCaptureCount === 0
+      && spectrum.sourceClockEventCount === spectrum.spectrumAcquisitionCount
+      && spectrum.onlineSpectrumRepresentativeCount
+        === spectrum.fitEligibleRepresentativeCount + spectrum.fitIneligibleRepresentativeCount
+      && spectrum.attemptsWithFitEligibleRepresentative
+        === partition.eligibleAttemptCountsByView['spectrum-only']
+      && spectrum.fitEligibleRepresentativeCount
+        === partition.fitEligibleRepresentativeCountsByView['spectrum-only']
+      && spectrum.attemptsWithAnyRepresentative <= spectrum.attemptCount
+      && spectrum.attemptsWithFitEligibleRepresentative
+        <= spectrum.attemptsWithAnyRepresentative
+      && spectrum.multiRepresentativeAttemptCount <= spectrum.attemptsWithAnyRepresentative
+      && envelope.postCaptureProvenanceUnavailableWindowCount === 0
+      && envelope.provenanceUnavailableWindowCount
+        === envelope.preCaptureProvenanceUnavailableWindowCount
+          + envelope.postCaptureProvenanceUnavailableWindowCount
+      && envelope.sourceClockEventCount
+        === envelope.spectrumAcquisitionCount + envelope.physicalDetectedPowerCaptureCount
+      && envelope.physicalDetectedPowerCaptureCount
+        === envelope.receiptVerifiedDetectedPowerCaptureSampleCount
+          + envelope.postCaptureProvenanceUnavailableWindowCount
+      && envelope.receiptVerifiedDetectedPowerCaptureSampleCount
+        === envelope.capturedEnvelopeRepresentativeCount
+          + envelope.censoredFrequencyAgileFixedTuneCaptureCount
+      && envelope.attemptsWithoutDetectedPowerCapture
+        === envelope.attemptCount - envelope.physicalDetectedPowerCaptureCount
+      && envelope.fitEligibleUntimedCapturedEnvelopeRepresentativeCount
+        <= envelope.capturedEnvelopeRepresentativeCount
+      && envelope.fitEligibleTimedCapturedEnvelopeRepresentativeCount
+        <= envelope.capturedEnvelopeRepresentativeCount
+      && envelope.fitEligibleUntimedCapturedEnvelopeRepresentativeCount
+        === partition.fitEligibleRepresentativeCountsByView['envelope-untimed']
+      && envelope.fitEligibleTimedCapturedEnvelopeRepresentativeCount
+        === partition.fitEligibleRepresentativeCountsByView['envelope-timed']
+      && envelope.fitEligibleUntimedCapturedEnvelopeRepresentativeCount
+        === partition.eligibleAttemptCountsByView['envelope-untimed']
+      && envelope.fitEligibleTimedCapturedEnvelopeRepresentativeCount
+        === partition.eligibleAttemptCountsByView['envelope-timed'];
+  };
+  const unavailableTotal = (
+    values: readonly { readonly unavailableWindowCount: number }[],
+  ) => values.reduce((sum, item) => sum + item.unavailableWindowCount, 0);
+  const traceHashes = samplingAudit?.attributedSourceClockTraceAudit;
+  if (!samplingAudit || samplingAudit.schemaVersion !== 3 || !fittingCounts
+    || !fittingCountsByView || !calibrationCounts
+    || !censoredCaptureCountsAreValid(censoredCaptureCounts?.fitting)
+    || !censoredCaptureCountsAreValid(censoredCaptureCounts?.tailCalibration)
+    || samplingAudit.provenanceUnavailableAttemptPolicy
+      !== 'branch-attributed-exact-attempt-cell-counts-v2'
+    || !partitionAuditIsValid(samplingAudit.fitting)
+    || !partitionAuditIsValid(samplingAudit.tailCalibration)
+    || Object.values(censoredCaptureCounts.fitting).reduce((sum, count) => sum + count, 0)
+      !== samplingAudit.fitting.runtimeBranches.qualifiedEnvelope
+        .censoredFrequencyAgileFixedTuneCaptureCount
+    || Object.values(censoredCaptureCounts.tailCalibration)
+      .reduce((sum, count) => sum + count, 0)
+      !== samplingAudit.tailCalibration.runtimeBranches.qualifiedEnvelope
+        .censoredFrequencyAgileFixedTuneCaptureCount
+    || Object.values(fittingCounts).reduce((sum, count) => sum + count, 0)
+      !== samplingAudit.fitting.runtimeBranches.qualifiedEnvelope
+        .fitEligibleTimedCapturedEnvelopeRepresentativeCount
+    || OBSERVABLE_EVIDENCE_VIEWS.some((view) =>
+      Object.values(fittingCountsByView).reduce((sum, counts) => sum + (counts[view] ?? 0), 0)
+        !== samplingAudit.fitting.fitEligibleRepresentativeCountsByView[view])
+    || OBSERVABLE_EVIDENCE_VIEWS.some((view) =>
+      Object.values(calibrationCounts).reduce((sum, counts) => sum + (counts[view] ?? 0), 0)
+        !== samplingAudit.tailCalibration.eligibleAttemptCountsByView[view])
+    || Object.values(fittingCountsByView).some((counts) => OBSERVABLE_EVIDENCE_VIEWS.some(
+      (view) => !Number.isSafeInteger(counts[view]) || counts[view] < 0))
+    || Object.values(calibrationCounts).some((counts) => OBSERVABLE_EVIDENCE_VIEWS.some(
+      (view) => !Number.isSafeInteger(counts[view]) || counts[view] < 0))
+    || bluetoothScenarioIds.some((scenarioId) =>
+      (fittingCounts[scenarioId] ?? 0) !== 0
+      || envelopeViews.some((view) =>
+        fittingCountsByView[scenarioId]?.[view] !== 0
+        || calibrationCounts[scenarioId]?.[view] !== 0))
+    || unavailableTotal(
+      samplingAudit.provenanceUnavailableAttempts.fitting.consecutiveSpectrum,
+    ) !== samplingAudit.fitting.runtimeBranches.consecutiveSpectrum
+      .provenanceUnavailableWindowCount
+    || unavailableTotal(
+      samplingAudit.provenanceUnavailableAttempts.fitting.qualifiedEnvelope,
+    ) !== samplingAudit.fitting.runtimeBranches.qualifiedEnvelope
+      .provenanceUnavailableWindowCount
+    || unavailableTotal(
+      samplingAudit.provenanceUnavailableAttempts.tailCalibration.consecutiveSpectrum,
+    ) !== samplingAudit.tailCalibration.runtimeBranches.consecutiveSpectrum
+      .provenanceUnavailableWindowCount
+    || unavailableTotal(
+      samplingAudit.provenanceUnavailableAttempts.tailCalibration.qualifiedEnvelope,
+    ) !== samplingAudit.tailCalibration.runtimeBranches.qualifiedEnvelope
+      .provenanceUnavailableWindowCount
+    || traceHashes?.serialization
+      !== 'canonical-attempt-id-branch-attributed-trace-and-capture-disposition-digest-v3'
+    || [
+      traceHashes.fitting.consecutiveSpectrumSha256,
+      traceHashes.fitting.qualifiedEnvelopeSha256,
+      traceHashes.tailCalibration.consecutiveSpectrumSha256,
+      traceHashes.tailCalibration.qualifiedEnvelopeSha256,
+    ].some((hash) => !/^[a-f0-9]{64}$/.test(hash))) {
+    throw new Error('Observable model causal sampling audit is absent or internally inconsistent');
   }
   const ids = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => model.id);
   if (ids.length !== OBSERVABLE_LEAF_CLASSES.length || new Set(ids).size !== ids.length || OBSERVABLE_LEAF_CLASSES.some((id) => !ids.includes(id))) {
@@ -397,21 +726,179 @@ function assertGeneratedModel(): void {
   }
   const priorTotal = BAYESIAN_OBSERVABLE_MODEL.classModels.reduce((sum, model) => sum + Math.exp(model.logPrior), 0);
   if (!Number.isFinite(priorTotal) || Math.abs(priorTotal - 1) > 1e-9) throw new Error('Observable model class priors are not normalized');
+  const expectedDimensionsByView: Partial<Record<ObservableEvidenceView, readonly string[]>> = {};
+  const componentIdentitiesByView: Record<ObservableEvidenceView, string[]> = {
+    'spectrum-only': [],
+    'envelope-untimed': [],
+    'envelope-timed': [],
+  };
+  const scenarioAssignmentsByView: Record<ObservableEvidenceView, string[]> = {
+    'spectrum-only': [],
+    'envelope-untimed': [],
+    'envelope-timed': [],
+  };
+  const expectedCsmaSourceScenarioIds = [
+    'unknown-802154',
+    'wifi-hr-dsss-11m',
+    'wifi-ofdm-20m',
+    'wifi-ofdm-40m',
+    'wifi-ofdm-80m',
+  ];
+  const decomposedSourceScenarioIdsByView: Record<ObservableEvidenceView, string[]> = {
+    'spectrum-only': [],
+    'envelope-untimed': [],
+    'envelope-timed': [],
+  };
   for (const model of BAYESIAN_OBSERVABLE_MODEL.classModels) {
-    const weightTotal = model.components.reduce((sum, component) => sum + Math.exp(component.logWeight), 0);
-    if (!model.components.length || !Number.isFinite(weightTotal) || Math.abs(weightTotal - 1) > 1e-9) throw new Error(`Observable model mixture ${model.id} is not normalized`);
-    if (model.components.some((component) => component.dimensions.length !== BAYESIAN_OBSERVABLE_MODEL.dimensions.length
-      || component.dimensions.some((dimension, index) => dimension !== BAYESIAN_OBSERVABLE_MODEL.dimensions[index]))) {
-      throw new Error(`Observable model mixture ${model.id} does not use the pinned feature order`);
+    if (model.components !== undefined) {
+      throw new Error(`Observable model ${model.id} retains a forbidden legacy single-population mixture`);
     }
-    if (model.id !== 'unknown-signal') {
-      const calibration = model.tailCalibrationScoresByView;
-      for (const view of ['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const) {
-        const scores = calibration?.[view];
-        if (!scores?.length || scores.some((value, index) => !Number.isFinite(value) || value < 0 || value > 1 || (index > 0 && value < scores[index - 1]!))) {
+    for (const view of OBSERVABLE_EVIDENCE_VIEWS) {
+      const components = observableModelComponents(model, view);
+      const supportsView = observableClassSupportsEvidenceView(model.id, view);
+      const calibrationScores = model.tailCalibrationScoresByView?.[view];
+      if (!supportsView) {
+        if (components.length !== 0 || calibrationScores === undefined
+          || calibrationScores.length !== 0) {
+          throw new Error(
+            `Observable model ${model.id} ${view} must use exact empty likelihood and calibration arrays`,
+          );
+        }
+        continue;
+      }
+      for (const component of components) {
+        assertStudentTLikelihoodComponent(component);
+      }
+      const weightTotal = components.reduce((sum, component) => sum + Math.exp(component.logWeight), 0);
+      if (!Number.isFinite(weightTotal) || Math.abs(weightTotal - 1) > 1e-9) {
+        throw new Error(`Observable model ${model.id} ${view} mixture is not normalized`);
+      }
+      const expectedDimensions = expectedDimensionsByView[view] ?? components[0]!.dimensions;
+      expectedDimensionsByView[view] = expectedDimensions;
+      if (components.some((component) => component.dimensions.length !== expectedDimensions.length
+        || component.dimensions.some((dimension, index) => dimension !== expectedDimensions[index]))) {
+        throw new Error(`Observable model ${model.id} ${view} mixture does not use the exact view feature order`);
+      }
+      const componentsBySourceScenario = new Map<string, typeof components>();
+      for (const component of components) {
+        if (component.sourceScenarioId === undefined || component.modeId === undefined
+          || component.fitSampleCount === undefined) {
+          throw new Error(`Observable model ${model.id} ${view} component ${component.id} lacks explicit fitting ownership`);
+        }
+        const owned = componentsBySourceScenario.get(component.sourceScenarioId) ?? [];
+        componentsBySourceScenario.set(component.sourceScenarioId, [...owned, component]);
+      }
+      for (const [sourceScenarioId, sourceComponents] of componentsBySourceScenario) {
+        const expectedFitSampleCount = fittingCountsByView[sourceScenarioId]?.[view];
+        const observedFitSampleCount = sourceComponents.reduce(
+          (sum, component) => sum + component.fitSampleCount!,
+          0,
+        );
+        if (!Number.isSafeInteger(expectedFitSampleCount) || expectedFitSampleCount! <= 0
+          || observedFitSampleCount !== expectedFitSampleCount) {
+          throw new Error(`Observable model ${model.id} ${view} source scenario ${sourceScenarioId} does not own its declared fitting representatives`);
+        }
+        const isExpectedCsmaSource = expectedCsmaSourceScenarioIds.includes(sourceScenarioId);
+        if (!isExpectedCsmaSource && sourceComponents.length === 1) {
+          const [component] = sourceComponents;
+          if (component!.id !== sourceScenarioId || component!.modeId !== 'single-population') {
+            throw new Error(`Observable model ${model.id} ${view} ordinary source scenario ${sourceScenarioId} has an invalid component identity`);
+          }
+        } else if (isExpectedCsmaSource
+          && sourceComponents.length === OBSERVABLE_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.csmaModeCount) {
+          decomposedSourceScenarioIdsByView[view].push(sourceScenarioId);
+          const sharedScale = JSON.stringify(sourceComponents[0]!.scale);
+          for (let index = 0; index < sourceComponents.length; index += 1) {
+            const modeId = `csma-activity-mode-${index + 1}-of-${sourceComponents.length}`;
+            const component = sourceComponents[index]!;
+            if (component.id !== `${sourceScenarioId}/${modeId}` || component.modeId !== modeId
+              || JSON.stringify(component.scale) !== sharedScale
+              || component.fitSampleCount!
+                < OBSERVABLE_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.minimumModeFitSampleCount) {
+              throw new Error(`Observable model ${model.id} ${view} source scenario ${sourceScenarioId} has an invalid shared-covariance CSMA decomposition`);
+            }
+          }
+          const partitionDimensionIndex = sourceComponents[0]!.dimensions.indexOf(
+            OBSERVABLE_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.csmaPartitionFeature,
+          );
+          const partitionCenters = sourceComponents.map((component) =>
+            component.location[partitionDimensionIndex]);
+          if (partitionDimensionIndex < 0 || partitionCenters.some((center, index) =>
+            !Number.isFinite(center) || (index > 0 && center! <= partitionCenters[index - 1]!))) {
+            throw new Error(`Observable model ${model.id} ${view} source scenario ${sourceScenarioId} CSMA centers are not strictly increasing`);
+          }
+        } else {
+          throw new Error(`Observable model ${model.id} ${view} source scenario ${sourceScenarioId} has an unsupported component count`);
+        }
+        for (const component of sourceComponents) {
+          const expectedWeight = (1 / componentsBySourceScenario.size)
+            * (component.fitSampleCount! / observedFitSampleCount);
+          if (Math.abs(Math.exp(component.logWeight) - expectedWeight) > 1e-9) {
+            throw new Error(`Observable model ${model.id} ${view} component ${component.id} has an invalid source-owned mixture weight`);
+          }
+        }
+      }
+      componentIdentitiesByView[view].push(...components.map((component) => `${model.id}:${component.id}`));
+      scenarioAssignmentsByView[view].push(
+        ...[...componentsBySourceScenario.keys()].map((sourceScenarioId) => `${model.id}:${sourceScenarioId}`),
+      );
+      if (model.id !== 'unknown-signal') {
+        const expectedScoreCount = [...componentsBySourceScenario.keys()].reduce(
+          (sum, sourceScenarioId) => sum + (calibrationCounts[sourceScenarioId]?.[view] ?? 0),
+          0,
+        );
+        if (!calibrationScores?.length || calibrationScores.some((value, index) =>
+          !Number.isFinite(value) || value < 0 || value > 1
+          || (index > 0 && value < calibrationScores[index - 1]!))) {
           throw new Error(`Observable model ${view} support calibration ${model.id} is invalid`);
+        }
+        if (calibrationScores.length !== expectedScoreCount) {
+          throw new Error(`Observable model ${view} support calibration ${model.id} does not match its causal attempt count`);
         }
       }
     }
+  }
+  if (OBSERVABLE_EVIDENCE_VIEWS.some((view) =>
+    JSON.stringify([...decomposedSourceScenarioIdsByView[view]].sort())
+      !== JSON.stringify(expectedCsmaSourceScenarioIds))) {
+    throw new Error('Observable view-matched likelihoods do not decompose the exact five CSMA source scenarios');
+  }
+  const expectedComponentCounts: Readonly<Record<ObservableEvidenceView, number>> = {
+    'spectrum-only': 28,
+    'envelope-untimed': 26,
+    'envelope-timed': 26,
+  };
+  const expectedEnvelopeComponentIdentities = componentIdentitiesByView['spectrum-only']
+    .filter((identity) => !identity.startsWith('bluetooth-like:'));
+  if (OBSERVABLE_EVIDENCE_VIEWS.some((view) =>
+    componentIdentitiesByView[view].length !== expectedComponentCounts[view])
+    || (['envelope-untimed', 'envelope-timed'] as const).some((view) =>
+      componentIdentitiesByView[view].length !== expectedEnvelopeComponentIdentities.length
+      || componentIdentitiesByView[view].some(
+        (identity, index) => identity !== expectedEnvelopeComponentIdentities[index],
+      ))) {
+    throw new Error('Observable view-matched likelihoods do not have the exact 28/26/26 component identities');
+  }
+  const expectedScenarioCounts: Readonly<Record<ObservableEvidenceView, number>> = {
+    'spectrum-only': 18,
+    'envelope-untimed': 16,
+    'envelope-timed': 16,
+  };
+  const expectedEnvelopeAssignments = scenarioAssignmentsByView['spectrum-only']
+    .filter((assignment) => !assignment.startsWith('bluetooth-like:'));
+  if (OBSERVABLE_EVIDENCE_VIEWS.some((view) =>
+    scenarioAssignmentsByView[view].length !== expectedScenarioCounts[view])
+    || (['envelope-untimed', 'envelope-timed'] as const).some((view) =>
+      scenarioAssignmentsByView[view].length !== expectedEnvelopeAssignments.length
+      || scenarioAssignmentsByView[view].some(
+        (assignment, index) => assignment !== expectedEnvelopeAssignments[index],
+      ))) {
+    throw new Error('Observable view-matched likelihoods do not have the exact 18/16/16 scenario assignments');
+  }
+  const dimensionUnion = [...new Set(OBSERVABLE_EVIDENCE_VIEWS.flatMap((view) =>
+    expectedDimensionsByView[view] ?? []))].sort();
+  if (dimensionUnion.length !== BAYESIAN_OBSERVABLE_MODEL.dimensions.length
+    || dimensionUnion.some((dimension, index) => dimension !== BAYESIAN_OBSERVABLE_MODEL.dimensions[index])) {
+    throw new Error('Observable model global feature manifest does not equal its view-specific dimension union');
   }
 }

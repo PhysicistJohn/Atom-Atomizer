@@ -1,5 +1,12 @@
 export interface StudentTLikelihoodComponent {
+  /** Unique likelihood-component identity within its class/view mixture. */
   id: string;
+  /** Canonical corpus scenario that owns this component; legacy one-component models use id. */
+  sourceScenarioId?: string;
+  /** Deterministic within-scenario population label, not a waveform or protocol claim. */
+  modeId?: string;
+  /** Number of fitting representatives assigned to this component. */
+  fitSampleCount?: number;
   logWeight: number;
   degreesOfFreedom: number;
   dimensions: readonly string[];
@@ -10,7 +17,12 @@ export interface StudentTLikelihoodComponent {
 export interface ClassLikelihoodModel {
   id: string;
   logPrior: number;
-  components: readonly StudentTLikelihoodComponent[];
+  /** Legacy single-population likelihood. New observable models fit each runtime evidence view separately. */
+  components?: readonly StudentTLikelihoodComponent[];
+  componentsByView?: Readonly<Record<
+    'spectrum-only' | 'envelope-untimed' | 'envelope-timed',
+    readonly StudentTLikelihoodComponent[]
+  >>;
   /** Sorted fixed-model radial scores from generator-separated, view-matched calibration examples. */
   tailCalibrationScoresByView?: Readonly<Record<'spectrum-only' | 'envelope-untimed' | 'envelope-timed', readonly number[]>>;
 }
@@ -23,6 +35,19 @@ export interface PosteriorCandidate {
 }
 
 const validatedComponents = new WeakSet<object>();
+
+/**
+ * Validate a fitted component independently of inference caches.
+ *
+ * Runtime model admission calls this for every generated component so a
+ * malformed asset is rejected while the classifier capability is constructed,
+ * before any classify request can observe a late numerical failure.
+ */
+export function assertStudentTLikelihoodComponent(
+  component: StudentTLikelihoodComponent,
+): void {
+  assertValidComponent(component);
+}
 
 /** Multivariate Student-t log likelihood under a fixed fitted component, with exact marginalization of absent dimensions. */
 export function studentTLogDensity(observation: Readonly<Record<string, number>>, component: StudentTLikelihoodComponent): number {
@@ -76,6 +101,9 @@ export function mixtureLogLikelihood(observation: Readonly<Record<string, number
 export function posteriorCandidates(observation: Readonly<Record<string, number>>, models: readonly ClassLikelihoodModel[]): readonly PosteriorCandidate[] {
   if (models.length < 2) throw new Error('Bayesian classification requires at least two class models');
   const values = models.map((model) => {
+    if (!model.components) {
+      throw new Error(`Generic posteriorCandidates requires a single-population component set for ${model.id}`);
+    }
     const logLikelihood = mixtureLogLikelihood(observation, model.components);
     return { id: model.id, logLikelihood, logJoint: model.logPrior + logLikelihood };
   });
@@ -190,7 +218,18 @@ function solveLowerTriangular(matrix: readonly (readonly number[])[], right: rea
 
 function validateComponent(component: StudentTLikelihoodComponent): void {
   if (validatedComponents.has(component)) return;
+  assertValidComponent(component);
+  validatedComponents.add(component);
+}
+
+function assertValidComponent(component: StudentTLikelihoodComponent): void {
   if (!component.id || !Number.isFinite(component.logWeight)) throw new Error('Predictive component identity/weight is invalid');
+  if (component.sourceScenarioId !== undefined && component.sourceScenarioId.trim().length === 0) throw new Error('Predictive component source scenario identity is invalid');
+  if (component.modeId !== undefined && component.modeId.trim().length === 0) throw new Error('Predictive component mode identity is invalid');
+  if (component.fitSampleCount !== undefined
+    && (!Number.isSafeInteger(component.fitSampleCount) || component.fitSampleCount <= 0)) {
+    throw new Error('Predictive component fit sample count is invalid');
+  }
   if (!Number.isFinite(component.degreesOfFreedom) || component.degreesOfFreedom <= 0) throw new Error('Predictive degrees of freedom must be positive');
   if (!component.dimensions.length || component.location.length !== component.dimensions.length || component.scale.length !== component.dimensions.length) throw new Error('Predictive component dimensions are inconsistent');
   if (new Set(component.dimensions).size !== component.dimensions.length) throw new Error('Predictive component contains duplicate dimensions');
@@ -200,5 +239,4 @@ function validateComponent(component: StudentTLikelihoodComponent): void {
     for (let column = 0; column < component.scale.length; column++) if (Math.abs(component.scale[row]![column]! - component.scale[column]![row]!) > 1e-8) throw new Error('Predictive component scale must be symmetric');
   }
   choleskyDecomposition(component.scale);
-  validatedComponents.add(component);
 }

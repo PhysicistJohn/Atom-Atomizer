@@ -1,9 +1,93 @@
 import type { DetectedSignal, Sweep } from '@tinysa/contracts';
 
+export const REGULAR_SPECTRAL_COMPONENT_MODEL_ID =
+  'regular-spectral-component-lineage-v2' as const;
+
+export function regularSpectralComponentLineageId(ordinal: number): string {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
+    throw new Error('Regular spectral-component lineage ordinal must be a positive safe integer');
+  }
+  return `regular-spectral-component-lineage-${String(ordinal).padStart(4, '0')}`;
+}
+
 export interface RegularSpectralComponentAssociation {
   candidateIndices: readonly number[];
   startHz: number;
   stopHz: number;
+  /** Largest directly resolved step supported by this exact current detector population. */
+  spacingHz: number;
+  /** One exact current member center; other members lie on integer lattice steps from it. */
+  latticeAnchorHz: number;
+  /** Exact current detector-component centers, sorted by frequency. */
+  memberCentersHz: readonly number[];
+}
+
+export interface RegularSpectralComponentLatticeRegion {
+  startHz: number;
+  stopHz: number;
+  spacingHz: number;
+  latticeAnchorHz: number;
+  /** Exact current-look detector-component centers; track IDs may differ across looks. */
+  memberCentersHz: readonly number[];
+}
+
+/**
+ * A regular-line association is non-identity regional morphology. Its lineage
+ * may therefore survive local track replacement or an intermittently missed
+ * edge line, but only when both looks support the same replayable frequency
+ * lattice, overlapping regional support, and at least one resolved component
+ * center in common. Track IDs need not survive that shared frequency support.
+ */
+export function regularSpectralComponentLineagesAreCompatible(
+  left: RegularSpectralComponentLatticeRegion,
+  right: RegularSpectralComponentLatticeRegion,
+  rbwHz: number,
+  binWidthHz: number,
+): boolean {
+  if (![left.startHz, left.stopHz, left.spacingHz, left.latticeAnchorHz,
+    right.startHz, right.stopHz, right.spacingHz, right.latticeAnchorHz,
+    rbwHz, binWidthHz].every(Number.isFinite)
+    || !left.memberCentersHz.length
+    || !right.memberCentersHz.length
+    || left.memberCentersHz.some((value) => !Number.isFinite(value))
+    || right.memberCentersHz.some((value) => !Number.isFinite(value))
+    || left.stopHz <= left.startHz
+    || right.stopHz <= right.startHz
+    || left.spacingHz <= 0
+    || right.spacingHz <= 0
+    || rbwHz <= 0
+    || binWidthHz <= 0) return false;
+  const fundamentalSpacingHz = Math.min(left.spacingHz, right.spacingHz);
+  const largerSpacingHz = Math.max(left.spacingHz, right.spacingHz);
+  const spacingToleranceHz = Math.max(
+    binWidthHz * 2,
+    rbwHz * 0.5,
+    fundamentalSpacingHz * 0.08,
+  );
+  const spacingRatio = Math.round(largerSpacingHz / fundamentalSpacingHz);
+  if (spacingRatio < 1
+    || spacingRatio > 2
+    || Math.abs(largerSpacingHz - spacingRatio * fundamentalSpacingHz)
+      > spacingToleranceHz) return false;
+  const anchorSteps = Math.round(
+    (right.latticeAnchorHz - left.latticeAnchorHz) / fundamentalSpacingHz,
+  );
+  if (Math.abs(
+    right.latticeAnchorHz - left.latticeAnchorHz
+      - anchorSteps * fundamentalSpacingHz,
+  ) > spacingToleranceHz) return false;
+  const sharedMemberToleranceHz = Math.max(binWidthHz * 2, rbwHz * 0.5);
+  if (!left.memberCentersHz.some((leftCenterHz) =>
+    right.memberCentersHz.some((rightCenterHz) =>
+      Math.abs(leftCenterHz - rightCenterHz) <= sharedMemberToleranceHz))) {
+    return false;
+  }
+  // Require observed support to overlap. Merely lying on the same infinite
+  // lattice is not enough: two nearby independent combs can share spacing and
+  // phase. Real outer-line churn retains at least one resolved component (and
+  // therefore a non-zero hull overlap); a wholly disjoint jump is ambiguous
+  // and must allocate a new non-identity lineage.
+  return Math.min(left.stopHz, right.stopHz) > Math.max(left.startHz, right.startHz);
 }
 
 /** Pure regular-line association shared by tracking and provenance revalidation. */
@@ -31,7 +115,10 @@ export function regularSpectralComponentAssociations(
     indices: readonly number[];
     spanHz: number;
     summedPeakDbm: number;
+    spacingHz: number;
+    latticeAnchorHz: number;
   }>();
+  const evaluatedMemberSpacing = new Set<string>();
   for (let leftIndex = 0; leftIndex < centers.length - 1; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < centers.length; rightIndex++) {
       const left = centers[leftIndex]!;
@@ -52,34 +139,65 @@ export function regularSpectralComponentAssociations(
           if (!existing || center.peakDbm > existing.peakDbm) byStep.set(step, center);
         }
         const selected = [...byStep.entries()].sort((a, b) => a[0] - b[0]);
-        if (selected.length < 3) continue;
-        const steps = selected.map(([step]) => step);
-        if (steps.slice(1).some((step, index) => step - steps[index]! > 2)) continue;
-        const selectedCenters = selected.map(([, center]) => center);
-        const firstFrequencyHz = selectedCenters[0]!.frequencyHz;
-        const lastFrequencyHz = selectedCenters.at(-1)!.frequencyHz;
-        const spanHz = lastFrequencyHz - firstFrequencyHz;
-        const minimumSpanIntervals = selected.length === 3 ? 1.8 : 2.8;
-        if (spanHz < spacingHz * minimumSpanIntervals || spanHz > maximumClusterSpanHz) continue;
-        const selectedIndices = new Set(selectedCenters.map((center) => center.candidateIndex));
-        if (centers.some((center) => center.frequencyHz > firstFrequencyHz
-          && center.frequencyHz < lastFrequencyHz
-          && !selectedIndices.has(center.candidateIndex))) continue;
-        const summedPeakMilliwatts = selectedCenters.reduce(
-          (sum, center) => sum + dbmToMilliwatts(center.peakDbm),
-          0,
-        );
-        const hypothesis = {
-          indices: [...selectedIndices].sort((a, b) => a - b),
-          spanHz,
-          summedPeakDbm: milliwattsToDbm(summedPeakMilliwatts),
-        };
-        const key = hypothesis.indices.join(',');
-        const existing = hypothesisByMembers.get(key);
-        if (!existing
-          || hypothesis.summedPeakDbm > existing.summedPeakDbm
-          || (hypothesis.summedPeakDbm === existing.summedPeakDbm && hypothesis.spanHz < existing.spanHz)) {
-          hypothesisByMembers.set(key, hypothesis);
+        // A shared infinite lattice does not make disjoint combs one region.
+        // Partition the current hits at gaps larger than one allowed missing
+        // line so a remote same-spacing run cannot poison a valid local run.
+        for (const run of maximalRegularStepRuns(selected)) {
+          if (run.length < 3) continue;
+          // This hypothesis was seeded by `left` and `right`; only the one
+          // maximal run containing both seeds belongs to it. Other runs are
+          // evaluated by their own local seed pairs, avoiding both cross-run
+          // attribution and a combinatorial duplicate expansion.
+          if (!run.some(([, center]) => center.candidateIndex === left.candidateIndex)
+            || !run.some(([, center]) =>
+              center.candidateIndex === right.candidateIndex)) continue;
+          const runSteps = run.map(([step]) => step);
+          const commonStepDivisor = runSteps.slice(1).reduce(
+            (divisor, step, index) =>
+              greatestCommonDivisor(divisor, step - runSteps[index]!),
+            0,
+          );
+          if (commonStepDivisor > 1) continue;
+          const selectedCenters = run.map(([, center]) => center);
+          const firstFrequencyHz = selectedCenters[0]!.frequencyHz;
+          const lastFrequencyHz = selectedCenters.at(-1)!.frequencyHz;
+          const spanHz = lastFrequencyHz - firstFrequencyHz;
+          const minimumSpanIntervals = run.length === 3 ? 1.8 : 2.8;
+          if (spanHz < spacingHz * minimumSpanIntervals || spanHz > maximumClusterSpanHz) continue;
+          const selectedIndices = new Set(
+            selectedCenters.map((center) => center.candidateIndex),
+          );
+          const sortedIndices = [...selectedIndices].sort((a, b) => a - b);
+          const memberSpacingKey = `${sortedIndices.join(',')}@${spacingHz}`;
+          if (evaluatedMemberSpacing.has(memberSpacingKey)) continue;
+          evaluatedMemberSpacing.add(memberSpacingKey);
+          if (centers.some((center) => center.frequencyHz > firstFrequencyHz
+            && center.frequencyHz < lastFrequencyHz
+            && !selectedIndices.has(center.candidateIndex))) continue;
+          const summedPeakMilliwatts = selectedCenters.reduce(
+            (sum, center) => sum + dbmToMilliwatts(center.peakDbm),
+            0,
+          );
+          const hypothesis = {
+            indices: sortedIndices,
+            spanHz,
+            summedPeakDbm: milliwattsToDbm(summedPeakMilliwatts),
+            spacingHz,
+            latticeAnchorHz: firstFrequencyHz,
+          };
+          const key = hypothesis.indices.join(',');
+          const existing = hypothesisByMembers.get(key);
+          if (!existing
+            || hypothesis.summedPeakDbm > existing.summedPeakDbm
+            || (hypothesis.summedPeakDbm === existing.summedPeakDbm
+              && (hypothesis.spanHz < existing.spanHz
+                || (hypothesis.spanHz === existing.spanHz
+                  // The larger spacing is the directly resolved lattice.
+                  // A smaller divisor with empty intermediate steps is an
+                  // observationally possible fundamental, not a resolved one.
+                  && hypothesis.spacingHz > existing.spacingHz)))) {
+            hypothesisByMembers.set(key, hypothesis);
+          }
         }
       }
     }
@@ -106,8 +224,37 @@ export function regularSpectralComponentAssociations(
       candidateIndices: hypothesis.indices,
       startHz: Math.min(...selectedCandidates.map((candidate) => candidate.startHz)),
       stopHz: Math.max(...selectedCandidates.map((candidate) => candidate.stopHz)),
+      spacingHz: hypothesis.spacingHz,
+      latticeAnchorHz: hypothesis.latticeAnchorHz,
+      memberCentersHz: selectedCandidates
+        .map((candidate) => (candidate.startHz + candidate.stopHz) / 2)
+        .sort((left, right) => left - right),
     };
   });
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.abs(Math.trunc(left));
+  let b = Math.abs(Math.trunc(right));
+  while (b !== 0) {
+    [a, b] = [b, a % b];
+  }
+  return a;
+}
+
+function maximalRegularStepRuns<T>(
+  selected: readonly (readonly [number, T])[],
+): readonly (readonly (readonly [number, T])[])[] {
+  const runs: Array<Array<readonly [number, T]>> = [];
+  for (const item of selected) {
+    const current = runs.at(-1);
+    if (!current || item[0] - current.at(-1)![0] > 2) {
+      runs.push([item]);
+    } else {
+      current.push(item);
+    }
+  }
+  return runs;
 }
 
 function dbmToMilliwatts(value: number): number { return 10 ** (value / 10); }

@@ -5,7 +5,7 @@ import type {
 } from '@tinysa/contracts';
 import { measurementIdentityKey } from './measurement-provenance.js';
 
-export const MULTICOMPONENT_SWEPT_REGION_MODEL_ID = 'multicomponent-swept-region-v1' as const;
+export const MULTICOMPONENT_SWEPT_REGION_MODEL_ID = 'multicomponent-swept-region-v2' as const;
 export const MULTICOMPONENT_LOCAL_DETECTOR_MODEL_ID = 'bayesian-exponential-multiscale-cfar-v3' as const;
 export const MULTICOMPONENT_REGION_MINIMUM_PADDED_IOU = 0.75;
 
@@ -34,6 +34,15 @@ interface SweepGeometry {
   readonly actualStopHz: number;
   readonly actualRbwHz: number;
   readonly binWidthHz: number;
+}
+
+export interface MulticomponentSweptRegionLineageShape {
+  readonly geometryId: string;
+  readonly startHz: number;
+  readonly stopHz: number;
+  readonly rbwHz: number;
+  readonly binWidthHz: number;
+  readonly memberCentersHz: readonly number[];
 }
 
 export function multicomponentSweptRegionAssociations(
@@ -153,6 +162,35 @@ export function multicomponentAssociationRegionsOverlap(
   const unionHz = Math.max(paddedLeftStopHz, paddedRightStopHz)
     - Math.min(paddedLeftStartHz, paddedRightStartHz);
   return intersectionHz / unionHz >= MULTICOMPONENT_REGION_MINIMUM_PADDED_IOU;
+}
+
+export function multicomponentSweptRegionLineagesAreCompatible(
+  left: MulticomponentSweptRegionLineageShape,
+  right: MulticomponentSweptRegionLineageShape,
+): boolean {
+  if (!left.geometryId
+    || left.geometryId !== right.geometryId
+    || left.rbwHz !== right.rbwHz
+    || left.binWidthHz !== right.binWidthHz
+    || !left.memberCentersHz.length
+    || !right.memberCentersHz.length
+    || !left.memberCentersHz.every(Number.isFinite)
+    || !right.memberCentersHz.every(Number.isFinite)) return false;
+  if (!multicomponentAssociationRegionsOverlap(
+    left.startHz,
+    left.stopHz,
+    right.startHz,
+    right.stopHz,
+    right.rbwHz,
+    right.binWidthHz,
+  )) return false;
+  const sharedCenterToleranceHz = Math.max(
+    right.rbwHz * 2,
+    right.binWidthHz * 5,
+  );
+  return left.memberCentersHz.some((leftCenterHz) =>
+    right.memberCentersHz.some((rightCenterHz) =>
+      Math.abs(leftCenterHz - rightCenterHz) <= sharedCenterToleranceHz));
 }
 
 export function multicomponentSweepBinWidthHz(sweep: Sweep): number {
