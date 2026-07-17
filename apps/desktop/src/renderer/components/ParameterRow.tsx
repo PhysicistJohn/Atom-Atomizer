@@ -233,10 +233,14 @@ export function SelectParameter({ label, value, options, disabled = false, contr
   onValue(value: string): void;
 }) {
   const current = options.find((option) => String(option.value) === String(value));
-  if (!current) throw new Error(`${label} value ${value} has no menu option`);
-  return <label className={`parameter-row select-parameter ${disabled ? 'disabled' : ''}`} data-agent-control={controlId}>
-    <span>{label}</span><strong>{current.label}</strong><ChevronDown size={15}/>
-    <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onValue(event.target.value)}>{options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}</select>
+  const unavailable = current === undefined;
+  const effectivelyDisabled = disabled || options.length === 0;
+  return <label className={`parameter-row select-parameter ${effectivelyDisabled ? 'disabled' : ''} ${unavailable ? 'invalid' : ''}`} data-agent-control={controlId}>
+    <span>{label}</span><strong>{current?.label ?? `${String(value)} · unavailable`}</strong><ChevronDown size={15}/>
+    <select aria-label={label} aria-invalid={unavailable || undefined} value={value} disabled={effectivelyDisabled} onChange={(event) => onValue(event.target.value)}>
+      {unavailable && <option value={value} disabled>{String(value)} · unavailable</option>}
+      {options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}
+    </select>
   </label>;
 }
 

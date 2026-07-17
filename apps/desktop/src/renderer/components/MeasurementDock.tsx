@@ -73,6 +73,7 @@ export function MeasurementDock(props: MeasurementDockProps) {
         ><span>M{marker.id}</span><i/></button>;
       })}</div>
       <div className="active-marker-result"><small>M{activeMarker.id} · {activeMarker.mode.replace('-', ' ').toUpperCase()}</small><strong>{activeReading ? formatMarkerReading(activeReading) : 'No trace data'}</strong><span>{activeReading ? formatFrequency(activeReading.frequencyHz) : 'Place on the trace or run a peak search'}</span></div>
+      {activeReading && <MarkerCharacterizationCard reading={activeReading}/>}
       <div className="parameter-stack marker-settings">
         <ToggleParameter label={`Marker M${activeMarker.id} visibility`} value={activeMarker.enabled} controlId={`marker.${activeMarker.id}.enabled`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled })}/>
         <EditableParameter label="Frequency" value={activeMarker.frequencyHz} displayValue={formatFrequency(activeMarker.frequencyHz)} unit="Hz" minimum={0} maximum={17_922_600_000} controlId={`marker.${activeMarker.id}.frequency`} onCommit={(value) => props.onMarker({ ...activeMarker, enabled: true, tracking: 'fixed', frequencyHz: Number(value) })}/>
@@ -134,6 +135,57 @@ function formatMarkerReading(reading: MarkerReading | undefined): string {
   if (reading.mode === 'delta' && reading.deltaPowerDb !== undefined && reading.deltaFrequencyHz !== undefined) return `Δ ${reading.deltaPowerDb >= 0 ? '+' : ''}${reading.deltaPowerDb.toFixed(1)} dB · ${formatSignedFrequency(reading.deltaFrequencyHz)}`;
   if (reading.mode === 'noise-density' && reading.noiseDensityDbmHz !== undefined) return `${reading.noiseDensityDbmHz.toFixed(1)} dBm/Hz`;
   return formatLevel(reading.powerDbm);
+}
+
+function MarkerCharacterizationCard({ reading }: { reading: MarkerReading }) {
+  const characterization = reading.localCharacterization;
+  const measurement = 'threeDecibelBandwidth' in characterization
+    ? characterization.threeDecibelBandwidth
+    : undefined;
+  const measured = measurement?.status !== undefined && measurement.status !== 'unavailable'
+    ? measurement
+    : undefined;
+  const componentOccupiedBandwidth = 'componentOccupiedBandwidth' in characterization
+    ? characterization.componentOccupiedBandwidth
+    : undefined;
+  const widthLabel = characterization.widthClassification === 'resolution-limited-narrow'
+    ? 'Narrow · resolution limited'
+    : characterization.widthClassification === 'resolved-wideband'
+      ? 'Resolved local response · >2 resolution elements'
+      : '3 dB unavailable';
+  const reason = characterization.widthClassification === 'unavailable'
+    ? 'unavailableReason' in characterization
+      ? characterizationUnavailableReason(characterization.unavailableReason)
+      : measurement?.status === 'unavailable'
+        ? crossingUnavailableReason(measurement.reason)
+        : 'Half-power response unavailable'
+    : undefined;
+  const detection = characterization.physicalDetection;
+  return <section className="marker-characterization-card" aria-label={`Marker M${reading.markerId} local characterization`}>
+    <div className="marker-characterization-heading"><span>{widthLabel}</span><small>Observed local response · separate 3 dB / component OBW</small></div>
+    <div className="marker-characterization-grid">
+      <div><small>3 dB response width</small><strong>{measured ? formatFrequency(measured.bandwidthHz) : '—'}</strong><span>{measured ? `${formatFrequency(measured.startHz)} – ${formatFrequency(measured.stopHz)}` : reason}</span></div>
+      <div><small>99% component occupied bandwidth</small><strong>{componentOccupiedBandwidth ? formatFrequency(componentOccupiedBandwidth.bandwidthHz) : '—'}</strong><span>{componentOccupiedBandwidth ? `${formatFrequency(componentOccupiedBandwidth.startHz)} – ${formatFrequency(componentOccupiedBandwidth.stopHz)} · robust-floor subtracted` : 'Requires a prominence-qualified threshold component'}</span></div>
+      <div><small>Signal / noise context</small><strong>{characterization.peakToRobustFloorDb.toFixed(1)} dB peak-to-floor</strong><span>{characterization.prominenceDb.toFixed(1)} dB prominence · gate {characterization.requiredProminenceDb.toFixed(1)} dB</span></div>
+      <div><small>Local evidence</small><strong>{detection ? `${detection.detectionState} ${detection.detectionId}` : 'Trace-only component'}</strong><span>{detection ? detection.relationship === 'contains-local-peak' ? 'Detection contains local peak' : `Nearest detection · ${formatFrequency(detection.distanceHz)} away` : characterization.componentRelationship === 'nearest-threshold-component' ? `Nearest component · ${formatFrequency(characterization.componentDistanceHz)} away` : 'No current candidate/active detector row'}</span></div>
+    </div>
+  </section>;
+}
+
+function characterizationUnavailableReason(reason: 'no-qualified-local-component' | 'insufficient-local-prominence'): string {
+  return reason === 'no-qualified-local-component'
+    ? 'No local component clears the robust-floor gate'
+    : 'Local peak prominence does not clear the evidence gate';
+}
+
+function crossingUnavailableReason(reason: 'lower-crossing-not-observed' | 'upper-crossing-not-observed' | 'crossing-outside-window' | 'nonmonotone-half-power-response' | 'no-sampled-peak'): string {
+  return ({
+    'lower-crossing-not-observed': 'Lower half-power edge is truncated or buried',
+    'upper-crossing-not-observed': 'Upper half-power edge is truncated or buried',
+    'crossing-outside-window': 'Half-power response leaves the local component window',
+    'nonmonotone-half-power-response': 'Resolved half-power islands do not identify one contiguous response',
+    'no-sampled-peak': 'No sampled local peak is available',
+  })[reason];
 }
 
 function formatSignedFrequency(value: number): string { return `${value >= 0 ? '+' : '−'}${formatFrequency(Math.abs(value))}`; }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { BarChart3, Brackets, Radio } from 'lucide-react';
 import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep } from '@tinysa/contracts';
 import { measureChannel } from '@tinysa/analysis';
@@ -14,7 +14,7 @@ export interface ChannelAnalysisViewProps {
 
 export function ChannelAnalysisView({ sweep, configuration, display, onConfiguration }: ChannelAnalysisViewProps) {
   const measurement = useMemo(() => evaluate(sweep, configuration), [sweep, configuration]);
-  return <section className="channel-analysis-view" aria-label="Channel power, ACP, and occupied bandwidth">
+  return <section className="channel-analysis-view" aria-label="Channel power, 3 dB bandwidth, ACP, and occupied bandwidth">
     <div className="channel-visual">
       <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result}/>
       {measurement.result && <ChannelResults result={measurement.result}/>} 
@@ -39,36 +39,134 @@ export function ChannelAnalysisView({ sweep, configuration, display, onConfigura
 function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep; configuration: ChannelMeasurementConfiguration; display: SpectrumDisplayConfiguration; result?: ChannelMeasurementResult }) {
   const width = 1000;
   const height = 420;
-  const maximum = display.referenceLevelDbm;
-  const minimum = maximum - display.decibelsPerDivision * display.divisions;
-  const span = sweep ? sweep.actualStopHz - sweep.actualStartHz : 1;
-  const x = (frequency: number) => sweep ? (frequency - sweep.actualStartHz) / span * width : 0;
-  const y = (power: number) => height - (Math.min(maximum, Math.max(minimum, power)) - minimum) / (maximum - minimum) * height;
-  const channels = Array.from({ length: configuration.adjacentChannelCount }, (_, index) => index + 1).flatMap((order) => [
-    { key: `l${order}`, start: configuration.centerHz - configuration.channelSpacingHz * order - configuration.adjacentBandwidthHz / 2, stop: configuration.centerHz - configuration.channelSpacingHz * order + configuration.adjacentBandwidthHz / 2, label: order === 1 ? 'L ADJ' : `L${order}` },
-    { key: `u${order}`, start: configuration.centerHz + configuration.channelSpacingHz * order - configuration.adjacentBandwidthHz / 2, stop: configuration.centerHz + configuration.channelSpacingHz * order + configuration.adjacentBandwidthHz / 2, label: order === 1 ? 'U ADJ' : `U${order}` },
-  ]);
+  const gradientId = `${useId().replaceAll(':', '')}-channel-trace-fill`;
+  const effectiveDisplay = validChannelDisplay(display)
+    ? display
+    : { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
+  const maximum = effectiveDisplay.referenceLevelDbm;
+  const minimum = maximum - effectiveDisplay.decibelsPerDivision * effectiveDisplay.divisions;
+  const geometry = sweep ? channelTraceGeometry(sweep, width, height, minimum, maximum) : undefined;
+  const plotSweep = geometry ? sweep : undefined;
+  const span = plotSweep ? plotSweep.actualStopHz - plotSweep.actualStartHz : 1;
+  const x = (frequency: number): number | undefined => {
+    if (!plotSweep || !Number.isFinite(frequency)) return undefined;
+    const projected = (frequency - plotSweep.actualStartHz) / span * width;
+    return Number.isFinite(projected)
+      ? Math.min(width, Math.max(0, projected))
+      : undefined;
+  };
+  const windowGeometry = (start: number, stop: number): { startX: number; width: number; centerX: number } | undefined => {
+    if (!Number.isFinite(start) || !Number.isFinite(stop) || stop <= start) return undefined;
+    const startX = x(start);
+    const stopX = x(stop);
+    if (startX === undefined || stopX === undefined || stopX <= startX) return undefined;
+    return { startX, width: stopX - startX, centerX: startX + (stopX - startX) / 2 };
+  };
+  const threeDecibelBandwidth = result?.threeDecibelBandwidth;
+  const adjacentCount = Number.isSafeInteger(configuration.adjacentChannelCount)
+    && configuration.adjacentChannelCount >= 1
+    && configuration.adjacentChannelCount <= 3
+    ? configuration.adjacentChannelCount
+    : 0;
+  const channels = Array.from({ length: adjacentCount }, (_, index) => index + 1).flatMap((order) => {
+    const lower = windowGeometry(
+      configuration.centerHz - configuration.channelSpacingHz * order - configuration.adjacentBandwidthHz / 2,
+      configuration.centerHz - configuration.channelSpacingHz * order + configuration.adjacentBandwidthHz / 2,
+    );
+    const upper = windowGeometry(
+      configuration.centerHz + configuration.channelSpacingHz * order - configuration.adjacentBandwidthHz / 2,
+      configuration.centerHz + configuration.channelSpacingHz * order + configuration.adjacentBandwidthHz / 2,
+    );
+    return [
+      ...(lower ? [{ key: `l${order}`, geometry: lower, label: order === 1 ? 'L ADJ' : `L${order}` }] : []),
+      ...(upper ? [{ key: `u${order}`, geometry: upper, label: order === 1 ? 'U ADJ' : `U${order}` }] : []),
+    ];
+  });
+  const mainWindow = windowGeometry(
+    configuration.centerHz - configuration.mainBandwidthHz / 2,
+    configuration.centerHz + configuration.mainBandwidthHz / 2,
+  );
+  const occupiedWindow = result
+    ? windowGeometry(result.occupiedBandwidth.startHz, result.occupiedBandwidth.stopHz)
+    : undefined;
+  const threeDecibelWindow = threeDecibelBandwidth && threeDecibelBandwidth.status !== 'unavailable'
+    ? windowGeometry(threeDecibelBandwidth.startHz, threeDecibelBandwidth.stopHz)
+    : undefined;
   return <div className="channel-plot-shell">
     <div className="channel-y-axis"><span>{maximum}</span><span>{minimum}</span><em>dBm</em></div>
-    {!sweep ? <div className="analysis-empty"><Radio size={23}/><strong>No sweep</strong><span>Acquire the carrier and adjacent windows.</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
-      <defs><linearGradient id="channel-trace-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>
+    {!plotSweep || !geometry ? <div className="analysis-empty"><Radio size={23}/><strong>{sweep ? 'Spectrum unavailable' : 'No sweep'}</strong><span>{sweep ? 'The live trace grid was invalid and was not rendered.' : 'Acquire the carrier and adjacent windows.'}</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
+      <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>
       {Array.from({ length: 9 }, (_, index) => <line key={`v${index}`} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height} className="plot-grid"/>)}
       {Array.from({ length: 6 }, (_, index) => <line key={`h${index}`} x1="0" x2={width} y1={index * height / 5} y2={index * height / 5} className="plot-grid"/>)}
-      {channels.map((channel) => <g key={channel.key} className="adjacent-window"><rect x={x(channel.start)} width={x(channel.stop) - x(channel.start)} y="0" height={height}/><text x={(x(channel.start) + x(channel.stop)) / 2} y="20">{channel.label}</text></g>)}
-      <g className="carrier-window"><rect x={x(configuration.centerHz - configuration.mainBandwidthHz / 2)} width={x(configuration.centerHz + configuration.mainBandwidthHz / 2) - x(configuration.centerHz - configuration.mainBandwidthHz / 2)} y="0" height={height}/><text x={x(configuration.centerHz)} y="20">MAIN</text></g>
-      {result && <g className="obw-window"><line x1={x(result.occupiedBandwidth.startHz)} x2={x(result.occupiedBandwidth.startHz)} y1="0" y2={height}/><line x1={x(result.occupiedBandwidth.stopHz)} x2={x(result.occupiedBandwidth.stopHz)} y1="0" y2={height}/></g>}
-      <polygon points={`0,${height} ${sweep.powerDbm.map((power, index) => `${index / Math.max(1, sweep.powerDbm.length - 1) * width},${y(power)}`).join(' ')} ${width},${height}`} fill="url(#channel-trace-fill)"/>
-      <polyline points={sweep.powerDbm.map((power, index) => `${index / Math.max(1, sweep.powerDbm.length - 1) * width},${y(power)}`).join(' ')} className="trace-line t1" vectorEffect="non-scaling-stroke"/>
+      {channels.map((channel) => <g key={channel.key} className="adjacent-window"><rect x={channel.geometry.startX} width={channel.geometry.width} y="0" height={height}/><text x={channel.geometry.centerX} y="20">{channel.label}</text></g>)}
+      {mainWindow && <g className="carrier-window"><rect x={mainWindow.startX} width={mainWindow.width} y="0" height={height}/><text x={mainWindow.centerX} y="20">MAIN</text></g>}
+      {occupiedWindow && <g className="obw-window"><line x1={occupiedWindow.startX} x2={occupiedWindow.startX} y1="0" y2={height}/><line x1={occupiedWindow.startX + occupiedWindow.width} x2={occupiedWindow.startX + occupiedWindow.width} y1="0" y2={height}/></g>}
+      {threeDecibelWindow && <g className="three-db-window" aria-label="Interpolated 3 dB bandwidth crossings"><line x1={threeDecibelWindow.startX} x2={threeDecibelWindow.startX} y1="0" y2={height}/><line x1={threeDecibelWindow.startX + threeDecibelWindow.width} x2={threeDecibelWindow.startX + threeDecibelWindow.width} y1="0" y2={height}/></g>}
+      <polygon points={`${geometry.firstX},${height} ${geometry.points} ${geometry.lastX},${height}`} fill={`url(#${gradientId})`}/>
+      <polyline points={geometry.points} className="trace-line t1" vectorEffect="non-scaling-stroke"/>
     </svg>}
-    <div className="channel-x-axis"><span>{sweep ? formatFrequency(sweep.actualStartHz) : 'START'}</span><span>{sweep ? formatFrequency((sweep.actualStartHz + sweep.actualStopHz) / 2) : 'CENTER'}</span><span>{sweep ? formatFrequency(sweep.actualStopHz) : 'STOP'}</span></div>
+    <div className="channel-x-axis"><span>{plotSweep ? formatFrequency(plotSweep.actualStartHz) : 'START'}</span><span>{plotSweep ? formatFrequency((plotSweep.actualStartHz + plotSweep.actualStopHz) / 2) : 'CENTER'}</span><span>{plotSweep ? formatFrequency(plotSweep.actualStopHz) : 'STOP'}</span></div>
   </div>;
+}
+
+function channelTraceGeometry(
+  sweep: Pick<Sweep, 'actualStartHz' | 'actualStopHz' | 'frequencyHz' | 'powerDbm'>,
+  width: number,
+  height: number,
+  minimum: number,
+  maximum: number,
+): { readonly points: string; readonly firstX: number; readonly lastX: number } | undefined {
+  const span = sweep.actualStopHz - sweep.actualStartHz;
+  if (!Number.isFinite(sweep.actualStartHz)
+    || !Number.isFinite(sweep.actualStopHz)
+    || !Number.isFinite(span)
+    || span <= 0
+    || !Number.isFinite(width)
+    || width <= 0
+    || !Number.isFinite(height)
+    || height <= 0
+    || !Number.isFinite(minimum)
+    || !Number.isFinite(maximum)
+    || maximum <= minimum
+    || sweep.frequencyHz.length !== sweep.powerDbm.length
+    || sweep.frequencyHz.length < 2) return undefined;
+  const coordinates: Array<{ x: number; y: number }> = [];
+  for (let index = 0; index < sweep.frequencyHz.length; index++) {
+    const frequency = sweep.frequencyHz[index]!;
+    const power = sweep.powerDbm[index]!;
+    if (!Number.isFinite(frequency) || !Number.isFinite(power)
+      || (index > 0 && frequency <= sweep.frequencyHz[index - 1]!)) return undefined;
+    if (frequency < sweep.actualStartHz || frequency > sweep.actualStopHz) continue;
+    const x = (frequency - sweep.actualStartHz) / span * width;
+    const y = height - (Math.min(maximum, Math.max(minimum, power)) - minimum) / (maximum - minimum) * height;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+    coordinates.push({ x, y });
+  }
+  if (coordinates.length < 2) return undefined;
+  return {
+    points: coordinates.map(({ x, y }) => `${x},${y}`).join(' '),
+    firstX: coordinates[0]!.x,
+    lastX: coordinates.at(-1)!.x,
+  };
+}
+
+function validChannelDisplay(display: SpectrumDisplayConfiguration): boolean {
+  return Number.isFinite(display.referenceLevelDbm)
+    && Number.isFinite(display.decibelsPerDivision)
+    && display.decibelsPerDivision > 0
+    && Number.isFinite(display.divisions)
+    && display.divisions > 0;
 }
 
 function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
   const lower = result.adjacent.filter((item) => item.side === 'lower').sort((left, right) => left.order - right.order);
   const upper = result.adjacent.filter((item) => item.side === 'upper').sort((left, right) => left.order - right.order);
+  const threeDecibelBandwidth = result.threeDecibelBandwidth;
   return <div className="channel-results">
     <div className="channel-primary-result"><small>CHANNEL POWER</small><strong>{formatLevel(result.carrier.powerDbm)}</strong><span>{result.carrier.powerSpectralDensityDbmHz.toFixed(1)} dBm/Hz · {result.carrier.binsUsed} bins</span></div>
+    {threeDecibelBandwidth.status === 'unavailable'
+      ? <div className="channel-primary-result three-db"><small>3 dB BANDWIDTH</small><strong>Unavailable</strong><span>{formatThreeDecibelUnavailableReason(threeDecibelBandwidth.reason)}</span></div>
+      : <div className="channel-primary-result three-db"><small>3 dB BANDWIDTH</small><strong>{threeDecibelBandwidth.status === 'resolution-limited' ? 'Resolution-limited' : formatFrequency(threeDecibelBandwidth.bandwidthHz)}</strong><span>{threeDecibelBandwidth.status === 'resolution-limited' ? `Response ${formatFrequency(threeDecibelBandwidth.bandwidthHz)} · RBW/grid ${formatFrequency(threeDecibelBandwidth.resolutionScaleHz)}` : `${formatFrequency(threeDecibelBandwidth.startHz)} — ${formatFrequency(threeDecibelBandwidth.stopHz)} · interpolated`}</span></div>}
     <div className="channel-primary-result obw"><small>OCCUPIED BANDWIDTH · {result.occupiedBandwidth.percent}%</small><strong>{formatFrequency(result.occupiedBandwidth.bandwidthHz)}</strong><span>{formatFrequency(result.occupiedBandwidth.startHz)} — {formatFrequency(result.occupiedBandwidth.stopHz)}</span></div>
     <div className="acp-results"><small>LOWER ACP</small><div>{lower.map((entry) => <span key={`l${entry.order}`}><em>L{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
     <div className="acp-results"><small>UPPER ACP</small><div>{upper.map((entry) => <span key={`u${entry.order}`}><em>U{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
@@ -77,6 +175,16 @@ function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
 
 function NumberControl({ label, value, minimum, controlId, onValue }: { label: string; value: number; minimum: number; controlId: string; onValue(value: number): void }) {
   return <EditableParameter label={label} value={value} displayValue={formatFrequency(value)} unit="Hz" minimum={minimum} step={1} controlId={controlId} onCommit={(next) => onValue(Number(next))}/>;
+}
+
+function formatThreeDecibelUnavailableReason(reason: Extract<ChannelMeasurementResult['threeDecibelBandwidth'], { status: 'unavailable' }>['reason']): string {
+  return ({
+    'no-sampled-peak': 'No sampled peak inside the main channel',
+    'lower-crossing-not-observed': 'Lower half-power crossing was not observed',
+    'upper-crossing-not-observed': 'Upper half-power crossing was not observed',
+    'crossing-outside-window': 'Half-power response extends outside the main channel',
+    'nonmonotone-half-power-response': 'Resolved half-power islands are not one bounded response',
+  })[reason];
 }
 
 function evaluate(sweep: Sweep | undefined, configuration: ChannelMeasurementConfiguration): { result?: ChannelMeasurementResult; error?: string } {

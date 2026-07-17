@@ -66,5 +66,5 @@ function candidateDescription(candidate: InstrumentCandidate): string {
   if (candidate.sourceKind === 'tinysa-firmware-twin') return `Renode bridge · ${candidate.firmwareTwin.repositoryCommit.slice(0, 12)} · USB transactions not modeled`;
   const serial = candidate.serialPort;
   const usb = serial.vendorId && serial.productId ? `${serial.vendorId}:${serial.productId}` : 'unverified USB identity';
-  return `${serial.path} · ${usb}${serial.serialNumber ? ` · ${serial.serialNumber}` : ''}`;
+  return `${serial.path} · ${usb}${serial.serialNumber ? ` · ${serial.serialNumber}` : ''} · exclusive CDC; finish any Flasher session first`;
 }

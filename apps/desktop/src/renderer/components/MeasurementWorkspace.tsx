@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Activity, AudioWaveform, BarChart3, Clock3, Crosshair, Layers3, RadioTower, Repeat2, SlidersHorizontal, Square, Zap } from 'lucide-react';
+import { BarChart3, Clock3, Crosshair, RadioTower, Repeat2, SlidersHorizontal, Square, Zap } from 'lucide-react';
 import type {
   AnalyzerConfig,
   AnalyzerConfigPatch,
   ChannelMeasurementConfiguration,
   DetectedSignal,
-  EnvelopeStftConfiguration,
   FirmwareTraceFrame,
   FirmwareTraceId,
   FirmwareTraceVisibility,
@@ -24,15 +23,12 @@ import type {
   TraceFrame,
   TraceId,
   WaterfallConfiguration,
-  ZeroSpanCapture,
-  ZeroSpanConfig,
 } from '@tinysa/contracts';
 import { calculateSweepMetrics } from '@tinysa/analysis';
 import type { AcquisitionState } from '../ui-contracts.js';
 import { formatFrequency, formatLevel } from '../format.js';
 import { AnalyzerInspector } from './AnalyzerInspector.js';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
-import { EnvelopeStftView } from './EnvelopeStftView.js';
 import { MeasurementDock } from './MeasurementDock.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
@@ -42,12 +38,9 @@ type Overlay = 'setup' | 'controls';
 export interface MeasurementWorkspaceProps {
   acquisitionActions: ReactNode;
   view: MeasurementViewId;
-  onView(view: MeasurementViewId): void;
   analyzer: AnalyzerConfig;
   spectrumCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
-  detectedPowerCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
   busy: boolean;
-  connected: boolean;
   streaming: boolean;
   onAnalyzer(patch: AnalyzerConfigPatch): void;
   sweep?: Sweep;
@@ -74,24 +67,19 @@ export interface MeasurementWorkspaceProps {
   onSearchConfiguration(configuration: MarkerSearchConfiguration): void;
   onDisplay(configuration: SpectrumDisplayConfiguration): void;
   onAutoScale(): void;
-  onMarkerPlace(frequencyHz: number): void;
+  onMarkerPlace(frequencyHz: number): boolean;
   waterfall: WaterfallConfiguration;
   onWaterfall(configuration: WaterfallConfiguration): void;
   channel: ChannelMeasurementConfiguration;
   onChannel(configuration: ChannelMeasurementConfiguration): void;
-  zeroConfig: ZeroSpanConfig;
-  zeroCapture?: ZeroSpanCapture;
-  stft: EnvelopeStftConfiguration;
-  onZeroConfig(configuration: ZeroSpanConfig): void;
-  onStft(configuration: EnvelopeStftConfiguration): void;
-  onAcquireZero(): void;
 }
 
 export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   const [overlay, setOverlay] = useState<Overlay>();
-  const activeDetections = props.detections.filter((item) => item.state === 'active');
+  const activeDetections = props.detections.filter((item) =>
+    typeof item === 'object' && item !== null && item.state === 'active');
+  const view = props.view === 'envelope-stft' ? 'spectrum' : props.view;
   const toggleOverlay = (next: Overlay) => setOverlay((current) => current === next ? undefined : next);
-  const selectView = (view: MeasurementViewId) => { setOverlay(undefined); props.onView(view); };
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOverlay(undefined); };
     window.addEventListener('keydown', closeOnEscape);
@@ -99,13 +87,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   }, []);
   return <section className="measurement-workspace">
     <header className="measurement-viewbar">
-      <div className="measurement-view-tabs" role="tablist" aria-label="Spectrum analysis views">
-        <ViewTab id="spectrum" label="Spectrum" icon={<Activity size={14}/>} active={props.view} onView={selectView}/>
-        <ViewTab id="waterfall" label="Waterfall" icon={<Layers3 size={14}/>} active={props.view} onView={selectView}/>
-        <ViewTab id="channel" label="Channel" icon={<BarChart3 size={14}/>} active={props.view} onView={selectView}/>
-        <ViewTab id="envelope-stft" label="Time / STFT" icon={<AudioWaveform size={14}/>} active={props.view} disabled={!props.detectedPowerCapability} onView={selectView}/>
-      </div>
-      <div className="measurement-view-utilities">
+      <div className="measurement-view-utilities" role="toolbar" aria-label="Measurement utilities">
         <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
         <div className="measurement-view-actions">
           <button className={overlay === 'setup' ? 'active' : ''} onClick={() => toggleOverlay('setup')} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>Sweep setup</span></button>
@@ -120,35 +102,40 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
           : <MeasurementDock traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }
       </div>}
-      <div className="measurement-stage-content" role="tabpanel">
-        {props.view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
-        {props.view === 'waterfall' && <WaterfallView history={props.history} configuration={props.waterfall} onConfiguration={props.onWaterfall}/>} 
-        {props.view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} onConfiguration={props.onChannel}/>} 
-        {props.view === 'envelope-stft' && <EnvelopeStftView
-          zeroConfig={props.zeroConfig} capture={props.zeroCapture} configuration={props.stft}
-          capability={props.detectedPowerCapability} connected={props.connected}
-          streaming={props.streaming} busy={props.busy} onZeroConfig={props.onZeroConfig}
-          onConfiguration={props.onStft} onAcquire={props.onAcquireZero}
-        />}
+      <div className="measurement-stage-content" aria-label="Measurement view">
+        {view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
+        {view === 'waterfall' && <WaterfallView history={props.history} configuration={props.waterfall} onConfiguration={props.onWaterfall}/>}
+        {view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} onConfiguration={props.onChannel}/>}
       </div>
     </div>
   </section>;
 }
 
-function ViewTab({ id, label, icon, active, disabled = false, onView }: { id: MeasurementViewId; label: string; icon: ReactNode; active: MeasurementViewId; disabled?: boolean; onView(view: MeasurementViewId): void }) {
-  return <button role="tab" aria-selected={active === id} className={active === id ? 'active' : ''} disabled={disabled} onClick={() => onView(id)} data-agent-control={`measurement.view.${id}`}>{icon}<strong>{label}</strong></button>;
-}
-
 function MetricStrip({ sweep, detections, acquisition, historyCount }: { sweep?: Sweep; detections: number; acquisition: AcquisitionState; historyCount: number }) {
-  const metrics = sweep ? calculateSweepMetrics(sweep) : undefined;
+  const metrics = safeSweepMetrics(sweep);
+  const elapsedMilliseconds = sweep && Number.isFinite(sweep.elapsedMilliseconds)
+    ? sweep.elapsedMilliseconds
+    : undefined;
+  const pointCount = sweep && Array.isArray(sweep.frequencyHz)
+    ? sweep.frequencyHz.length
+    : undefined;
   return <section className="metric-strip compact-metrics">
     <Metric icon={<Zap size={13}/>} accent="mint" label="Peak" value={metrics ? formatLevel(metrics.peakDbm) : '—'} detail={metrics ? formatFrequency(metrics.peakHz) : undefined}/>
     <Metric icon={<Square size={12}/>} label="Robust floor" value={metrics ? formatLevel(metrics.noiseFloorDbm) : '—'}/>
     <Metric icon={<RadioTower size={13}/>} accent="amber" label="Tracked" value={String(detections).padStart(2, '0')}/>
     <Metric icon={<BarChart3 size={13}/>} label="OBW · 99%" value={metrics ? formatFrequency(metrics.occupiedBandwidth99Hz) : '—'}/>
-    <Metric icon={<Clock3 size={13}/>} label="Sweep" value={acquisition === 'retuning' ? 'RETUNING' : sweep ? `${sweep.elapsedMilliseconds.toFixed(0)} ms` : acquisition.toUpperCase()} detail={sweep ? `${sweep.frequencyHz.length} points · ${acquisition.toUpperCase()}` : undefined}/>
+    <Metric icon={<Clock3 size={13}/>} label="Sweep" value={acquisition === 'retuning' ? 'RETUNING' : elapsedMilliseconds === undefined ? acquisition.toUpperCase() : `${elapsedMilliseconds.toFixed(0)} ms`} detail={pointCount === undefined ? undefined : `${pointCount} points · ${acquisition.toUpperCase()}`}/>
     <Metric icon={<Repeat2 size={13}/>} label="History" value={`${historyCount} / 50`}/>
   </section>;
+}
+
+function safeSweepMetrics(sweep: Sweep | undefined): ReturnType<typeof calculateSweepMetrics> | undefined {
+  if (!sweep || !Array.isArray(sweep.frequencyHz) || !Array.isArray(sweep.powerDbm)) return undefined;
+  try {
+    return calculateSweepMetrics(sweep);
+  } catch {
+    return undefined;
+  }
 }
 
 function Metric({ icon, accent = '', label, value, detail }: { icon: ReactNode; accent?: string; label: string; value: string; detail?: string }) {

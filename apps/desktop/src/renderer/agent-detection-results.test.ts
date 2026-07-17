@@ -91,6 +91,75 @@ describe('Atom detection-result projection', () => {
     expect(JSON.stringify(projected.activityAssociations[0])).not.toContain('"state":"active"');
   });
 
+  it('does not call a prediction-only retained row a current local emission', () => {
+    const current = {
+      id: 'signal-current',
+      state: 'active',
+      startHz: 100,
+      stopHz: 120,
+      peakHz: 110,
+      peakDbm: -45,
+      bandwidthHz: 20,
+      prominenceDb: 18,
+      prominenceThresholdDb: 6,
+      persistenceSweeps: 4,
+      missedSweeps: 0,
+      detectorId: 'bayesian-exponential-multiscale-cfar-v3',
+      sweepIds: ['sweep-current'],
+      associationMode: 'frequency-local',
+      bayesianEvidence: { modelId: 'fixture' },
+    } as unknown as DetectedSignal;
+    const retained = {
+      ...current,
+      id: 'signal-retained',
+      missedSweeps: 1,
+      bayesianEvidence: {
+        modelId: 'fixture',
+        posteriorScope: 'track-predictive-state',
+      },
+    } as unknown as DetectedSignal;
+
+    const projected = agentDetectionResults([retained, current]);
+    expect(projected.localDetections).toEqual([
+      expect.objectContaining({
+        id: retained.id,
+        isPromotedActiveLocalEmission: false,
+        missedSweeps: 1,
+      }),
+      expect.objectContaining({
+        id: current.id,
+        isPromotedActiveLocalEmission: true,
+        missedSweeps: 0,
+      }),
+    ]);
+  });
+
+  it('quarantines malformed rows before Agent projection', () => {
+    const malformed = {
+      id: 'malformed',
+      state: 'active',
+      startHz: 100,
+      stopHz: 120,
+      peakHz: 110,
+      peakDbm: Number.NaN,
+      bandwidthHz: 20,
+      prominenceDb: 18,
+      prominenceThresholdDb: 6,
+      persistenceSweeps: 1,
+      missedSweeps: 0,
+      detectorId: 'fixture',
+      sweepIds: ['sweep-1'],
+      bayesianEvidence: { modelId: 'fixture' },
+      associationObservations: {},
+    } as unknown as DetectedSignal;
+
+    expect(agentDetectionResults([malformed])).toEqual({
+      contract: 'separated-local-detections-and-activity-associations-v1',
+      localDetections: [],
+      activityAssociations: [],
+    });
+  });
+
   it('retains regular-component association provenance on each physical local line', () => {
     const regular = {
       id: 'line-2',
@@ -108,8 +177,8 @@ describe('Atom detection-result projection', () => {
       sweepIds: ['sweep-8'],
       bayesianEvidence: { modelId: 'bayesian-exponential-multiscale-cfar-v3' },
       associationMode: 'regular-spectral-component-activity',
-      associationId: 'regular-lines:line-1,line-2,line-3',
-      associationModelId: 'simultaneous-regular-components-v1',
+      associationId: 'regular-spectral-component-lineage-0001',
+      associationModelId: 'regular-spectral-component-lineage-v2',
       associationRegionStartHz: 98_000_000,
       associationRegionStopHz: 100_000_000,
       associationRegionSweepIds: ['sweep-8'],
@@ -121,7 +190,7 @@ describe('Atom detection-result projection', () => {
 
     expect(projected.activityAssociations).toHaveLength(0);
     expect(projected.localDetections[0]?.classificationAssociation).toMatchObject({
-      associationModelId: 'simultaneous-regular-components-v1',
+      associationModelId: 'regular-spectral-component-lineage-v2',
       memberLocalTrackIds: ['line-1', 'line-2', 'line-3'],
       representsEmitterIdentity: false,
     });
@@ -166,7 +235,7 @@ describe('Atom detection-result projection', () => {
       bayesianEvidence: { modelId: 'bayesian-exponential-multiscale-cfar-v3' },
       associationMode: 'multicomponent-swept-region-activity',
       associationId: 'multicomponent-swept-region-0001',
-      associationModelId: 'multicomponent-swept-region-v1',
+      associationModelId: 'multicomponent-swept-region-v2',
       associationRegionStartHz: 96_000_000,
       associationRegionStopHz: 104_000_000,
       associationRegionSweepIds: ['sweep-8'],
@@ -179,7 +248,7 @@ describe('Atom detection-result projection', () => {
       label: 'observable:fm-angle-modulated-like',
       confidence: 0.91,
       candidates: [{ label: 'observable:fm-angle-modulated-like', confidence: 0.91, family: 'analog' }],
-      modelId: 'bayesian-observable-equivalence-v5',
+      modelId: 'bayesian-observable-equivalence-v8',
       qualification: 'bayesian-observable-equivalence',
       scoreKind: 'model-posterior',
       decisionLevel: 'equivalence-class',
@@ -192,7 +261,7 @@ describe('Atom detection-result projection', () => {
     expect(association).toMatchObject({
       mode: 'multicomponent-swept-region-activity',
       associationId: 'multicomponent-swept-region-0001',
-      associationModelId: 'multicomponent-swept-region-v1',
+      associationModelId: 'multicomponent-swept-region-v2',
       memberLocalTrackIds: ['line-1', 'line-2', 'line-3', 'line-4'],
       currentLocalMember: true,
       representsPhysicalEmission: false,

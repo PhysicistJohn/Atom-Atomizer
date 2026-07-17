@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { CircleAlert, Download, LoaderCircle, Play, Repeat2, StopCircle } from 'lucide-react';
 import {
   atomizerInstrumentEventSchema,
@@ -31,6 +31,7 @@ import {
   type AtomizerInstrumentPreferenceSelection,
   type AtomizerInstrumentState,
   type ChannelMeasurementConfiguration,
+  type DetectedPowerCaptureReceipt,
   type DetectedSignal,
   type FirmwareTraceFrame,
   type FirmwareTraceId,
@@ -70,7 +71,6 @@ import {
 import {
   BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
   SignalDetector,
-  SignalLabBayesianClassifier,
   SignalTracker,
   TraceAccumulator,
   autoScaleSpectrum,
@@ -78,7 +78,11 @@ import {
   classificationRepresentatives,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
+  createDetectedPowerCaptureReceipt,
+  extractObservableFeatures,
   measureChannel,
+  ObservableEvidenceUnavailableError,
+  observableAssociationEvidenceIsCurrentlyQualified,
   readMarkers,
   searchMarker,
   type EnvelopeClassification,
@@ -99,7 +103,6 @@ import {
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
 import { ClassificationWorkspace } from './components/ClassificationWorkspace.js';
 import { ConnectionDialog } from './components/ConnectionDialog.js';
-import { DetectionWorkspace } from './components/DetectionWorkspace.js';
 import { DeviceWorkspace } from './components/DeviceWorkspace.js';
 import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
 import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
@@ -119,6 +122,15 @@ import {
 } from './ui-contracts.js';
 import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
 import {
+  resolveVisibleClassificationTargetSelection,
+  sanitizeClassificationEvidenceDetections,
+  visibleClassificationTargetProjections,
+} from './classification-target-selection.js';
+export {
+  resolveClassificationTargetSelection,
+  resolveVisibleClassificationTargetSelection,
+} from './classification-target-selection.js';
+import {
   detectedPowerConfigurationFor,
   reconcileAnalyzerConfiguration,
   reconcileDetectedPowerConfiguration,
@@ -133,6 +145,10 @@ import {
   instrumentCandidateMatchesPreference,
   instrumentPreferenceSelectionForCandidate,
 } from './instrument-preference.js';
+import {
+  createBayesianClassifierRuntime,
+  type BayesianClassifierRuntime,
+} from './bayesian-classifier-runtime.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
@@ -149,6 +165,15 @@ const DEFAULT_ZERO_SPAN: ZeroSpanConfig = {
   sweepTimeSeconds: BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY.sweepTimeSeconds,
   trigger: { mode: 'auto' },
 };
+
+function visibleMeasurementView(value: unknown): MeasurementViewId {
+  const view = measurementViewIdSchema.parse(value);
+  // `envelope-stft` remains an API/analysis primitive for compatibility, but
+  // it has no first-class renderer route. Old persisted values and explicit
+  // agent requests land on the visible spectrum rather than reviving the
+  // removed Time/STFT navigation or workspace.
+  return view === 'envelope-stft' ? 'spectrum' : view;
+}
 // The Bayesian 2.4 GHz activity association retains up to 96 stable-geometry
 // opportunities; keep enough complete sweeps to bind its latest eight positive
 // looks and audit the full rolling opportunity provenance.
@@ -200,62 +225,107 @@ const DEFAULT_CHANNEL: ChannelMeasurementConfiguration = {
   obwNoiseCorrection: 'none',
 };
 const DEFAULT_STFT: EnvelopeStftConfiguration = { windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 };
+const RENDER_COMMIT_TIMEOUT_MILLISECONDS = 2_000;
 
-export function App() {
-  const [workspace, setWorkspace] = useState<WorkspaceId>('spectrum');
-  const [measurementView, setMeasurementView] = useState<MeasurementViewId>(() => loadStored('measurement-view', measurementViewIdSchema.parse, 'spectrum'));
-  const [agentOpen, setAgentOpen] = useState(true);
-  const [instrument, setInstrument] = useState<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE);
-  const [candidates, setCandidates] = useState<InstrumentCandidate[]>([]);
-  const [discoveryFailures, setDiscoveryFailures] = useState<InstrumentDiscoveryFailure[]>([]);
-  const [selectedCandidateId, setSelectedCandidateId] = useState<string>();
-  const [connectionOpen, setConnectionOpen] = useState(false);
-  const [connectionBusy, setConnectionBusy] = useState(false);
-  const [analyzer, setAnalyzer] = useState<AnalyzerConfig>(() => loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER));
-  const [generator, setGenerator] = useState<GeneratorConfig>(() => loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR));
-  const [detectionConfig, setDetectionConfig] = useState<SignalDetectionConfig>(() => loadStored('detector', parseStoredDetection, DEFAULT_DETECTION));
-  const [zeroConfig, setZeroConfig] = useState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN));
-  const [traceConfiguration, setTraceConfiguration] = useState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES));
-  const [traceFrames, setTraceFrames] = useState<readonly TraceFrame[]>([]);
-  const [firmwareTraceFrames, setFirmwareTraceFrames] = useState<readonly FirmwareTraceFrame[]>([]);
-  const [visibleFirmwareTraceIds, setVisibleFirmwareTraceIds] = useState<FirmwareTraceVisibility>(() => loadStored('firmware-trace-visibility', firmwareTraceVisibilitySchema.parse, []));
-  const [activeTraceId, setActiveTraceId] = useState<TraceId>(1);
-  const [markers, setMarkers] = useState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS));
-  const [activeMarkerId, setActiveMarkerId] = useState<MarkerId>(1);
-  const [markerSearchConfiguration, setMarkerSearchConfiguration] = useState<MarkerSearchConfiguration>(() => loadStored('marker-search', markerSearchConfigurationSchema.parse, DEFAULT_MARKER_SEARCH));
-  const [displayConfiguration, setDisplayConfiguration] = useState<SpectrumDisplayConfiguration>(() => loadStored('spectrum-display', spectrumDisplayConfigurationSchema.parse, DEFAULT_DISPLAY));
-  const [waterfallConfiguration, setWaterfallConfiguration] = useState<WaterfallConfiguration>(() => loadStored('waterfall', waterfallConfigurationSchema.parse, DEFAULT_WATERFALL));
-  const [channelConfiguration, setChannelConfiguration] = useState<ChannelMeasurementConfiguration>(() => loadStored('channel-measurement', channelMeasurementConfigurationSchema.parse, DEFAULT_CHANNEL));
-  const [stftConfiguration, setStftConfiguration] = useState<EnvelopeStftConfiguration>(() => loadStored('envelope-stft', envelopeStftConfigurationSchema.parse, DEFAULT_STFT));
-  const [sweep, setSweep] = useState<Sweep>();
-  const [history, setHistory] = useState<readonly Sweep[]>([]);
-  const [detections, setDetections] = useState<readonly DetectedSignal[]>([]);
-  const [classifications, setClassifications] = useState<readonly WaveformClassification[]>([]);
-  const [selectedClassificationId, setSelectedClassificationId] = useState<string>();
-  const [zeroCapture, setZeroCapture] = useState<ZeroSpanCapture>();
-  const [envelope, setEnvelope] = useState<EnvelopeClassification>();
-  const [diagnostics, setDiagnostics] = useState<readonly string[]>([]);
-  const [screenFrame, setScreenFrame] = useState<InstrumentScreenFrame>();
-  const [selectedProfile, setSelectedProfile] = useState<string>();
-  const [acquisition, setAcquisition] = useState<AcquisitionState>('idle');
-  const [continuous, setContinuous] = useState(false);
-  const [instrumentTransactionActive, setInstrumentTransactionActive] = useState(false);
-  const [remoteGestureActive, setRemoteGestureActive] = useState(false);
-  const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<string>();
+interface RenderCommitWaiter {
+  targetRevision: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeout: number;
+}
+
+function useControllerState<T>(
+  initialState: T | (() => T),
+  markRenderMutation: () => void,
+): [T, Dispatch<SetStateAction<T>>, MutableRefObject<T>] {
+  const [value, setReactValue] = useState<T>(initialState);
+  const valueRef = useRef(value);
+  const setValue = useCallback<Dispatch<SetStateAction<T>>>((update) => {
+    const previous = valueRef.current;
+    const next = typeof update === 'function'
+      ? (update as (current: T) => T)(previous)
+      : update;
+    if (Object.is(previous, next)) return;
+    valueRef.current = next;
+    markRenderMutation();
+    setReactValue(next);
+  }, [markRenderMutation]);
+  return [value, setValue, valueRef];
+}
+
+export interface AppProps {
+  /** Dependency seam for evidence-lifecycle tests; production uses the admitted bundled runtime. */
+  readonly classifierRuntimeFactory?: () => BayesianClassifierRuntime;
+}
+
+export function App({
+  classifierRuntimeFactory = createBayesianClassifierRuntime,
+}: AppProps = {}) {
+  const renderMutationRevision = useRef(0);
+  const committedRenderRevision = useRef(0);
+  const renderCommitWaiters = useRef(new Map<symbol, RenderCommitWaiter>());
+  const rendererMounted = useRef(true);
+  const markRenderMutation = useCallback(() => { renderMutationRevision.current++; }, []);
+
+  const [workspace, setWorkspace, workspaceRef] = useControllerState<WorkspaceId>('spectrum', markRenderMutation);
+  const [measurementView, setMeasurementView, measurementViewRef] = useControllerState<MeasurementViewId>(() => loadStored('measurement-view', visibleMeasurementView, 'spectrum'), markRenderMutation);
+  const [agentOpen, setAgentOpen] = useControllerState(true, markRenderMutation);
+  const [instrument, setInstrument, instrumentRef] = useControllerState<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE, markRenderMutation);
+  const [candidates, setCandidates, candidatesRef] = useControllerState<InstrumentCandidate[]>([], markRenderMutation);
+  const [discoveryFailures, setDiscoveryFailures, discoveryFailuresRef] = useControllerState<InstrumentDiscoveryFailure[]>([], markRenderMutation);
+  const [selectedCandidateId, setSelectedCandidateId, selectedCandidateIdRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [connectionOpen, setConnectionOpen] = useControllerState(false, markRenderMutation);
+  const [connectionBusy, setConnectionBusy] = useControllerState(false, markRenderMutation);
+  const [analyzer, setAnalyzer, analyzerRef] = useControllerState<AnalyzerConfig>(() => loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER), markRenderMutation);
+  const [generator, setGenerator, generatorRef] = useControllerState<GeneratorConfig>(() => loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR), markRenderMutation);
+  const [detectionConfig, setDetectionConfig, detectionConfigRef] = useControllerState<SignalDetectionConfig>(() => loadStored('detector', parseStoredDetection, DEFAULT_DETECTION), markRenderMutation);
+  const [zeroConfig, setZeroConfig, zeroConfigRef] = useControllerState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN), markRenderMutation);
+  const [traceConfiguration, setTraceConfiguration, traceConfigurationRef] = useControllerState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES), markRenderMutation);
+  const [traceFrames, setTraceFrames, traceFramesRef] = useControllerState<readonly TraceFrame[]>([], markRenderMutation);
+  const [firmwareTraceFrames, setFirmwareTraceFrames, firmwareTraceFramesRef] = useControllerState<readonly FirmwareTraceFrame[]>([], markRenderMutation);
+  const [visibleFirmwareTraceIds, setVisibleFirmwareTraceIds, visibleFirmwareTraceIdsRef] = useControllerState<FirmwareTraceVisibility>(() => loadStored('firmware-trace-visibility', firmwareTraceVisibilitySchema.parse, []), markRenderMutation);
+  const [activeTraceId, setActiveTraceId, activeTraceIdRef] = useControllerState<TraceId>(1, markRenderMutation);
+  const [markers, setMarkers, markersRef] = useControllerState<readonly MarkerConfiguration[]>(() => loadStored('markers', parseMarkerBank, DEFAULT_MARKERS), markRenderMutation);
+  const [activeMarkerId, setActiveMarkerId, activeMarkerIdRef] = useControllerState<MarkerId>(1, markRenderMutation);
+  const [markerSearchConfiguration, setMarkerSearchConfiguration, markerSearchConfigurationRef] = useControllerState<MarkerSearchConfiguration>(() => loadStored('marker-search', markerSearchConfigurationSchema.parse, DEFAULT_MARKER_SEARCH), markRenderMutation);
+  const [displayConfiguration, setDisplayConfiguration, displayConfigurationRef] = useControllerState<SpectrumDisplayConfiguration>(() => loadStored('spectrum-display', spectrumDisplayConfigurationSchema.parse, DEFAULT_DISPLAY), markRenderMutation);
+  const [waterfallConfiguration, setWaterfallConfiguration, waterfallConfigurationRef] = useControllerState<WaterfallConfiguration>(() => loadStored('waterfall', waterfallConfigurationSchema.parse, DEFAULT_WATERFALL), markRenderMutation);
+  const [channelConfiguration, setChannelConfiguration, channelConfigurationRef] = useControllerState<ChannelMeasurementConfiguration>(() => loadStored('channel-measurement', channelMeasurementConfigurationSchema.parse, DEFAULT_CHANNEL), markRenderMutation);
+  const [stftConfiguration, setStftConfiguration, stftConfigurationRef] = useControllerState<EnvelopeStftConfiguration>(() => loadStored('envelope-stft', envelopeStftConfigurationSchema.parse, DEFAULT_STFT), markRenderMutation);
+  const [sweep, setSweep, sweepRef] = useControllerState<Sweep | undefined>(undefined, markRenderMutation);
+  const [history, setHistory, historyRef] = useControllerState<readonly Sweep[]>([], markRenderMutation);
+  const [detections, setDetections, detectionsRef] = useControllerState<readonly DetectedSignal[]>([], markRenderMutation);
+  const [classifications, setClassifications, classificationsRef] = useControllerState<readonly WaveformClassification[]>([], markRenderMutation);
+  const [explicitClassificationId, setExplicitClassificationId, explicitClassificationIdRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const classificationTargetSelection = useMemo(
+    () => resolveVisibleClassificationTargetSelection(
+      detections,
+      sweep,
+      explicitClassificationId,
+    ),
+    [detections, explicitClassificationId, sweep],
+  );
+  const selectedClassificationId = classificationTargetSelection.detectionId;
+  const [zeroCapture, setZeroCapture, zeroCaptureRef] = useControllerState<ZeroSpanCapture | undefined>(undefined, markRenderMutation);
+  const [envelope, setEnvelope, envelopeRef] = useControllerState<EnvelopeClassification | undefined>(undefined, markRenderMutation);
+  const [diagnostics, setDiagnostics, diagnosticsRef] = useControllerState<readonly string[]>([], markRenderMutation);
+  const [screenFrame, setScreenFrame, screenFrameRef] = useControllerState<InstrumentScreenFrame | undefined>(undefined, markRenderMutation);
+  const [selectedProfile, setSelectedProfile, selectedProfileRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [acquisition, setAcquisition, acquisitionRef] = useControllerState<AcquisitionState>('idle', markRenderMutation);
+  const [continuous, setContinuous, continuousRef] = useControllerState(false, markRenderMutation);
+  const [instrumentTransactionActive, setInstrumentTransactionActive] = useControllerState(false, markRenderMutation);
+  const [remoteGestureActive, setRemoteGestureActive] = useControllerState(false, markRenderMutation);
+  const [error, setError, errorRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [notice, setNotice] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [classifierRuntime] = useState(classifierRuntimeFactory);
 
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
-  const classifier = useRef(new SignalLabBayesianClassifier());
   const traceAccumulator = useRef(new TraceAccumulator(traceConfiguration));
-  const historyRef = useRef<readonly Sweep[]>([]);
-  const detectionsRef = useRef<readonly DetectedSignal[]>([]);
-  const zeroCaptureRef = useRef<ZeroSpanCapture | undefined>(undefined);
+  const stagedClassificationTargetIdRef = useRef<string | undefined>(undefined);
+  const zeroCaptureReceiptRef = useRef<DetectedPowerCaptureReceipt | undefined>(undefined);
   const zeroCaptureSpectrumSweepIdsRef = useRef<readonly string[] | undefined>(undefined);
-  const instrumentRef = useRef<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE);
-  const analyzerRef = useRef<AnalyzerConfig>(analyzer);
   const analyzerRevision = useRef(0);
-  const visibleFirmwareTraceIdsRef = useRef<FirmwareTraceVisibility>(visibleFirmwareTraceIds);
   const agentConnectionCandidates = useRef(new Map<string, InstrumentCandidate>());
   const configurationRevisions = useRef(new BoundedRevisionCache<RendererConfigurationRevision>(CONFIGURATION_REVISION_LIMIT));
   const historyConfigurationRevisions = useRef<readonly string[]>([]);
@@ -274,6 +344,8 @@ export function App() {
   const remoteGestureTask = useRef<Promise<void> | undefined>(undefined);
   const analysisSequence = useRef(0);
   const instrumentStateEventSequence = useRef(0);
+  const instrumentDiscoveryEventSequence = useRef(0);
+  const initializationGeneration = useRef(0);
 
   const session = instrument.session;
   const generatorOutput = generatorOutputState(session);
@@ -289,13 +361,56 @@ export function App() {
   const spectrumCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
   const detectedPowerCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
   const generatorCapability = session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
+  const signalLabProfileCapability = session?.capabilities.features.find((capability) => capability.kind === 'signal-lab-profile-selection');
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
-  const markerReadings = useMemo(() => readMarkers(markers, traceFrames, sweep?.actualRbwHz ?? 10_000), [markers, traceFrames, sweep?.actualRbwHz]);
+  const markerReadings = useMemo(
+    () => readMarkers(markers, traceFrames, detections),
+    [markers, traceFrames, detections],
+  );
+
+  const renderedControllerRevision = renderMutationRevision.current;
+  useLayoutEffect(() => {
+    committedRenderRevision.current = Math.max(committedRenderRevision.current, renderedControllerRevision);
+    for (const [id, waiter] of renderCommitWaiters.current) {
+      if (waiter.targetRevision > committedRenderRevision.current) continue;
+      window.clearTimeout(waiter.timeout);
+      renderCommitWaiters.current.delete(id);
+      waiter.resolve();
+    }
+  });
+
+  useEffect(() => {
+    rendererMounted.current = true;
+    return () => {
+      rendererMounted.current = false;
+      for (const waiter of renderCommitWaiters.current.values()) {
+        window.clearTimeout(waiter.timeout);
+        waiter.reject(new Error('TinySA Atomizer renderer unmounted before the requested controller state committed'));
+      }
+      renderCommitWaiters.current.clear();
+    };
+  }, []);
+
+  function awaitControllerRenderCommit(): Promise<void> {
+    const targetRevision = renderMutationRevision.current;
+    if (committedRenderRevision.current >= targetRevision) return Promise.resolve();
+    if (!rendererMounted.current) return Promise.reject(new Error('TinySA Atomizer renderer is unavailable'));
+    return new Promise<void>((resolve, reject) => {
+      const id = Symbol('renderer-commit-waiter');
+      const timeout = window.setTimeout(() => {
+        renderCommitWaiters.current.delete(id);
+        reject(new Error('TinySA Atomizer renderer did not commit the staged controller state before the bounded computer-action deadline'));
+      }, RENDER_COMMIT_TIMEOUT_MILLISECONDS);
+      renderCommitWaiters.current.set(id, { targetRevision, resolve, reject, timeout });
+    });
+  }
 
   useEffect(() => {
     const unsubscribe = window.atomizerInstrument.subscribe(handleInstrumentEvent);
-    void initialize();
+    const generation = ++initializationGeneration.current;
+    void initialize(generation);
     return () => {
+      initializationGeneration.current++;
       if (continuousRequested.current) {
         void stopInstrumentStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
@@ -312,11 +427,7 @@ export function App() {
   useEffect(() => saveStored('generator', generator), [generator]);
   useEffect(() => saveStored('detector', detectionConfig), [detectionConfig]);
   useEffect(() => saveStored('zero-span', zeroConfig), [zeroConfig]);
-  useEffect(() => {
-    traceAccumulator.current.configure(traceConfiguration);
-    setTraceFrames(traceAccumulator.current.frames());
-    saveStored('traces', traceConfiguration);
-  }, [traceConfiguration]);
+  useEffect(() => saveStored('traces', traceConfiguration), [traceConfiguration]);
   useEffect(() => saveStored('firmware-trace-visibility', visibleFirmwareTraceIds), [visibleFirmwareTraceIds]);
   useEffect(() => saveStored('markers', markers), [markers]);
   useEffect(() => saveStored('marker-search', markerSearchConfiguration), [markerSearchConfiguration]);
@@ -325,52 +436,68 @@ export function App() {
   useEffect(() => saveStored('waterfall', waterfallConfiguration), [waterfallConfiguration]);
   useEffect(() => saveStored('channel-measurement', channelConfiguration), [channelConfiguration]);
   useEffect(() => {
-    if (!selectedClassificationId || !detections.some((item) => item.id === selectedClassificationId)) {
-      selectClassificationCandidate(detections[0]?.id);
+    if (explicitClassificationId !== undefined
+      && classificationTargetSelection.explicitDetectionId === undefined) {
+      setExplicitClassificationId(undefined);
     }
-  }, [detections, selectedClassificationId]);
+    stageClassificationCandidate(
+      classificationTargetSelection.rawTargetId ?? selectedClassificationId,
+    );
+  }, [detections, explicitClassificationId, classificationTargetSelection.explicitDetectionId, classificationTargetSelection.rawTargetId, selectedClassificationId]);
   useEffect(() => saveStored('envelope-stft', stftConfiguration), [stftConfiguration]);
   useEffect(() => {
-    if (session && !detectedPowerCapability && measurementView === 'envelope-stft') setMeasurementView('spectrum');
-  }, [session, detectedPowerCapability, measurementView]);
-  useEffect(() => {
-    if (session && !generatorCapability && workspace === 'generator') setWorkspace('spectrum');
-  }, [session, generatorCapability, workspace]);
+    if (session && !generatorCapability && !signalLabProfileCapability && workspace === 'generator') setWorkspace('spectrum');
+  }, [session, generatorCapability, signalLabProfileCapability, workspace]);
   useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(undefined), 4_000);
     return () => window.clearTimeout(timeout);
   }, [notice]);
-  useEffect(() => {
-    detector.current.configure(detectionConfig);
-    tracker.current.configure(detectionConfig);
-    detectionsRef.current = [];
-    setDetections([]);
-    setClassifications([]);
-    clearClassificationCapture();
-  }, [detectionConfig]);
-
-  async function initialize(): Promise<void> {
+  async function initialize(generation: number): Promise<void> {
     try {
       const stateEventSequence = instrumentStateEventSequence.current;
       const state = await getInstrumentState();
+      if (!rendererMounted.current || initializationGeneration.current !== generation) return;
       // A subscribed lifecycle event is newer than a state snapshot whose IPC
       // request was still in flight. Never let that older snapshot disconnect or
       // deconfigure the renderer after the event has already been accepted.
       if (instrumentStateEventSequence.current === stateEventSequence) acceptInstrumentState(state);
+      const discoveryEventSequence = instrumentDiscoveryEventSequence.current;
       const discovery = await discoverInstruments();
-      acceptDiscovery(discovery.candidates, discovery.failures);
+      if (!rendererMounted.current || initializationGeneration.current !== generation) return;
+      if (instrumentDiscoveryEventSequence.current === discoveryEventSequence) {
+        acceptDiscovery(discovery.candidates, discovery.failures);
+      }
     } catch (value) {
-      setError(errorMessage(value));
+      if (rendererMounted.current && initializationGeneration.current === generation) {
+        setError(errorMessage(value));
+      }
     }
   }
 
-  function handleInstrumentEvent(value: AtomizerInstrumentEvent): void {
-    const event = atomizerInstrumentEventSchema.parse(value);
+  function handleInstrumentEvent(value: unknown): void {
+    try {
+      handleValidatedInstrumentEvent(atomizerInstrumentEventSchema.parse(value));
+    } catch (failure) {
+      const detail = errorMessage(failure).replace(/\s+/g, ' ').slice(0, 480);
+      const message = `Instrument event rejected at the renderer boundary: ${detail}`;
+      setError(message);
+      const ownership = continuousStreamOwnership.current;
+      if (continuousRequested.current && ownership) {
+        setAcquisition('failed');
+        requestContinuousMeasurementStop(ownership, message);
+      }
+    }
+  }
+
+  function handleValidatedInstrumentEvent(event: AtomizerInstrumentEvent): void {
     if (event.type !== 'discovery' && event.type !== 'measurement') {
       instrumentStateEventSequence.current++;
     }
-    if (event.type === 'discovery') acceptDiscovery(event.result.candidates, event.result.failures);
+    if (event.type === 'discovery') {
+      instrumentDiscoveryEventSequence.current++;
+      acceptDiscovery(event.result.candidates, event.result.failures);
+    }
     else if (event.type === 'connected') acceptSession(event.session);
     else if (event.type === 'configured') acceptConfiguration(event.configuration);
     else if (event.type === 'configuration-invalidated') {
@@ -564,8 +691,11 @@ export function App() {
   async function refreshCandidatesOwned(): Promise<void> {
     setError(undefined);
     try {
+      const discoveryEventSequence = instrumentDiscoveryEventSequence.current;
       const next = await discoverInstruments();
-      acceptDiscovery(next.candidates, next.failures);
+      if (instrumentDiscoveryEventSequence.current === discoveryEventSequence) {
+        acceptDiscovery(next.candidates, next.failures);
+      }
     } catch (value) { setError(errorMessage(value)); }
   }
 
@@ -590,7 +720,7 @@ export function App() {
   }
 
   async function connect(): Promise<void> {
-    const candidate = candidates.find((value) => instrumentCandidateUiKey(value) === selectedCandidateId);
+    const candidate = candidatesRef.current.find((value) => instrumentCandidateUiKey(value) === selectedCandidateIdRef.current);
     if (!candidate) { setError('Select an available instrument source before connecting'); return; }
     try { await connectCandidate(candidate); } catch { /* Presented in the connection dialog. */ }
   }
@@ -635,7 +765,6 @@ export function App() {
   function acceptInstrumentState(next: AtomizerInstrumentState, initializeSelection = false): void {
     const previousSessionId = instrumentRef.current.session?.sessionId;
     if (next.session?.sessionId !== previousSessionId) invalidateAcquiredEvidence(true);
-    instrumentRef.current = next;
     setInstrument(next);
     if (next.session && (initializeSelection || next.session.sessionId !== previousSessionId)) initializeSessionSelection(next.session);
   }
@@ -688,14 +817,14 @@ export function App() {
     setSelectedProfile(profileId);
     const selectedProfileEntry = profileCapability?.profiles.find((profile) => profile.profileId === profileId);
     const detectedPower = next.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
-    if (selectedProfileEntry) setZeroConfig((current) => {
+    if (selectedProfileEntry) updateZeroSpanConfiguration((current) => {
       const staged = zeroSpanConfigSchema.parse({ ...current, frequencyHz: selectedProfileEntry.centerFrequencyHz });
       return detectedPower?.kind === 'detected-power-timeseries'
         ? reconcileDetectedPowerConfiguration(detectedPower, staged)
         : staged;
     });
     else if (detectedPower?.kind === 'detected-power-timeseries') {
-      setZeroConfig((current) => reconcileDetectedPowerConfiguration(detectedPower, current));
+      updateZeroSpanConfiguration((current) => reconcileDetectedPowerConfiguration(detectedPower, current));
     }
     const spectrum = next.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
     if (!spectrum) {
@@ -723,7 +852,6 @@ export function App() {
       });
       const reconciled = reconcileAnalyzerConfiguration(spectrum, staged);
       if (!sameAnalyzerConfiguration(current, reconciled)) {
-        analyzerRef.current = reconciled;
         analyzerRevision.current++;
         setAnalyzer(reconciled);
       }
@@ -739,7 +867,7 @@ export function App() {
   }
 
   async function makeSelectedDefault(): Promise<void> {
-    const candidate = candidates.find((value) => instrumentCandidateUiKey(value) === selectedCandidateId);
+    const candidate = candidatesRef.current.find((value) => instrumentCandidateUiKey(value) === selectedCandidateIdRef.current);
     if (!candidate) { setError('Select an instrument source before setting the startup default'); return; }
     try {
       const preference = await writeInstrumentPreference(instrumentPreferenceSelectionForCandidate(candidate));
@@ -907,7 +1035,6 @@ export function App() {
       sweptSpectrumConfigurationFor(capability, next);
     }
     if (sameAnalyzerConfiguration(previous, next)) return { configuration: previous, changed: false };
-    analyzerRef.current = next;
     analyzerRevision.current++;
     setAnalyzer(next);
     setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, next.startHz, next.stopHz));
@@ -923,8 +1050,6 @@ export function App() {
       zeroCaptureConfigurationRevision.current = undefined;
       configurationRevisions.current.clear();
     }
-    historyRef.current = [];
-    detectionsRef.current = [];
     traceAccumulator.current.reset();
     tracker.current.reset();
     setSweep(undefined);
@@ -933,35 +1058,74 @@ export function App() {
     setFirmwareTraceFrames([]);
     setDetections([]);
     setClassifications([]);
-    setSelectedClassificationId(undefined);
+    setExplicitClassificationId(undefined);
+    stagedClassificationTargetIdRef.current = undefined;
     clearClassificationCapture();
   }
 
   function clearClassificationCapture(): void {
     zeroCaptureConfigurationRevision.current = undefined;
     retainEvidenceConfigurationRevisions();
-    zeroCaptureRef.current = undefined;
+    zeroCaptureReceiptRef.current = undefined;
     zeroCaptureSpectrumSweepIdsRef.current = undefined;
     setZeroCapture(undefined);
     setEnvelope(undefined);
   }
 
-  function selectClassificationCandidate(detectionId: string | undefined): number | undefined {
-    const changed = detectionId !== selectedClassificationId;
-    setSelectedClassificationId(detectionId);
+  function stageClassificationCandidate(detectionId: string | undefined): number | undefined {
+    const changed = detectionId !== stagedClassificationTargetIdRef.current;
+    stagedClassificationTargetIdRef.current = detectionId;
     if (changed) clearClassificationCapture();
     if (!detectionId) return undefined;
-    const detection = detectionsRef.current.find((candidate) => candidate.id === detectionId)
-      ?? detections.find((candidate) => candidate.id === detectionId);
+    const detection = detectionsRef.current.find((candidate) => candidate.id === detectionId);
     const capability = instrumentRef.current.session?.capabilities.acquisitions
       .find((candidate) => candidate.kind === 'detected-power-timeseries');
     if (!detection || capability?.kind !== 'detected-power-timeseries') return undefined;
     const frequencyHz = projectDetectedPowerTuneHz(detection.peakHz, capability.centerFrequencyHz);
-    setZeroConfig((current) => reconcileDetectedPowerConfiguration(
+    updateZeroSpanConfiguration((current) => reconcileDetectedPowerConfiguration(
       capability,
-      zeroSpanConfigSchema.parse({ ...current, frequencyHz }),
+      zeroSpanConfigSchema.parse({
+        ...current,
+        ...BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
+        frequencyHz,
+      }),
     ));
     return frequencyHz;
+  }
+
+  function selectClassificationCandidate(detectionId: string | undefined): number | undefined {
+    const currentDetections = detectionsRef.current;
+    const selection = resolveVisibleClassificationTargetSelection(
+      currentDetections,
+      sweepRef.current,
+      detectionId,
+    );
+    setExplicitClassificationId(selection.explicitDetectionId);
+    return stageClassificationCandidate(
+      selection.rawTargetId ?? selection.detectionId,
+    );
+  }
+
+  function classificationEvidenceForDetection(
+    detection: DetectedSignal,
+    sweeps: readonly Sweep[],
+  ) {
+    const capture = zeroCaptureRef.current;
+    const receipt = zeroCaptureReceiptRef.current;
+    const spectrumSweepIds = zeroCaptureSpectrumSweepIdsRef.current;
+    if (!capture
+      || !receipt
+      || !spectrumSweepIds
+      || receipt.selection.projectedRepresentativeId !== detection.id
+      || !captureReceiptRepresentativeMatches(receipt, detection)) {
+      return { sweeps };
+    }
+    return {
+      sweeps,
+      zeroSpan: capture,
+      zeroSpanSpectrumSweepIds: spectrumSweepIds,
+      detectedPowerCaptureReceipt: receipt,
+    };
   }
 
   function synchronizeContinuousAnalyzer(): Promise<void> {
@@ -1015,23 +1179,6 @@ export function App() {
     }
   }
 
-  function updateZeroSpanFromUi(input: ZeroSpanConfig): void {
-    try {
-      const next = zeroSpanConfigSchema.parse(input);
-      const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
-      if (!capability || capability.kind !== 'detected-power-timeseries') {
-        throw new Error('Active instrument does not advertise detected-power acquisition');
-      }
-      detectedPowerConfigurationFor(capability, next);
-      if (JSON.stringify(next) === JSON.stringify(zeroConfig)) return;
-      setZeroConfig(next);
-      clearClassificationCapture();
-    } catch (value) {
-      setError(`Detected-power configuration failed: ${errorMessage(value)}`);
-      throw value;
-    }
-  }
-
   async function recordSweep(
     next: Sweep,
     configurationRevision: string,
@@ -1048,7 +1195,6 @@ export function App() {
     const sequence = ++analysisSequence.current;
     const nextHistory = [next, ...historyRef.current].slice(0, HISTORY_LIMIT);
     const nextHistoryRevisions = [configurationRevision, ...historyConfigurationRevisions.current].slice(0, HISTORY_LIMIT);
-    historyRef.current = nextHistory;
     historyConfigurationRevisions.current = nextHistoryRevisions;
     retainEvidenceConfigurationRevisions();
     setSweep(next);
@@ -1056,32 +1202,49 @@ export function App() {
     setTraceFrames(traceAccumulator.current.update(next));
     setFirmwareTraceFrames(next.firmwareTraces ?? []);
     const candidates = detector.current.analyze(next);
-    const tracked = tracker.current.update(next, candidates);
-    detectionsRef.current = tracked;
+    const trackerRows = tracker.current.update(next, candidates);
+    const tracked = sanitizeClassificationEvidenceDetections(trackerRows);
+    if (tracked.length !== trackerRows.length) {
+      console.warn('[Classification] quarantined malformed tracker rows before ranking, rendering, or agent projection', {
+        sweepId: next.id,
+        quarantinedRows: trackerRows.length - tracked.length,
+      });
+    }
     setDetections(tracked);
+    // Detection IDs intentionally persist across tracker updates, so a result
+    // from the preceding sweep can otherwise look current while this sweep is
+    // being classified (or remain indefinitely if classification rejects).
+    // Publish no classifier projection until it is bound to this evidence
+    // revision.
+    setClassifications([]);
     let currentSignals = classificationRepresentatives(
       tracked.filter((item) => item.state === 'active'),
-      zeroCaptureRef.current?.targetDetectionId,
+      zeroCaptureReceiptRef.current?.selection.projectedRepresentativeId
+        ?? zeroCaptureRef.current?.targetDetectionId,
     );
     const cachedCapture = zeroCaptureRef.current;
+    const cachedReceipt = zeroCaptureReceiptRef.current;
     const cachedSweepIds = zeroCaptureSpectrumSweepIdsRef.current;
     if (cachedCapture) {
-      const target = currentSignals.find((item) => item.id === cachedCapture.targetDetectionId);
+      const projectedDetectionId = cachedReceipt?.selection.projectedRepresentativeId
+        ?? cachedCapture.targetDetectionId;
+      const target = currentSignals.find((item) => item.id === projectedDetectionId);
       const currentSweepIds = target ? classificationWindowSweepIds(target, nextHistory) : [];
-      if (!cachedSweepIds
+      if (!cachedReceipt
+        || !target
+        || !captureReceiptRepresentativeMatches(cachedReceipt, target)
+        || !cachedSweepIds
         || currentSweepIds.length !== cachedSweepIds.length
         || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
         clearClassificationCapture();
         currentSignals = classificationRepresentatives(tracked.filter((item) => item.state === 'active'));
       }
     }
-    const results = await Promise.all(currentSignals.map((item) => classifier.current.classify(item, {
-      sweeps: nextHistory,
-      zeroSpan: zeroCaptureRef.current,
-      ...(zeroCaptureSpectrumSweepIdsRef.current
-        ? { zeroSpanSpectrumSweepIds: zeroCaptureSpectrumSweepIdsRef.current }
-        : {}),
-    })));
+    const results = await Promise.all(currentSignals.map((item) =>
+      classifierRuntime.classifier.classify(
+        item,
+        classificationEvidenceForDetection(item, nextHistory),
+      )));
     if (sequence === analysisSequence.current && stillCurrent()) setClassifications(results);
     return true;
   }
@@ -1158,18 +1321,65 @@ export function App() {
   async function acquireZeroSpanOwned(): Promise<ZeroSpanCapture> {
     const activeSession = requireConnected();
     const sessionId = activeSession.sessionId;
-    const validated = zeroSpanConfigSchema.parse(zeroConfig);
+    const validated = zeroSpanConfigSchema.parse(zeroConfigRef.current);
+    const preCaptureSignals = structuredClone(detectionsRef.current);
+    const preCaptureHistory = [...historyRef.current];
+    const preCaptureSweep = sweepRef.current;
+    const requestedSelection = resolveVisibleClassificationTargetSelection(
+      preCaptureSignals,
+      preCaptureSweep,
+      explicitClassificationIdRef.current !== undefined
+        ? explicitClassificationIdRef.current
+        : undefined,
+    );
+    const requestedRawTargetId = requestedSelection.rawTargetId
+      ?? requestedSelection.detectionId;
+    const admittedTarget = resolveRuntimeAdmittedCaptureTarget(
+      preCaptureSignals,
+      preCaptureHistory,
+      preCaptureSweep,
+      requestedRawTargetId,
+    );
+    if (requestedRawTargetId !== undefined && admittedTarget === undefined) {
+      const message = `Selected classification target ${requestedRawTargetId} is not available on an exact runtime-admitted eight-sweep window`;
+      setError(message);
+      throw new Error(message);
+    }
+    const preCaptureTarget = admittedTarget?.rawTarget;
+    const preCaptureSweepIds = admittedTarget?.spectrumSweepIds ?? [];
     setError(undefined);
     setAcquisition('acquiring');
     try {
       const reservation = configurationRevisions.current.reserve();
       let configuration: InstrumentConfigurationState;
+      let admittedTargetTuneHz: number | undefined;
       try {
         const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
         if (!capability || capability.kind !== 'detected-power-timeseries') {
           throw new Error('Active instrument does not advertise detected-power acquisition');
         }
-        const requested = detectedPowerConfigurationFor(capability, validated);
+        const projectedTargetTuneHz = preCaptureTarget === undefined
+          ? undefined
+          : projectDetectedPowerTuneHz(
+            preCaptureTarget.peakHz,
+            capability.centerFrequencyHz,
+          );
+        admittedTargetTuneHz = admittedTarget === undefined
+          ? undefined
+          : projectedTargetTuneHz;
+        const captureConfiguration = admittedTargetTuneHz === undefined
+          ? validated
+          : zeroSpanConfigSchema.parse({
+            ...validated,
+            frequencyHz: admittedTargetTuneHz,
+          });
+        const requested = detectedPowerConfigurationFor(
+          capability,
+          captureConfiguration,
+        );
+        if (admittedTargetTuneHz !== undefined) {
+          commitZeroSpanConfiguration(captureConfiguration);
+        }
         configuration = await configureInstrument(requested);
         if (configuration.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
           throw new Error(`Detected-power configuration response was invalidated with instrument session ${sessionId}`);
@@ -1196,12 +1406,51 @@ export function App() {
           throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configuration.configurationRevision}`);
         }
         const requested = requireConfiguration(measurement.configurationRevision, 'detected-power-timeseries', `Measurement ${measurement.measurementId}`);
-        const capture = projectDetectedPowerMeasurement(measurement, activeSession, requested, selectedClassificationId);
+        const capture = projectDetectedPowerMeasurement(
+          measurement,
+          activeSession,
+          requested,
+          preCaptureTarget?.id,
+        );
+        let captureReceipt: DetectedPowerCaptureReceipt | undefined;
+        if (admittedTarget
+          && preCaptureTarget
+          && admittedTargetTuneHz === capture.frequencyHz
+          && preCaptureSweepIds.length === 8) {
+          try {
+            captureReceipt = createDetectedPowerCaptureReceipt({
+              activeSignals: preCaptureSignals,
+              evidenceSweeps: preCaptureHistory,
+              ...(requestedSelection.origin === 'explicit'
+                ? { preferredDetectionId: preCaptureTarget.id }
+                : {}),
+              capture,
+              admittedTargetTuneHz,
+              spectrumSweepIds: preCaptureSweepIds,
+            });
+          } catch (value) {
+            console.warn(
+              '[Classification] detected-power capture remains unqualified',
+              value,
+            );
+            setNotice(
+              `Envelope captured without Bayesian qualification: ${errorMessage(value)}`,
+            );
+          }
+        } else if (preCaptureTarget) {
+          setNotice(
+            'Envelope captured without Bayesian qualification: target was not admitted on the exact eight-sweep window and tune',
+          );
+        }
         zeroCaptureConfigurationRevision.current = measurement.configurationRevision;
         retainEvidenceConfigurationRevisions();
-        zeroCaptureRef.current = capture;
+        zeroCaptureReceiptRef.current = captureReceipt;
         setZeroCapture(capture);
         setEnvelope(classifyZeroSpanEnvelope(capture));
+        // The prior spectrum-only result is not a result for this newly
+        // published detected-power evidence. Fail closed while the qualified
+        // evidence revision is recomputed, including on classifier failure.
+        setClassifications([]);
         try {
           await configureAnalyzer(analyzerRef.current);
         } catch (value) {
@@ -1209,21 +1458,17 @@ export function App() {
         }
         const sequence = ++analysisSequence.current;
         const active = classificationRepresentatives(
-          detectionsRef.current.filter((item) => item.state === 'active'),
-          capture.targetDetectionId,
+          preCaptureSignals.filter((item) => item.state === 'active'),
+          admittedTarget?.detection.id,
         );
-        const target = active.find((item) => item.id === capture.targetDetectionId);
-        const capturedSweepIds = target ? classificationWindowSweepIds(target, historyRef.current) : [];
-        zeroCaptureSpectrumSweepIdsRef.current = capturedSweepIds.length === 8
-          ? capturedSweepIds
+        zeroCaptureSpectrumSweepIdsRef.current = captureReceipt
+          ? preCaptureSweepIds
           : undefined;
-        const results = await Promise.all(active.map((item) => classifier.current.classify(item, {
-          sweeps: historyRef.current,
-          zeroSpan: capture,
-          ...(zeroCaptureSpectrumSweepIdsRef.current
-            ? { zeroSpanSpectrumSweepIds: zeroCaptureSpectrumSweepIdsRef.current }
-            : {}),
-        })));
+        const results = await Promise.all(active.map((item) =>
+          classifierRuntime.classifier.classify(
+            item,
+            classificationEvidenceForDetection(item, preCaptureHistory),
+          )));
         if (sequence === analysisSequence.current) setClassifications(results);
         setAcquisition('complete');
         return capture;
@@ -1271,7 +1516,7 @@ export function App() {
     }
   }
 
-  async function configureGeneratorFromUi(): Promise<void> { try { await configureGeneratorWith(generator); } catch { /* Visible in the workspace alert. */ } }
+  async function configureGeneratorFromUi(): Promise<void> { try { await configureGeneratorWith(generatorRef.current); } catch { /* Visible in the workspace alert. */ } }
 
   function setOutput(enabled: boolean) {
     return runInstrumentTransaction(enabled ? 'enable-rf-output' : 'disable-rf-output', () => setOutputOwned(enabled));
@@ -1282,7 +1527,7 @@ export function App() {
     setError(undefined);
     setAcquisition('configuring');
     try {
-      await configureGeneratorOwned(generatorConfigSchema.parse(generator));
+      await configureGeneratorOwned(generatorConfigSchema.parse(generatorRef.current));
       const next = await executeInstrumentFeature({ kind: 'rf-generator', action: 'set-output', enabled });
       acceptFeatureResult(next);
       setAcquisition('complete');
@@ -1331,7 +1576,7 @@ export function App() {
 
   async function captureScreenOwned(): Promise<InstrumentScreenFrame> {
     requireConnected();
-    assertWorkspaceTransition(workspace, 'device', currentGeneratorOutput());
+    assertWorkspaceTransition(workspaceRef.current, 'device', currentGeneratorOutput());
     setError(undefined);
     setAcquisition('acquiring');
     try {
@@ -1427,10 +1672,11 @@ export function App() {
   function tapScreen(point: InstrumentScreenPoint): void { void queueRemoteTap(point); }
 
   async function exportLatest(format: 'csv' | 'json'): Promise<unknown> {
-    if (!sweep) throw new Error('Acquire a complete spectrum sweep before exporting');
+    const latestSweep = sweepRef.current;
+    if (!latestSweep) throw new Error('Acquire a complete spectrum sweep before exporting');
     setError(undefined);
     try {
-      const result = await window.atomizerFiles.exportSweep({ sweep, format });
+      const result = await window.atomizerFiles.exportSweep({ sweep: latestSweep, format });
       if (result.status === 'saved') setNotice(`Saved ${result.bytesWritten.toLocaleString()} provenance-bearing bytes to ${result.path}`);
       return result;
     } catch (value) {
@@ -1439,9 +1685,15 @@ export function App() {
     }
   }
 
+  async function exportLatestFromUi(format: 'csv' | 'json'): Promise<void> {
+    try { await exportLatest(format); }
+    catch { /* exportLatest already presents the boundary failure in the workspace. */ }
+  }
+
   function applyWorkspace(next: WorkspaceId): void {
-    assertWorkspaceTransition(workspace, next, currentGeneratorOutput());
-    setWorkspace(next);
+    const canonical = next === 'detection' ? 'classification' : next;
+    assertWorkspaceTransition(workspaceRef.current, canonical, currentGeneratorOutput());
+    setWorkspace(canonical);
     setError(undefined);
   }
 
@@ -1450,9 +1702,37 @@ export function App() {
     catch (value) { setError(errorMessage(value)); }
   }
 
+  function applyDetectionConfiguration(input: SignalDetectionConfig): SignalDetectionConfig {
+    const next = signalDetectionConfigSchema.parse(input);
+    if (JSON.stringify(next) === JSON.stringify(detectionConfigRef.current)) return detectionConfigRef.current;
+    detector.current.configure(next);
+    tracker.current.configure(next);
+    analysisSequence.current++;
+    stagedClassificationTargetIdRef.current = undefined;
+    setDetectionConfig(next);
+    setDetections([]);
+    setClassifications([]);
+    setExplicitClassificationId(undefined);
+    clearClassificationCapture();
+    return next;
+  }
+
+  function commitZeroSpanConfiguration(input: ZeroSpanConfig): ZeroSpanConfig {
+    const next = zeroSpanConfigSchema.parse(input);
+    setZeroConfig(next);
+    return next;
+  }
+
+  function updateZeroSpanConfiguration(update: (current: ZeroSpanConfig) => ZeroSpanConfig): ZeroSpanConfig {
+    return commitZeroSpanConfiguration(update(zeroConfigRef.current));
+  }
+
   function applyTrace(input: TraceConfiguration): TraceConfiguration {
     const trace = traceConfigurationSchema.parse(input);
-    setTraceConfiguration((current) => traceBankConfigurationSchema.parse(current.map((item) => item.id === trace.id ? trace : item)));
+    const next = traceBankConfigurationSchema.parse(traceConfigurationRef.current.map((item) => item.id === trace.id ? trace : item));
+    traceAccumulator.current.configure(next);
+    setTraceConfiguration(next);
+    setTraceFrames(traceAccumulator.current.frames());
     setError(undefined);
     return trace;
   }
@@ -1476,7 +1756,6 @@ export function App() {
       const next = firmwareTraceVisibilitySchema.parse(visible
         ? [...new Set([...current, traceId])].sort((left, right) => left - right)
         : current.filter((item) => item !== traceId));
-      visibleFirmwareTraceIdsRef.current = next;
       setVisibleFirmwareTraceIds(next);
       setError(undefined);
       return next;
@@ -1488,16 +1767,26 @@ export function App() {
 
   function applyMarker(input: MarkerConfiguration): MarkerConfiguration {
     const marker = markerConfigurationSchema.parse(input);
-    setMarkers((current) => {
-      const next = current.map((item) => item.id === marker.id ? marker : item);
-      if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
-        return next.map((item) => item.id === marker.referenceMarkerId && !item.enabled ? { ...item, enabled: true } : item);
-      }
-      return next;
-    });
+    let next = markersRef.current.map((item) => item.id === marker.id ? marker : item);
+    if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
+      next = next.map((item) => item.id === marker.referenceMarkerId && !item.enabled ? { ...item, enabled: true } : item);
+    }
+    setMarkers(next);
     setActiveMarkerId(marker.id);
     setError(undefined);
     return marker;
+  }
+
+  function previewMarkerReading(marker: MarkerConfiguration) {
+    let preview = markersRef.current.map((item) => item.id === marker.id ? marker : item);
+    if (marker.mode === 'delta' && marker.referenceMarkerId !== undefined) {
+      preview = preview.map((item) => item.id === marker.referenceMarkerId && !item.enabled
+        ? { ...item, enabled: true }
+        : item);
+    }
+    const frames = traceAccumulator.current.frames();
+    return readMarkers(preview, frames, detectionsRef.current)
+      .find((reading) => reading.markerId === marker.id);
   }
 
   function configureMarker(input: MarkerConfiguration): void {
@@ -1505,19 +1794,30 @@ export function App() {
     catch (value) { setError(`Marker configuration failed: ${errorMessage(value)}`); }
   }
 
-  function placeActiveMarker(frequencyHz: number): void {
-    const marker = markers.find((item) => item.id === activeMarkerId);
-    if (!marker) { setError(`Active marker M${activeMarkerId} is unavailable`); return; }
-    configureMarker({ ...marker, enabled: true, tracking: 'fixed', frequencyHz });
+  function placeActiveMarker(frequencyHz: number): boolean {
+    try {
+      const markerId = activeMarkerIdRef.current;
+      const marker = markersRef.current.find((item) => item.id === markerId);
+      if (!marker) throw new Error(`Active marker M${markerId} is unavailable`);
+      const applied = applyMarker({ ...marker, enabled: true, tracking: 'fixed', frequencyHz });
+      const committed = markersRef.current.find((item) => item.id === markerId);
+      return applied.frequencyHz === frequencyHz
+        && committed?.enabled === true
+        && committed.tracking === 'fixed'
+        && committed.frequencyHz === frequencyHz;
+    } catch (value) {
+      setError(`Marker configuration failed: ${errorMessage(value)}`);
+      return false;
+    }
   }
 
-  function runMarkerSearch(action: MarkerSearchAction, markerId: MarkerId = activeMarkerId): void {
+  function runMarkerSearch(action: MarkerSearchAction, markerId: MarkerId = activeMarkerIdRef.current): void {
     try {
-      const marker = markers.find((item) => item.id === markerId);
+      const marker = markersRef.current.find((item) => item.id === markerId);
       if (!marker) throw new Error(`Marker M${markerId} is unavailable`);
-      const frame = traceFrames.find((item) => item.traceId === marker.traceId);
+      const frame = traceAccumulator.current.frames().find((item) => item.traceId === marker.traceId);
       if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
-      const frequencyHz = searchMarker(frame, marker.frequencyHz, action, markerSearchConfiguration);
+      const frequencyHz = searchMarker(frame, marker.frequencyHz, action, markerSearchConfigurationRef.current, detectionsRef.current);
       applyMarker({ ...marker, enabled: true, tracking: action === 'peak' ? 'peak' : 'fixed', frequencyHz });
       setNotice(`M${marker.id} moved by ${action.replace('-', ' ')} search`);
     } catch (value) { setError(`Marker search failed: ${errorMessage(value)}`); }
@@ -1548,7 +1848,7 @@ export function App() {
   }
 
   function applyMeasurementView(input: MeasurementViewId): MeasurementViewId {
-    const next = measurementViewIdSchema.parse(input);
+    const next = visibleMeasurementView(input);
     applyWorkspace('spectrum');
     setMeasurementView(next);
     return next;
@@ -1590,24 +1890,22 @@ export function App() {
     return configuration;
   }
 
-  function configureEnvelopeStft(input: EnvelopeStftConfiguration): void {
-    try { applyEnvelopeStft(input); }
-    catch (value) { setError(`Envelope STFT configuration failed: ${errorMessage(value)}`); }
-  }
-
   function requireChannelMeasurement() {
-    if (!sweep) throw new Error('Acquire a complete spectrum sweep before reading channel measurements');
-    return measureChannel(sweep, channelConfiguration);
+    const latestSweep = sweepRef.current;
+    if (!latestSweep) throw new Error('Acquire a complete spectrum sweep before reading channel measurements');
+    return measureChannel(latestSweep, channelConfigurationRef.current);
   }
 
   function requireEnvelopeStft() {
-    if (!zeroCapture) throw new Error('Acquire a complete zero-span capture before reading the envelope STFT');
-    return computeEnvelopeStft(zeroCapture, stftConfiguration);
+    const capture = zeroCaptureRef.current;
+    if (!capture) throw new Error('Acquire a complete zero-span capture before reading the envelope STFT');
+    return computeEnvelopeStft(capture, stftConfigurationRef.current);
   }
 
   function autoScaleDisplay(): void {
-    if (!sweep) { setError('Acquire a sweep before auto-scaling the display'); return; }
-    configureDisplay(autoScaleSpectrum(sweep));
+    const latestSweep = sweepRef.current;
+    if (!latestSweep) { setError('Acquire a sweep before auto-scaling the display'); return; }
+    configureDisplay(autoScaleSpectrum(latestSweep));
   }
 
   function systemTopology() {
@@ -1623,14 +1921,14 @@ export function App() {
         usbIdentityVerified: active.provenance.sourceKind === 'serial-port' ? active.provenance.device.usbIdentityVerified : false,
         sessionId: active.sessionId,
       } : null,
-      firmwareTwin: { owner: 'tinysa-firmware', available: candidates.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
-      signalLab: { owner: 'tinysa-signal-lab', available: candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v1', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+      firmwareTwin: { owner: 'tinysa-firmware', available: candidatesRef.current.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
+      signalLab: { owner: 'tinysa-signal-lab', available: candidatesRef.current.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v1', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
     } as const;
   }
 
   function agentStagedConfiguration(
-    stagedAnalyzer: AnalyzerConfig = analyzer,
-    stagedDetectedPower: ZeroSpanConfig = zeroConfig,
+    stagedAnalyzer: AnalyzerConfig = analyzerRef.current,
+    stagedDetectedPower: ZeroSpanConfig = zeroConfigRef.current,
   ) {
     const acquisitions = instrumentRef.current.session?.capabilities.acquisitions ?? [];
     const spectrum = acquisitions.find((capability) => capability.kind === 'swept-spectrum');
@@ -1688,8 +1986,8 @@ export function App() {
   }
 
   function agentConfigurationContext(
-    stagedAnalyzer: AnalyzerConfig = analyzer,
-    stagedDetectedPower: ZeroSpanConfig = zeroConfig,
+    stagedAnalyzer: AnalyzerConfig = analyzerRef.current,
+    stagedDetectedPower: ZeroSpanConfig = zeroConfigRef.current,
   ) {
     const active = instrumentRef.current.session?.configuration;
     return {
@@ -1703,39 +2001,77 @@ export function App() {
   }
 
   function applicationContext(): string {
+    const currentInstrument = instrumentRef.current;
+    const currentWorkspace = workspaceRef.current;
+    const currentMeasurementView = measurementViewRef.current;
+    const currentSweep = sweepRef.current;
+    const currentHistory = historyRef.current;
+    const currentDetections = detectionsRef.current;
+    const currentClassifications = classificationsRef.current;
+    const currentZeroCapture = zeroCaptureRef.current;
+    const currentZeroCaptureReceipt = zeroCaptureReceiptRef.current;
+    const currentEnvelope = envelopeRef.current;
+    const currentTraceFrames = traceFramesRef.current;
+    const currentMarkers = markersRef.current;
+    const currentMarkerReadings = readMarkers(
+      currentMarkers,
+      currentTraceFrames,
+      currentDetections,
+    );
+    const currentMetrics = currentSweep ? calculateSweepMetrics(currentSweep) : undefined;
+    const currentSelection = resolveVisibleClassificationTargetSelection(
+      currentDetections,
+      currentSweep,
+      explicitClassificationIdRef.current,
+    );
     const channelMeasurement = evaluateAnalysis(() => requireChannelMeasurement());
     const envelopeStft = evaluateAnalysis(() => requireEnvelopeStft());
     return JSON.stringify({
-      workspace,
-      measurementView,
-      acquisition,
-      continuous,
-      simulated,
+      workspace: currentWorkspace,
+      measurementView: currentMeasurementView,
+      acquisition: acquisitionRef.current,
+      continuous: continuousRef.current,
+      simulated: currentInstrument.session !== undefined && currentInstrument.session.provenance.execution !== 'physical',
       topology: systemTopology(),
-      visibleError: error ?? null,
-      instrument,
-      generatorOutput,
+      visibleError: errorRef.current ?? null,
+      instrument: currentInstrument,
+      generatorOutput: currentGeneratorOutput(),
       scalarConfiguration: agentConfigurationContext(),
-      generator,
-      detectionConfig,
-      historyCount: history.length,
-      latestSweep: sweep && metrics ? { id: sweep.id, sequence: sweep.sequence, capturedAt: sweep.capturedAt, rangeHz: [sweep.actualStartHz, sweep.actualStopHz], points: sweep.frequencyHz.length, source: sweep.source, elapsedMilliseconds: sweep.elapsedMilliseconds, metrics } : null,
-      detections: agentDetectionResults(detections),
-      classifications: classifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
-      selectedClassificationId: selectedClassificationId ?? null,
-      zeroSpan: zeroCapture && envelope ? { frequencyHz: zeroCapture.frequencyHz, samples: zeroCapture.powerDbm.length, samplePeriodSeconds: zeroCapture.samplePeriodSeconds, envelope } : null,
+      generator: generatorRef.current,
+      detectionConfig: detectionConfigRef.current,
+      historyCount: currentHistory.length,
+      latestSweep: currentSweep && currentMetrics ? { id: currentSweep.id, sequence: currentSweep.sequence, capturedAt: currentSweep.capturedAt, rangeHz: [currentSweep.actualStartHz, currentSweep.actualStopHz], points: currentSweep.frequencyHz.length, source: currentSweep.source, elapsedMilliseconds: currentSweep.elapsedMilliseconds, metrics: currentMetrics } : null,
+      detections: agentDetectionResults(currentDetections),
+      classifications: currentClassifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
+      selectedClassificationId: agentSelectedClassificationId({
+        receiptProjectedRepresentativeId:
+          currentZeroCaptureReceipt?.selection.projectedRepresentativeId,
+        captureRawTargetId: currentZeroCapture?.targetDetectionId,
+        currentSelectionId: currentSelection.detectionId,
+      }),
+      zeroSpan: currentZeroCapture && currentEnvelope ? {
+        frequencyHz: currentZeroCapture.frequencyHz,
+        samples: currentZeroCapture.powerDbm.length,
+        samplePeriodSeconds: currentZeroCapture.samplePeriodSeconds,
+        rawTargetId: currentZeroCaptureReceipt?.selection.rawTargetId
+          ?? currentZeroCapture.targetDetectionId
+          ?? null,
+        projectedRepresentativeId:
+          currentZeroCaptureReceipt?.selection.projectedRepresentativeId ?? null,
+        envelope: currentEnvelope,
+      } : null,
       measurement: {
-        activeView: measurementView,
-        traces: traceConfiguration.map((trace) => ({ ...trace, sweepCount: traceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
-        firmwareTraces: firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, visible: visibleFirmwareTraceIds.includes(traceId), sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
-        activeTraceId,
-        markers: { configurations: markers, readings: markerReadings },
-        activeMarkerId,
-        markerSearch: markerSearchConfiguration,
-        display: displayConfiguration,
-        waterfall: { configuration: waterfallConfiguration, coherentSweeps: coherentSweepCount(history, waterfallConfiguration.historyDepth) },
-        channel: { configuration: channelConfiguration, analysis: channelMeasurement },
-        envelopeStft: { configuration: stftConfiguration, analysis: envelopeStft },
+        activeView: currentMeasurementView,
+        traces: traceConfigurationRef.current.map((trace) => ({ ...trace, sweepCount: currentTraceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
+        firmwareTraces: firmwareTraceFramesRef.current.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, visible: visibleFirmwareTraceIdsRef.current.includes(traceId), sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
+        activeTraceId: activeTraceIdRef.current,
+        markers: { configurations: currentMarkers, readings: currentMarkerReadings },
+        activeMarkerId: activeMarkerIdRef.current,
+        markerSearch: markerSearchConfigurationRef.current,
+        display: displayConfigurationRef.current,
+        waterfall: { configuration: waterfallConfigurationRef.current, coherentSweeps: coherentSweepCount(currentHistory, waterfallConfigurationRef.current.historyDepth) },
+        channel: { configuration: channelConfigurationRef.current, analysis: channelMeasurement },
+        envelopeStft: { configuration: stftConfigurationRef.current, analysis: envelopeStft },
         evidence: 'host-derived',
       },
     });
@@ -1743,23 +2079,23 @@ export function App() {
 
   async function executeAgentTool(name: AgentToolName, args: unknown): Promise<unknown> {
     switch (name) {
-      case 'get_application_state': return {
-        workspace,
-        measurementView,
-        acquisition,
-        continuous,
-        simulated,
-        error: error ?? null,
-        historyCount: history.length,
-        topology: systemTopology(),
-        connection: instrument.session ? 'connected' : 'disconnected',
-        scalarConfiguration: agentConfigurationContext(),
-        generator,
-        detection: detectionConfig,
-        measurement: JSON.parse(applicationContext()).measurement,
-        latestSweep: JSON.parse(applicationContext()).latestSweep,
-        agentSurfaceVersion: ATOM_AGENT_VERSION,
-      };
+      case 'get_application_state': {
+        const context = JSON.parse(applicationContext()) as {
+          workspace: WorkspaceId; measurementView: MeasurementViewId; acquisition: AcquisitionState;
+          continuous: boolean; simulated: boolean; visibleError: string | null; historyCount: number;
+          topology: unknown; scalarConfiguration: unknown; generator: GeneratorConfig;
+          detectionConfig: SignalDetectionConfig; measurement: unknown; latestSweep: unknown;
+        };
+        return {
+          workspace: context.workspace, measurementView: context.measurementView,
+          acquisition: context.acquisition, continuous: context.continuous, simulated: context.simulated,
+          error: context.visibleError, historyCount: context.historyCount, topology: context.topology,
+          connection: instrumentRef.current.session ? 'connected' : 'disconnected',
+          scalarConfiguration: context.scalarConfiguration, generator: context.generator,
+          detection: context.detectionConfig, measurement: context.measurement,
+          latestSweep: context.latestSweep, agentSurfaceVersion: ATOM_AGENT_VERSION,
+        };
+      }
       case 'get_system_topology': return systemTopology();
       case 'get_agent_surface': return {
         version: ATOM_AGENT_VERSION,
@@ -1769,19 +2105,19 @@ export function App() {
         controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
         apiCoverage: agentApiCoverage,
       };
-      case 'get_instrument_state': return { ...instrument, generatorOutput, scalarConfiguration: agentConfigurationContext() };
+      case 'get_instrument_state': return { ...instrumentRef.current, generatorOutput: currentGeneratorOutput(), scalarConfiguration: agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
-      case 'get_detection_results': return agentDetectionResults(detections);
+      case 'get_detection_results': return agentDetectionResults(detectionsRef.current);
       case 'get_classification_results': return {
         contract: 'classification-results-with-association-lineage-v1',
-        spectral: agentClassificationResults(detections, classifications),
-        zeroSpan: zeroCapture ? { captureId: zeroCapture.id, envelope: envelope ?? null } : null,
+        spectral: agentClassificationResults(detectionsRef.current, classificationsRef.current),
+        zeroSpan: zeroCaptureRef.current ? { captureId: zeroCaptureRef.current.id, envelope: envelopeRef.current ?? null } : null,
       };
       case 'read_device_diagnostics': return refreshDiagnostics();
       case 'list_connection_candidates': {
         const discovery = await runInstrumentTransaction('list-connection-candidates', () => discoverInstruments());
         acceptDiscovery(discovery.candidates, discovery.failures);
-        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: instrumentCandidateIsSimulated(candidate), selected: instrumentCandidateUiKey(candidate) === selectedCandidateId }));
+        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: instrumentCandidateIsSimulated(candidate), selected: instrumentCandidateUiKey(candidate) === selectedCandidateIdRef.current }));
         agentConnectionCandidates.current = new Map(issued.map((candidate, index) => [candidate.candidateId, discovery.candidates[index]!]));
         return { candidates: issued, failures: discovery.failures };
       }
@@ -1805,13 +2141,16 @@ export function App() {
       }
       case 'disconnect_device': await disconnectDevice(); return { disconnected: true, state: 'disconnected' };
       case 'inspect_interface': {
+        await awaitControllerRenderCommit();
         const rendered = inspectRenderedAgentControls();
-        return { activeWorkspace: workspace, activeMeasurementView: measurementView, controls: Object.fromEntries(rendered.map((control) => [control.controlId, control.enabled])), rendered };
+        return { activeWorkspace: workspaceRef.current, activeMeasurementView: measurementViewRef.current, controls: Object.fromEntries(rendered.map((control) => [control.controlId, control.enabled])), rendered };
       }
       case 'computer_action': {
+        await awaitControllerRenderCommit();
         const control = (args as { controlId: AgentSemanticControlId }).controlId;
         const binding = agentControlBinding(control);
         if (binding.risk === 'high-impact') throw new Error(`Semantic control ${control} is high-impact and requires its typed approval tool`);
+        if (semanticControlRequiresCoordinates(control)) throw new Error(`Semantic control ${control} requires a coordinate-bearing computer_click or its typed ${binding.preferredTool} tool`);
         const targets = [...document.querySelectorAll<HTMLElement>('[data-agent-control]')].filter((element) => element.dataset.agentControl === control);
         if (targets.length !== 1) throw new Error(`Semantic control ${control} has ${targets.length} rendered targets; expected exactly one`);
         const target = targets[0]!;
@@ -1821,33 +2160,33 @@ export function App() {
         else target.click();
         return { activated: control, preferredTool: binding.preferredTool, projection: binding.projection };
       }
-      case 'computer_screenshot': return window.atomAgent.computerScreenshot();
-      case 'computer_click': return requireComputerActionResult(await window.atomAgent.computerClick(args as { screenshotId: string; x: number; y: number }));
-      case 'computer_type': return requireComputerActionResult(await window.atomAgent.computerType(args as { expectedTarget: string; text: string }));
-      case 'computer_key': return requireComputerActionResult(await window.atomAgent.computerKey(args as { expectedTarget: string; key: string }));
-      case 'computer_scroll': return requireComputerActionResult(await window.atomAgent.computerScroll(args as { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }));
-      case 'navigate_workspace': applyWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: (args as { workspace: WorkspaceId }).workspace };
+      case 'computer_screenshot': await awaitControllerRenderCommit(); return window.atomAgent.computerScreenshot();
+      case 'computer_click': await awaitControllerRenderCommit(); return requireComputerActionResult(await window.atomAgent.computerClick(args as { screenshotId: string; x: number; y: number }));
+      case 'computer_type': await awaitControllerRenderCommit(); return requireComputerActionResult(await window.atomAgent.computerType(args as { expectedTarget: string; text: string }));
+      case 'computer_key': await awaitControllerRenderCommit(); return requireComputerActionResult(await window.atomAgent.computerKey(args as { expectedTarget: string; key: string }));
+      case 'computer_scroll': await awaitControllerRenderCommit(); return requireComputerActionResult(await window.atomAgent.computerScroll(args as { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }));
+      case 'navigate_workspace': applyWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: workspaceRef.current };
       case 'configure_analyzer': {
-        assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput());
+        assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput());
         const patch = analyzerConfigPatchSchema.parse(args);
         const next = await updateAnalyzer(patch);
         applyWorkspace('spectrum');
         return { patch, scalarConfiguration: agentConfigurationContext(next), continuous: continuousRequested.current };
       }
-      case 'acquire_sweep': { assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity }; }
-      case 'start_continuous_sweeps': assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput()); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
-      case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: history.length };
+      case 'acquire_sweep': { assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput()); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity }; }
+      case 'start_continuous_sweeps': assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput()); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
+      case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: historyRef.current.length };
       case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
       case 'set_measurement_view': {
         const view = measurementViewIdSchema.parse((args as { view: MeasurementViewId }).view);
         applyMeasurementView(view);
-        return { workspace: 'spectrum', view };
+        return { workspace: 'spectrum', view: measurementViewRef.current };
       }
       case 'configure_waterfall': {
         const configuration = waterfallConfigurationSchema.parse(args);
         applyMeasurementView('waterfall');
         applyWaterfall(configuration);
-        return { configuration, retainedSweeps: coherentSweepCount(history, configuration.historyDepth), evidence: 'host-derived-scalar-sweep' };
+        return { configuration, retainedSweeps: coherentSweepCount(historyRef.current, configuration.historyDepth), evidence: 'host-derived-scalar-sweep' };
       }
       case 'configure_channel_measurement': {
         const configuration = channelMeasurementConfigurationSchema.parse(args);
@@ -1864,15 +2203,15 @@ export function App() {
       }
       case 'get_envelope_stft_results': return requireEnvelopeStft();
       case 'acquire_envelope_stft': {
-        assertWorkspaceTransition(workspace, 'spectrum', currentGeneratorOutput());
+        assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput());
         const capture = await acquireZeroSpan();
-        const result = computeEnvelopeStft(capture, stftConfiguration);
+        const result = computeEnvelopeStft(capture, stftConfigurationRef.current);
         applyMeasurementView('envelope-stft');
         return result;
       }
       case 'select_marker': {
         const markerId = (args as { markerId: MarkerId }).markerId;
-        if (!markers.some((marker) => marker.id === markerId)) throw new Error(`Marker M${markerId} is unavailable`);
+        if (!markersRef.current.some((marker) => marker.id === markerId)) throw new Error(`Marker M${markerId} is unavailable`);
         applyWorkspace('spectrum');
         setActiveMarkerId(markerId);
         return { markerId, selected: true, evidence: 'ui-only' };
@@ -1881,7 +2220,7 @@ export function App() {
         const marker = markerConfigurationSchema.parse(args);
         applyWorkspace('spectrum');
         applyMarker(marker);
-        return { marker, evidence: 'host-derived' };
+        return { marker, reading: previewMarkerReading(marker) ?? null, evidence: 'host-derived' };
       }
       case 'configure_marker_search': {
         const configuration = markerSearchConfigurationSchema.parse(args);
@@ -1891,18 +2230,22 @@ export function App() {
       }
       case 'search_marker': {
         const value = args as { markerId: MarkerId; action: MarkerSearchAction };
-        const marker = markers.find((item) => item.id === value.markerId);
+        const marker = markersRef.current.find((item) => item.id === value.markerId);
         if (!marker) throw new Error(`Marker M${value.markerId} is unavailable`);
-        const frame = traceFrames.find((item) => item.traceId === marker.traceId);
+        // One Atom operation may acquire and then search before React commits a
+        // render. The accumulator is the synchronous source of truth at that
+        // transaction boundary; traceFrames is its UI projection.
+        const frame = traceAccumulator.current.frames().find((item) => item.traceId === marker.traceId);
         if (!frame) throw new Error(`Trace ${marker.traceId} has no data; enable and acquire it first`);
         applyWorkspace('spectrum');
-        const frequencyHz = searchMarker(frame, marker.frequencyHz, value.action, markerSearchConfiguration);
-        applyMarker({ ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' : 'fixed', frequencyHz });
-        return { markerId: value.markerId, action: value.action, frequencyHz, evidence: 'host-derived' };
+        const frequencyHz = searchMarker(frame, marker.frequencyHz, value.action, markerSearchConfigurationRef.current, detectionsRef.current);
+        const nextMarker = { ...marker, enabled: true, tracking: value.action === 'peak' ? 'peak' as const : 'fixed' as const, frequencyHz };
+        applyMarker(nextMarker);
+        return { markerId: value.markerId, action: value.action, frequencyHz, reading: previewMarkerReading(nextMarker) ?? null, evidence: 'host-derived' };
       }
       case 'select_trace': {
         const traceId = (args as { traceId: TraceId }).traceId;
-        if (!traceConfiguration.some((trace) => trace.id === traceId)) throw new Error(`Trace ${traceId} is unavailable`);
+        if (!traceConfigurationRef.current.some((trace) => trace.id === traceId)) throw new Error(`Trace ${traceId} is unavailable`);
         applyWorkspace('spectrum');
         setActiveTraceId(traceId);
         return { traceId, selected: true, evidence: 'ui-only' };
@@ -1933,32 +2276,55 @@ export function App() {
         return { display, evidence: 'host-derived' };
       }
       case 'auto_scale_spectrum_display': {
-        if (!sweep) throw new Error('Acquire a complete spectrum sweep before auto-scaling the display');
+        const latestSweep = sweepRef.current;
+        if (!latestSweep) throw new Error('Acquire a complete spectrum sweep before auto-scaling the display');
         applyWorkspace('spectrum');
-        const display = autoScaleSpectrum(sweep);
+        const display = autoScaleSpectrum(latestSweep);
         applyDisplay(display);
-        return { display, sweepId: sweep.id, evidence: 'host-derived-complete-sweep' };
+        return { display, sweepId: latestSweep.id, evidence: 'host-derived-complete-sweep' };
       }
-      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); applyWorkspace('detection'); setDetectionConfig(next); return next; }
+      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); applyWorkspace('classification'); return applyDetectionConfiguration(next); }
       case 'select_classification_candidate': {
         const detectionId = (args as { detectionId: string }).detectionId;
-        if (!detections.some((item) => item.id === detectionId)) throw new Error(`Detection ${detectionId} is no longer available`);
+        const requestedSelection = resolveVisibleClassificationTargetSelection(
+          detectionsRef.current,
+          sweepRef.current,
+          detectionId,
+        );
+        if (requestedSelection.origin !== 'explicit'
+          || requestedSelection.explicitDetectionId !== detectionId
+          || requestedSelection.detectionId === undefined) {
+          throw new Error(`Detection ${detectionId} is not an exact current physical or qualified agile-representative classification target`);
+        }
         applyWorkspace('classification');
         const stagedDetectedPowerCenterHz = selectClassificationCandidate(detectionId);
-        return { detectionId, selected: true, stagedDetectedPowerCenterHz: stagedDetectedPowerCenterHz ?? null, evidence: 'ui-staging' };
+        const stagedDetectionId = stagedClassificationTargetIdRef.current;
+        const expectedRawTargetId = requestedSelection.rawTargetId
+          ?? requestedSelection.detectionId;
+        if (stagedDetectionId !== expectedRawTargetId) {
+          throw new Error(`Detection ${detectionId} was not retained as the exact staged classification target`);
+        }
+        return {
+          detectionId: requestedSelection.detectionId,
+          rawTargetId: expectedRawTargetId,
+          selected: true,
+          stagedDetectedPowerCenterHz: stagedDetectedPowerCenterHz ?? null,
+          evidence: 'ui-staging',
+        };
       }
       case 'configure_zero_span': {
         const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
         const { patch, configuration: next } = stageDetectedPowerConfigurationPatch(
           capability?.kind === 'detected-power-timeseries' ? capability : undefined,
-          zeroConfig,
+          zeroConfigRef.current,
           args as ZeroSpanConfigPatch,
         );
         applyWorkspace('classification');
-        setZeroConfig(next);
-        return { patch, scalarConfiguration: agentConfigurationContext(analyzer, next) };
+        commitZeroSpanConfiguration(next);
+        clearClassificationCapture();
+        return { patch, scalarConfiguration: agentConfigurationContext(analyzerRef.current, next) };
       }
-      case 'acquire_zero_span': { assertWorkspaceTransition(workspace, 'classification', currentGeneratorOutput()); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
+      case 'acquire_zero_span': { assertWorkspaceTransition(workspaceRef.current, 'classification', currentGeneratorOutput()); const result = await acquireZeroSpan(); applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); applyWorkspace('generator'); setGenerator(next); return configureGeneratorWith(next); }
       case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; applyWorkspace('generator'); await setOutput(enabled); return { enabled, sourceKind: instrumentRef.current.session?.provenance.sourceKind ?? 'unknown', evidence: 'driver-commanded' }; }
       case 'capture_device_screen': { const frame = await captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.pixelFormat, capturedAt: frame.capturedAt }; }
@@ -1979,8 +2345,8 @@ export function App() {
   const agent = useAtomAgent({ applicationContext, execute: executeAgentTool });
   const acquisitionActions = (continuous || (workspace !== 'generator' && workspace !== 'device')) ? <div className="acquisition-actions">
     {sweep && workspace !== 'generator' && workspace !== 'device' && <>
-      <button data-agent-control="export.csv" className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatest('csv')}><Download size={14}/><span>CSV</span></button>
-      <button data-agent-control="export.json" className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatest('json')}><span>{'{ }'}</span></button>
+      <button data-agent-control="export.csv" className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatestFromUi('csv')}><Download size={14}/><span>CSV</span></button>
+      <button data-agent-control="export.json" className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatestFromUi('json')}><span>{'{ }'}</span></button>
     </>}
     {continuous
       ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop</button>
@@ -1992,15 +2358,15 @@ export function App() {
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
     <TopBar instrument={instrument} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
-    <Sidebar active={workspace} output={generatorOutput} generatorAvailable={generatorCapability !== undefined} onSelect={changeWorkspace}/>
-    <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' ? 'classification-workspace' : ''}`}>
+    <Sidebar active={workspace} measurementView={measurementView} output={generatorOutput} generationAvailable={generatorCapability !== undefined || signalLabProfileCapability !== undefined} onSelect={changeWorkspace} onMeasurementView={changeMeasurementView}/>
+    <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' || workspace === 'detection' ? 'classification-workspace' : ''}`}>
       {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button data-agent-control="notice.dismiss" onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {workspace === 'spectrum' && <MeasurementWorkspace
         acquisitionActions={acquisitionActions}
-        view={measurementView} onView={changeMeasurementView}
-        analyzer={analyzer} spectrumCapability={spectrumCapability} detectedPowerCapability={detectedPowerCapability} busy={busy} connected={connected} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
+        view={measurementView}
+        analyzer={analyzer} spectrumCapability={spectrumCapability} busy={busy} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
         traces={traceConfiguration} frames={traceFrames} firmwareFrames={firmwareTraceFrames} visibleFirmwareTraceIds={visibleFirmwareTraceIds} onFirmwareTraceVisibility={configureFirmwareTraceVisibility} activeTraceId={activeTraceId} onActiveTrace={setActiveTraceId} markers={markers} readings={markerReadings}
         activeMarkerId={activeMarkerId} markerSearch={markerSearchConfiguration} display={displayConfiguration}
@@ -2009,18 +2375,30 @@ export function App() {
         onAutoScale={autoScaleDisplay} onMarkerPlace={placeActiveMarker}
         waterfall={waterfallConfiguration} onWaterfall={configureWaterfall}
         channel={channelConfiguration} onChannel={configureChannelMeasurement}
-        zeroConfig={zeroConfig} zeroCapture={zeroCapture} stft={stftConfiguration}
-        onZeroConfig={updateZeroSpanFromUi} onStft={configureEnvelopeStft} onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
-      {workspace === 'detection' && <DetectionWorkspace sweep={sweep} detections={detections} busy={busy} config={detectionConfig} onConfig={setDetectionConfig}/>}
-      {workspace === 'classification' && <ClassificationWorkspace
-        sweep={sweep} detections={detections} classifications={classifications}
-        selectedId={selectedClassificationId} onSelectedId={selectClassificationCandidate}
+      {(workspace === 'detection' || workspace === 'classification') && <ClassificationWorkspace
+        sweep={sweep}
+        traces={traceFrames} firmwareTraces={firmwareTraceFrames} visibleFirmwareTraceIds={visibleFirmwareTraceIds}
+        activeTraceId={activeTraceId} markers={markerReadings} activeMarkerId={activeMarkerId}
+        display={displayConfiguration} onMarkerPlace={placeActiveMarker}
+        detections={detections} classifications={classifications}
+        modelAvailability={classifierRuntime.status}
+        selectedId={zeroCaptureReceiptRef.current?.selection.projectedRepresentativeId
+          ?? selectedClassificationId}
+        selectionOrigin={classificationTargetSelection.origin}
+        onSelectedId={selectClassificationCandidate}
+        detectionConfig={detectionConfig} detectorBusy={busy} onDetectionConfig={applyDetectionConfiguration}
         zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope}
         capability={detectedPowerCapability} busy={!connected || busy}
-        onZeroConfig={updateZeroSpanFromUi} onAcquireZero={() => void acquireZeroSpanFromUi()}
+        onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
-      {workspace === 'generator' && <GeneratorWorkspace config={generator} capability={generatorCapability} output={generatorOutput} busy={busy} onChange={setGenerator} onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}/>}
+      {workspace === 'generator' && <GeneratorWorkspace
+        config={generator} capability={generatorCapability}
+        signalLabProfiles={signalLabProfileCapability} selectedSignalLabProfile={selectedProfile}
+        output={generatorOutput} busy={busy} onChange={setGenerator}
+        onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}
+        onSignalLabProfile={(profileId) => void selectSignalLabProfile(profileId)}
+      />}
       {workspace === 'device' && <DeviceWorkspace session={session} diagnostics={diagnostics} frame={screenFrame} busy={busy} touchBusy={touchBusy} selectedProfile={selectedProfile} onProfile={(profileId) => void selectSignalLabProfile(profileId)} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTap={tapScreen}/>}
     </section>
     <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={session?.provenance.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
@@ -2041,6 +2419,10 @@ export function App() {
       onClose={() => setConnectionOpen(false)}
     />}
   </main>;
+}
+
+export function semanticControlRequiresCoordinates(control: AgentSemanticControlId): boolean {
+  return control === 'spectrum.marker-place';
 }
 
 async function getInstrumentState() {
@@ -2080,10 +2462,30 @@ async function writeInstrumentPreference(selection: AtomizerInstrumentPreference
 }
 
 function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
-  const raw = localStorage.getItem(`tinysa-atomizer:v2:${name}`);
-  return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
+  const key = `tinysa-atomizer:v2:${name}`;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
+  } catch (failure) {
+    // UI preferences are never evidence authority. A stale/corrupt value must
+    // not make an otherwise healthy instrument renderer unrecoverable after a
+    // reload; quarantine only the bad key and retain an explicit diagnostic.
+    console.warn(`[Preferences] quarantined invalid ${name} state and restored its default`, failure);
+    try { localStorage.removeItem(key); }
+    catch (cleanupFailure) {
+      console.warn(`[Preferences] could not remove invalid ${name} state`, cleanupFailure);
+    }
+    return structuredClone(initial);
+  }
 }
-function saveStored(name: string, value: unknown): void { localStorage.setItem(`tinysa-atomizer:v2:${name}`, JSON.stringify(value)); }
+function saveStored(name: string, value: unknown): void {
+  try { localStorage.setItem(`tinysa-atomizer:v2:${name}`, JSON.stringify(value)); }
+  catch (failure) {
+    // Persistence failure must remain non-fatal; the in-memory controller
+    // state is still authoritative for the current renderer lifetime.
+    console.warn(`[Preferences] could not persist ${name} state`, failure);
+  }
+}
 export function parseStoredDetection(value: unknown): SignalDetectionConfig {
   if (value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'minimumProminenceDb')) {
     return signalDetectionConfigSchema.parse({ ...value, minimumProminenceDb: DEFAULT_DETECTION.minimumProminenceDb });
@@ -2189,6 +2591,74 @@ function classificationWindowSweepIds(
     .map((candidate) => candidate.id);
 }
 
+function resolveRuntimeAdmittedCaptureTarget(
+  signals: readonly DetectedSignal[],
+  evidenceSweeps: readonly Sweep[],
+  currentSweep: Sweep | undefined,
+  preferredDetectionId: string | undefined,
+): {
+  readonly rawTarget: DetectedSignal;
+  readonly detection: DetectedSignal;
+  readonly spectrumSweepIds: readonly string[];
+} | undefined {
+  if (preferredDetectionId === undefined) return undefined;
+  const projections = visibleClassificationTargetProjections(signals, currentSweep);
+  for (const projection of projections.filter((candidate) =>
+    candidate.rawTarget.id === preferredDetectionId)) {
+    const detection = projection.projectedRepresentative;
+    if (!observableAssociationEvidenceIsCurrentlyQualified(detection)) continue;
+    try {
+      const observation = extractObservableFeatures(detection, {
+        sweeps: evidenceSweeps,
+      });
+      if (observation.sweepIds.length === 8) {
+        return {
+          rawTarget: projection.rawTarget,
+          detection,
+          spectrumSweepIds: observation.sweepIds,
+        };
+      }
+    } catch (error) {
+      if (error instanceof ObservableEvidenceUnavailableError) continue;
+      throw error;
+    }
+  }
+  return undefined;
+}
+
+function captureReceiptRepresentativeMatches(
+  receipt: DetectedPowerCaptureReceipt,
+  detection: DetectedSignal,
+): boolean {
+  const expected = receipt.projectedRepresentative;
+  return expected.id === detection.id
+    && expected.startHz === detection.startHz
+    && expected.stopHz === detection.stopHz
+    && expected.peakHz === detection.peakHz
+    && expected.peakDbm === detection.peakDbm
+    && expected.bandwidthHz === detection.bandwidthHz
+    && expected.missedSweeps === detection.missedSweeps
+    && expected.lastSeenAt === detection.lastSeenAt
+    && expected.associationMode === detection.associationMode
+    && expected.associationId === detection.associationId
+    && expected.associationMissedSweeps === detection.associationMissedSweeps
+    && sameOptionalStringArray(
+      expected.associationMemberTrackIds,
+      detection.associationMemberTrackIds,
+    );
+}
+
+function sameOptionalStringArray(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  return left === undefined
+    ? right === undefined
+    : right !== undefined
+      && left.length === right.length
+      && left.every((value, index) => value === right[index]);
+}
+
 function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {
   if (!result.ok) throw new Error(`App-scoped computer ${result.action} was rejected${result.target ? ` at ${result.target}` : ''}: ${result.reason ?? 'no rejection reason was returned'}`);
   return result;
@@ -2207,6 +2677,21 @@ function sameAnalyzerConfiguration(left: AnalyzerConfig, right: AnalyzerConfig):
     && left.avoidSpurs === right.avoidSpurs
     && left.trigger.mode === right.trigger.mode
     && (left.trigger.mode === 'auto' || (right.trigger.mode !== 'auto' && left.trigger.levelDbm === right.trigger.levelDbm));
+}
+
+export function agentSelectedClassificationId({
+  receiptProjectedRepresentativeId,
+  captureRawTargetId,
+  currentSelectionId,
+}: {
+  receiptProjectedRepresentativeId?: string;
+  captureRawTargetId?: string;
+  currentSelectionId?: string;
+}): string | null {
+  return receiptProjectedRepresentativeId
+    ?? captureRawTargetId
+    ?? currentSelectionId
+    ?? null;
 }
 function errorMessage(value: unknown): string { return value instanceof Error ? value.message : String(value); }
 function evaluateAnalysis<T>(operation: () => T): { ok: true; result: T } | { ok: false; error: string } {

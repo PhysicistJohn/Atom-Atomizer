@@ -41,7 +41,9 @@ describe('ConnectionDialog startup preference identity', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Connect' });
     expect(within(dialog).getByRole('button', { name: /TinySA physical A.*STARTUP DEFAULT/i })).toBeTruthy();
-    expect(within(dialog).getByRole('button', { name: /TinySA physical B/i }).textContent).not.toMatch(/STARTUP DEFAULT/);
+    const secondCandidate = within(dialog).getByRole('button', { name: /TinySA physical B/i });
+    expect(secondCandidate.textContent).not.toMatch(/STARTUP DEFAULT/);
+    expect(secondCandidate.textContent).toMatch(/exclusive CDC; finish any Flasher session first/i);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Use at startup' }));
     expect(onMakeDefault).toHaveBeenCalledOnce();
   });

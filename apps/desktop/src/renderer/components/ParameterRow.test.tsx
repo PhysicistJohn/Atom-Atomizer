@@ -101,6 +101,36 @@ describe('parameter-row contract', () => {
     expect(change).toHaveBeenCalledWith('average');
   });
 
+  it('keeps a stale or custom value visible without crashing and permits recovery to an advertised option', () => {
+    const change = vi.fn();
+    const { container } = render(<SelectParameter
+      label="Promote after"
+      value={7}
+      options={[{ value: 1, label: '1 sweep' }, { value: 5, label: '5 sweeps' }]}
+      onValue={change}
+    />);
+
+    const select = screen.getByRole('combobox', { name: 'Promote after' }) as HTMLSelectElement;
+    expect(select.value).toBe('7');
+    expect(select.getAttribute('aria-invalid')).toBe('true');
+    expect(container.querySelector('.select-parameter.invalid')?.textContent).toContain('7 · unavailable');
+    expect(within(select).getByRole('option', { name: '7 · unavailable' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(select, { target: { value: '5' } });
+    expect(change).toHaveBeenCalledWith('5');
+  });
+
+  it('renders an empty capability menu as unavailable and disabled instead of throwing', () => {
+    const { container } = render(<SelectParameter label="RF path" value="normal" options={[]} onValue={vi.fn()}/>);
+
+    const select = screen.getByRole('combobox', { name: 'RF path' }) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe('normal');
+    expect(select.getAttribute('aria-invalid')).toBe('true');
+    expect(container.querySelector('.select-parameter.disabled')).not.toBeNull();
+    expect(screen.getAllByText('normal · unavailable')).toHaveLength(2);
+  });
+
   it('keeps only one numeric editor open in a parameter stack', () => {
     const { container } = render(<div className="parameter-stack"><EditableParameter label="Start" value={1} onCommit={vi.fn()}/><EditableParameter label="Stop" value={2} onCommit={vi.fn()}/></div>);
     const [start, stop] = Array.from(container.querySelectorAll('details'));

@@ -17,7 +17,9 @@ function isStaticClassificationAssociationMode(
  * merged emission, common process, simultaneous event, protocol, or emitter.
  */
 export function agentClassificationAssociation(detection: DetectedSignal | undefined) {
-  if (!detection || !isStaticClassificationAssociationMode(detection.associationMode)) return null;
+  if (!detection
+    || !agentDetectionRowIsSafe(detection)
+    || !isStaticClassificationAssociationMode(detection.associationMode)) return null;
   const observations = detection.multicomponentAssociationObservations;
   return {
     evidenceKind: 'nonidentifying-static-classification-association' as const,
@@ -50,7 +52,9 @@ export function agentClassificationResults(
   detections: readonly DetectedSignal[],
   classifications: readonly WaveformClassification[],
 ) {
-  const detectionById = new Map(detections.map((detection) => [detection.id, detection] as const));
+  const detectionById = new Map(detections
+    .filter(agentDetectionRowIsSafe)
+    .map((detection) => [detection.id, detection] as const));
   return classifications.map((classification) => ({
     ...classification,
     classificationAssociation: agentClassificationAssociation(detectionById.get(classification.detectionId)),
@@ -62,15 +66,17 @@ export function agentClassificationResults(
  * or static classification association to masquerade as one physical emission.
  */
 export function agentDetectionResults(detections: readonly DetectedSignal[]) {
+  const safeDetections = detections.filter(agentDetectionRowIsSafe);
   return {
     contract: 'separated-local-detections-and-activity-associations-v1' as const,
-    localDetections: detections
+    localDetections: safeDetections
       .filter((detection) => detection.associationMode !== 'frequency-agile-2g4-activity')
       .map((detection) => ({
         evidenceKind: 'frequency-local-detection' as const,
         id: detection.id,
         state: detection.state,
-        isPromotedActiveLocalEmission: detection.state === 'active',
+        isPromotedActiveLocalEmission: detection.state === 'active'
+          && detection.missedSweeps === 0,
         startHz: detection.startHz,
         stopHz: detection.stopHz,
         peakHz: detection.peakHz,
@@ -87,7 +93,7 @@ export function agentDetectionResults(detections: readonly DetectedSignal[]) {
         bayesianDetectionEvidence: detection.bayesianEvidence,
         classificationAssociation: agentClassificationAssociation(detection),
       })),
-    activityAssociations: detections
+    activityAssociations: safeDetections
       .filter((detection) => detection.associationMode === 'frequency-agile-2g4-activity')
       .map((detection) => {
         const latestObservation = detection.associationObservations?.at(-1);
@@ -117,4 +123,44 @@ export function agentDetectionResults(detections: readonly DetectedSignal[]) {
         };
       }),
   };
+}
+
+function agentDetectionRowIsSafe(detection: DetectedSignal): boolean {
+  if (typeof detection !== 'object' || detection === null) return false;
+  return typeof detection.id === 'string'
+    && detection.id.length > 0
+    && (detection.state === 'candidate'
+      || detection.state === 'active'
+      || detection.state === 'released')
+    && Number.isSafeInteger(detection.missedSweeps)
+    && detection.missedSweeps >= 0
+    && Number.isSafeInteger(detection.persistenceSweeps)
+    && detection.persistenceSweeps >= 0
+    && Number.isFinite(detection.startHz)
+    && Number.isFinite(detection.stopHz)
+    && Number.isFinite(detection.peakHz)
+    && detection.startHz <= detection.peakHz
+    && detection.peakHz <= detection.stopHz
+    && Number.isFinite(detection.peakDbm)
+    && Number.isFinite(detection.bandwidthHz)
+    && detection.bandwidthHz >= 0
+    && Number.isFinite(detection.prominenceDb)
+    && Number.isFinite(detection.prominenceThresholdDb)
+    && typeof detection.detectorId === 'string'
+    && detection.detectorId.length > 0
+    && Array.isArray(detection.sweepIds)
+    && detection.sweepIds.every((sweepId) =>
+      typeof sweepId === 'string' && sweepId.length > 0)
+    && typeof detection.bayesianEvidence === 'object'
+    && detection.bayesianEvidence !== null
+    && (detection.associationObservations === undefined
+      || Array.isArray(detection.associationObservations))
+    && (detection.associationOpportunities === undefined
+      || Array.isArray(detection.associationOpportunities))
+    && (detection.multicomponentAssociationObservations === undefined
+      || Array.isArray(detection.multicomponentAssociationObservations))
+    && (detection.associationMemberTrackIds === undefined
+      || (Array.isArray(detection.associationMemberTrackIds)
+        && detection.associationMemberTrackIds.every((trackId) =>
+          typeof trackId === 'string' && trackId.length > 0)));
 }

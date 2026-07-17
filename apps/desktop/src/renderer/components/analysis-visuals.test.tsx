@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DetectedSignal, Sweep, WaveformClassification, ZeroSpanConfig } from '@tinysa/contracts';
+import { ChannelAnalysisView } from './ChannelAnalysisView.js';
 import { ClassificationWorkspace, classificationCaptureGeometryMenu, selectClassificationCaptureGeometry, waveformLabel } from './ClassificationWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 
@@ -32,6 +33,23 @@ const sweep = {
     simulated: true, usbIdentityVerified: false, execution: 'protocol-test-double',
   },
 } satisfies Sweep;
+
+function sweepAcross(startHz: number, stopHz: number): Sweep {
+  const frequencyHz = Array.from(
+    { length: sweep.frequencyHz.length },
+    (_value, index) => startHz + (stopHz - startHz) * index / (sweep.frequencyHz.length - 1),
+  );
+  return {
+    ...sweep,
+    actualStartHz: startHz,
+    actualStopHz: stopHz,
+    frequencyHz,
+    powerDbm: frequencyHz.map((_frequency, index) =>
+      index === Math.floor(frequencyHz.length / 2) ? -40 : -100),
+    actualRbwHz: (stopHz - startHz) / (frequencyHz.length - 1),
+    requested: { ...sweep.requested, startHz, stopHz },
+  };
+}
 
 const detection = {
   id: 'signal-1',
@@ -75,7 +93,7 @@ const classification = {
   label: 'observable:cw-like',
   confidence: 0.91,
   candidates: [{ label: 'observable:cw-like', confidence: 0.91, family: 'analog' }],
-  modelId: 'bayesian-observable-equivalence-v5',
+  modelId: 'bayesian-observable-equivalence-v8',
   qualification: 'bayesian-observable-equivalence',
   scoreKind: 'model-posterior',
   decisionLevel: 'equivalence-class',
@@ -95,6 +113,143 @@ const zeroConfig: ZeroSpanConfig = {
 afterEach(cleanup);
 
 describe('analysis visual contracts', () => {
+  it('shows narrow CW width as resolution-limited while retaining separately labeled percent-power OBW', () => {
+    const view = render(<ChannelAnalysisView
+      sweep={sweep}
+      configuration={{
+        centerHz: 50,
+        mainBandwidthHz: 40,
+        adjacentBandwidthHz: 20,
+        channelSpacingHz: 30,
+        adjacentChannelCount: 1,
+        occupiedPowerPercent: 99,
+        obwNoiseCorrection: 'robust-floor',
+      }}
+      display={{ referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }}
+      onConfiguration={vi.fn()}
+    />);
+
+    expect(within(view.container).getByText('3 dB BANDWIDTH')).toBeTruthy();
+    expect(within(view.container).getByText('Resolution-limited')).toBeTruthy();
+    expect(within(view.container).getByText(/RBW\/grid 25 Hz/i)).toBeTruthy();
+    expect(within(view.container).getByText('OCCUPIED BANDWIDTH · 99%')).toBeTruthy();
+    expect(view.container.querySelector('.three-db-window')).not.toBeNull();
+  });
+
+  it('leaves target defaulting to the owning App instead of creating a second sticky selection', () => {
+    const onSelectedId = vi.fn();
+    const stronger = { ...detection, id: 'signal-2', peakDbm: -30 } satisfies DetectedSignal;
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[detection]}
+      classifications={[]}
+      onSelectedId={onSelectedId}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onAcquireZero={vi.fn()}
+    />);
+
+    view.rerender(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[detection, stronger]}
+      classifications={[]}
+      onSelectedId={onSelectedId}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onAcquireZero={vi.fn()}
+    />);
+
+    expect(onSelectedId).not.toHaveBeenCalled();
+  });
+
+  it('shows the merged spectrum and resumes strongest-current automatic targeting on demand', () => {
+    const onSelectedId = vi.fn();
+    const stronger = { ...detection, id: 'signal-2', startHz: 60, stopHz: 80, peakHz: 70, peakDbm: -30 } satisfies DetectedSignal;
+    const props = {
+      sweep,
+      detections: [detection, stronger],
+      classifications: [],
+      onSelectedId,
+      zeroConfig,
+      busy: false,
+      onAcquireZero: vi.fn(),
+    };
+    const view = render(<ClassificationWorkspace
+      {...props}
+      selectedId={detection.id}
+      selectionOrigin="explicit"
+    />);
+
+    expect(within(view.container).getByLabelText('Measured power by frequency')).toBeTruthy();
+    const auto = within(view.container).getByRole('button', { name: /Auto · strongest signal/i });
+    expect(auto.getAttribute('aria-pressed')).toBe('false');
+    expect(view.container.querySelector('.detection-band.selected')).not.toBeNull();
+    fireEvent.click(auto);
+    expect(onSelectedId).toHaveBeenCalledWith(undefined);
+
+    view.rerender(<ClassificationWorkspace
+      {...props}
+      selectedId={stronger.id}
+      selectionOrigin="automatic"
+    />);
+    expect(within(view.container).getByRole('button', { name: /Auto · strongest signal/i }).getAttribute('aria-pressed')).toBe('true');
+    expect(view.container.querySelectorAll('.detection-band.selected')).toHaveLength(1);
+  });
+
+  it('fails the Auto control closed without a complete sweep or detections', () => {
+    const props = {
+      classifications: [],
+      onSelectedId: vi.fn(),
+      zeroConfig,
+      busy: false,
+      onAcquireZero: vi.fn(),
+    };
+    const view = render(<ClassificationWorkspace
+      detections={[detection]}
+      selectedId={detection.id}
+      {...props}
+    />);
+
+    expect(within(view.container).getByRole('button', {
+      name: /Auto · strongest signal/i,
+    }).hasAttribute('disabled')).toBe(true);
+
+    view.rerender(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[]}
+      {...props}
+    />);
+    expect(within(view.container).getByRole('button', {
+      name: /Auto · strongest signal/i,
+    }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('quarantines malformed evidence rows before merged Detect rendering', () => {
+    const malformed = {
+      ...detection,
+      id: 'signal-malformed',
+      sweepIds: undefined,
+      peakDbm: Number.NaN,
+      associationObservations: {},
+    } as unknown as DetectedSignal;
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[malformed, detection]}
+      classifications={[]}
+      selectedId={detection.id}
+      onSelectedId={vi.fn()}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onAcquireZero={vi.fn()}
+    />);
+
+    expect(view.container.querySelectorAll('.candidate-row')).toHaveLength(1);
+    expect(view.container.textContent).not.toContain('signal-malformed');
+    expect(within(view.container).getByRole('button', {
+      name: /Auto · strongest signal/i,
+    }).hasAttribute('disabled')).toBe(false);
+  });
+
   it.each([
     { points: 450, sweepTimeSeconds: 0.05, expectedToken: 'pinned', expectedLabel: '450 × 50 ms · pinned Bayesian geometry' },
     { points: 290, sweepTimeSeconds: 0.05, expectedToken: 'current', expectedLabel: '290 × 50 ms · current · outside pinned Bayesian geometry' },
@@ -108,9 +263,8 @@ describe('analysis visual contracts', () => {
     expect(menu.options.find((option) => option.value === expectedToken)?.label).toBe(expectedLabel);
   });
 
-  it('renders legacy geometry as out-of-model and selects pinned points and duration atomically', () => {
+  it('reduces legacy capture geometry to compact status and keeps atomic geometry migration deterministic', () => {
     const legacy = { ...zeroConfig, points: 290, sweepTimeSeconds: 0.1 };
-    const onZeroConfig = vi.fn();
     const view = render(<ClassificationWorkspace
       sweep={sweep}
       detections={[]}
@@ -118,14 +272,15 @@ describe('analysis visual contracts', () => {
       onSelectedId={vi.fn()}
       zeroConfig={legacy}
       busy={false}
-      onZeroConfig={onZeroConfig}
       onAcquireZero={vi.fn()}
     />);
-    const select = within(view.container).getByRole('combobox', { name: 'Capture geometry' }) as HTMLSelectElement;
-    expect(select.value).toBe('current');
-    expect(select.selectedOptions[0]?.textContent).toBe('290 × 100 ms · current · outside pinned Bayesian geometry');
-    fireEvent.change(select, { target: { value: 'pinned' } });
-    expect(onZeroConfig).toHaveBeenCalledWith({ ...legacy, points: 450, sweepTimeSeconds: 0.05 });
+    const status = within(view.container).getByLabelText('Detected-power evidence status');
+    expect(status.textContent).toContain('290 samples · 100 ms · outside Bayesian geometry');
+    expect(within(view.container).queryByRole('combobox', { name: 'Capture geometry' })).toBeNull();
+    expect(view.container.querySelector('.classification-capture-strip')).not.toBeNull();
+    expect(view.container.querySelector('.zero-span-panel')).toBeNull();
+    expect(view.container.querySelector('.envelope-plot')).toBeNull();
+    expect(selectClassificationCaptureGeometry(legacy, 'pinned')).toEqual({ ...legacy, points: 450, sweepTimeSeconds: 0.05 });
     view.unmount();
 
     expect(() => classificationCaptureGeometryMenu({ ...zeroConfig, sweepTimeSeconds: 0.002 })).toThrow();
@@ -140,13 +295,15 @@ describe('analysis visual contracts', () => {
     expect(view.container.querySelector('.detection-band')).toBeNull();
     expect(view.container.querySelector('.detection-center')).toBeNull();
 
-    view.rerender(<SpectrumPlot sweep={sweep} detections={[detection]} detectionOverlay busy={false}/>);
+    view.rerender(<SpectrumPlot sweep={sweep} detections={[detection]} detectionOverlay selectedDetectionId={detection.id} busy={false}/>);
     const band = view.container.querySelector('.detection-band');
     const center = view.container.querySelector('.detection-center');
     expect(band?.getAttribute('x')).toBe('240');
     expect(band?.getAttribute('width')).toBe('240');
     expect(center?.getAttribute('x1')).toBe('360');
     expect(center?.getAttribute('x2')).toBe('360');
+    expect(band?.classList.contains('selected')).toBe(true);
+    expect(center?.classList.contains('selected')).toBe(true);
   });
 
   it('uses canonical waveform names and a positive classification pill', () => {
@@ -158,7 +315,6 @@ describe('analysis visual contracts', () => {
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
     const candidate = view.container.querySelector('.candidate-row');
@@ -173,6 +329,101 @@ describe('analysis visual contracts', () => {
     expect(waveformLabel('signal-lab:am')).toBe('AM signal');
     expect(waveformLabel('signal-lab:fm')).toBe('FM signal');
     expect(waveformLabel('signal-lab:fm')).not.toMatch(/replay/i);
+  });
+
+  it('separates active, qualifying, and agile evidence while hiding retained and released rows', () => {
+    const active = detection;
+    const qualifying = {
+      ...detection,
+      id: 'signal-qualifying',
+      startHz: 35,
+      stopHz: 55,
+      peakHz: 45,
+      state: 'candidate',
+      persistenceSweeps: 1,
+    } satisfies DetectedSignal;
+    const retainedMiss = {
+      ...detection,
+      id: 'signal-retained-miss',
+      startHz: 40,
+      stopHz: 60,
+      peakHz: 50,
+      missedSweeps: 1,
+    } satisfies DetectedSignal;
+    const released = {
+      ...detection,
+      id: 'signal-released',
+      startHz: 45,
+      stopHz: 65,
+      peakHz: 55,
+      state: 'released',
+      missedSweeps: 2,
+    } satisfies DetectedSignal;
+    const agile = {
+      ...detection,
+      id: 'signal-agile-summary',
+      startHz: 48,
+      stopHz: 68,
+      peakHz: 58,
+      associationMode: 'frequency-agile-2g4-activity',
+      associationMissedSweeps: 0,
+      associationModelId: 'frequency-agile-2g4-activity-v3',
+      associationBayesianEvidence: {
+        modelId: 'bayesian-frequency-agile-transition-v3',
+        priorAgileDynamicsProbability: 0.01,
+        posteriorAgileDynamicsProbability: 0.9942,
+        logBayesFactor: 11.9,
+        fullBand79CellAgileLogMarginalLikelihood: -2,
+        threePrimaryChannelAgileLogMarginalLikelihood: -4,
+        stationaryLogMarginalLikelihood: -14,
+        positiveObservationCount: 8,
+        transitionCount: 7,
+        changedTransitionCount: 7,
+        uniqueResolutionCellCount: 8,
+        primaryChannelCenterHitCount: 1,
+        opportunityCount: 12,
+        maximumOpportunityWindow: 96,
+        modeledSweepTimeSeconds: 0.05,
+        promotionPosteriorProbability: 0.99,
+        retentionPosteriorProbability: 0.9,
+        qualification: 'engineering-transition-families-conditional-on-unambiguous-cfar-looks-not-protocol-or-emitter-identity',
+      },
+    } as DetectedSignal;
+    const onSelectedId = vi.fn();
+    const view = render(<ClassificationWorkspace
+      sweep={sweep}
+      detections={[released, retainedMiss, agile, qualifying, active]}
+      classifications={[]}
+      selectedId={active.id}
+      onSelectedId={onSelectedId}
+      zeroConfig={zeroConfig}
+      busy={false}
+      onAcquireZero={vi.fn()}
+    />);
+
+    expect(view.container.textContent).toContain('1 active · 1 qualifying · 1 agile');
+    expect(view.container.textContent).toContain('ACTIVE PHYSICAL ROWS');
+    expect(view.container.textContent).toContain('QUALIFYING CANDIDATES');
+    expect(view.container.textContent).toContain('AGILE ACTIVITY SUMMARIES');
+    expect(view.container.querySelectorAll('.candidate-row')).toHaveLength(3);
+    expect(view.container.querySelectorAll('[data-agent-control^="classification.candidate."]')).toHaveLength(1);
+    expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-1.select"]')).not.toBeNull();
+    expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-qualifying.select"]')).toBeNull();
+    expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-agile-summary.select"]')).toBeNull();
+    expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-retained-miss.select"]')).toBeNull();
+    expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-released.select"]')).toBeNull();
+    expect(view.container.querySelectorAll('.detection-band')).toHaveLength(1);
+    const evidenceRegion = within(view.container).getByRole('region', { name: /Current detector and classification evidence/i });
+    expect(evidenceRegion.querySelector('[role="table"], [role="row"]')).toBeNull();
+    expect(evidenceRegion.querySelector('[data-agent-control="classification.candidate.signal-1.select"]')?.tagName).toBe('BUTTON');
+    expect(view.container.textContent).toContain('threshold -80.0 dBm');
+    expect(view.container.textContent).toContain('prominence +50.0 / +6.0 dB');
+    expect(view.container.textContent).toContain('P_track 99.90%');
+    expect(view.container.textContent).toContain('robust-prominence-v1 · 3 sweeps · 0 missed');
+    expect(view.container.textContent).toContain('1/2 promotion looks · 0 missed');
+    expect(view.container.textContent).not.toContain('2 missed');
+    fireEvent.click(within(view.container).getByRole('button', { name: /Auto · strongest signal/i }));
+    expect(onSelectedId).toHaveBeenCalledWith(undefined);
   });
 
   it('labels the synthetic out-of-domain gate as an empirical rank, not a p-value', () => {
@@ -192,7 +443,6 @@ describe('analysis visual contracts', () => {
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
 
@@ -213,8 +463,8 @@ describe('analysis visual contracts', () => {
       associationRegionStartHz: 98_000_000,
       associationRegionStopHz: 98_077_000,
       associationRegionSweepIds: ['sweep-1'],
-      associationId: 'regular-lines:test',
-      associationModelId: 'simultaneous-regular-components-v1',
+      associationId: 'regular-spectral-component-lineage-0001',
+      associationModelId: 'regular-spectral-component-lineage-v2',
       associationMemberTrackIds: members,
       associationMissedSweeps: 0,
     }));
@@ -231,14 +481,13 @@ describe('analysis visual contracts', () => {
     };
 
     const view = render(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={sweepAcross(97_900_000, 98_200_000)}
       detections={associated}
       classifications={[groupClassification]}
       selectedId="line-edge"
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
 
@@ -252,6 +501,7 @@ describe('analysis visual contracts', () => {
 
   it('maps a changing multicomponent result only to the latest member hull', () => {
     const associationId = 'multicomponent-swept-region-0001';
+    const multicomponentSweep = sweepAcross(90_000_000, 110_000_000);
     const currentMemberIds = ['line-2', 'line-3', 'line-4', 'line-5'];
     const lineageObservation = {
       sweepId: 'sweep-1',
@@ -279,7 +529,7 @@ describe('analysis visual contracts', () => {
       associationRegionStopHz: 104_100_000,
       associationRegionSweepIds: ['sweep-1'],
       associationId,
-      associationModelId: 'multicomponent-swept-region-v1',
+      associationModelId: 'multicomponent-swept-region-v2',
       associationMemberTrackIds: currentMemberIds,
       associationMissedSweeps: 0,
       multicomponentAssociationObservations: [lineageObservation],
@@ -293,7 +543,7 @@ describe('analysis visual contracts', () => {
       associationRegionStopHz: 104_100_000,
       associationRegionSweepIds: ['previous-sweep'],
       associationId,
-      associationModelId: 'multicomponent-swept-region-v1',
+      associationModelId: 'multicomponent-swept-region-v2',
       associationMemberTrackIds: ['line-1', ...currentMemberIds],
       associationMissedSweeps: 1,
       multicomponentAssociationObservations: [{ ...lineageObservation, sweepId: 'previous-sweep' }],
@@ -312,32 +562,30 @@ describe('analysis visual contracts', () => {
     const detections = [...current, departed];
 
     const view = render(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={multicomponentSweep}
       detections={detections}
       classifications={[groupClassification]}
       selectedId={departed.id}
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
 
     const departedRow = view.container.querySelector('[data-agent-control="classification.candidate.line-1.select"]');
-    expect(departedRow?.querySelector('.pending')).not.toBeNull();
-    expect(departedRow?.textContent).not.toContain('Group ·');
+    expect(departedRow).toBeNull();
+    expect(view.container.querySelectorAll('.candidate-row')).toHaveLength(4);
     expect(view.container.querySelectorAll('.candidate-row .classified')).toHaveLength(4);
     expect(view.container.querySelector('.classification-result')?.textContent).toContain('Select evidence');
 
     view.rerender(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={multicomponentSweep}
       detections={detections}
       classifications={[groupClassification]}
       selectedId="line-4"
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
     const provenance = view.container.querySelector('.result-provenance')?.textContent ?? '';
@@ -418,14 +666,13 @@ describe('analysis visual contracts', () => {
     } satisfies WaveformClassification;
 
     const view = render(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={sweepAcross(2_399_000_000, 2_483_000_000)}
       detections={[activity]}
       classifications={[activityClassification]}
       selectedId={activity.id}
       onSelectedId={vi.fn()}
       zeroConfig={zeroConfig}
       busy={false}
-      onZeroConfig={vi.fn()}
       onAcquireZero={vi.fn()}
     />);
 

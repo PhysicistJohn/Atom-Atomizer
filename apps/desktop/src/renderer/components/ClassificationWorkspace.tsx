@@ -1,44 +1,105 @@
-import { useEffect } from 'react';
-import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint } from 'lucide-react';
-import { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, observableClassDefinitions, type EnvelopeClassification } from '@tinysa/analysis';
-import { zeroSpanConfigSchema, type DetectedSignal, type InstrumentAcquisitionCapability, type Sweep, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
+import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint, ScanSearch } from 'lucide-react';
+import {
+  BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
+  observableClassDefinitions,
+  robustNoiseFloor,
+  type EnvelopeClassification,
+} from '@tinysa/analysis';
+import { zeroSpanConfigSchema, type DetectedSignal, type FirmwareTraceFrame, type FirmwareTraceId, type InstrumentAcquisitionCapability, type MarkerId, type MarkerReading, type SignalDetectionConfig, type SpectrumDisplayConfiguration, type Sweep, type TraceFrame, type TraceId, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
+import {
+  classificationSpectrumSelection,
+  currentVisiblePhysicalClassificationRows,
+  sanitizeVisibleClassificationEvidenceDetections,
+  visibleClassificationTargetProjections,
+} from '../classification-target-selection.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
-import { DetectedPowerReceiverControls } from './ReceiverControlRows.js';
+import { SpectrumPlot } from './SpectrumPlot.js';
 
 type DetectedPowerCapability = Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
 
-export function ClassificationWorkspace({ sweep, detections, classifications, selectedId, onSelectedId, zeroConfig, zeroCapture, envelope, capability, busy, onZeroConfig, onAcquireZero }: {
+export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visibleFirmwareTraceIds, activeTraceId, markers, activeMarkerId, display, onMarkerPlace, detections, classifications, modelAvailability, selectedId, selectionOrigin = 'automatic', onSelectedId, detectionConfig, detectorBusy = false, onDetectionConfig, zeroConfig, zeroCapture, envelope, capability, busy, onAcquireZero }: {
   sweep?: Sweep;
+  traces?: readonly TraceFrame[];
+  firmwareTraces?: readonly FirmwareTraceFrame[];
+  visibleFirmwareTraceIds?: readonly FirmwareTraceId[];
+  activeTraceId?: TraceId;
+  markers?: readonly MarkerReading[];
+  activeMarkerId?: MarkerId;
+  display?: SpectrumDisplayConfiguration;
+  onMarkerPlace?(frequencyHz: number): boolean;
   detections: readonly DetectedSignal[];
   classifications: readonly WaveformClassification[];
+  modelAvailability?: 'ready' | 'unavailable';
   selectedId?: string;
+  selectionOrigin?: 'automatic' | 'explicit';
   onSelectedId(detectionId: string | undefined): void;
+  detectionConfig?: SignalDetectionConfig;
+  detectorBusy?: boolean;
+  onDetectionConfig?(config: SignalDetectionConfig): void;
   zeroConfig: ZeroSpanConfig;
   zeroCapture?: ZeroSpanCapture;
   envelope?: EnvelopeClassification;
   capability?: DetectedPowerCapability;
   busy: boolean;
-  onZeroConfig(config: ZeroSpanConfig): void;
   onAcquireZero(): void;
 }) {
-  const captureGeometryMenu = classificationCaptureGeometryMenu(zeroConfig, capability);
-  useEffect(() => {
-    if (!selectedId || !detections.some((item) => item.id === selectedId)) onSelectedId(detections[0]?.id);
-  }, [detections, selectedId, onSelectedId]);
-  const selected = detections.find((item) => item.id === selectedId);
-  const result = classificationForDetection(selected, detections, classifications);
-  const localDetectionCount = detections.filter((item) => item.associationMode !== 'frequency-agile-2g4-activity').length;
-  const activityAssociationCount = detections.length - localDetectionCount;
-  const qualification = result?.qualification === 'bayesian-observable-equivalence'
-    ? 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL'
-    : result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'MEASURED WAVEFORM HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
-  const scoreLabel = result?.scoreKind === 'model-posterior' ? 'synthetic-model posterior · uncalibrated' : 'relative score';
+  const safeDetections = sanitizeVisibleClassificationEvidenceDetections(detections, sweep);
+  const activePhysicalRows = [...currentVisiblePhysicalClassificationRows(safeDetections)]
+    .sort((left, right) => right.prominenceDb - left.prominenceDb);
+  const qualifyingCandidates = safeDetections
+    .filter((item) => item.state === 'candidate'
+      && item.missedSweeps === 0
+      && item.associationMode !== 'frequency-agile-2g4-activity')
+    .sort((left, right) => right.prominenceDb - left.prominenceDb);
+  const agileSummaries = safeDetections
+    .filter((item) => item.state === 'active'
+      && item.missedSweeps === 0
+      && item.associationMode === 'frequency-agile-2g4-activity')
+    .sort((left, right) => (right.associationBayesianEvidence?.posteriorAgileDynamicsProbability ?? 0)
+      - (left.associationBayesianEvidence?.posteriorAgileDynamicsProbability ?? 0));
+  const captureTargetProjections = visibleClassificationTargetProjections(safeDetections, sweep);
+  const targetableRepresentativeIds = new Set(captureTargetProjections
+    .map((projection) => projection.projectedRepresentative.id));
+  const spectrumSelection = classificationSpectrumSelection(
+    activePhysicalRows,
+    captureTargetProjections,
+    selectedId,
+  );
+  const currentEvidenceRows = [...activePhysicalRows, ...agileSummaries];
+  const currentEvidenceCount = activePhysicalRows.length + qualifyingCandidates.length + agileSummaries.length;
+  const selected = currentEvidenceRows.find((item) => item.id === selectedId);
+  const result = classificationForDetection(selected, safeDetections, classifications);
+  const qualification = result?.qualification === 'unavailable'
+    ? 'BAYESIAN MODEL UNAVAILABLE'
+    : result?.qualification === 'bayesian-observable-equivalence'
+      ? 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL'
+      : result?.qualification === 'signal-lab-synthetic-hypothesis' ? 'MEASURED WAVEFORM HYPOTHESIS' : 'TRACE SHAPE · NOT PROTOCOL';
+  const scoreLabel = result?.scoreKind === 'model-posterior'
+    ? 'synthetic-model posterior · uncalibrated'
+    : result?.scoreKind === 'none' ? 'no model score' : 'relative score';
   const supportRejected = result?.decisionSupport?.kind === 'synthetic-support-rank';
-  const stageZeroPatch = (patch: Partial<ZeroSpanConfig>) => onZeroConfig(zeroSpanConfigSchema.parse({ ...zeroConfig, ...patch }));
 
   return <div className="classification-grid">
-    <section className="pipeline-panel"><div className="pipeline"><PipelineStep icon={<Database/>} label="Capture" detail={sweep ? `${sweep.frequencyHz.length} points · ${sweep.source}` : 'No sweep'} ready={Boolean(sweep)}/><ArrowRight/><PipelineStep icon={<Fingerprint/>} label="Detect" detail={`${localDetectionCount} local${activityAssociationCount ? ` · ${activityAssociationCount} activity association${activityAssociationCount === 1 ? '' : 's'}` : ''}`} ready={detections.length > 0}/><ArrowRight/><PipelineStep icon={<BrainCircuit/>} label="Classify" detail={result?.modelId ?? 'No result'} ready={Boolean(result)}/></div></section>
+    <section className="pipeline-panel"><div className="pipeline"><PipelineStep icon={<Database/>} label="Capture" detail={sweep ? `${sweep.frequencyHz.length} points · ${sweep.source}` : 'No sweep'} ready={Boolean(sweep)}/><ArrowRight/><PipelineStep icon={<Fingerprint/>} label="Detect" detail={`${activePhysicalRows.length} active · ${qualifyingCandidates.length} qualifying${agileSummaries.length ? ` · ${agileSummaries.length} agile summar${agileSummaries.length === 1 ? 'y' : 'ies'}` : ''}`} ready={currentEvidenceCount > 0}/><ArrowRight/><PipelineStep icon={<BrainCircuit/>} label="Classify" detail={modelAvailability === 'unavailable' ? 'Bayesian model unavailable' : result?.modelId ?? 'No result'} ready={modelAvailability !== 'unavailable' && Boolean(result)}/></div></section>
+
+    <section className="classification-spectrum">
+      <SpectrumPlot
+        sweep={sweep}
+        traces={traces}
+        firmwareTraces={firmwareTraces}
+        visibleFirmwareTraceIds={visibleFirmwareTraceIds}
+        activeTraceId={activeTraceId}
+        markers={markers}
+        activeMarkerId={activeMarkerId}
+        display={display}
+        onMarkerPlace={onMarkerPlace}
+        detections={spectrumSelection.detections}
+        detectionOverlay
+        selectedDetectionId={spectrumSelection.selectedDetectionId}
+        busy={detectorBusy}
+      />
+    </section>
 
     <section className="classification-result">
       {result ? <div className="result-card">
@@ -51,22 +112,141 @@ export function ClassificationWorkspace({ sweep, detections, classifications, se
           : `${Math.round(result.confidence * 100)}% ${scoreLabel}`}</strong>
         <div className="ranked-candidates">{result.candidates.slice(0, 4).map((candidate) => <div key={candidate.label}><span>{waveformLabel(candidate.label)}</span><i><b style={{ width: `${candidate.confidence * 100}%` }}/></i><em>{Math.round(candidate.confidence * 100)}%</em></div>)}{result.candidates.length > 4 && <small>+{result.candidates.length - 4} lower-ranked hypotheses</small>}</div>
         <ResultProvenance detection={selected} result={result}/>
-      </div> : <div className="result-empty"><Fingerprint size={28}/><h2>{detections.length ? 'Select evidence' : 'No candidate'}</h2>{detections.length === 0 && <p>Acquire a sweep to detect candidates.</p>}</div>}
+      </div> : <div className="result-empty"><Fingerprint size={28}/><h2>{modelAvailability === 'unavailable' ? 'Classification unavailable' : currentEvidenceCount ? 'Select evidence' : 'No current candidate'}</h2>{modelAvailability === 'unavailable' ? <p>The generated Bayesian model did not pass its runtime contract. Regenerate it and reload; acquisition and detection remain available.</p> : currentEvidenceCount === 0 && <p>{sweep ? 'No current emission passed the detector and tracker gates.' : 'Acquire a sweep to detect candidates.'}</p>}</div>}
     </section>
 
-    <section className="candidate-panel"><div className="panel-header"><span>Evidence</span><span>{localDetectionCount} local · {activityAssociationCount} associated</span></div>{detections.length ? <div className="candidate-list">{detections.map((detection, index) => {
-      const classification = classificationForDetection(detection, detections, classifications);
-      const state = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
-      const groupResult = classification && classification.detectionId !== detection.id;
-      const activityAssociation = detection.associationMode === 'frequency-agile-2g4-activity';
-      const associationEvidence = detection.associationBayesianEvidence;
-      return <button data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}><span className="candidate-index">{String(index + 1).padStart(2, '0')}</span><span><strong>{activityAssociation ? '2.4 GHz activity association' : formatFrequency(detection.peakHz)}</strong><small>{activityAssociation
-        ? `P_agile | positive looks ${formatProbability(associationEvidence?.posteriorAgileDynamicsProbability)} · ${associationEvidence?.positiveObservationCount ?? 0}/${associationEvidence?.opportunityCount ?? 0} positive/opportunity looks · not emitter identity`
-        : `${formatFrequency(detection.bandwidthHz)} · ${formatLevel(detection.peakDbm)} · ${detection.persistenceSweeps}×`}</small></span><em className={state}>{classification ? `${activityAssociation ? 'Activity · ' : groupResult ? 'Group · ' : ''}${waveformLabel(classification.label)}` : 'Pending'}</em></button>;
-    })}</div> : <div className="table-empty"><Fingerprint size={20}/><strong>No candidates</strong><span>Run a sweep.</span></div>}</section>
+    <section className="candidate-panel">
+      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} disabled={captureTargetProjections.length === 0} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · strongest signal</button></div></div>
+      {currentEvidenceCount ? <div className="candidate-list" role="region" aria-label="Current detector and classification evidence">
+        {activePhysicalRows.length > 0 && <div className="candidate-group-label"><span>ACTIVE PHYSICAL ROWS</span><em>CURRENT PHYSICAL</em></div>}
+        {activePhysicalRows.map((detection, index) => {
+          const classification = classificationForDetection(detection, safeDetections, classifications);
+          const classificationState = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
+          const groupResult = classification && classification.detectionId !== detection.id;
+          const targetable = targetableRepresentativeIds.has(detection.id);
+          const content = <>
+            <span className="candidate-index">{String(index + 1).padStart(2, '0')}</span>
+            <span><strong>{formatFrequency(detection.peakHz)}</strong><small>ACTIVE · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)} · threshold {formatLevel(detection.thresholdDbm)} · prominence +{detection.prominenceDb.toFixed(1)} / +{detection.prominenceThresholdDb.toFixed(1)} dB</small><small>{detectorPosterior(detection)} · {detection.detectorId} · {detection.persistenceSweeps} sweep{detection.persistenceSweeps === 1 ? '' : 's'} · {detection.missedSweeps} missed</small></span>
+            <em className={classificationState}>{classification
+              ? `${groupResult ? 'Group · ' : ''}${waveformLabel(classification.label)}`
+              : targetable ? 'Classification pending' : 'Not a current visible target'}</em>
+          </>;
+          return targetable
+            ? <button type="button" data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}>{content}</button>
+            : <div className="candidate-row candidate-evidence-row" key={detection.id}>{content}</div>;
+        })}
+        {qualifyingCandidates.length > 0 && <div className="candidate-group-label"><span>QUALIFYING CANDIDATES</span><em>NOT YET TARGETABLE</em></div>}
+        {qualifyingCandidates.map((detection, index) => <div className="candidate-row candidate-evidence-row qualifying" key={detection.id}>
+          <span className="candidate-index">Q{String(index + 1).padStart(2, '0')}</span>
+          <span><strong>{formatFrequency(detection.peakHz)}</strong><small>CANDIDATE · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)} · threshold {formatLevel(detection.thresholdDbm)} · prominence +{detection.prominenceDb.toFixed(1)} / +{detection.prominenceThresholdDb.toFixed(1)} dB</small><small>{detectorPosterior(detection)} · {detection.detectorId} · {detection.persistenceSweeps}/{detection.detectorConfig.minimumConsecutiveSweeps} promotion looks · {detection.missedSweeps} missed</small></span>
+          <em>Qualifying</em>
+        </div>)}
+        {agileSummaries.length > 0 && <div className="candidate-group-label"><span>AGILE ACTIVITY SUMMARIES</span><em>NOT A PHYSICAL EMISSION</em></div>}
+        {agileSummaries.map((detection, index) => {
+          const classification = classificationForDetection(detection, safeDetections, classifications);
+          const classificationState = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
+          const associationEvidence = detection.associationBayesianEvidence;
+          const targetable = targetableRepresentativeIds.has(detection.id);
+          const content = <>
+            <span className="candidate-index">A{String(index + 1).padStart(2, '0')}</span>
+            <span><strong>2.4 GHz activity association</strong><small>P_agile | positive looks {formatProbability(associationEvidence?.posteriorAgileDynamicsProbability)} · latest {detectorPosterior(detection)} · {associationEvidence?.positiveObservationCount ?? 0}/{associationEvidence?.opportunityCount ?? 0} positive/opportunity looks</small><small>{detection.associationMissedSweeps ?? 0} opportunities since positive · {detection.associationModelId ?? 'association model unavailable'} · not emitter identity</small></span>
+            <em className={classificationState}>{classification ? `Activity · ${waveformLabel(classification.label)}` : targetable ? 'Activity summary · targetable' : 'Activity summary'}</em>
+          </>;
+          return targetable
+            ? <button type="button" data-agent-control={`classification.candidate.${detection.id}.select`} className={`candidate-row candidate-evidence-row agile-summary ${selectedId === detection.id ? 'selected' : ''}`} key={detection.id} onClick={() => onSelectedId(detection.id)}>{content}</button>
+            : <div className="candidate-row candidate-evidence-row agile-summary" key={detection.id}>{content}</div>;
+        })}
+      </div> : <div className="table-empty"><Fingerprint size={20}/><strong>No current candidates</strong><span>{sweep ? 'No active or qualifying tracker rows remain.' : 'Run a sweep.'}</span></div>}
+    </section>
 
-    <section className="zero-span-panel"><div className="panel-header"><div><Activity size={14}/>Envelope</div><span>{zeroCapture ? `${zeroCapture.powerDbm.length} samples` : 'DETECTED POWER · NOT I/Q'}</span></div><div className="zero-span-body"><div className="zero-controls parameter-stack"><EditableParameter label="Center frequency" value={zeroConfig.frequencyHz} displayValue={formatFrequency(zeroConfig.frequencyHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min ?? 0} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={busy || !capability || capability.controls.model === 'synthetic-scalar'} controlId="classification.envelope-frequency" onCommit={(value) => stageZeroPatch({ frequencyHz: Number(value) })}/><SelectParameter label="Capture geometry" value={captureGeometryMenu.value} options={captureGeometryMenu.options} disabled={busy || !capability} controlId="classification.envelope-window" onValue={(value) => onZeroConfig(selectClassificationCaptureGeometry(zeroConfig, value, capability))}/><DetectedPowerReceiverControls config={zeroConfig} capability={capability} disabled={busy} controlPrefix="classification.envelope" onChange={stageZeroPatch}/><div className="panel-action"><button className="secondary full" disabled={busy} onClick={onAcquireZero} data-agent-control="classification.capture-envelope">Capture envelope</button></div></div><EnvelopePlot capture={zeroCapture}/><div className="envelope-result"><small>CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : '—'}</strong>{envelope && <span>{Math.round(envelope.confidence * 100)}% · {envelope.features.transitionCount} transitions</span>}</div></div></section>
+    {detectionConfig && onDetectionConfig && <DetectionSettings
+      sweep={sweep}
+      config={detectionConfig}
+      busy={detectorBusy}
+      onConfig={onDetectionConfig}
+    />}
+
+    <CaptureEvidenceStrip
+      configuration={zeroConfig}
+      capture={zeroCapture}
+      envelope={envelope}
+      capability={capability}
+      target={selected}
+      busy={busy}
+      onAcquire={onAcquireZero}
+    />
   </div>;
+}
+
+function CaptureEvidenceStrip({ configuration, capture, envelope, capability, target, busy, onAcquire }: {
+  configuration: ZeroSpanConfig;
+  capture?: ZeroSpanCapture;
+  envelope?: EnvelopeClassification;
+  capability?: DetectedPowerCapability;
+  target?: DetectedSignal;
+  busy: boolean;
+  onAcquire(): void;
+}) {
+  const ready = capability !== undefined && target !== undefined;
+  const geometryQualification = hasPinnedClassificationCaptureGeometry(configuration)
+    ? 'Bayesian geometry'
+    : 'outside Bayesian geometry';
+  const agileFixedTune = target?.associationMode === 'frequency-agile-2g4-activity';
+  return <section className="classification-capture-strip" aria-label="Detected-power evidence status">
+    <div className="capture-strip-state"><span className="capture-strip-icon"><Activity size={14}/></span><span><small>DETECTED POWER · NOT I/Q</small><strong>{capture ? `${capture.powerDbm.length} samples captured` : ready ? 'Ready to capture' : capability ? 'Select active evidence' : 'Capture unavailable'}</strong><em>{configuration.points} samples · {formatCaptureWindow(configuration.sweepTimeSeconds)} · {geometryQualification}</em></span></div>
+    <div><small>AUTO-TUNED TARGET</small><strong>{target ? formatFrequency(configuration.frequencyHz) : 'No active target'}</strong><em>{agileFixedTune ? `Fixed tune from latest physical member at ${formatFrequency(target.peakHz)}` : target ? `Follows ${formatFrequency(target.peakHz)} selected peak` : 'Auto selects the strongest current physical signal'}</em></div>
+    <div><small>ENVELOPE CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : agileFixedTune ? 'Fixed-tune trace only' : 'No envelope evidence'}</strong><em>{agileFixedTune ? 'Display characterization · Bayesian classifier uses regional spectrum/history' : envelope ? `${Math.round(envelope.confidence * 100)}% · ${envelope.features.transitionCount} transitions` : capture ? 'Classification pending' : 'Optional classifier evidence'}</em></div>
+    <div className="capture-strip-action"><button className="secondary" disabled={busy || !ready} onClick={onAcquire} data-agent-control="classification.capture-envelope">{capture ? 'Recapture envelope' : 'Capture envelope'}</button></div>
+  </section>;
+}
+
+function DetectionSettings({ sweep, config, busy, onConfig }: {
+  sweep?: Sweep;
+  config: SignalDetectionConfig;
+  busy: boolean;
+  onConfig(config: SignalDetectionConfig): void;
+}) {
+  const floor = sweep ? robustNoiseFloor(sweep.powerDbm) : Number.NaN;
+  const minimumBandwidthOptions = includeCurrentOption(
+    [{ value: 0, label: 'Any width' }, { value: 10_000, label: '10 kHz' }, { value: 100_000, label: '100 kHz' }, { value: 1_000_000, label: '1 MHz' }],
+    config.minimumBandwidthHz,
+    `${formatFrequency(config.minimumBandwidthHz)} · custom`,
+  );
+  const promotionOptions = includeCurrentOption(
+    [1, 2, 3, 5].map((value) => ({ value, label: `${value} sweep${value === 1 ? '' : 's'}` })),
+    config.minimumConsecutiveSweeps,
+    `${config.minimumConsecutiveSweeps} sweeps · custom`,
+  );
+  const releaseOptions = includeCurrentOption(
+    [{ value: 0, label: 'First missed sweep' }, { value: 1, label: '1 missed sweep' }, { value: 2, label: '2 missed sweeps' }, { value: 5, label: '5 missed sweeps' }],
+    config.releaseAfterMissedSweeps,
+    `${config.releaseAfterMissedSweeps} missed sweeps · custom`,
+  );
+  return <section className="detection-settings-panel">
+    <div className="panel-header"><div><ScanSearch size={14}/>Detection</div><span>{busy ? 'UPDATING' : 'FULL VISIBLE SPAN'}</span></div>
+    <div className="detector-visual"><div className="floor-line"><span style={{ width: sweep ? '68%' : '0%' }}/></div><div><small>LOWER-TAIL CANDIDATE BASELINE</small><strong>{Number.isFinite(floor) ? formatLevel(floor) : '—'}</strong></div></div>
+    <fieldset disabled={busy} className="control-section parameter-stack">
+      <SelectParameter label="Threshold mode" value={config.threshold.strategy} options={[{ value: 'noise-relative', label: 'Adaptive to candidate baseline' }, { value: 'absolute', label: 'Absolute power level' }]} disabled={busy} controlId="detection.threshold-mode" onValue={(value) => onConfig({ ...config, threshold: value === 'noise-relative' ? { strategy: 'noise-relative', marginDb: 10 } : { strategy: 'absolute', levelDbm: -80 } })}/>
+      {config.threshold.strategy === 'noise-relative'
+        ? <EditableParameter label="Margin above floor" value={config.threshold.marginDb} displayValue={`+${config.threshold.marginDb} dB`} unit="dB" minimum={3} maximum={30} disabled={busy} controlId="detection.margin" onCommit={(value) => onConfig({ ...config, threshold: { strategy: 'noise-relative', marginDb: Number(value) } })}/>
+        : <EditableParameter label="Absolute threshold" value={config.threshold.levelDbm} displayValue={`${config.threshold.levelDbm} dBm`} unit="dBm" minimum={-120} maximum={0} disabled={busy} controlId="detection.absolute-level" onCommit={(value) => onConfig({ ...config, threshold: { strategy: 'absolute', levelDbm: Number(value) } })}/>
+      }
+      <EditableParameter label="Minimum prominence" value={config.minimumProminenceDb} displayValue={`${config.minimumProminenceDb} dB`} unit="dB" minimum={0} maximum={30} disabled={busy} controlId="detection.prominence" onCommit={(value) => onConfig({ ...config, minimumProminenceDb: Number(value) })}/>
+      <SelectParameter label="Minimum bandwidth" value={config.minimumBandwidthHz} options={minimumBandwidthOptions} disabled={busy} controlId="detection.minimum-bandwidth" onValue={(value) => onConfig({ ...config, minimumBandwidthHz: Number(value) })}/>
+      <SelectParameter label="Promote after" value={config.minimumConsecutiveSweeps} options={promotionOptions} disabled={busy} controlId="detection.promote" onValue={(value) => onConfig({ ...config, minimumConsecutiveSweeps: Number(value) })}/>
+      <SelectParameter label="Release after" value={config.releaseAfterMissedSweeps} options={releaseOptions} disabled={busy} controlId="detection.release" onValue={(value) => onConfig({ ...config, releaseAfterMissedSweeps: Number(value) })}/>
+    </fieldset>
+  </section>;
+}
+
+function includeCurrentOption(
+  options: readonly { value: number; label: string }[],
+  value: number,
+  label: string,
+): readonly { value: number; label: string }[] {
+  return options.some((option) => option.value === value)
+    ? options
+    : [{ value, label }, ...options];
 }
 
 type ClassificationCaptureGeometryToken = 'pinned' | 'current';
@@ -151,6 +331,15 @@ function formatProbability(value: number | undefined): string {
   return Number.isFinite(value) ? `${(value! * 100).toFixed(2)}%` : 'unavailable';
 }
 
+function detectorPosterior(detection: DetectedSignal): string {
+  const scope = detection.bayesianEvidence.posteriorScope === 'track-state'
+    ? 'track'
+    : detection.bayesianEvidence.posteriorScope === 'track-predictive-state'
+      ? 'track pred'
+      : 'local';
+  return `P_${scope} ${formatProbability(detection.bayesianEvidence.posteriorSignalProbability)}`;
+}
+
 function formatSweepTime(seconds: number | undefined): string {
   return Number.isFinite(seconds) ? `${(seconds! * 1_000).toFixed(0)} ms modeled sweep` : 'sweep time unavailable';
 }
@@ -161,10 +350,12 @@ export function classificationForDetection(
   classifications: readonly WaveformClassification[],
 ): WaveformClassification | undefined {
   if (!detection) return undefined;
-  const direct = classifications.find((item) => item.detectionId === detection.id);
+  const direct = classifications.find((item) =>
+    isRenderableClassification(item) && item.detectionId === detection.id);
   if (direct || !isStaticRegionAssociation(detection) || !detection.associationId) return direct;
   if (!isCurrentStaticAssociationMember(detection)) return undefined;
   return classifications.find((item) => {
+    if (!isRenderableClassification(item)) return false;
     const representative = detections.find((candidate) => candidate.id === item.detectionId);
     return representative !== undefined
       && isStaticRegionAssociation(representative)
@@ -172,6 +363,44 @@ export function classificationForDetection(
       && representative.associationId === detection.associationId
       && representative.associationMemberTrackIds?.includes(detection.id) === true;
   });
+}
+
+function isRenderableClassification(value: unknown): value is WaveformClassification {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<WaveformClassification>;
+  if (typeof candidate.detectionId !== 'string'
+    || typeof candidate.label !== 'string'
+    || typeof candidate.modelId !== 'string'
+    || !finiteProbability(candidate.confidence)
+    || !Array.isArray(candidate.candidates)
+    || !candidate.candidates.every((entry) => typeof entry === 'object'
+      && entry !== null
+      && typeof entry.label === 'string'
+      && finiteProbability(entry.confidence))) return false;
+  const evidence = candidate.evidence as unknown;
+  if (typeof evidence !== 'object' || evidence === null) return false;
+  const evidenceRecord = evidence as Record<string, unknown>;
+  if (!isFiniteNumber(evidenceRecord.bandwidthHz)
+    || !Array.isArray(evidenceRecord.sweepIds)
+    || !evidenceRecord.sweepIds.every((sweepId) => typeof sweepId === 'string')) return false;
+  if (candidate.unknownReason !== undefined && typeof candidate.unknownReason !== 'string') return false;
+  const support = candidate.decisionSupport as unknown;
+  if (support !== undefined) {
+    if (typeof support !== 'object' || support === null) return false;
+    const supportRecord = support as Record<string, unknown>;
+    if ((supportRecord.kind !== 'model-posterior' && supportRecord.kind !== 'synthetic-support-rank')
+      || !finiteProbability(supportRecord.value)
+      || (supportRecord.threshold !== undefined && !finiteProbability(supportRecord.threshold))) return false;
+  }
+  return true;
+}
+
+function finiteProbability(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && value <= 1;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function isStaticRegionAssociation(detection: DetectedSignal): boolean {
@@ -188,15 +417,8 @@ function isCurrentStaticAssociationMember(detection: DetectedSignal): boolean {
 
 function PipelineStep({ icon, label, detail, ready }: { icon: React.ReactNode; label: string; detail: string; ready: boolean }) { return <div className={`pipeline-step ${ready ? 'ready' : ''}`}><span>{icon}</span><div><strong>{label}</strong><small>{detail}</small></div>{ready && <CheckCircle2 size={14}/>}</div>; }
 
-function EnvelopePlot({ capture }: { capture?: ZeroSpanCapture }) {
-  if (!capture) return <div className="envelope-empty">No capture</div>;
-  const minimum = Math.min(...capture.powerDbm) - 2;
-  const maximum = Math.max(...capture.powerDbm) + 2;
-  const points = capture.powerDbm.map((value, index) => `${index / Math.max(1, capture.powerDbm.length - 1) * 600},${100 - (value - minimum) / Math.max(1, maximum - minimum) * 100}`).join(' ');
-  return <div className="envelope-plot"><svg viewBox="0 0 600 100" preserveAspectRatio="none"><line x1="0" x2="600" y1="50" y2="50"/><polyline points={points}/></svg><span>0</span><span>{Math.round(capture.requested.sweepTimeSeconds * 1_000)} ms</span></div>;
-}
-
 export function waveformLabel(value: string): string {
+  if (typeof value !== 'string' || value.length === 0) return 'Unknown';
   const observable = value.match(/^observable:(.+)$/)?.[1];
   if (observable && observable in observableClassDefinitions) return observableClassDefinitions[observable as keyof typeof observableClassDefinitions].label;
   const legacyProfileId = value.match(/^signal-lab:(.+)$/)?.[1];

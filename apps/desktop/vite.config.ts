@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { createDevelopmentRendererCspPlugin } from './src/main/development-renderer-csp-vite.ts';
+import { createOptionalBayesianClassifierVitePlugin } from './src/main/optional-bayesian-classifier-vite.ts';
 import { developmentRendererTrust, validateDevelopmentServerUrl } from './src/main/renderer-trust.ts';
 
 const root = fileURLToPath(new URL('./src/renderer', import.meta.url));
@@ -10,6 +11,9 @@ const developmentUrl = validateDevelopmentServerUrl(process.env.VITE_DEV_SERVER_
 const developmentHost = developmentUrl.hostname === '[::1]' ? '::1' : developmentUrl.hostname;
 export default defineConfig({
   plugins: [
+    createOptionalBayesianClassifierVitePlugin({
+      forceUnavailable: process.env.ATOMIZER_DISABLE_BAYESIAN_CLASSIFIER === '1',
+    }),
     react(),
     createDevelopmentRendererCspPlugin(developmentRendererTrust(developmentUrl), react.preambleCode),
   ],

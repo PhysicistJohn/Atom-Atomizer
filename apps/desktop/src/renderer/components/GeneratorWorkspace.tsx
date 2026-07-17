@@ -1,20 +1,31 @@
-import { AlertTriangle, Gauge, Power, Radio, ShieldCheck, Waves } from 'lucide-react';
+import { AlertTriangle, FlaskConical, Gauge, Power, Radio, ShieldCheck, Waves } from 'lucide-react';
 import type { GeneratorConfig, InstrumentFeatureCapability } from '@tinysa/contracts';
 import type { GeneratorOutputState } from '../ui-contracts.js';
 import { formatFrequency } from '../format.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
 
 type RfGeneratorCapability = Extract<InstrumentFeatureCapability, { kind: 'rf-generator' }>;
+type SignalLabProfileCapability = Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
 
-export function GeneratorWorkspace({ config, capability, output, busy, onChange, onApply, onOutput }: {
+export function GeneratorWorkspace({ config, capability, signalLabProfiles, selectedSignalLabProfile, output, busy, onChange, onApply, onOutput, onSignalLabProfile }: {
   config: GeneratorConfig;
   capability?: RfGeneratorCapability;
+  signalLabProfiles?: SignalLabProfileCapability;
+  selectedSignalLabProfile?: string;
   output: GeneratorOutputState;
   busy: boolean;
   onChange(config: GeneratorConfig): void;
   onApply(): void;
   onOutput(enabled: boolean): void;
+  onSignalLabProfile(profileId: string): void;
 }) {
+  if (signalLabProfiles) return <SignalLabGenerationWorkspace
+    capability={signalLabProfiles}
+    selectedProfile={selectedSignalLabProfile}
+    busy={busy}
+    onProfile={onSignalLabProfile}
+  />;
+
   const on = output === 'on';
   const unknown = output === 'unknown';
   const path = capability?.paths.find((candidate) => candidate.path === config.path);
@@ -68,6 +79,48 @@ export function GeneratorWorkspace({ config, capability, output, busy, onChange,
     </section>
 
     <section className="safety-panel"><div><ShieldCheck size={18}/><strong>Before enabling</strong></div><ul><li><AlertTriangle size={13}/>Verify load and attenuation.</li><li><AlertTriangle size={13}/>Driver capability does not prove RF readback.</li></ul></section>
+  </div>;
+}
+
+function SignalLabGenerationWorkspace({ capability, selectedProfile, busy, onProfile }: {
+  capability: SignalLabProfileCapability;
+  selectedProfile?: string;
+  busy: boolean;
+  onProfile(profileId: string): void;
+}) {
+  const activeProfileId = selectedProfile ?? capability.selectedProfileId;
+  const activeProfile = capability.profiles.find((profile) => profile.profileId === activeProfileId);
+  return <div className="generator-layout signal-lab-generation-layout">
+    <section className="rf-stage signal-lab-stage">
+      <div className="rf-halo"><FlaskConical size={36}/><span/><span/><span/></div>
+      <span className="rf-state-label">Synthetic signal source</span>
+      <h2>{activeProfileId.toUpperCase()}</h2>
+      <p>SignalLab generates scalar simulated measurements. It does not command an RF output or claim emitted energy.</p>
+      <span className="synthetic-source-state">ACTIVE · NO RF OUTPUT</span>
+    </section>
+
+    <section className="generator-controls">
+      <div className="panel-header"><div><Waves size={14}/>SignalLab waveform</div><span>SIMULATED · HUMAN SELECTED</span></div>
+      <div className="generator-form parameter-stack" data-agent-exclusion="human-signal-profile-boundary">
+        <SelectParameter
+          label="SignalLab profile"
+          value={activeProfileId}
+          options={capability.profiles.map(({ profileId, centerFrequencyHz }) => ({
+            value: profileId,
+            label: `${profileId} · ${(centerFrequencyHz / 1e6).toFixed(3)} MHz`,
+          }))}
+          disabled={busy}
+          onValue={(value) => onProfile(String(value))}
+        />
+        <div className="signal-lab-profile-facts">
+          <span><small>Center</small><strong>{activeProfile ? formatFrequency(activeProfile.centerFrequencyHz) : '—'}</strong></span>
+          <span><small>Recommended span</small><strong>{activeProfile ? formatFrequency(activeProfile.recommendedSpanHz) : '—'}</strong></span>
+        </div>
+        <div className="channel-contract-note"><FlaskConical size={14}/><p>Changing profile invalidates prior evidence and recenters the analyzer on the selected scenario.</p></div>
+      </div>
+    </section>
+
+    <section className="safety-panel"><div><ShieldCheck size={18}/><strong>Simulation boundary</strong></div><ul><li><AlertTriangle size={13}/>No USB device identity is claimed.</li><li><AlertTriangle size={13}/>No RF energy is emitted.</li></ul></section>
   </div>;
 }
 

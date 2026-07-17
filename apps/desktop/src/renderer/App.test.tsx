@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AnalyzerConfig,
@@ -11,10 +12,27 @@ import {
   type InstrumentMeasurement,
   type InstrumentSessionSnapshot,
   type Sweep,
+  type WaveformClassification,
 } from '@tinysa/contracts';
-import { classificationRepresentatives } from '@tinysa/analysis';
-import { App, coherentSweepCount, fitChannelConfigurationToSpan, parseStoredDetection } from './App.js';
+import { classificationRepresentatives, SignalTracker } from '@tinysa/analysis';
+import {
+  App,
+  agentSelectedClassificationId,
+  coherentSweepCount,
+  fitChannelConfigurationToSpan,
+  parseStoredDetection,
+  resolveClassificationTargetSelection,
+  semanticControlRequiresCoordinates,
+} from './App.js';
 import { agentControlBinding } from '@tinysa/agent';
+import { ATOM_REALTIME_TOOL_CALL_LIMIT } from './atom-agent-retention.js';
+import type { BayesianClassifierRuntime } from './bayesian-classifier-runtime.js';
+import {
+  DEFAULT_REPLAY_CHANNEL,
+  suggestedAnalyzerRange,
+  synthesizeSpectrum,
+  waveformDescriptor,
+} from '../../../../../TinySA_SignalLab/src/waveforms.js';
 
 const HASH = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -141,6 +159,161 @@ function detectedPowerMeasurement(config: Extract<InstrumentConfiguration, { kin
   return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sweepTimeSeconds / config.sampleCount, timingQualification: 'wall-clock-derived', powerDbm: Array(config.sampleCount).fill(-90) };
 }
 
+function testClassification(
+  detection: DetectedSignal,
+  modelId: string,
+): WaveformClassification {
+  return {
+    detectionId: detection.id,
+    label: 'cw-regression',
+    confidence: 0.9,
+    candidates: [{ label: 'cw-regression', confidence: 0.9 }],
+    modelId,
+    qualification: 'bayesian-observable-equivalence',
+    scoreKind: 'model-posterior',
+    decisionLevel: 'equivalence-class',
+    classifiedAt: '2026-07-10T00:00:02.000Z',
+    evidence: {
+      centerHz: detection.peakHz,
+      bandwidthHz: detection.bandwidthHz,
+      peakDbm: detection.peakDbm,
+      sweepIds: detection.sweepIds,
+    },
+  };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function readyClassifierRuntime(
+  classify: BayesianClassifierRuntime['classifier']['classify'],
+): BayesianClassifierRuntime {
+  return {
+    status: 'ready',
+    classifier: { modelId: 'regression-classifier', classify },
+  };
+}
+
+function persistOneLookDetector(): void {
+  localStorage.setItem('tinysa-atomizer:v2:detector', JSON.stringify({
+    threshold: { strategy: 'absolute', levelDbm: -80 },
+    minimumBandwidthHz: 0,
+    minimumProminenceDb: 6,
+    minimumConsecutiveSweeps: 1,
+    releaseAfterMissedSweeps: 2,
+  }));
+}
+
+function mockSignalLabCwSource(peakIndices: readonly number[] = [225]) {
+  if (!peakIndices.length) throw new Error('SignalLab CW test source requires at least one peak index');
+  vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+    schemaVersion: 1,
+    startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+    streaming: { status: 'stopped' },
+    connectionCleanup: { status: 'not-required' },
+    preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } },
+    session: signalLabSession,
+  });
+  vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
+  vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+    activeConfiguration = structuredClone(configuration);
+    configurationRevision = `configuration-${++revisionSequence}`;
+    return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+  });
+  const expectedPeakHz: number[] = [];
+  let acquisitionCount = 0;
+  vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+    const configuration = activeConfiguration;
+    if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
+    const frequencyHz = Array.from({ length: configuration.points }, (_value, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
+    const peakIndex = peakIndices[acquisitionCount % peakIndices.length]!;
+    if (!Number.isInteger(peakIndex) || peakIndex < 0 || peakIndex >= frequencyHz.length) throw new Error('SignalLab CW test peak index is outside the sweep');
+    acquisitionCount++;
+    expectedPeakHz.push(frequencyHz[peakIndex]!);
+    return {
+      schemaVersion: 1, kind: 'swept-spectrum', measurementId: `signal-cw-marker-${acquisitionCount}`, sessionId: signalLabSession.sessionId,
+      configurationRevision, producerConfigurationEpoch: 'producer-epoch:1', sequence: acquisitionCount,
+      capturedAt: `2026-07-10T00:00:${String(acquisitionCount).padStart(2, '0')}.000Z`, elapsedMilliseconds: 50,
+      resolutionBandwidthHz: null, attenuationDb: null, qualification: 'synthetic-visual-projection', complete: true,
+      frequencyHz, powerDbm: frequencyHz.map((_frequency, index) => index === peakIndex ? -35 : -105),
+    };
+  });
+  return { expectedPeakHz, acquisitionCount: () => acquisitionCount };
+}
+
+function mockSignalLabWidebandSource(profile: 'lte-etm3.1') {
+  const descriptor = waveformDescriptor(profile);
+  const range = suggestedAnalyzerRange(descriptor);
+  vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+    schemaVersion: 1,
+    startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+    streaming: { status: 'stopped' },
+    connectionCleanup: { status: 'not-required' },
+    preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } },
+    session: signalLabSession,
+  });
+  vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
+  vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+    activeConfiguration = structuredClone(configuration);
+    configurationRevision = `configuration-${++revisionSequence}`;
+    return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+  });
+  const rawPeakHz: number[] = [];
+  vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+    const configuration = activeConfiguration;
+    if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
+    const frequencyHz = Array.from({ length: configuration.points }, (_value, index) =>
+      configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
+    const powerDbm = synthesizeSpectrum({
+      profile,
+      startHz: configuration.startHz,
+      stopHz: configuration.stopHz,
+      points: configuration.points,
+      sweepIndex: 0,
+      channel: DEFAULT_REPLAY_CHANNEL,
+    });
+    const peakIndex = powerDbm.reduce((best, value, index) => value > powerDbm[best]! ? index : best, 0);
+    rawPeakHz.push(frequencyHz[peakIndex]!);
+    return {
+      schemaVersion: 1, kind: 'swept-spectrum', measurementId: 'signal-lte-tm31-marker-1', sessionId: signalLabSession.sessionId,
+      configurationRevision, producerConfigurationEpoch: 'producer-epoch:1', sequence: 1,
+      capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50,
+      resolutionBandwidthHz: (configuration.stopHz - configuration.startHz) / (configuration.points - 1),
+      attenuationDb: null, qualification: 'synthetic-visual-projection', complete: true,
+      frequencyHz, powerDbm,
+    };
+  });
+  return { descriptor, range, rawPeakHz };
+}
+
+function mockConnectedInstrument(session: InstrumentSessionSnapshot = ready): void {
+  vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+    schemaVersion: 1,
+    startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+    streaming: { status: 'stopped' },
+    connectionCleanup: { status: 'not-required' },
+    preference: { source: 'persisted', preference: { schemaVersion: 1, driverId: session.driverId, candidateKind: session.candidate.sourceKind, candidateId: session.candidate.candidateId, updatedAt: '2026-07-10T00:00:00.000Z' } },
+    session,
+  });
+  vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({
+    discoveryRevision: session.candidate.discoveryRevision,
+    discoveredAt: '2026-07-10T00:00:00.000Z',
+    candidates: [session.candidate],
+    failures: [],
+  });
+}
+
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
@@ -220,6 +393,11 @@ beforeEach(() => {
 });
 
 describe('operator vertical slice', () => {
+  it('requires a coordinate-bearing path for direct spectrum marker placement', () => {
+    expect(semanticControlRequiresCoordinates('spectrum.marker-place')).toBe(true);
+    expect(semanticControlRequiresCoordinates('classification.auto-select')).toBe(false);
+  });
+
   it('fits stale channel geometry inside the active analyzer span', () => {
     const fitted = fitChannelConfigurationToSpan({
       centerHz: 98_000_000,
@@ -252,7 +430,57 @@ describe('operator vertical slice', () => {
     expect(() => parseStoredDetection({ threshold: 'corrupt' })).toThrow();
   });
 
-  it('opens Classify with the persisted pre-model 100 ms capture geometry intact and explicitly out of model', async () => {
+  it('quarantines a corrupt persisted preference and keeps reload startup usable', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    localStorage.setItem('tinysa-atomizer:v2:analyzer', '{not-json');
+
+    render(<App/>);
+
+    expect(await screen.findByRole('navigation', { name: /Primary navigation/i })).toBeTruthy();
+    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
+    await waitFor(() => expect(() => JSON.parse(localStorage.getItem('tinysa-atomizer:v2:analyzer') ?? '')).not.toThrow());
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('quarantined invalid analyzer state'),
+      expect.anything(),
+    );
+    warning.mockRestore();
+  });
+
+  it('does not let a superseded StrictMode initialization overwrite the live session', async () => {
+    const first = deferred<AtomizerInstrumentState>();
+    const second = deferred<AtomizerInstrumentState>();
+    vi.mocked(window.atomizerInstrument.getState)
+      .mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const connectedState: AtomizerInstrumentState = {
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      session: ready,
+    };
+
+    render(<StrictMode><App/></StrictMode>);
+    await waitFor(() => expect(window.atomizerInstrument.getState).toHaveBeenCalledTimes(2));
+    await act(async () => { second.resolve(connectedState); });
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+
+    await act(async () => {
+      first.resolve({
+        schemaVersion: 1,
+        startup: { status: 'not-started' },
+        streaming: { status: 'stopped' },
+        connectionCleanup: { status: 'not-required' },
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce();
+  });
+
+  it('shows persisted pre-model capture geometry as compact status without restoring the removed envelope editor', async () => {
     localStorage.setItem('tinysa-atomizer:v2:zero-span', JSON.stringify({
       frequencyHz: 433_920_000,
       points: 290,
@@ -265,11 +493,12 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
 
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
-    fireEvent.click(within(navigation).getByRole('button', { name: /^Classify$/i }));
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
 
-    const captureGeometry = screen.getByRole('combobox', { name: 'Capture geometry' }) as HTMLSelectElement;
-    expect(captureGeometry.value).toBe('current');
-    expect(captureGeometry.selectedOptions[0]?.textContent).toBe('290 × 100 ms · current · outside pinned Bayesian geometry');
+    const status = screen.getByLabelText('Detected-power evidence status');
+    expect(status.textContent).toContain('290 samples · 100 ms · outside Bayesian geometry');
+    expect(screen.queryByRole('combobox', { name: 'Capture geometry' })).toBeNull();
+    expect(document.querySelector('.zero-span-panel')).toBeNull();
   });
 
   it('classifies one representative per regular component association and honors a zero-span target', () => {
@@ -285,11 +514,208 @@ describe('operator vertical slice', () => {
     const local = { id: 'local', associationMode: 'frequency-local' } as DetectedSignal;
     const signals = [associated('left', 100), associated('center', 200), associated('right', 300), local];
 
-    expect(classificationRepresentatives(signals).map((signal) => signal.id)).toEqual(['center', 'local']);
-    expect(classificationRepresentatives(signals, 'right').map((signal) => signal.id)).toEqual(['right', 'local']);
+    expect(classificationRepresentatives(signals).map((signal) => signal.id)).toEqual(['local', 'center']);
+    expect(classificationRepresentatives(signals, 'right').map((signal) => signal.id)).toEqual(['local', 'right']);
+  });
+
+  it('re-evaluates an autonomous classification target when a stronger detection arrives', () => {
+    const weak = { id: 'weak', peakDbm: -60, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+    const strong = { id: 'strong', peakDbm: -40, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+
+    expect(resolveClassificationTargetSelection([weak])).toEqual({
+      detectionId: 'weak',
+      origin: 'automatic',
+    });
+    expect(resolveClassificationTargetSelection([weak, strong])).toEqual({
+      detectionId: 'strong',
+      origin: 'automatic',
+    });
+  });
+
+  it('clears the preceding classification while a new sweep evidence revision is unresolved', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const pending = deferred<WaveformClassification>();
+    let classificationCall = 0;
+    const classify = vi.fn((detection: DetectedSignal) => {
+      classificationCall++;
+      return classificationCall === 2
+        ? pending.promise
+        : Promise.resolve(testClassification(detection, 'prior-sweep-evidence-model'));
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        const measurement = acquiredMeasurement(configuredAnalyzer, `evidence-sweep-${measurementSequence + 1}`);
+        return {
+          ...measurement,
+          capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000).toISOString(),
+        };
+      }
+      return activeConfiguration.kind === 'detected-power-timeseries'
+        ? detectedPowerMeasurement(activeConfiguration)
+        : Promise.reject(new Error('I/Q not mocked'));
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    const single = screen.getByRole('button', { name: /^Single$/i });
+    await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(document.body.textContent).toContain('prior-sweep-evidence-model'));
+    await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    expect(classify.mock.calls[1]?.[0].id).toBe(classify.mock.calls[0]?.[0].id);
+    await waitFor(() => expect(document.body.textContent).not.toContain('prior-sweep-evidence-model'));
+
+    await act(async () => {
+      pending.reject(new Error('next sweep classifier rejected'));
+      await Promise.resolve();
+    });
+    await screen.findByText('next sweep classifier rejected');
+    expect(document.body.textContent).not.toContain('prior-sweep-evidence-model');
+  });
+
+  it('clears the spectrum-only classification when new detected-power evidence is published', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const pending = deferred<WaveformClassification>();
+    let classificationCall = 0;
+    const classify = vi.fn((detection: DetectedSignal) => {
+      classificationCall++;
+      return classificationCall === 9
+        ? pending.promise
+        : Promise.resolve(testClassification(detection, 'prior-spectrum-only-model'));
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        const measurement = acquiredMeasurement(configuredAnalyzer, `receipt-sweep-${measurementSequence + 1}`);
+        return {
+          ...measurement,
+          capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000).toISOString(),
+        };
+      }
+      return activeConfiguration.kind === 'detected-power-timeseries'
+        ? detectedPowerMeasurement(activeConfiguration)
+        : Promise.reject(new Error('I/Q not mocked'));
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    const single = screen.getByRole('button', { name: /^Single$/i });
+    await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+    for (let look = 1; look <= 8; look++) {
+      fireEvent.click(single);
+      await waitFor(() => expect(classify).toHaveBeenCalledTimes(look));
+      await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+    }
+    await waitFor(() => expect(document.body.textContent).toContain('prior-spectrum-only-model'));
+
+    const capture = screen.getByRole('button', { name: 'Capture envelope' });
+    await waitFor(() => expect(capture.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(capture);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(9));
+    expect(classify.mock.calls[8]?.[0].id).toBe(classify.mock.calls[7]?.[0].id);
+    await waitFor(() => expect(document.body.textContent).not.toContain('prior-spectrum-only-model'));
+
+    await act(async () => {
+      pending.reject(new Error('detected-power classifier rejected'));
+      await Promise.resolve();
+    });
+    await screen.findByText('detected-power classifier rejected');
+    expect(document.body.textContent).not.toContain('prior-spectrum-only-model');
+  });
+
+  it('reports the receipt-owned classifier representative ahead of its raw agile tune owner', () => {
+    expect(agentSelectedClassificationId({
+      receiptProjectedRepresentativeId: 'agile-2g4-activity-0001',
+      captureRawTargetId: 'signal-0008',
+      currentSelectionId: 'signal-0002',
+    })).toBe('agile-2g4-activity-0001');
+    expect(agentSelectedClassificationId({
+      captureRawTargetId: 'signal-0008',
+      currentSelectionId: 'signal-0002',
+    })).toBe('signal-0008');
+  });
+
+  it('keeps an explicit classification target sticky while it remains selectable', () => {
+    const weak = { id: 'weak', peakDbm: -60, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+    const strong = { id: 'strong', peakDbm: -40, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+
+    expect(resolveClassificationTargetSelection([weak, strong], weak.id)).toEqual({
+      detectionId: 'weak',
+      origin: 'explicit',
+      explicitDetectionId: 'weak',
+    });
+  });
+
+  it('falls back to the autonomous target when tracker retention keeps a departed explicit row visible', () => {
+    const current = {
+      id: 'current',
+      peakDbm: -45,
+      associationMode: 'regular-spectral-component-activity',
+      associationId: 'regular-1',
+      associationMemberTrackIds: ['current'],
+      state: 'active',
+      missedSweeps: 0,
+      associationMissedSweeps: 0,
+    } as unknown as DetectedSignal;
+    const departed = {
+      ...current,
+      id: 'departed',
+      peakDbm: -35,
+      associationMemberTrackIds: ['current'],
+      missedSweeps: 1,
+      associationMissedSweeps: 1,
+    } as DetectedSignal;
+
+    expect(resolveClassificationTargetSelection([departed, current], departed.id)).toEqual({
+      detectionId: 'current',
+      origin: 'automatic',
+    });
+  });
+
+  it('ignores stronger candidate, stale, released, and frequency-agile evidence rows for Auto', () => {
+    const current = {
+      id: 'current',
+      peakDbm: -55,
+      state: 'active',
+      missedSweeps: 0,
+      associationMode: 'frequency-local',
+    } as DetectedSignal;
+    const nonCurrentRows = [
+      { id: 'candidate', peakDbm: -10, state: 'candidate', missedSweeps: 0, associationMode: 'frequency-local' },
+      { id: 'stale', peakDbm: -9, state: 'active', missedSweeps: 1, associationMode: 'frequency-local' },
+      { id: 'released', peakDbm: -8, state: 'released', missedSweeps: 0, associationMode: 'frequency-local' },
+      { id: 'agile', peakDbm: -7, state: 'active', missedSweeps: 0, associationMode: 'frequency-agile-2g4-activity' },
+    ] as DetectedSignal[];
+
+    for (const nonCurrent of nonCurrentRows) {
+      expect(resolveClassificationTargetSelection([current, nonCurrent])).toEqual({
+        detectionId: 'current',
+        origin: 'automatic',
+      });
+      expect(resolveClassificationTargetSelection([current, nonCurrent], nonCurrent.id)).toEqual({
+        detectionId: 'current',
+        origin: 'automatic',
+      });
+    }
   });
 
   it('stages the selected detection on the admitted tuning lattice and captures at that exact center', async () => {
+    localStorage.setItem('tinysa-atomizer:v2:zero-span', JSON.stringify({
+      frequencyHz: 433_920_000,
+      points: 290,
+      rbwKhz: 100,
+      attenuationDb: 'auto',
+      sweepTimeSeconds: 0.1,
+      trigger: { mode: 'auto' },
+    }));
     vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
       schemaVersion: 1,
       startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
@@ -298,29 +724,103 @@ describe('operator vertical slice', () => {
       preference: { source: 'persisted', preference: { schemaVersion: 1, driverId: ready.driverId, candidateKind: ready.candidate.sourceKind, updatedAt: '2026-07-10T00:00:00.000Z' } },
       session: ready,
     });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        const measurement = acquiredMeasurement(configuredAnalyzer, `runtime-sweep-${measurementSequence + 1}`);
+        return {
+          ...measurement,
+          capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000).toISOString(),
+        };
+      }
+      if (activeConfiguration.kind === 'detected-power-timeseries') return detectedPowerMeasurement(activeConfiguration);
+      return Promise.reject(new Error('I/Q not mocked'));
+    });
 
     render(<App/>);
     expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    for (let look = 1; look <= 8; look++) {
+      fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+      await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(look));
+    }
 
     const expectedCenterHz = Math.round(88_000_000 + Math.floor(requested.points / 2)
       * ((108_000_000 - 88_000_000) / (requested.points - 1)));
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
-    fireEvent.click(within(navigation).getByRole('button', { name: /^Classify$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Capture envelope/i }));
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    const captureEnvelope = screen.getByRole('button', { name: /Capture envelope/i });
+    await waitFor(() => expect(captureEnvelope.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(captureEnvelope);
 
     await waitFor(() => {
       const detectedPowerConfigurations = vi.mocked(window.atomizerInstrument.configure).mock.calls
         .map(([configuration]) => configuration)
         .filter((configuration): configuration is Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }> =>
           configuration.kind === 'detected-power-timeseries');
-      expect(detectedPowerConfigurations).toContainEqual(expect.objectContaining({
+      expect(detectedPowerConfigurations, screen.queryByRole('alert')?.textContent ?? 'no application alert').toContainEqual(expect.objectContaining({
         kind: 'detected-power-timeseries',
         centerHz: expectedCenterHz,
+        sampleCount: 450,
+        sweepTimeSeconds: 0.05,
       }));
     });
     expect(expectedCenterHz).not.toBe(frequencies[Math.floor(requested.points / 2)]);
+  });
+
+  it('fails Auto capture closed instead of substituting a weaker runtime-ready row', async () => {
+    localStorage.setItem('tinysa-atomizer:v2:detector', JSON.stringify({
+      threshold: { strategy: 'absolute', levelDbm: -70 },
+      minimumBandwidthHz: 0,
+      minimumProminenceDb: 6,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    }));
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      preference: { source: 'persisted', preference: { schemaVersion: 1, driverId: ready.driverId, candidateKind: ready.candidate.sourceKind, updatedAt: '2026-07-10T00:00:00.000Z' } },
+      session: ready,
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'detected-power-timeseries') {
+        return detectedPowerMeasurement(activeConfiguration);
+      }
+      if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('I/Q not mocked');
+      const measurement = acquiredMeasurement(configuredAnalyzer, `auto-exact-${measurementSequence + 1}`);
+      return {
+        ...measurement,
+        capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000).toISOString(),
+        powerDbm: measurement.powerDbm.map((_power, index) => {
+          if (index === 120) return -50;
+          if (measurement.sequence >= 9 && index === 330) return -20;
+          return -100;
+        }),
+      };
+    });
+
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    for (let look = 1; look <= 9; look++) {
+      fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+      await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(look));
+    }
+
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    const auto = screen.getByRole('button', { name: /Auto · strongest signal/i });
+    expect(auto.getAttribute('aria-pressed')).toBe('true');
+    const captureEnvelope = screen.getByRole('button', { name: /Capture envelope/i });
+    expect(captureEnvelope.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(captureEnvelope);
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toMatch(/selected classification target .* is not available on an exact runtime-admitted eight-sweep window/i);
+    expect(vi.mocked(window.atomizerInstrument.configure).mock.calls
+      .map(([configuration]) => configuration)
+      .filter((configuration) => configuration.kind === 'detected-power-timeseries'))
+      .toHaveLength(0);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(9);
   });
 
   it('renders an already-started SignalLab default without fabricating hardware identity and can select its profile', async () => {
@@ -347,11 +847,14 @@ describe('operator vertical slice', () => {
     expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
     expect(screen.getByRole('button', { name: /SignalLab.*Synthetic measurement bridge/i })).toBeTruthy();
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
-    expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(true);
-    fireEvent.click(within(navigation).getByRole('button', { name: /Device/i }));
-    expect(await screen.findByText(/no device identity is asserted/i)).toBeTruthy();
-    expect(screen.getAllByText('Not claimed').length).toBeGreaterThan(0);
-    fireEvent.change(screen.getByRole('combobox', { name: /SignalLab profile/i }), { target: { value: 'fm' } });
+    expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(false);
+    fireEvent.click(within(navigation).getByRole('button', { name: /Generate/i }));
+    expect(await screen.findByText(/Synthetic signal source/i)).toBeTruthy();
+    expect(screen.getByText(/No RF output/i)).toBeTruthy();
+    const profile = screen.getByRole('combobox', { name: /SignalLab profile/i });
+    expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
+    expect(profile.closest('[data-agent-control]')).toBeNull();
+    fireEvent.change(profile, { target: { value: 'fm' } });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' }));
     fireEvent.click(within(navigation).getByRole('button', { name: /Spectrum/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
@@ -365,6 +868,64 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({
       format: 'json', sweep: expect.objectContaining({ requested: admitted }),
     }));
+  });
+
+  it('presents a failed operator export without an unhandled rejection or renderer loss', async () => {
+    mockConnectedInstrument();
+    vi.mocked(window.atomizerFiles.exportSweep).mockRejectedValueOnce(new Error('export destination unavailable'));
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export CSV' }));
+
+    expect(await screen.findByText('export destination unavailable')).toBeTruthy();
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    expect(within(navigation).getByRole('button', { name: /^Detect$/i }).getAttribute('aria-current')).toBe('page');
+    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
+  });
+
+  it.each([
+    { navigationName: /Generate/i, activeWorkspace: 'generator' },
+    { navigationName: /Device/i, activeWorkspace: 'device' },
+  ])('lets Atom inspect the SignalLab $activeWorkspace surface without exposing profile mutation', async ({ navigationName, activeWorkspace }) => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } },
+      session: signalLabSession,
+    });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'inspect-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'inspect-load', name: 'load_atom_tools', arguments: '{"toolNames":["inspect_interface"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'inspect-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'inspect-ui', name: 'inspect_interface', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'inspect-2', transport: 'realtime-websocket', text: 'Interface inspected.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    fireEvent.click(within(navigation).getByRole('button', { name: navigationName }));
+    const profile = await screen.findByRole('combobox', { name: /SignalLab profile/i });
+    expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
+    expect(profile.closest('[data-agent-control]')).toBeNull();
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Inspect this interface.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const inspected = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean;
+      output?: { activeWorkspace?: string; rendered?: readonly { controlId?: string }[] };
+    };
+    expect(inspected.ok, JSON.stringify(inspected)).toBe(true);
+    expect(inspected.output?.activeWorkspace).toBe(activeWorkspace);
+    expect(inspected.output?.rendered?.some(({ controlId }) => controlId === 'signal-lab.profile')).toBe(false);
+    expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
   });
 
   it('shows Atom only qualified synthetic staging and rejects receiver-only SignalLab edits', async () => {
@@ -602,6 +1163,30 @@ describe('operator vertical slice', () => {
     expect(await screen.findByText(/Sweep analysis failed/)).toBeTruthy();
   });
 
+  it('contains a malformed subscribed event and fail-safely stops the active stream', async () => {
+    render(<App/>);
+    await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
+    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
+    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    vi.mocked(window.atomizerInstrument.stopStreaming).mockClear();
+
+    await act(async () => {
+      expect(() => instrumentEventListener?.({
+        type: 'measurement',
+        measurement: { kind: 'swept-spectrum' },
+      } as never)).not.toThrow();
+    });
+
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/Instrument event rejected at the renderer boundary/i)).toBeTruthy();
+    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
+  });
+
   it('coalesces an invalid measurement flood into one fail-safe stream stop', async () => {
     let releaseStop: (() => void) | undefined;
     vi.mocked(window.atomizerInstrument.stopStreaming).mockImplementationOnce(() => new Promise((resolve) => {
@@ -704,6 +1289,7 @@ describe('operator vertical slice', () => {
   });
 
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
+    localStorage.setItem('tinysa-atomizer:v2:measurement-view', JSON.stringify('envelope-stft'));
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
@@ -712,18 +1298,25 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
-    for (const label of ['Spectrum', 'Detect', 'Classify', 'Generate', 'Device']) expect(navigation.textContent).toContain(label);
+    expect(within(navigation).getAllByRole('button').map((button) => button.textContent?.trim()))
+      .toEqual(['Spectrum', 'Waterfall', 'Channel', 'Detect', 'Generate', 'Device']);
+    expect(within(navigation).getAllByRole('button', { name: /^Detect$/i })).toHaveLength(1);
+    expect(within(navigation).queryByRole('button', { name: /^Classify$/i })).toBeNull();
     expect(navigation.textContent).not.toContain('Sessions');
     expect(navigation.textContent).not.toContain('Settings');
     expect(container.querySelector('.atomic-mark')).toBeTruthy();
-    for (const view of ['Spectrum', 'Waterfall', 'Channel', 'Time / STFT']) expect(screen.getByRole('tab', { name: new RegExp(view, 'i') })).toBeTruthy();
-    fireEvent.click(screen.getByRole('tab', { name: /Waterfall/i }));
+    expect(screen.queryByRole('tablist')).toBeNull();
+    expect(navigation.textContent).not.toContain('Time / STFT');
+    expect(within(navigation).getByRole('button', { name: /^Spectrum$/i }).getAttribute('aria-current')).toBe('page');
+    const topViewBar = within(container.querySelector('.measurement-viewbar') as HTMLElement);
+    for (const view of ['Spectrum', 'Waterfall', 'Channel']) {
+      expect(topViewBar.queryByRole('button', { name: new RegExp(`^${view}$`, 'i') })).toBeNull();
+    }
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Waterfall$/i }));
     expect(await screen.findByLabelText(/Measured power by frequency and sweep time/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('tab', { name: /Channel/i }));
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Channel$/i }));
     expect(await screen.findByText(/Channel setup/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('tab', { name: /Time \/ STFT/i }));
-    expect(await screen.findByText(/^Capture$/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('tab', { name: /^Spectrum/i }));
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
@@ -733,6 +1326,16 @@ describe('operator vertical slice', () => {
     expect(await screen.findByRole('button', { name: /^Peak$/i })).toBeTruthy();
     fireEvent.click(measurementTabs.getByRole('button', { name: /Traces/i }));
     expect(await screen.findByText('TRACE 4')).toBeTruthy();
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
+    for (const selector of [
+      '.classification-spectrum',
+      '.classification-result',
+      '.candidate-panel',
+      '.detection-settings-panel',
+      '.classification-capture-strip',
+    ]) expect(container.querySelector(selector), selector).not.toBeNull();
+    expect(container.querySelector('.detection-workspace')).toBeNull();
+    expect(container.querySelector('.envelope-stft-view')).toBeNull();
     await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('HIGH'));
     expect(container.querySelector('.atom-foot')?.textContent).toContain('BALLAD');
   });
@@ -766,8 +1369,9 @@ describe('operator vertical slice', () => {
     await screen.findByRole('dialog', { name: /^Connect$/i });
     assertRenderedContracts();
     fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
-    for (const view of ['Waterfall', 'Channel', 'Time / STFT', 'Spectrum']) {
-      fireEvent.click(screen.getByRole('tab', { name: new RegExp(view.replace('/', '\\/'), 'i') }));
+    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
+    for (const view of ['Waterfall', 'Channel', 'Spectrum']) {
+      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${view}$`, 'i') }));
       assertRenderedContracts();
     }
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
@@ -780,9 +1384,8 @@ describe('operator vertical slice', () => {
       fireEvent.click(tabs.getByRole('button', { name: new RegExp(panel, 'i') }));
       assertRenderedContracts();
     }
-    const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
-    for (const workspace of ['Detect', 'Classify', 'Generate', 'Device', 'Spectrum']) {
-      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(workspace, 'i') }));
+    for (const workspace of ['Detect', 'Generate', 'Device', 'Spectrum']) {
+      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${workspace}$`, 'i') }));
       assertRenderedContracts();
     }
   });
@@ -1128,6 +1731,480 @@ describe('operator vertical slice', () => {
     expect(candidateOutput).toContain('"simulated":true');
     expect(candidateOutput).not.toContain('repositoryCommit');
     expect(candidateOutput).not.toContain(COMMIT);
+  });
+
+  it('lets Atom recover from an empty trace and place a peak marker on SignalLab CW through typed tools', async () => {
+    const source = mockSignalLabCwSource();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'marker-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'marker-load', name: 'load_atom_tools', arguments: '{"toolNames":["acquire_sweep","search_marker"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'marker-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'marker-empty', name: 'search_marker', arguments: '{"markerId":1,"action":"peak"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'marker-2', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'marker-acquire', name: 'acquire_sweep', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'marker-3', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'marker-peak', name: 'search_marker', arguments: '{"markerId":1,"action":"peak"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'marker-4', transport: 'realtime-websocket', text: 'CW peak marker placed.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Place marker 1 on the CW peak.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(5));
+    const emptyTraceResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as { ok?: boolean; error?: string };
+    expect(emptyTraceResult.ok).toBe(false);
+    expect(emptyTraceResult.error).toMatch(/Trace 1 has no data/);
+    const peakResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[4]?.[0].toolOutputs?.[0]?.output ?? '{}') as { ok?: boolean; output?: { markerId?: number; action?: string; frequencyHz?: number; reading?: { localCharacterization?: { widthClassification?: string; peakToRobustFloorDb?: number; physicalDetection?: { detectionState?: string; relationship?: string }; threeDecibelBandwidth?: { status?: string; bandwidthHz?: number }; componentOccupiedBandwidth?: { percent?: number; bandwidthHz?: number; noiseCorrection?: string } } } } };
+    expect(peakResult.ok, JSON.stringify(peakResult)).toBe(true);
+    expect(peakResult.output).toMatchObject({ markerId: 1, action: 'peak' });
+    expect(peakResult.output?.frequencyHz).toBe(source.expectedPeakHz[0]);
+    expect(peakResult.output?.reading?.localCharacterization).toMatchObject({
+      widthClassification: 'resolution-limited-narrow',
+      physicalDetection: { detectionState: 'candidate', relationship: 'contains-local-peak' },
+      threeDecibelBandwidth: { status: 'resolution-limited' },
+      componentOccupiedBandwidth: { percent: 99, noiseCorrection: 'robust-floor' },
+    });
+    expect(peakResult.output?.reading?.localCharacterization?.peakToRobustFloorDb).toBeGreaterThan(10);
+    expect(await screen.findByText('CW peak marker placed.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    expect(screen.getByRole('button', { name: /Marker 1, visible, selected/i })).toBeTruthy();
+    expect(screen.getAllByText(/Narrow · resolution limited/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/peak-to-floor/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/99% component occupied bandwidth/i)).toBeTruthy();
+  });
+
+  it('keeps Atom, stored marker state, readout, and diamond on the same fractional SignalLab TM3.1 center bin', async () => {
+    const source = mockSignalLabWidebandSource('lte-etm3.1');
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    const toolCalls = [
+      { callId: 'tm31-configure', name: 'configure_analyzer', arguments: JSON.stringify({ startHz: source.range.startHz, stopHz: source.range.stopHz, points: 450 }) },
+      { callId: 'tm31-acquire', name: 'acquire_sweep', arguments: '{}' },
+      { callId: 'tm31-search', name: 'search_marker', arguments: '{"markerId":1,"action":"peak"}' },
+      { callId: 'tm31-state', name: 'get_measurement_state', arguments: '{}' },
+    ];
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'tm31-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'tm31-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_analyzer","acquire_sweep","search_marker","get_measurement_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'tm31-1', transport: 'realtime-websocket', text: '', toolCalls })
+      .mockResolvedValueOnce({ conversationId: 'tm31-2', transport: 'realtime-websocket', text: 'TM3.1 center marker placed.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Acquire LTE TM3.1 and place M1 on its channel center.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    expect(outputs).toHaveLength(4);
+    const results = outputs.map(({ output }) => JSON.parse(output) as {
+      ok?: boolean;
+      output?: {
+        frequencyHz?: number;
+        reading?: { frequencyHz?: number; localCharacterization?: { markerCenterMethod?: string } };
+        markers?: {
+          configurations?: Array<{ id?: number; frequencyHz?: number }>;
+          readings?: Array<{ markerId?: number; frequencyHz?: number }>;
+        };
+      };
+    });
+    expect(results.every((result) => result.ok), JSON.stringify(results)).toBe(true);
+    const search = results[2]!.output!;
+    const frequencyHz = search.frequencyHz!;
+    expect(Number.isInteger(frequencyHz)).toBe(false);
+    expect(search.reading?.frequencyHz).toBe(frequencyHz);
+    expect(search.reading?.localCharacterization?.markerCenterMethod)
+      .toBe('resolved-component-linear-power-centroid');
+    const binWidthHz = (source.range.stopHz - source.range.startHz) / 449;
+    expect(Math.abs(frequencyHz - source.descriptor.centerHz)).toBeLessThanOrEqual(binWidthHz / 2 + 1e-6);
+    expect(frequencyHz).not.toBe(source.rawPeakHz[0]);
+    const state = results[3]!.output!;
+    expect(state.markers?.configurations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 1, frequencyHz }),
+    ]));
+    expect(state.markers?.readings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ markerId: 1, frequencyHz }),
+    ]));
+
+    const diamond = await screen.findByTestId('marker-m1-diamond');
+    const overlayItem = diamond.closest('.plot-marker-overlay-item');
+    expect(overlayItem?.getAttribute('aria-label')).toMatch(/noise-subtracted linear-power center.*centroid/i);
+    const leftPercent = (frequencyHz - source.range.startHz) / (source.range.stopHz - source.range.startHz) * 100;
+    expect(Number.parseFloat((overlayItem as HTMLElement).style.left)).toBeCloseTo(leftPercent, 10);
+    expect(screen.getByTestId('marker-readout-gutter').textContent).toMatch(/noise-subtracted linear-power center.*centroid/i);
+  });
+
+  it('keeps the app live while Atom repeats acquire then peak-marker search through the maximum bounded tool chain', async () => {
+    expect(ATOM_REALTIME_TOOL_CALL_LIMIT % 2).toBe(0);
+    const cycleCount = ATOM_REALTIME_TOOL_CALL_LIMIT / 2;
+    const source = mockSignalLabCwSource(Array.from({ length: cycleCount }, (_value, index) => 220 + index));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    let turnIndex = 0;
+    vi.mocked(window.atomAgent.agentTurn).mockImplementation(async () => {
+      const current = turnIndex++;
+      if (current === 0) {
+        return { conversationId: 'marker-soak-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'marker-soak-load', name: 'load_atom_tools', arguments: '{"toolNames":["acquire_sweep","search_marker"]}' }] };
+      }
+      if (current <= ATOM_REALTIME_TOOL_CALL_LIMIT) {
+        const toolIndex = current - 1;
+        const cycle = Math.floor(toolIndex / 2);
+        const acquire = toolIndex % 2 === 0;
+        return {
+          conversationId: `marker-soak-${current}`,
+          transport: 'realtime-websocket', text: '',
+          toolCalls: [acquire
+            ? { callId: `marker-soak-acquire-${cycle}`, name: 'acquire_sweep', arguments: '{}' }
+            : { callId: `marker-soak-peak-${cycle}`, name: 'search_marker', arguments: '{"markerId":1,"action":"peak"}' }],
+        };
+      }
+      return { conversationId: `marker-soak-${current}`, transport: 'realtime-websocket', text: 'Repeated CW peak placement complete.', toolCalls: [] };
+    });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Repeatedly acquire and place M1 on each CW peak.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(ATOM_REALTIME_TOOL_CALL_LIMIT + 2));
+    expect(source.acquisitionCount()).toBe(cycleCount);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(cycleCount);
+    const peakFrequencies = vi.mocked(window.atomAgent.agentTurn).mock.calls
+      .flatMap(([request]) => request.toolOutputs ?? [])
+      .map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: { action?: string; frequencyHz?: number } })
+      .filter((result) => result.ok && result.output?.action === 'peak')
+      .map((result) => result.output!.frequencyHz);
+    expect(peakFrequencies).toEqual(source.expectedPeakHz);
+    expect(await screen.findByText('Repeated CW peak placement complete.')).toBeTruthy();
+    const send = screen.getByRole('button', { name: /Send to Atom/i });
+    fireEvent.change(composer, { target: { value: 'Confirm the app is still responsive.' } });
+    await waitFor(() => expect(send.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    expect(screen.getByRole('button', { name: /Marker 1, visible, selected/i })).toBeTruthy();
+  });
+
+  it('uses one synchronous controller snapshot across an eight-call configure, acquire, search, and getter response', async () => {
+    const source = mockSignalLabCwSource();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    const toolCalls = [
+      { callId: 'sync-trace', name: 'configure_trace', arguments: '{"id":2,"mode":"clear-write","averageCount":8}' },
+      { callId: 'sync-marker', name: 'configure_marker', arguments: '{"id":1,"enabled":true,"traceId":2,"mode":"normal","frequencyHz":90000000,"tracking":"fixed"}' },
+      { callId: 'sync-search-config', name: 'configure_marker_search', arguments: '{"minimumLevelDbm":-60,"minimumExcursionDb":5}' },
+      { callId: 'sync-detector', name: 'configure_signal_detector', arguments: '{"threshold":{"strategy":"absolute","levelDbm":-60},"minimumBandwidthHz":0,"minimumProminenceDb":6,"minimumConsecutiveSweeps":1,"releaseAfterMissedSweeps":2}' },
+      { callId: 'sync-acquire', name: 'acquire_sweep', arguments: '{}' },
+      { callId: 'sync-search', name: 'search_marker', arguments: '{"markerId":1,"action":"peak"}' },
+      { callId: 'sync-detections', name: 'get_detection_results', arguments: '{}' },
+      { callId: 'sync-measurement', name: 'get_measurement_state', arguments: '{}' },
+    ];
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'sync-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'sync-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_trace","configure_marker","configure_marker_search","configure_signal_detector","acquire_sweep","search_marker","get_detection_results","get_measurement_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'sync-1', transport: 'realtime-websocket', text: '', toolCalls })
+      .mockResolvedValueOnce({ conversationId: 'sync-2', transport: 'realtime-websocket', text: 'Synchronous chain complete.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Configure and inspect in one response.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    expect(outputs).toHaveLength(8);
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown>; error?: string });
+    expect(results.every((result) => result.ok), JSON.stringify(results)).toBe(true);
+    expect(results[5]?.output).toMatchObject({ markerId: 1, action: 'peak', frequencyHz: source.expectedPeakHz[0] });
+    expect(results[6]?.output).toMatchObject({ localDetections: expect.arrayContaining([expect.objectContaining({ state: 'active' })]) });
+    expect(results[7]?.output).toMatchObject({
+      traces: expect.arrayContaining([expect.objectContaining({ id: 2, mode: 'clear-write', sweepCount: 1 })]),
+      markers: { configurations: expect.arrayContaining([expect.objectContaining({ id: 1, traceId: 2 })]) },
+      markerSearch: { minimumLevelDbm: -60, minimumExcursionDb: 5 },
+    });
+  });
+
+  it('rejects stale and unqualified agile classification IDs without substitution, then stages the exact physical ID in one response', async () => {
+    mockConnectedInstrument();
+    const stalePeakHz = 2_460_000_000;
+    const agilePeakHz = 2_470_000_000;
+    const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
+      const base = candidates[0];
+      if (!base) throw new Error('Expected the stress fixture sweep to produce one detector candidate');
+      const physical = {
+        ...base,
+        id: 'physical-row',
+        state: 'active' as const,
+        missedSweeps: 0,
+        associationMode: 'frequency-local' as const,
+        peakDbm: -45,
+        sweepIds: [sourceSweep.id],
+      } satisfies DetectedSignal;
+      const stale = {
+        ...physical,
+        id: 'stale-row',
+        peakDbm: -15,
+        startHz: stalePeakHz - 100_000,
+        stopHz: stalePeakHz + 100_000,
+        peakHz: stalePeakHz,
+        missedSweeps: 1,
+      } satisfies DetectedSignal;
+      const agile = {
+        ...physical,
+        id: 'agile-row',
+        peakDbm: -5,
+        startHz: agilePeakHz - 100_000,
+        stopHz: agilePeakHz + 100_000,
+        peakHz: agilePeakHz,
+        associationMode: 'frequency-agile-2g4-activity' as const,
+        associationId: 'agile-row',
+        associationModelId: 'frequency-agile-2g4-activity-v3',
+        associationRegionStartHz: 2_402_000_000,
+        associationRegionStopHz: 2_480_000_000,
+        associationRegionSweepIds: [sourceSweep.id],
+        associationMemberTrackIds: [physical.id],
+        associationMissedSweeps: 0,
+      } satisfies DetectedSignal;
+      return [agile, stale, physical];
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'target-truth-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'target-truth-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_analyzer","acquire_sweep","select_classification_candidate","get_application_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'target-truth-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'target-truth-configure', name: 'configure_analyzer', arguments: '{"startHz":2402000000,"stopHz":2480000000}' },
+        { callId: 'target-truth-acquire', name: 'acquire_sweep', arguments: '{}' },
+        { callId: 'target-truth-agile', name: 'select_classification_candidate', arguments: '{"detectionId":"agile-row"}' },
+        { callId: 'target-truth-after-agile', name: 'get_application_state', arguments: '{}' },
+        { callId: 'target-truth-stale', name: 'select_classification_candidate', arguments: '{"detectionId":"stale-row"}' },
+        { callId: 'target-truth-after-stale', name: 'get_application_state', arguments: '{}' },
+        { callId: 'target-truth-physical', name: 'select_classification_candidate', arguments: '{"detectionId":"physical-row"}' },
+        { callId: 'target-truth-after-physical', name: 'get_application_state', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'target-truth-2', transport: 'realtime-websocket', text: 'Exact target staged.', toolCalls: [] });
+
+    try {
+      render(<App/>);
+      expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+      const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+      fireEvent.change(composer, { target: { value: 'Reject nonphysical target IDs and select the physical row.' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+      await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+      const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+      const results = outputs.map(({ output }) => JSON.parse(output) as {
+        ok?: boolean;
+        error?: string;
+        output?: {
+          detectionId?: string;
+          selected?: boolean;
+          stagedDetectedPowerCenterHz?: number;
+          scalarConfiguration?: { staged?: { detectedPower?: { centerHz?: number } } };
+        };
+      });
+      expect(results[2]).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
+      expect(results[4]).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
+      const afterAgile = results[3]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
+      const afterStale = results[5]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
+      expect(afterStale).toBe(afterAgile);
+      expect(afterAgile).not.toBe(agilePeakHz);
+      expect(afterStale).not.toBe(stalePeakHz);
+      expect(results[6]).toMatchObject({
+        ok: true,
+        output: {
+          detectionId: 'physical-row',
+          selected: true,
+          stagedDetectedPowerCenterHz: expect.any(Number),
+        },
+      });
+      expect(results[7]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz)
+        .toBe(results[6]?.output?.stagedDetectedPowerCenterHz);
+    } finally {
+      trackerUpdate.mockRestore();
+    }
+  });
+
+  it('canonicalizes Agent detector configuration to the merged classification workspace', async () => {
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'detector-route-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'detector-route-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_signal_detector","get_application_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'detector-route-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'detector-route-configure', name: 'configure_signal_detector', arguments: '{"threshold":{"strategy":"absolute","levelDbm":-60},"minimumBandwidthHz":0,"minimumProminenceDb":6,"minimumConsecutiveSweeps":1,"releaseAfterMissedSweeps":2}' },
+        { callId: 'detector-route-state', name: 'get_application_state', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'detector-route-2', transport: 'realtime-websocket', text: 'Detector workspace ready.', toolCalls: [] });
+
+    render(<App/>);
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open the detector controls.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const state = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[1]?.output ?? '{}') as { ok?: boolean; output?: { workspace?: string } };
+    expect(state).toMatchObject({ ok: true, output: { workspace: 'classification' } });
+  });
+
+  it('canonicalizes the legacy detection route in both mutation and same-response state', async () => {
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'legacy-route-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'legacy-route-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","get_application_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'legacy-route-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'legacy-route-navigate', name: 'navigate_workspace', arguments: '{"workspace":"detection"}' },
+        { callId: 'legacy-route-state', name: 'get_application_state', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'legacy-route-2', transport: 'realtime-websocket', text: 'Merged workspace ready.', toolCalls: [] });
+
+    render(<App/>);
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open the legacy detector route.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: { workspace?: string } });
+    expect(results).toEqual([
+      expect.objectContaining({ ok: true, output: { workspace: 'classification' } }),
+      expect.objectContaining({ ok: true, output: expect.objectContaining({ workspace: 'classification' }) }),
+    ]);
+  });
+
+  it('does not leave a phantom render revision when navigation is already current', async () => {
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.computerScreenshot).mockResolvedValue({ kind: 'tinysa-atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'noop-route-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'noop-route-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","computer_screenshot"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'noop-route-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'noop-route-navigate', name: 'navigate_workspace', arguments: '{"workspace":"spectrum"}' },
+        { callId: 'noop-route-screenshot', name: 'computer_screenshot', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'noop-route-2', transport: 'realtime-websocket', text: 'Spectrum confirmed.', toolCalls: [] });
+
+    render(<App/>);
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Stay on spectrum and inspect it.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean });
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(window.atomAgent.computerScreenshot).toHaveBeenCalledOnce();
+  });
+
+  it('never reapplies stale RF settings when configure and output commands share one response', async () => {
+    mockConnectedInstrument();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'rf-sync-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'rf-sync-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_generator","set_rf_output","get_application_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'rf-sync-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'rf-sync-configure', name: 'configure_generator', arguments: '{"frequencyHz":123000000,"levelDbm":-40,"path":"normal","modulation":"off","modulationFrequencyHz":1000,"amDepthPercent":50,"fmDeviationHz":25000}' },
+        { callId: 'rf-sync-output', name: 'set_rf_output', arguments: '{"enabled":false}' },
+        { callId: 'rf-sync-state', name: 'get_application_state', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'rf-sync-2', transport: 'realtime-websocket', text: 'RF chain complete.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Configure RF then keep output off.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const configureRequests = vi.mocked(window.atomizerInstrument.executeFeature).mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.kind === 'rf-generator' && request.action === 'configure');
+    expect(configureRequests).toHaveLength(2);
+    expect(configureRequests).toEqual(configureRequests.map(() => expect.objectContaining({ frequencyHz: 123_000_000, levelDbm: -40, path: 'normal', modulation: { mode: 'off' } })));
+    expect(window.atomizerInstrument.executeFeature).toHaveBeenLastCalledWith({ kind: 'rf-generator', action: 'set-output', enabled: false });
+    const state = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[2]?.output ?? '{}') as { ok?: boolean; output?: { generator?: { frequencyHz?: number } } };
+    expect(state).toMatchObject({ ok: true, output: { generator: { frequencyHz: 123_000_000 } } });
+  });
+
+  it('preserves selected tune and repeated zero-span patches while pre-admission capture fails closed', async () => {
+    mockConnectedInstrument();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'zero-sync-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'zero-sync-load', name: 'load_atom_tools', arguments: '{"toolNames":["configure_signal_detector","acquire_sweep","select_classification_candidate","configure_zero_span","acquire_zero_span","configure_envelope_stft","get_envelope_stft_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'zero-sync-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'zero-sync-detector', name: 'configure_signal_detector', arguments: '{"threshold":{"strategy":"absolute","levelDbm":-60},"minimumBandwidthHz":0,"minimumProminenceDb":6,"minimumConsecutiveSweeps":1,"releaseAfterMissedSweeps":2}' },
+        { callId: 'zero-sync-spectrum', name: 'acquire_sweep', arguments: '{}' },
+        { callId: 'zero-sync-select', name: 'select_classification_candidate', arguments: '{"detectionId":"signal-0001"}' },
+        { callId: 'zero-sync-points', name: 'configure_zero_span', arguments: '{"points":64}' },
+        { callId: 'zero-sync-time', name: 'configure_zero_span', arguments: '{"sweepTimeSeconds":0.2}' },
+        { callId: 'zero-sync-capture', name: 'acquire_zero_span', arguments: '{}' },
+        { callId: 'zero-sync-stft', name: 'configure_envelope_stft', arguments: '{"windowSize":32,"hopSize":8,"window":"hann","removeDc":true,"dynamicRangeDb":60}' },
+        { callId: 'zero-sync-stft-read', name: 'get_envelope_stft_results', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'zero-sync-2', transport: 'realtime-websocket', text: 'Zero-span chain complete.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Capture the selected signal and read its STFT.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown>; error?: string });
+    expect(results.slice(0, 5).every((result) => result.ok), JSON.stringify(results)).toBe(true);
+    expect(results[5]).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/not available on an exact runtime-admitted eight-sweep window/i),
+    });
+    expect(results[6]?.ok).toBe(true);
+    expect(results[7]).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/acquire a complete zero-span capture/i),
+    });
+    const detectedPowerConfiguration = vi.mocked(window.atomizerInstrument.configure).mock.calls
+      .map(([configuration]) => configuration)
+      .find((configuration) => configuration.kind === 'detected-power-timeseries');
+    expect(detectedPowerConfiguration).toBeUndefined();
+    expect(results[4]?.output).toMatchObject({
+      scalarConfiguration: {
+        staged: {
+          detectedPower: {
+            centerHz: 98_022_272,
+            sampleCount: 64,
+            sweepTimeSeconds: 0.2,
+          },
+        },
+      },
+    });
+  });
+
+  it('uses a just-acquired sweep for channel, autoscale, export, then commits navigation before screenshot and inspect', async () => {
+    mockConnectedInstrument();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.computerScreenshot).mockImplementation(async () => {
+      expect(document.querySelector('.classification-workspace')).toBeTruthy();
+      return { kind: 'tinysa-atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' };
+    });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'view-sync-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'view-sync-load', name: 'load_atom_tools', arguments: '{"toolNames":["acquire_sweep","configure_channel_measurement","get_channel_measurement_results","auto_scale_spectrum_display","export_latest_sweep","navigate_workspace","computer_screenshot","inspect_interface"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'view-sync-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'view-sync-acquire', name: 'acquire_sweep', arguments: '{}' },
+        { callId: 'view-sync-channel-config', name: 'configure_channel_measurement', arguments: '{"centerHz":98000000,"mainBandwidthHz":1000000,"adjacentBandwidthHz":1000000,"channelSpacingHz":2000000,"adjacentChannelCount":1,"occupiedPowerPercent":99,"obwNoiseCorrection":"none"}' },
+        { callId: 'view-sync-channel-read', name: 'get_channel_measurement_results', arguments: '{}' },
+        { callId: 'view-sync-scale', name: 'auto_scale_spectrum_display', arguments: '{}' },
+        { callId: 'view-sync-export', name: 'export_latest_sweep', arguments: '{"format":"json"}' },
+        { callId: 'view-sync-navigate', name: 'navigate_workspace', arguments: '{"workspace":"classification"}' },
+        { callId: 'view-sync-screenshot', name: 'computer_screenshot', arguments: '{}' },
+        { callId: 'view-sync-inspect', name: 'inspect_interface', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'view-sync-2', transport: 'realtime-websocket', text: 'View chain complete.', toolCalls: [] });
+
+    render(<App/>);
+    expect(await screen.findByText('tinySA Ultra+ ZS407')).toBeTruthy();
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Acquire, inspect, export, and show classification.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown>; error?: string });
+    expect(results.every((result) => result.ok), JSON.stringify(results)).toBe(true);
+    expect(results[2]?.output).toMatchObject({
+      carrier: { startHz: 97_500_000, stopHz: 98_500_000, bandwidthHz: 1_000_000 },
+      adjacent: expect.arrayContaining([expect.objectContaining({ bandwidthHz: 1_000_000 })]),
+    });
+    expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({ sweep: expect.objectContaining({ id: 'runtime-sweep' }), format: 'json' });
+    expect(window.atomAgent.computerScreenshot).toHaveBeenCalledOnce();
+    expect(results[7]?.output).toMatchObject({ activeWorkspace: 'classification' });
   });
 
   it('restores the swept-spectrum configuration after an Atom detected-power capture', async () => {
