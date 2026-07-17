@@ -18,6 +18,15 @@ import assert from 'node:assert/strict';
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
+const {
+  MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS,
+  MAX_RENDERER_LOAD_DESCRIPTION_CHARACTERS,
+  MAX_RENDERER_LOAD_URL_CHARACTERS,
+  normalizeRendererConsoleMessage,
+  normalizeRendererLoadFailure,
+  rendererGoneDiagnostic,
+  rendererProcessMetricSnapshot,
+} = require('./renderer-diagnostics.cjs');
 const roots = [];
 
 afterEach(() => {
@@ -39,6 +48,75 @@ test('the installed Electron launcher contains every launcher-local runtime depe
       `installer must copy launcher dependency ${dependency}`,
     );
   }
+});
+
+describe('bounded renderer diagnostics', () => {
+  test('retains Electron 43 legacy console text instead of logging only its numeric level', () => {
+    assert.deepEqual(
+      normalizeRendererConsoleMessage({}, 3, 'marker search failed with trace context', 2045, 'http://localhost:5173/src/App.tsx?t=secret'),
+      {
+        level: 'error',
+        message: 'marker search failed with trace context',
+        line: 2045,
+        sourceId: 'http://localhost:5173/src/App.tsx',
+      },
+    );
+  });
+
+  test('accepts modern console details while bounding text and omitting image payloads', () => {
+    assert.deepEqual(
+      normalizeRendererConsoleMessage({
+        level: 'warning', message: `prefix data:image/jpeg;base64,${'a'.repeat(100_000)}`,
+        lineNumber: 12, sourceId: 'vite://renderer/source.ts#fragment',
+      }),
+      {
+        level: 'warning',
+        message: '[renderer console message omitted because it contains image data; characters=100030]',
+        line: 12,
+        sourceId: 'vite://renderer/source.ts',
+      },
+    );
+    const bounded = normalizeRendererConsoleMessage({}, 1, 'x'.repeat(MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS + 50), 1, 'source');
+    assert.ok(bounded.message.length < MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS + 100);
+    assert.match(bounded.message, /50 characters truncated/);
+  });
+
+  test('bounds renderer load failures and strips URL credentials, query, and fragment data', () => {
+    const normalized = normalizeRendererLoadFailure(
+      -105,
+      'x'.repeat(MAX_RENDERER_LOAD_DESCRIPTION_CHARACTERS + 50),
+      `http://operator:private-token@localhost:5173/${'p'.repeat(MAX_RENDERER_LOAD_URL_CHARACTERS + 100)}?api_key=secret#session-secret`,
+      true,
+    );
+
+    assert.equal(normalized.code, -105);
+    assert.equal(normalized.isMainFrame, true);
+    assert.ok(normalized.description.length < MAX_RENDERER_LOAD_DESCRIPTION_CHARACTERS + 60);
+    assert.match(normalized.description, /…$/);
+    assert.ok(normalized.url.length <= MAX_RENDERER_LOAD_URL_CHARACTERS + 1);
+    assert.match(normalized.url, /^http:\/\/<credentials>@localhost:5173\//);
+    assert.doesNotMatch(normalized.url, /operator|private-token|api_key|secret/);
+    assert.deepEqual(normalizeRendererLoadFailure('bad', null, null, 'true'), {
+      code: undefined,
+      description: '',
+      url: '',
+      isMainFrame: false,
+    });
+  });
+
+  test('retains only one fixed-shape renderer metric and crash snapshot', () => {
+    const metric = rendererProcessMetricSnapshot([{ pid: 42, type: 'Tab', creationTime: 1_000, cpu: { percentCPUUsage: 5, idleWakeupsPerSecond: 2 }, memory: { workingSetSize: 120_000, peakWorkingSetSize: 140_000 }, ignored: 'not retained' }], 42);
+    assert.deepEqual(metric, {
+      type: 'Tab', name: undefined, creationTime: 1_000, cpuPercent: 5, idleWakeupsPerSecond: 2,
+      workingSetKb: 120_000, peakWorkingSetKb: 140_000, privateBytesKb: undefined,
+    });
+    assert.deepEqual(rendererGoneDiagnostic({ reason: 'crashed', exitCode: 5, ignored: 'not retained' }, {
+      webContentsId: 7, osProcessId: 42, currentMetric: metric, lastMemorySample: { privateKb: 99 }, crashDumpsPath: '/bounded/dumps',
+    }), {
+      webContentsId: 7, osProcessId: 42, reason: 'crashed', exitCode: 5,
+      currentMetric: metric, lastMemorySample: { privateKb: 99 }, crashDumpsPath: '/bounded/dumps',
+    });
+  });
 });
 
 describe('private development environment file', () => {

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, crashReporter, dialog } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } = require('node:fs');
 const { request } = require('node:http');
@@ -10,6 +10,13 @@ const { pathToFileURL } = require('node:url');
 const { inspect } = require('node:util');
 const { appendBoundedLogSync } = require('./bounded-log.cjs');
 const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
+const {
+  boundedErrorMessage,
+  normalizeRendererConsoleMessage,
+  normalizeRendererLoadFailure,
+  rendererGoneDiagnostic,
+  rendererProcessMetricSnapshot,
+} = require('./renderer-diagnostics.cjs');
 
 const APP_NAME = 'TinySA Atomizer Dev';
 const LAUNCHER_CONTRACT_VERSION = 3;
@@ -19,9 +26,11 @@ const SIGNAL_LAB_BRIDGE_CONTRACT_VERSION = 1;
 const LOG_FILE = join(homedir(), 'Library', 'Logs', `${APP_NAME}.log`);
 const STARTUP_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 150;
+const RENDERER_MEMORY_SAMPLE_INTERVAL_MS = 15_000;
 
 let viteProcess;
 let quitting = false;
+let crashDumpsPath;
 
 mkdirSync(dirname(LOG_FILE), { recursive: true });
 
@@ -35,6 +44,70 @@ function formatLogValue(value) {
 function log(level, ...values) {
   const line = `${new Date().toISOString()} [${level}] ${values.map(formatLogValue).join(' ')}\n`;
   appendBoundedLogSync(LOG_FILE, line);
+}
+
+function startLocalCrashReporter() {
+  crashReporter.start({
+    productName: APP_NAME,
+    uploadToServer: false,
+    globalExtra: {
+      atomizer_mode: 'live-development',
+      launcher_contract: String(LAUNCHER_CONTRACT_VERSION),
+    },
+  });
+  crashDumpsPath = app.getPath('crashDumps');
+  log('CRASH-REPORTER', {
+    uploadToServer: crashReporter.getUploadToServer(),
+    crashDumpsPath,
+  });
+}
+
+function attachRendererDiagnostics(contents) {
+  let lastMemorySample;
+
+  const sampleMemory = (reason) => {
+    if (contents.isDestroyed()) return;
+    let osProcessId;
+    try {
+      osProcessId = contents.getOSProcessId();
+      lastMemorySample = Object.freeze({
+        reason,
+        webContentsId: contents.id,
+        osProcessId,
+        metric: rendererProcessMetricSnapshot(app.getAppMetrics(), osProcessId),
+      });
+      log('RENDERER-MEMORY', lastMemorySample);
+    } catch (error) {
+      if (reason !== 'periodic') {
+        log('RENDERER-MEMORY-UNAVAILABLE', {
+          reason,
+          webContentsId: contents.id,
+          osProcessId,
+          error: boundedErrorMessage(error),
+        });
+      }
+    }
+  };
+
+  contents.on('console-message', (...args) => log('RENDERER', normalizeRendererConsoleMessage(...args)));
+  contents.on('did-finish-load', () => sampleMemory('did-finish-load'));
+  contents.on('did-fail-load', (_loadEvent, code, description, url, isMainFrame) => log('RENDERER-LOAD', normalizeRendererLoadFailure(code, description, url, isMainFrame)));
+  contents.on('render-process-gone', (_goneEvent, details) => {
+    let osProcessId;
+    try { osProcessId = contents.getOSProcessId(); } catch { /* Process is already gone. */ }
+    log('RENDERER-GONE', rendererGoneDiagnostic(details, {
+      webContentsId: contents.id,
+      osProcessId,
+      currentMetric: rendererProcessMetricSnapshot(app.getAppMetrics(), osProcessId),
+      lastMemorySample,
+      crashDumpsPath,
+    }));
+  });
+  contents.on('preload-error', (_preloadEvent, preloadPath, error) => log('PRELOAD', { preloadPath, error: boundedErrorMessage(error) }));
+
+  const memoryTimer = setInterval(() => sampleMemory('periodic'), RENDERER_MEMORY_SAMPLE_INTERVAL_MS);
+  memoryTimer.unref?.();
+  contents.once('destroyed', () => clearInterval(memoryTimer));
 }
 
 function requireExactObject(value, expectedKeys, label) {
@@ -354,6 +427,7 @@ function focusApplication() {
 async function launch() {
   const contract = loadContract();
   log('START', `${APP_NAME} launcher contract`, contract);
+  startLocalCrashReporter();
   process.chdir(contract.repoRoot);
   process.env.NODE_ENV = 'development';
   process.env.VITE_DEV_SERVER_URL = contract.devServerUrl;
@@ -368,10 +442,7 @@ async function launch() {
   await startVite(contract);
   await app.whenReady();
   app.on('web-contents-created', (_event, contents) => {
-    contents.on('console-message', (_consoleEvent, details) => log('RENDERER', details));
-    contents.on('did-fail-load', (_loadEvent, code, description, url, isMainFrame) => log('RENDERER-LOAD', { code, description, url, isMainFrame }));
-    contents.on('render-process-gone', (_goneEvent, details) => log('RENDERER-GONE', details));
-    contents.on('preload-error', (_preloadEvent, preloadPath, error) => log('PRELOAD', { preloadPath, error }));
+    attachRendererDiagnostics(contents);
   });
   const icon = join(process.resourcesPath, 'atomizer-dev.png');
   if (!existsSync(icon)) throw new Error(`Installed application icon is missing: ${icon}`);

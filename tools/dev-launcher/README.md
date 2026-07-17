@@ -35,5 +35,15 @@ failure aborts visibly and writes details to
 rotation are each capped at 4 MiB; one child-process write is capped at 64 KiB,
 so repeated live-edit sessions cannot grow diagnostics without bound.
 
+The launcher also starts Electron's local crash reporter with uploads disabled,
+records the crash-dump path, and retains bounded renderer memory samples and
+`render-process-gone` details. The two historical macOS renderer reports examined
+for the July 2026 crash are identical `SIGTRAP`/`EXC_BREAKPOINT` failures in
+Electron's allocator path; the fault context includes a 2 GiB-sized value while
+the renderer's resident writable regions were only about 17 MiB. That evidence is
+consistent with one pathological allocation, not a gradual renderer leak. It does
+not identify the initiating JavaScript or Electron API, and screenshot capture is
+not established as the cause.
+
 Rerun the installer after changing the launcher itself, moving the checkout, or
 upgrading Electron. Ordinary application code changes do not require reinstalling.
