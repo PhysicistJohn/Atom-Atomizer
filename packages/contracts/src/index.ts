@@ -308,7 +308,10 @@ export const markerConfigurationSchema = z.object({
   enabled: z.boolean(),
   traceId: traceIdSchema,
   mode: markerModeSchema,
-  frequencyHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
+  // Host markers bind to measured bins, whose exact frequency can be
+  // fractional on a finite start/stop/point grid. Instrument commands remain
+  // integer-Hz where their own schemas require it.
+  frequencyHz: z.number().finite().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
   tracking: z.enum(['fixed', 'peak']),
   referenceMarkerId: markerIdSchema.optional(),
 }).strict().superRefine((marker, context) => {
@@ -394,6 +397,37 @@ export interface OccupiedBandwidthMeasurement {
   occupiedPowerDbm: number;
   noiseCorrection: ChannelMeasurementConfiguration['obwNoiseCorrection'];
 }
+interface ThreeDecibelBandwidthBase {
+  windowStartHz: number;
+  windowStopHz: number;
+  /** Coarser of reported RBW and nominal sample spacing; not an emitter-width upper bound. */
+  resolutionScaleHz: number;
+}
+interface ThreeDecibelBandwidthPeak extends ThreeDecibelBandwidthBase {
+  peakHz: number;
+  peakDbm: number;
+  /** Level from which the half-power threshold was derived. */
+  referenceLevelDbm: number;
+  /** A narrow response uses its sampled peak; a resolved rippled response uses a robust upper-envelope level. */
+  referenceKind: 'sampled-peak' | 'robust-upper-envelope';
+  halfPowerLevelDbm: number;
+}
+export type ThreeDecibelBandwidthMeasurement =
+  | (ThreeDecibelBandwidthPeak & {
+    status: 'resolved' | 'resolution-limited';
+    startHz: number;
+    stopHz: number;
+    /** Interpolated width of the measured scalar response; not a deconvolved emitter width. */
+    bandwidthHz: number;
+  })
+  | (ThreeDecibelBandwidthPeak & {
+    status: 'unavailable';
+    reason: 'lower-crossing-not-observed' | 'upper-crossing-not-observed' | 'crossing-outside-window' | 'nonmonotone-half-power-response';
+  })
+  | (ThreeDecibelBandwidthBase & {
+    status: 'unavailable';
+    reason: 'no-sampled-peak';
+  });
 export interface AdjacentChannelMeasurement extends IntegratedBandPower {
   side: 'lower' | 'upper';
   order: 1 | 2 | 3;
@@ -402,6 +436,7 @@ export interface AdjacentChannelMeasurement extends IntegratedBandPower {
 export interface ChannelMeasurementResult {
   carrier: IntegratedBandPower;
   adjacent: readonly AdjacentChannelMeasurement[];
+  threeDecibelBandwidth: ThreeDecibelBandwidthMeasurement;
   occupiedBandwidth: OccupiedBandwidthMeasurement;
   sourceSweepId: string;
   actualRbwHz: number;
@@ -430,6 +465,10 @@ export interface TraceFrame {
   mode: TraceMode;
   frequencyHz: readonly number[];
   powerDbm: readonly number[];
+  /** Exact resolution bandwidth of the sweep evidence retained in this frame. */
+  actualRbwHz: number;
+  /** Exact qualification retained with actualRbwHz; absence is itself part of the provenance. */
+  resolutionBandwidthQualification?: ResolutionBandwidthQualification;
   sweepCount: number;
   sourceSweepId: string;
   evidence: 'host-derived';
@@ -444,9 +483,88 @@ export interface MarkerReading {
   deltaFrequencyHz?: number;
   deltaPowerDb?: number;
   noiseDensityDbmHz?: number;
+  /** Evidence-local shape and component-bounded OBW; never a whole-span or protocol-label projection. */
+  localCharacterization: MarkerLocalCharacterization;
   sourceSweepId: string;
   evidence: 'host-derived';
 }
+
+export interface MarkerPhysicalDetectionContext {
+  detectionId: string;
+  detectionState: 'candidate' | 'active';
+  relationship: 'contains-local-peak' | 'nearest-current-detection';
+  distanceHz: number;
+  startHz: number;
+  stopHz: number;
+  peakHz: number;
+  peakDbm: number;
+  prominenceDb: number;
+}
+
+export type MarkerCenterSelection =
+  | {
+    markerCenterMethod: 'fixed-frequency' | 'local-peak';
+    powerCentroidHz?: never;
+  }
+  | {
+    markerCenterMethod: 'resolved-component-linear-power-centroid';
+    /**
+     * Continuous noise-subtracted linear-power centroid before bin snapping.
+     */
+    powerCentroidHz: number;
+  };
+
+type MarkerLocalCharacterizationBase = MarkerCenterSelection & {
+  markerFrequencyHz: number;
+  localPeakHz: number;
+  localPeakDbm: number;
+  componentThresholdDbm: number;
+  robustFloorDbm: number;
+  peakToRobustFloorDb: number;
+  prominenceDb: number;
+  requiredProminenceDb: number;
+  physicalDetection?: MarkerPhysicalDetectionContext;
+  evidence: 'host-derived-local-scalar-trace';
+  qualification: 'observed-response-not-deconvolved-or-calibrated-snr';
+};
+type MarkerThresholdComponentCharacterization = MarkerLocalCharacterizationBase & {
+  componentRelationship: 'contains-marker-bin' | 'nearest-threshold-component';
+  componentDistanceHz: number;
+  componentStartHz: number;
+  componentStopHz: number;
+};
+export type MarkerComponentOccupiedBandwidthMeasurement = OccupiedBandwidthMeasurement & {
+  percent: 99;
+  noiseCorrection: 'robust-floor';
+};
+type MarkerQualifiedThresholdComponentCharacterization = MarkerThresholdComponentCharacterization & {
+  /** 99% of robust-floor-subtracted power inside this threshold component only. */
+  componentOccupiedBandwidth: MarkerComponentOccupiedBandwidthMeasurement;
+};
+type AvailableThreeDecibelBandwidthMeasurement = Extract<ThreeDecibelBandwidthMeasurement, {
+  status: 'resolved' | 'resolution-limited';
+}>;
+type UnavailableThreeDecibelBandwidthMeasurement = Extract<ThreeDecibelBandwidthMeasurement, {
+  status: 'unavailable';
+}>;
+export type MarkerLocalCharacterization =
+  | (MarkerQualifiedThresholdComponentCharacterization & {
+    widthClassification: 'resolution-limited-narrow' | 'resolved-wideband';
+    threeDecibelBandwidth: AvailableThreeDecibelBandwidthMeasurement;
+  })
+  | (MarkerQualifiedThresholdComponentCharacterization & {
+    widthClassification: 'unavailable';
+    threeDecibelBandwidth: UnavailableThreeDecibelBandwidthMeasurement;
+  })
+  | (MarkerThresholdComponentCharacterization & {
+    widthClassification: 'unavailable';
+    unavailableReason: 'insufficient-local-prominence';
+  })
+  | (MarkerLocalCharacterizationBase & {
+    widthClassification: 'unavailable';
+    componentRelationship: 'no-qualified-component';
+    unavailableReason: 'no-qualified-local-component';
+  });
 
 export const triggerConfigSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('auto') }).strict(),
@@ -663,6 +781,131 @@ export interface ZeroSpanCapture {
   complete: true;
   identity: MeasurementIdentity;
 }
+
+export type DetectedPowerCapturePolicyId =
+  'capture-once-after-first-runtime-admitted-strongest-current-target-v2';
+export type CaptureTargetSelectionPolicyId =
+  'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3';
+
+/**
+ * Explicit relationship between the physical row tuned by the controller and
+ * the evidence representative classified after capture.
+ */
+export type DetectedPowerCaptureProjectionKind =
+  | 'current-active-physical-representative'
+  | 'current-qualified-agile-latest-member';
+
+/**
+ * Immutable raw tracker-row evidence recorded at the instant a detected-power
+ * capture target is selected. `rank` is the exact policy order; `inputOrdinal`
+ * preserves the order within the derived current physical candidate
+ * population independently of that ranking.
+ *
+ * An ordinary candidate is an active, zero-miss physical row. A one-look
+ * `candidate` row is admitted only when it is the exact latest physical member
+ * of a current, promotion-qualified agile association. In that narrow case the
+ * raw row owns the tune/capture while the agile association owns the exact
+ * multi-look classifier evidence.
+ */
+export interface DetectedPowerCaptureCandidateEvidence {
+  rank: number;
+  inputOrdinal: number;
+  rawTargetId: string;
+  currentPeakDbm: number;
+  currentPeakHz: number;
+  currentStartHz: number;
+  currentStopHz: number;
+  state: 'candidate' | 'active';
+  missedSweeps: number;
+  lastSeenAt: string;
+  associationMode?: DetectedSignal['associationMode'];
+  associationId?: string;
+  associationMemberTrackIds?: readonly string[];
+  associationMissedSweeps?: number;
+  projectionKind: DetectedPowerCaptureProjectionKind;
+  projectedRepresentativeId: string;
+  runtimeAdmission:
+    | {
+      status: 'admitted';
+      /** Exact newest-first eight-sweep scalar observation accepted before capture. */
+      spectrumSweepIds: readonly string[];
+    }
+    | {
+      status: 'unavailable';
+      reason:
+        | 'insufficient-spectrum-history'
+        | 'association-not-currently-qualified'
+        | 'local-history-not-uniquely-replayable'
+        | 'insufficient-roi-bins';
+    };
+}
+
+/** Exact classifier-representative state to which the physical target projects. */
+export interface DetectedPowerCaptureRepresentativeEvidence {
+  id: string;
+  startHz: number;
+  stopHz: number;
+  peakHz: number;
+  peakDbm: number;
+  bandwidthHz: number;
+  missedSweeps: number;
+  lastSeenAt: string;
+  associationMode?: DetectedSignal['associationMode'];
+  associationId?: string;
+  associationMemberTrackIds?: readonly string[];
+  associationMissedSweeps?: number;
+}
+
+/**
+ * Analysis-issued receipt for one physical detected-power capture.
+ *
+ * The public shape is deliberately auditable, but shape alone is not
+ * authority: analysis accepts only object identities issued and deeply frozen
+ * by its receipt factory, then re-verifies every field against the capture,
+ * representative, measurement identity, tune, and exact scalar window.
+ * Issuance owns an immutable structured-clone capture snapshot; successful
+ * verification returns that snapshot to analysis so caller-owned objects are
+ * never reread for classification features.
+ */
+export interface DetectedPowerCaptureReceipt {
+  schemaVersion: 3;
+  capturePolicyId: DetectedPowerCapturePolicyId;
+  targetSelectionPolicyId: CaptureTargetSelectionPolicyId;
+  runtimeAdmissionPolicyId:
+    'exact-eight-sweep-pre-capture-observable-feature-admission-v1';
+  selection: {
+    mode: 'strongest-current' | 'preferred-target';
+    preferredRawTargetId?: string;
+    rawTargetId: string;
+    projectedRepresentativeId: string;
+  };
+  candidates: readonly DetectedPowerCaptureCandidateEvidence[];
+  projectedRepresentative: DetectedPowerCaptureRepresentativeEvidence;
+  spectrumSweepIds: readonly string[];
+  capture: {
+    id: string;
+    sequence: number;
+    capturedAt: string;
+    measurementIdentityKey: string;
+    targetDetectionId: string;
+    /** Controller-projected tune admitted for the selected raw target. */
+    admittedTargetTuneHz: number;
+    frequencyHz: number;
+    requestedCenterHz: number;
+    /**
+     * Domain-separated SHA-256 of the complete canonical ZeroSpanCapture.
+     * This binds the authorized receipt to the exact returned samples,
+     * cadence, requested geometry/controls, RF metadata, source, and
+     * provenance rather than only its measurement identity and tune.
+     */
+    payloadBinding: {
+      algorithm: 'sha256';
+      canonicalization: 'zero-span-capture-canonical-json-v1';
+      sha256: string;
+    };
+  };
+}
+
 export interface ScreenFrame {
   width: 480;
   height: 320;
@@ -776,7 +1019,11 @@ export interface RegularSpectralComponentAssociationObservation {
   sourceSweep: Sweep;
   observedRegionStartHz: number;
   observedRegionStopHz: number;
-  /** Exact independently admitted members, sorted by frequency-local track ID. */
+  /** Largest directly resolved current-look lattice step; a compatible look may resolve a factor-of-two step only with shared component support. */
+  spacingHz: number;
+  /** Exact current-look member center anchoring the integer frequency lattice. */
+  latticeAnchorHz: number;
+  /** Exact independently admitted current-look members, sorted by frequency-local track ID. */
   members: readonly MulticomponentSweptRegionMemberObservation[];
 }
 export interface ActivityAssociationOpportunity {
@@ -833,6 +1080,12 @@ export interface DetectedSignal {
   classificationRegionSweepIds?: readonly string[];
   /** Self-contained one-look provenance used to recompute the frozen local ROI. */
   classificationRegionObservation?: LocalClassificationRegionObservation;
+  /**
+   * Oldest-to-newest, bounded exact detector admissions for the retained local
+   * track history. Each observation is independently replayable from its
+   * immutable source sweep; this is tracker provenance, not emitter identity.
+   */
+  localClassificationObservations?: readonly LocalClassificationRegionObservation[];
   /** Whether the track is local or carries a separately disclosed, non-emitter-identity association. */
   associationMode?: 'frequency-local' | 'frequency-agile-2g4-activity' | 'regular-spectral-component-activity' | 'multicomponent-swept-region-activity';
   /** Latest independently qualified region in the disclosed non-identity activity lineage. */
@@ -843,12 +1096,17 @@ export interface DetectedSignal {
   /** Association-lineage identifier; never an emitter or common-process identity. */
   associationId?: string;
   associationModelId?: string;
+  /** Exact members of the latest independently qualified association look. */
   associationMemberTrackIds?: readonly string[];
   /** Ordered local-look provenance for a disclosed, non-identity activity association. */
   associationObservations?: readonly ActivityAssociationObservation[];
   /** Ordered, bounded-overlap same-sweep member provenance ending at the current public region. */
   multicomponentAssociationObservations?: readonly MulticomponentSweptRegionAssociationObservation[];
-  /** Ordered, bounded regular-line looks with the detector inputs needed for recomputation. */
+  /**
+   * Latest eight ordered, region/lattice-compatible regular-line looks with
+   * exact detector inputs. Member track IDs are current-look provenance and
+   * may change across this non-emitter-identity lineage.
+   */
   regularComponentAssociationObservations?: readonly RegularSpectralComponentAssociationObservation[];
   /** Every stable-geometry opportunity in the rolling association window. */
   associationOpportunities?: readonly ActivityAssociationOpportunity[];
@@ -896,6 +1154,12 @@ export interface WaveformClassification {
     peakDbm: number;
     sweepIds: readonly string[];
     zeroSpanCaptureId?: string;
+    /**
+     * Present only after an analysis-issued receipt independently replays
+     * runtime admission, target ranking/projection, tune, capture identity,
+     * and the exact scalar window.
+     */
+    detectedPowerAcquisitionQualification?: 'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4';
     views?: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
     features?: Readonly<Record<string, number>>;
     limitations?: readonly string[];
@@ -1295,6 +1559,11 @@ export interface WaveformClassificationEvidence {
   sweeps: readonly Sweep[];
   /** Optional fixed-tune detected-power capture bound to the selected detection. */
   zeroSpan?: ZeroSpanCapture;
+  /**
+   * Opaque-at-runtime, auditable capture-selection receipt. A caller-authored
+   * object with the same TypeScript shape is not sufficient for admission.
+   */
+  detectedPowerCaptureReceipt?: DetectedPowerCaptureReceipt;
 }
 
 export interface AnalysisApiV2 {
