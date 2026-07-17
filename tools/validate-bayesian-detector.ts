@@ -1,5 +1,12 @@
-import { BAYESIAN_DETECTOR_MODEL, SignalDetector } from '../packages/analysis/src/index.js';
-import type { AnalyzerConfig, DetectedSignal, DeviceIdentity, SignalDetectionConfig, Sweep } from '../packages/contracts/src/index.js';
+import { BAYESIAN_DETECTOR_MODEL, SignalDetector, SignalTracker } from '../packages/analysis/src/index.js';
+import type {
+  AnalyzerConfig,
+  DetectedSignal,
+  DeviceIdentity,
+  SignalDetectionConfig,
+  Sweep,
+  SweptSpectrumConfiguration,
+} from '../packages/contracts/src/index.js';
 
 const POINTS = 450;
 const BIN_WIDTH_HZ = 10_000;
@@ -10,6 +17,13 @@ const SHAPES = [1, 2, 6, 12] as const;
 const CORRELATION_WIDTHS = [1, 3] as const;
 const SIGNAL_SNR_DB = [0, 5, 10, 15, 20, 25, 30] as const;
 const SIGNAL_WIDTHS_RBW = [1, 8] as const;
+const DETECTOR_ALTERNATIVE_DEFINITION = Object.freeze({
+  id: 'centered-flat-linear-power-mean-shift-v1',
+  qualification: 'analytic-observation-domain-detector-alternative',
+  domain: 'scalar-spectrum-linear-power',
+  supportAnchor: 'symmetric-about-frequency-grid-midpoint-upper-cell-tie-v1',
+  disclosure: 'Constant additive linear power relative to mean null power in each frequency-grid bin of a centered support spanning the declared one or eight RBWs; support bin count is round(widthRbw * binsPerRbw). This is an abstract detector alternative, not a synthesized RF waveform, protocol, receiver calibration, sensitivity, or field-strength claim.',
+} as const);
 const NULL_FAMILY_SIZE = SHAPES.length * CORRELATION_WIDTHS.length;
 // Bonferroni simultaneous 95% family: Phi^-1(1 - 0.05 / (2 * 8)).
 // With zero observed false-alarm sweeps, 8,000 trials give a Wilson upper
@@ -29,6 +43,13 @@ const MINIMUM_PD_LOWER_95_AT_15_DB = 0.15;
 const MINIMUM_PD_LOWER_95_AT_20_DB = 0.60;
 const MINIMUM_PD_LOWER_95_AT_25_DB = 0.75;
 const MINIMUM_PD_LOWER_95_AT_30_DB = 0.90;
+// The runtime requires two consecutive admitted local looks. Under this
+// validator's explicitly independent-look alternative, the corresponding
+// engineering promotion gates are the squares of the one-look Pd gates.
+const MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_15_DB = MINIMUM_PD_LOWER_95_AT_15_DB ** 2;
+const MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_20_DB = MINIMUM_PD_LOWER_95_AT_20_DB ** 2;
+const MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_25_DB = MINIMUM_PD_LOWER_95_AT_25_DB ** 2;
+const MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_30_DB = MINIMUM_PD_LOWER_95_AT_30_DB ** 2;
 const SCALE_INVARIANCE_TOLERANCE = 1e-9;
 const FREQUENCIES = Array.from({ length: POINTS }, (_, index) => 100_000_000 + index * BIN_WIDTH_HZ);
 
@@ -42,8 +63,9 @@ const analyzer: AnalyzerConfig = {
   detector: 'sample', spurRejection: 'off', lna: 'off', avoidSpurs: 'off', trigger: { mode: 'auto' },
 };
 const permissiveCfarConfig: SignalDetectionConfig = {
-  // This deliberately weak prefilter exposes the Bayesian gate to more null
-  // candidates than the production 10 dB / 6 dB configuration.
+  // This deliberately weak prefilter exercises a distinct high-candidate-load
+  // segmentation path. A lower threshold can merge connected components, so
+  // this is not claimed to be a mathematical superset of production candidates.
   threshold: { strategy: 'noise-relative', marginDb: 3 },
   minimumBandwidthHz: 0,
   minimumProminenceDb: 0,
@@ -63,7 +85,7 @@ const productionDetector = new SignalDetector(productionDetectionConfig);
 interface StationaryConfiguration {
   shape: number;
   correlationWidth: number;
-  modelRole: 'exact-exponential' | 'conservative-gamma-average';
+  modelRole: 'exact-iid-exponential' | 'exponential-marginal-block-correlation' | 'gamma-average-analytic-stress';
 }
 
 interface ProbabilityPoint {
@@ -76,7 +98,11 @@ interface ProbabilityPoint {
 const configurations: readonly StationaryConfiguration[] = SHAPES.flatMap((shape) => CORRELATION_WIDTHS.map((correlationWidth) => ({
   shape,
   correlationWidth,
-  modelRole: shape === 1 ? 'exact-exponential' as const : 'conservative-gamma-average' as const,
+  modelRole: shape === 1
+    ? correlationWidth === 1
+      ? 'exact-iid-exponential' as const
+      : 'exponential-marginal-block-correlation' as const
+    : 'gamma-average-analytic-stress' as const,
 })));
 
 const nullResults = configurations.map((configuration) => {
@@ -99,48 +125,81 @@ const nullResults = configurations.map((configuration) => {
   };
 });
 
-const detectionResults = configurations.flatMap((configuration) => SIGNAL_WIDTHS_RBW.map((signalWidthRbw) => {
-  const detectedBySnr = new Map<number, number>(SIGNAL_SNR_DB.map((snrDb) => [snrDb, 0]));
-  let pairedMonotonicityViolations = 0;
-  const pairedMonotonicityExamples: Array<{ trial: number; lowerSnrDb: number; higherSnrDb: number }> = [];
+const detectionAudits = configurations.flatMap((configuration) => SIGNAL_WIDTHS_RBW.map((signalWidthRbw) => {
+  const sweepLocalDetectedBySnr = new Map<number, number>(SIGNAL_SNR_DB.map((snrDb) => [snrDb, 0]));
+  const twoLookPromotedBySnr = new Map<number, number>(SIGNAL_SNR_DB.map((snrDb) => [snrDb, 0]));
+  let sweepLocalPairedMonotonicityViolations = 0;
+  let twoLookPairedMonotonicityViolations = 0;
+  const sweepLocalPairedMonotonicityExamples: Array<{ trial: number; lowerSnrDb: number; higherSnrDb: number }> = [];
+  const twoLookPairedMonotonicityExamples: Array<{ trial: number; lowerSnrDb: number; higherSnrDb: number }> = [];
   for (let trial = 0; trial < SIGNAL_SWEEPS_PER_POINT; trial++) {
-    let previousDetected = false;
+    let previousSweepLocalDetected = false;
+    let previousTwoLookPromoted = false;
     for (const [snrIndex, snrDb] of SIGNAL_SNR_DB.entries()) {
-      // Common random numbers make this a pointwise monotonicity test rather
-      // than a comparison of two noisy Monte Carlo proportions.
-      const sweep = makeStationarySweep(1_000_000 + trial, configuration, snrDb, signalWidthRbw);
-      const detected = detectsTarget(productionDetector.analyze(sweep), sweep.frequencyHz[CENTER_INDEX]!);
-      if (detected) detectedBySnr.set(snrDb, detectedBySnr.get(snrDb)! + 1);
-      if (snrIndex > 0 && previousDetected && !detected) {
-        pairedMonotonicityViolations++;
-        if (pairedMonotonicityExamples.length < 20) pairedMonotonicityExamples.push({
+      // Both modeled looks are independent. Reusing their exact two noise
+      // realizations across SNR provides pointwise common-random-number
+      // monotonicity tests without treating different SNR cells as independent.
+      const firstSweep = makeStationarySweep(1_000_000 + 2 * trial, configuration, snrDb, signalWidthRbw);
+      const secondSweep = makeStationarySweep(1_000_000 + 2 * trial + 1, configuration, snrDb, signalWidthRbw);
+      const targetHz = firstSweep.frequencyHz[CENTER_INDEX]!;
+      const firstCandidates = productionDetector.analyze(firstSweep);
+      const sweepLocalDetected = detectsTarget(firstCandidates, targetHz);
+      const tracker = new SignalTracker(productionDetectionConfig);
+      tracker.update(firstSweep, firstCandidates);
+      const secondCandidates = productionDetector.analyze(secondSweep);
+      const twoLookPromoted = detectsActiveTarget(tracker.update(secondSweep, secondCandidates), targetHz);
+
+      if (sweepLocalDetected) {
+        sweepLocalDetectedBySnr.set(snrDb, sweepLocalDetectedBySnr.get(snrDb)! + 1);
+      }
+      if (twoLookPromoted) twoLookPromotedBySnr.set(snrDb, twoLookPromotedBySnr.get(snrDb)! + 1);
+      if (snrIndex > 0 && previousSweepLocalDetected && !sweepLocalDetected) {
+        sweepLocalPairedMonotonicityViolations++;
+        if (sweepLocalPairedMonotonicityExamples.length < 20) sweepLocalPairedMonotonicityExamples.push({
           trial,
           lowerSnrDb: SIGNAL_SNR_DB[snrIndex - 1]!,
           higherSnrDb: snrDb,
         });
       }
-      previousDetected = detected;
+      if (snrIndex > 0 && previousTwoLookPromoted && !twoLookPromoted) {
+        twoLookPairedMonotonicityViolations++;
+        if (twoLookPairedMonotonicityExamples.length < 20) twoLookPairedMonotonicityExamples.push({
+          trial,
+          lowerSnrDb: SIGNAL_SNR_DB[snrIndex - 1]!,
+          higherSnrDb: snrDb,
+        });
+      }
+      previousSweepLocalDetected = sweepLocalDetected;
+      previousTwoLookPromoted = twoLookPromoted;
     }
   }
-  const probabilityOfDetection: Record<string, ProbabilityPoint> = {};
-  for (const snrDb of SIGNAL_SNR_DB) {
-    const detected = detectedBySnr.get(snrDb)!;
-    probabilityOfDetection[String(snrDb)] = {
-      trials: SIGNAL_SWEEPS_PER_POINT,
-      detected,
-      probability: detected / SIGNAL_SWEEPS_PER_POINT,
-      interval95Percent: wilsonInterval(detected, SIGNAL_SWEEPS_PER_POINT, POINTWISE_WILSON_Z),
-    };
-  }
   return {
-    ...configuration,
-    signalWidthRbw,
-    signalDefinition: 'constant per-bin signal power relative to mean noise power',
-    probabilityOfDetection,
-    pairedMonotonicityViolations,
-    pairedMonotonicityExamples,
+    sweepLocal: {
+      ...configuration,
+      signalWidthRbw,
+      alternativeDefinition: DETECTOR_ALTERNATIVE_DEFINITION,
+      successCriterion: 'one-sweep-local-candidate-threshold-component-contains-declared-center-before-tracker-promotion',
+      confidenceScope: 'pointwise-per-shape-correlation-width-signal-width-and-snr-not-simultaneous',
+      probabilityOfDetection: probabilityPoints(sweepLocalDetectedBySnr),
+      pairedMonotonicityViolations: sweepLocalPairedMonotonicityViolations,
+      pairedMonotonicityExamples: sweepLocalPairedMonotonicityExamples,
+    },
+    twoLookTrackPromotion: {
+      ...configuration,
+      signalWidthRbw,
+      alternativeDefinition: DETECTOR_ALTERNATIVE_DEFINITION,
+      lookModel: 'two-ordered-independent-analytic-looks-with-common-random-numbers-across-snr',
+      successCriterion: 'active-runtime-track-threshold-component-contains-declared-center-after-exactly-two-looks',
+      confidenceScope: 'pointwise-per-shape-correlation-width-signal-width-and-snr-not-simultaneous',
+      probabilityOfDetection: probabilityPoints(twoLookPromotedBySnr),
+      pairedMonotonicityViolations: twoLookPairedMonotonicityViolations,
+      pairedMonotonicityExamples: twoLookPairedMonotonicityExamples,
+    },
   };
 }));
+
+const sweepLocalDetectionResults = detectionAudits.map((audit) => audit.sweepLocal);
+const twoLookTrackPromotionResults = detectionAudits.map((audit) => audit.twoLookTrackPromotion);
 
 interface StressObservation {
   sweep: Sweep;
@@ -319,8 +378,11 @@ const gainInvarianceResults = configurations
 const nullDesignSufficient = NULL_SWEEPS_PER_CONFIGURATION >= MINIMUM_NULL_TRIALS_FOR_ZERO_EVENT_BOUND;
 const nominalNullRateViolations = nullResults.filter((item) =>
   item.simultaneousFamily95PercentWilsonInterval.upper > BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability);
-const pairedMonotonicityViolations = detectionResults.reduce((sum, item) => sum + item.pairedMonotonicityViolations, 0);
-const highSnrDetectionViolations = detectionResults.flatMap((item) => {
+const sweepLocalPairedMonotonicityViolations = sweepLocalDetectionResults
+  .reduce((sum, item) => sum + item.pairedMonotonicityViolations, 0);
+const twoLookPairedMonotonicityViolations = twoLookTrackPromotionResults
+  .reduce((sum, item) => sum + item.pairedMonotonicityViolations, 0);
+const sweepLocalHighSnrDetectionViolations = sweepLocalDetectionResults.flatMap((item) => {
   const at15 = item.probabilityOfDetection['15']!;
   const at20 = item.probabilityOfDetection['20']!;
   const at25 = item.probabilityOfDetection['25']!;
@@ -340,6 +402,26 @@ const highSnrDetectionViolations = detectionResults.flatMap((item) => {
       : undefined,
   ].filter((value): value is NonNullable<typeof value> => value !== undefined);
 });
+const twoLookHighSnrPromotionViolations = twoLookTrackPromotionResults.flatMap((item) => {
+  const at15 = item.probabilityOfDetection['15']!;
+  const at20 = item.probabilityOfDetection['20']!;
+  const at25 = item.probabilityOfDetection['25']!;
+  const at30 = item.probabilityOfDetection['30']!;
+  return [
+    at15.interval95Percent.lower < MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_15_DB
+      ? { shape: item.shape, correlationWidth: item.correlationWidth, signalWidthRbw: item.signalWidthRbw, snrDb: 15, lower95: at15.interval95Percent.lower, required: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_15_DB }
+      : undefined,
+    at20.interval95Percent.lower < MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_20_DB
+      ? { shape: item.shape, correlationWidth: item.correlationWidth, signalWidthRbw: item.signalWidthRbw, snrDb: 20, lower95: at20.interval95Percent.lower, required: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_20_DB }
+      : undefined,
+    at25.interval95Percent.lower < MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_25_DB
+      ? { shape: item.shape, correlationWidth: item.correlationWidth, signalWidthRbw: item.signalWidthRbw, snrDb: 25, lower95: at25.interval95Percent.lower, required: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_25_DB }
+      : undefined,
+    at30.interval95Percent.lower < MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_30_DB
+      ? { shape: item.shape, correlationWidth: item.correlationWidth, signalWidthRbw: item.signalWidthRbw, snrDb: 30, lower95: at30.interval95Percent.lower, required: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_30_DB }
+      : undefined,
+  ].filter((value): value is NonNullable<typeof value> => value !== undefined);
+});
 const gainInvarianceViolations = gainInvarianceResults.filter((item) => item.topologyMismatches > 0
   || item.maximumTailProbabilityDifference > SCALE_INVARIANCE_TOLERANCE
   || item.maximumPosteriorDifference > SCALE_INVARIANCE_TOLERANCE);
@@ -348,13 +430,19 @@ const acceptanceFailures = [
     ? `null design has ${NULL_SWEEPS_PER_CONFIGURATION} trials/configuration; at least ${MINIMUM_NULL_TRIALS_FOR_ZERO_EVENT_BOUND} are required for a zero-event simultaneous-family Wilson upper bound <= ${BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability}`
     : undefined,
   nominalNullRateViolations.length
-    ? `${nominalNullRateViolations.length} stationary Gamma configurations exceed the actual ${BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability} simultaneous-family Wilson upper bound`
+    ? `${nominalNullRateViolations.length} stationary Gamma configurations exceed the declared ideal-model ${BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability} simultaneous-family Wilson upper bound`
     : undefined,
-  pairedMonotonicityViolations
-    ? `${pairedMonotonicityViolations} paired trials detected at a lower SNR but not the next higher SNR`
+  sweepLocalPairedMonotonicityViolations
+    ? `${sweepLocalPairedMonotonicityViolations} sweep-local paired trials detected at a lower SNR but not the next higher SNR`
     : undefined,
-  highSnrDetectionViolations.length
-    ? `${highSnrDetectionViolations.length} high-SNR Pd lower-confidence gates failed`
+  twoLookPairedMonotonicityViolations
+    ? `${twoLookPairedMonotonicityViolations} two-look track-promotion paired trials promoted at a lower SNR but not the next higher SNR`
+    : undefined,
+  sweepLocalHighSnrDetectionViolations.length
+    ? `${sweepLocalHighSnrDetectionViolations.length} sweep-local high-SNR pointwise Pd lower-confidence gates failed`
+    : undefined,
+  twoLookHighSnrPromotionViolations.length
+    ? `${twoLookHighSnrPromotionViolations.length} two-look active-track high-SNR pointwise Pd lower-confidence gates failed`
     : undefined,
   gainInvarianceViolations.length
     ? `${gainInvarianceViolations.length} exact common-scale gain-invariance configurations failed`
@@ -364,8 +452,12 @@ const acceptanceFailures = [
 const report = {
   qualification: 'analytic-synthetic-development-validation-not-physical-calibration',
   interpretation: {
-    nominalNull: 'Only the stationary common-scale Gamma family with RBW-matched block correlation is used for acceptance of the 0.001 sweep false-alarm target. Shape 1 is the detector\'s exact exponential model; larger shapes are conservative averaged-power variants. The interval is a Bonferroni simultaneous-family 95% Wilson bound across all eight predeclared configurations.',
-    probabilityOfDetection: 'Pd is measured through the exact production detector configuration for two predeclared signal widths. Common random numbers provide a pointwise monotonicity test. These SNRs are per-bin additive signal power relative to mean noise, not receiver sensitivity or field strength.',
+    nominalNull: 'The stationary common-scale Gamma family is exercised through the exact declared permissive high-candidate-load segmentation path; it is not claimed to be a superset of production segmentation. Shape 1 supplies exact exponential marginal draws, correlation width 1 is the exact iid cell model, and correlation width 3 is a perfect-block analytic correlation family whose RBW effective-count approximation is assessed empirically. Larger Gamma shapes are lower-variance averaged-power analytic stress variants, not a general proof of conservatism. The interval is a Bonferroni simultaneous-family 95% Wilson bound across all eight predeclared configurations.',
+    sweepLocalProbabilityOfDetection: 'One-look Pd is the probability that the exact production sweep-local detector settings emit a threshold-connected local candidate containing the declared center before the runtime tracker promotion rule. Common random numbers provide pointwise monotonicity tests.',
+    twoLookTrackPromotionProbabilityOfDetection: 'Two-look Pd passes two ordered independent analytic looks through the exact production detector and runtime tracker, then requires an active track containing the declared center after look two. Its engineering lower gates are the squares of the predeclared independent-look one-sweep gates.',
+    probabilityConfidence: 'Every Pd interval and lower-confidence gate is pointwise for one shape, correlation width, signal width, and SNR cell. No simultaneous-family Pd confidence statement is made.',
+    probabilityPrior: 'Both Pd matrices are conditional on the fixed 0.01 local-region prior, 0.99 posterior gate, and declared 18 dB-scale truncated positive-power-gain mixture. This validator does not establish detector-prior sensitivity or physical signal prevalence.',
+    alternative: 'Alternative SNR is per-bin additive linear power relative to mean noise. It is not a synthesized RF waveform, protocol, receiver sensitivity, or field strength.',
     stress: 'Slope, in-span gain discontinuity, declared spurs, impulses, and compound heavy-tail clutter violate the stationary common-scale null. Their response is reported as susceptibility and is deliberately not laundered into a nominal false-alarm guarantee. A one-sweep scalar analyzer cannot distinguish a declared impulse or spur from a real narrow emission.',
     physical: 'No result is tinySA hardware calibration. Physical calibration still requires terminated-input and injected-signal captures across frequency, RBW, detector modes, temperature, attenuation, LNA, spurs, compression, and sweep timing.',
   },
@@ -380,7 +472,9 @@ const report = {
     nullSweepsPerConfiguration: NULL_SWEEPS_PER_CONFIGURATION,
     minimumNullTrialsForZeroEventBound: MINIMUM_NULL_TRIALS_FOR_ZERO_EVENT_BOUND,
     simultaneousWilsonZ: SIMULTANEOUS_WILSON_Z,
-    signalSweepsPerPoint: SIGNAL_SWEEPS_PER_POINT,
+    sweepLocalTrialsPerPoint: SIGNAL_SWEEPS_PER_POINT,
+    twoLookTrackPromotionTrialsPerPoint: SIGNAL_SWEEPS_PER_POINT,
+    analyticLooksPerTrackPromotionTrial: 2,
     signalSnrDb: SIGNAL_SNR_DB,
     signalWidthsRbw: SIGNAL_WIDTHS_RBW,
     stressSweepsPerCase: STRESS_SWEEPS_PER_CASE,
@@ -389,17 +483,30 @@ const report = {
   nominalStationaryNull: {
     targetSweepFalseAlarmProbability: BAYESIAN_DETECTOR_MODEL.targetSweepFalseAlarmProbability,
     simultaneousFamilyConfidence: 0.95,
+    segmentationScope: 'permissive-high-candidate-load-path-not-a-production-candidate-superset',
     designSufficient: nullDesignSufficient,
     nominalNullCells: NULL_SWEEPS_PER_CONFIGURATION * configurations.length * POINTS,
     effectiveNullCells: nullResults.reduce((sum, item) => sum + item.effectiveCells, 0),
     results: nullResults,
   },
-  probabilityOfDetection: {
+  sweepLocalCandidateProbabilityOfDetection: {
+    confidenceScope: 'pointwise-not-simultaneous',
+    successCriterion: 'one-sweep-local-candidate-threshold-component-contains-declared-center-before-tracker-promotion',
     minimumLower95At15Db: MINIMUM_PD_LOWER_95_AT_15_DB,
     minimumLower95At20Db: MINIMUM_PD_LOWER_95_AT_20_DB,
     minimumLower95At25Db: MINIMUM_PD_LOWER_95_AT_25_DB,
     minimumLower95At30Db: MINIMUM_PD_LOWER_95_AT_30_DB,
-    results: detectionResults,
+    results: sweepLocalDetectionResults,
+  },
+  twoLookActiveTrackProbabilityOfDetection: {
+    confidenceScope: 'pointwise-not-simultaneous',
+    lookModel: 'two-ordered-independent-analytic-looks',
+    successCriterion: 'active-runtime-track-threshold-component-contains-declared-center-after-exactly-two-looks',
+    minimumLower95At15Db: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_15_DB,
+    minimumLower95At20Db: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_20_DB,
+    minimumLower95At25Db: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_25_DB,
+    minimumLower95At30Db: MINIMUM_TWO_LOOK_PROMOTION_PD_LOWER_95_AT_30_DB,
+    results: twoLookTrackPromotionResults,
   },
   commonScaleGainInvariance: gainInvarianceResults,
   outOfModelStressDiagnostics: stressResults,
@@ -407,8 +514,10 @@ const report = {
     passed: acceptanceFailures.length === 0,
     failures: acceptanceFailures,
     nominalNullRateViolations,
-    pairedMonotonicityViolations,
-    highSnrDetectionViolations,
+    sweepLocalPairedMonotonicityViolations,
+    twoLookPairedMonotonicityViolations,
+    sweepLocalHighSnrDetectionViolations,
+    twoLookHighSnrPromotionViolations,
     gainInvarianceViolations,
   },
 };
@@ -428,7 +537,11 @@ function makeStationarySweep(
   const power = stationaryPowerMilliwatts(sequence, configuration.shape, configuration.correlationWidth, 0x407);
   if (Number.isFinite(snrDb)) {
     const signalBins = Math.max(1, Math.round(signalWidthRbw * configuration.correlationWidth));
-    const first = CENTER_INDEX - Math.floor((signalBins - 1) / 2);
+    // Center the support on the frequency-grid midpoint. An odd support on an
+    // even-point grid necessarily chooses one of the two central cells; the
+    // declared policy selects the upper cell. Even supports remain exactly
+    // symmetric about the midpoint between those cells.
+    const first = Math.ceil((POINTS - signalBins) / 2);
     const last = first + signalBins - 1;
     const signalMilliwatts = MEAN_NOISE_MILLIWATTS * 10 ** (snrDb / 10);
     for (let index = first; index <= last; index++) power[index] = power[index]! + signalMilliwatts;
@@ -449,15 +562,57 @@ function stationaryPowerMilliwatts(sequence: number, shape: number, correlationW
 function sweepFromMilliwatts(id: string, sequence: number, powerMilliwatts: readonly number[], correlationWidth: number): Sweep {
   const actualRbwHz = BIN_WIDTH_HZ * correlationWidth;
   return {
-    kind: 'spectrum', id, sequence, capturedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, sequence % 60)).toISOString(), elapsedMilliseconds: 50,
+    kind: 'spectrum', id, sequence, capturedAt: new Date(Date.UTC(2026, 0, 1) + sequence * 50).toISOString(), elapsedMilliseconds: 50,
     frequencyHz: FREQUENCIES, powerDbm: powerMilliwatts.map((value) => 10 * Math.log10(Math.max(Number.MIN_VALUE, value))),
-    requested: { ...analyzer, rbwKhz: actualRbwHz / 1_000 }, actualStartHz: FREQUENCIES[0]!, actualStopHz: FREQUENCIES.at(-1)!, actualRbwHz,
+    requested: admittedSpectrum({ ...analyzer, rbwKhz: actualRbwHz / 1_000 }), actualStartHz: FREQUENCIES[0]!, actualStopHz: FREQUENCIES.at(-1)!, actualRbwHz,
     actualAttenuationDb: 0, source: 'scan-text', complete: true, identity,
+  };
+}
+
+function admittedSpectrum(config: AnalyzerConfig): SweptSpectrumConfiguration {
+  return {
+    kind: 'swept-spectrum',
+    startHz: config.startHz,
+    stopHz: config.stopHz,
+    points: config.points,
+    sweepTimeSeconds: config.sweepTimeSeconds,
+    controls: {
+      schemaVersion: 1,
+      model: 'receiver',
+      acquisitionFormat: config.acquisitionFormat,
+      resolutionBandwidthKhz: config.rbwKhz,
+      attenuationDb: config.attenuationDb,
+      detector: config.detector,
+      spurRejection: config.spurRejection,
+      lowNoiseAmplifier: config.lna,
+      avoidSpurs: config.avoidSpurs,
+      trigger: config.trigger,
+    },
   };
 }
 
 function detectsTarget(values: readonly DetectedSignal[], targetHz: number): boolean {
   return values.some((value) => value.startHz <= targetHz && value.stopHz >= targetHz);
+}
+
+function detectsActiveTarget(values: readonly DetectedSignal[], targetHz: number): boolean {
+  return values.some((value) => value.state === 'active'
+    && value.startHz <= targetHz
+    && value.stopHz >= targetHz);
+}
+
+function probabilityPoints(detectedBySnr: ReadonlyMap<number, number>): Record<string, ProbabilityPoint> {
+  const probabilityOfDetection: Record<string, ProbabilityPoint> = {};
+  for (const snrDb of SIGNAL_SNR_DB) {
+    const detected = detectedBySnr.get(snrDb)!;
+    probabilityOfDetection[String(snrDb)] = {
+      trials: SIGNAL_SWEEPS_PER_POINT,
+      detected,
+      probability: detected / SIGNAL_SWEEPS_PER_POINT,
+      interval95Percent: wilsonInterval(detected, SIGNAL_SWEEPS_PER_POINT, POINTWISE_WILSON_Z),
+    };
+  }
+  return probabilityOfDetection;
 }
 
 function detectionTouchesDeclaredAnomaly(value: DetectedSignal, sweep: Sweep, anomalyIndices: readonly number[]): boolean {

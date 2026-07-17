@@ -9,22 +9,48 @@ import {
   knownModelSupportRank,
   selectObservableDecision,
 } from '../packages/analysis/src/bayesian-waveform-classifier.js';
-import { BAYESIAN_OBSERVABLE_MODEL } from '../packages/analysis/src/models/bayesian-observable-v5.generated.js';
-import { BAYESIAN_OBSERVABLE_MODEL_SHA256 } from '../packages/analysis/src/models/bayesian-observable-v5.manifest.generated.js';
-import { OBSERVABLE_LEAF_CLASSES, type ObservableLeafClass } from '../packages/analysis/src/observable-classifier-model.js';
+import { BAYESIAN_OBSERVABLE_MODEL } from '../packages/analysis/src/models/bayesian-observable.generated.js';
+import { BAYESIAN_OBSERVABLE_MODEL_SHA256 } from '../packages/analysis/src/models/bayesian-observable.manifest.generated.js';
+import {
+  OBSERVABLE_EVIDENCE_CENSORING_POLICY,
+  OBSERVABLE_EVIDENCE_VIEWS,
+  OBSERVABLE_LEAF_CLASSES,
+  observableModelComponents,
+  observableModelView,
+  type ObservableEvidenceView,
+  type ObservableLeafClass,
+} from '../packages/analysis/src/observable-classifier-model.js';
 import {
   extractObservableFeatures,
+  ObservableEvidenceUnavailableError,
   observableAssociationEvidenceIsCurrentlyQualified,
   type ObservableFeatureObservation,
 } from '../packages/analysis/src/observable-features.js';
 import { observableRepresentativeIsInClassDomain } from '../packages/analysis/src/observable-hypothesis-domain.js';
 import {
-  logSumExp,
-  mixtureLogLikelihood,
   studentTModelTailProbability,
-  type PosteriorCandidate,
 } from '../packages/analysis/src/bayesian-predictive.js';
-import { classificationRepresentatives, SignalDetector, SignalTracker } from '../packages/analysis/src/index.js';
+import {
+  classificationCaptureTargetProjections,
+  classificationRepresentatives,
+  createDetectedPowerCaptureReceipt,
+  SignalDetector,
+  SignalTracker,
+} from '../packages/analysis/src/index.js';
+import {
+  assertDetectedPowerCaptureReceiptMatches,
+} from '../packages/analysis/src/detected-power-capture-receipt.js';
+import { measurementIdentityKey } from '../packages/analysis/src/measurement-provenance.js';
+import {
+  independentlyReplayCaptureTargetProjections,
+  type IndependentlyReplayedCaptureTargetProjection,
+} from './validator-capture-target-projection.js';
+import { posteriorUnderDeclaredPrior } from './validator-prior-sensitivity.js';
+import {
+  classifyValidatorReceiptQualifiedObservation,
+  extractValidatorReceiptQualifiedObservation,
+} from './validator-receipt-qualified-capture.js';
+import { nonFiniteReportNumberPaths } from './validator-numeric-report.js';
 import {
   CLASSIFICATION_CORPUS_VERSION,
   canonicalClassificationScenarios,
@@ -39,6 +65,8 @@ import {
   detectedPowerTimeseriesConfigurationSchema,
   projectDetectedPowerTuneHz,
   SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+  type DetectedPowerCaptureProjectionKind,
+  type DetectedPowerCaptureReceipt,
   type DetectedSignal,
   type DeviceIdentity,
   type SignalDetectionConfig,
@@ -88,6 +116,20 @@ const PINNED_EXACT_OBSERVABLE_EQUIVALENCE_NULL_SCENARIO_IDS = PINNED_EXACT_OBSER
 const PINNED_KNOWN_ACQUISITION_VALIDATION_ONLY_SCENARIO_IDS = [
   'gsm-900-tdma',
 ] as const;
+const PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS = [
+  'bluetooth-classic-connected',
+  'bluetooth-le-advertising',
+] as const;
+const PINNED_COMPONENT_SOURCE_SCENARIO_COUNTS_BY_VIEW = Object.freeze({
+  'spectrum-only': 18,
+  'envelope-untimed': 16,
+  'envelope-timed': 16,
+} as const);
+const PINNED_LIKELIHOOD_COMPONENT_COUNTS_BY_VIEW = Object.freeze({
+  'spectrum-only': 28,
+  'envelope-untimed': 26,
+  'envelope-timed': 26,
+} as const);
 const PINNED_SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS = [
   ...PINNED_KNOWN_ACQUISITION_VALIDATION_ONLY_SCENARIO_IDS,
   ...PINNED_STRICT_UNKNOWN_HOLDOUT_SCENARIO_IDS,
@@ -113,6 +155,33 @@ const ROLLING_MINIMUM_OVERALL_HIERARCHICAL_ACCURACY = 0.95;
 const ROLLING_MINIMUM_PER_SCENARIO_KNOWN_COVERAGE = 0.9;
 const ROLLING_MINIMUM_PER_SCENARIO_HIERARCHICAL_ACCURACY = 0.9;
 const CLASSIFICATION_ADMISSIONS = 8;
+const PINNED_DETECTED_POWER_CAPTURE_POLICY_ID =
+  'capture-once-after-first-runtime-admitted-strongest-current-target-v2' as const;
+const PINNED_CAPTURE_TARGET_SELECTION_POLICY_ID =
+  'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3' as const;
+const PINNED_CAPTURE_RUNTIME_ADMISSION_POLICY_ID =
+  'exact-eight-sweep-pre-capture-observable-feature-admission-v1' as const;
+const PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION =
+  'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4' as const;
+const PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY = Object.freeze({
+  id: 'frequency-agile-fixed-tune-envelope-censoring-v1',
+  associationMode: 'frequency-agile-2g4-activity',
+  runtimeCapturePolicy: 'validate-receipt-and-capture-before-censoring-v1',
+  classifierEvidencePolicy: 'spectrum-only-no-detected-power-envelope-v1',
+  unsupportedModelViewPolicy: 'exact-empty-components-and-calibration-v1',
+} as const);
+const PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID =
+  PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY.id;
+const PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_LIMITATION =
+  'frequency-agile-fixed-tune-envelope-censored' as const;
+type DetectedPowerEvidenceDisposition =
+  | 'admitted-envelope'
+  | 'censored-frequency-agile-spectrum-only';
+const PINNED_TRAINING_RUNTIME_IDENTITY = Object.freeze({
+  policyId: 'exact-repository-node-version-v1',
+  nodeVersion: '22.23.1',
+  v8Version: '12.4.254.21-node.56',
+});
 // A finite asynchronous Wi-Fi burst/noise phase missed the eight-admission
 // requirement for one of eight held-out seeds at 24 dB under 24 looks.  The
 // runtime has no 24-look stop condition, so validation uses 32 standard
@@ -121,11 +190,39 @@ const STANDARD_OBSERVATION_OPPORTUNITIES = 32;
 const FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES = 96;
 const FULL_BAND_2G4_START_HZ = 2_402_000_000;
 const FULL_BAND_2G4_STOP_HZ = 2_480_000_000;
-const SELECTION_POLICY = 'online-first-ready-all-representatives-v3' as const;
-const PINNED_TAIL_CALIBRATION_SCORE_UNIT = 'one-score-per-observation-domain-eligible-acquisition-attempt-v2' as const;
-const PINNED_TAIL_CALIBRATION_SELECTION_POLICY = 'online-all-ready-representatives-v1' as const;
-const PINNED_TAIL_CALIBRATION_AGGREGATION_POLICY = 'minimum-support-across-observation-domain-eligible-online-representatives-v3' as const;
-const PINNED_TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY = 'single-representative-rank-dominates-attempt-min-rank-v1' as const;
+const SELECTION_POLICY =
+  'independent-consecutive-spectrum-and-strongest-first-admission-qualified-envelope-branches-v8' as const;
+const REPRESENTATIVE_WEIGHTING_POLICY =
+  'view-matched-spectrum-event-envelope-causal-attempt-weighting-v4' as const;
+const LIKELIHOOD_POPULATION_POLICY =
+  'independent-branch-view-matched-runtime-event-populations-v3' as const;
+const PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY = Object.freeze({
+  id: 'scenario-components-with-three-shared-covariance-csma-activity-modes-v1',
+  scenarioWeighting: 'equal-fitted-scenario-weight-within-class-v1',
+  ordinaryScenarioModel: 'one-student-t-component-v1',
+  csmaEnvelopeModel: 'csma-bursts',
+  csmaPartitionFeature: 'spectrum.powerVariationDb',
+  csmaModeCount: 3,
+  minimumModeFitSampleCount: 3,
+  csmaClustering: 'deterministic-one-dimensional-lloyd-min-median-max-v1',
+  csmaModeWeighting: 'empirical-fit-event-frequency-within-scenario-and-view-v1',
+  csmaCovariance: 'shared-within-mode-pooled-covariance-with-0.35-off-diagonal-retention-v1',
+} as const);
+const PINNED_CSMA_DECOMPOSED_SOURCE_SCENARIO_IDS = [
+  'unknown-802154',
+  'wifi-hr-dsss-11m',
+  'wifi-ofdm-20m',
+  'wifi-ofdm-40m',
+  'wifi-ofdm-80m',
+] as const;
+const PINNED_TAIL_CALIBRATION_SCORE_UNIT =
+  'one-independent-branch-acquisition-attempt-score-per-evidence-view-v4' as const;
+const PINNED_TAIL_CALIBRATION_SELECTION_POLICY =
+  'consecutive-spectrum-all-runtime-representatives-and-independent-qualified-envelope-sole-capture-v4' as const;
+const PINNED_TAIL_CALIBRATION_AGGREGATION_POLICY =
+  'consecutive-spectrum-branch-minimum-qualified-envelope-branch-sole-capture-v5' as const;
+const PINNED_TAIL_CALIBRATION_RUNTIME_INTERPRETATION_POLICY =
+  'spectrum-member-dominates-independent-branch-attempt-min-envelope-is-independent-sole-capture-v3' as const;
 const PINNED_TAIL_CALIBRATION_STATISTICAL_INTERPRETATION = 'empirical-synthetic-reference-only-no-exchangeability-or-coverage-guarantee-v1' as const;
 const PINNED_TAIL_CALIBRATION_SNR_DB = [6, 10, 16, 24, 32] as const;
 const PINNED_TAIL_CALIBRATION_RBW_DIVISORS = [12, 20, 35, 55, 80, 120] as const;
@@ -140,31 +237,126 @@ const PINNED_SIGNAL_LAB_PRODUCTION_GEOMETRY = Object.freeze({
 } as const);
 interface PinnedTemporalSchedule {
   readonly id: string;
+  readonly sourcePlanProfileId: string;
   readonly sourceLookIndexOffset: number;
-  readonly skipAfterSpectrumOpportunities: number | null;
-  readonly skippedSourceOpportunities: number;
+  readonly sourcePlanSpectrumOpportunities: number;
 }
-const PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES: readonly PinnedTemporalSchedule[] = Object.freeze([
-  Object.freeze({ id: 'contiguous-from-zero-v1', sourceLookIndexOffset: 0, skipAfterSpectrumOpportunities: null, skippedSourceOpportunities: 0 } as const),
-  Object.freeze({ id: 'post-eight-spectrum-single-capture-skip-v1', sourceLookIndexOffset: 0, skipAfterSpectrumOpportunities: 8, skippedSourceOpportunities: 1 } as const),
-  Object.freeze({ id: 'profile-sequence-offset-225-post-eight-spectrum-single-capture-skip-v1', sourceLookIndexOffset: 225, skipAfterSpectrumOpportunities: 8, skippedSourceOpportunities: 1 } as const),
+const PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN = Object.freeze([
+  Object.freeze({ profileId: 'cw', profileOrdinal: 0, sourceLookIndexOffset: 0, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'am', profileOrdinal: 1, sourceLookIndexOffset: 32, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'fm', profileOrdinal: 2, sourceLookIndexOffset: 64, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'gsm-900-loaded-bcch', profileOrdinal: 3, sourceLookIndexOffset: 96, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'lte-band3-fdd-20m', profileOrdinal: 4, sourceLookIndexOffset: 128, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'lte-band38-tdd-10m', profileOrdinal: 5, sourceLookIndexOffset: 160, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'nr-n3-fdd-20m', profileOrdinal: 6, sourceLookIndexOffset: 192, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'nr-n78-tdd-100m', profileOrdinal: 7, sourceLookIndexOffset: 224, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'wifi-hr-dsss-11m', profileOrdinal: 8, sourceLookIndexOffset: 256, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'wifi-ofdm-20m', profileOrdinal: 9, sourceLookIndexOffset: 288, spectrumOpportunities: 32, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'bluetooth-classic-connected', profileOrdinal: 10, sourceLookIndexOffset: 320, spectrumOpportunities: 96, automaticDetectedPowerCaptures: 0 } as const),
+  Object.freeze({ profileId: 'bluetooth-le-advertising', profileOrdinal: 11, sourceLookIndexOffset: 416, spectrumOpportunities: 96, automaticDetectedPowerCaptures: 0 } as const),
 ] as const);
-const PINNED_VALIDATION_TEMPORAL_SCHEDULE: PinnedTemporalSchedule = Object.freeze({
-  // 347 is the exact start of the final BLE profile in the owned live matrix
-  // (ten standard profiles at 25 measurements, then 96 spectra plus one
-  // envelope for Bluetooth Classic). It is outside every fitted look index.
-  id: 'held-out-offset-347-post-eleven-single-skip-v1',
-  sourceLookIndexOffset: 347,
-  skipAfterSpectrumOpportunities: 11,
-  skippedSourceOpportunities: 1,
+const PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN = Object.freeze([
+  Object.freeze({ profileId: 'cw', profileOrdinal: 0, sourceLookIndexOffset: 0, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'am', profileOrdinal: 1, sourceLookIndexOffset: 33, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'fm', profileOrdinal: 2, sourceLookIndexOffset: 66, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'gsm-900-loaded-bcch', profileOrdinal: 3, sourceLookIndexOffset: 99, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'lte-band3-fdd-20m', profileOrdinal: 4, sourceLookIndexOffset: 132, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'lte-band38-tdd-10m', profileOrdinal: 5, sourceLookIndexOffset: 165, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'nr-n3-fdd-20m', profileOrdinal: 6, sourceLookIndexOffset: 198, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'nr-n78-tdd-100m', profileOrdinal: 7, sourceLookIndexOffset: 231, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'wifi-hr-dsss-11m', profileOrdinal: 8, sourceLookIndexOffset: 264, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'wifi-ofdm-20m', profileOrdinal: 9, sourceLookIndexOffset: 297, spectrumOpportunities: 32, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'bluetooth-classic-connected', profileOrdinal: 10, sourceLookIndexOffset: 330, spectrumOpportunities: 96, admittedDetectedPowerCaptures: 1 } as const),
+  Object.freeze({ profileId: 'bluetooth-le-advertising', profileOrdinal: 11, sourceLookIndexOffset: 427, spectrumOpportunities: 96, admittedDetectedPowerCaptures: 1 } as const),
+] as const);
+const PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES: readonly PinnedTemporalSchedule[] = Object.freeze(
+  PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN.map((sourcePlan) => branchSchedule(
+    'consecutive-spectrum',
+    sourcePlan.profileId,
+    sourcePlan.sourceLookIndexOffset,
+    sourcePlan.spectrumOpportunities,
+  )),
+);
+const PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES: readonly PinnedTemporalSchedule[] = Object.freeze(
+  PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN.map((sourcePlan) => branchSchedule(
+    'qualified-envelope',
+    sourcePlan.profileId,
+    sourcePlan.sourceLookIndexOffset,
+    sourcePlan.spectrumOpportunities,
+  )),
+);
+const PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE: PinnedTemporalSchedule = Object.freeze({
+  id: 'held-out-validation-consecutive-spectrum-first-post-live-index-512-v3',
+  sourcePlanProfileId: 'held-out-validation',
+  sourceLookIndexOffset: 512,
+  sourcePlanSpectrumOpportunities: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+} as const);
+const PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE: PinnedTemporalSchedule = Object.freeze({
+  id: 'held-out-validation-qualified-envelope-first-post-live-index-524-v3',
+  sourcePlanProfileId: 'held-out-validation',
+  sourceLookIndexOffset: 524,
+  sourcePlanSpectrumOpportunities: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
 } as const);
 const PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME = Object.freeze({
-  id: 'signal-lab-recommended-span-grid-with-session-sequence-nuisance-v1',
+  id: 'signal-lab-recommended-span-grid-with-independent-production-branch-source-clocks-v4',
   geometry: PINNED_SIGNAL_LAB_PRODUCTION_GEOMETRY,
-  temporalSchedules: PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES,
+  branchPolicy: 'independent-no-auto-spectrum-and-qualified-first-admitted-envelope-sessions-v1',
+  sourceClocks: Object.freeze({
+    spectrum: Object.freeze({
+      id: 'shared-monotonic-source-clock-v1',
+      acquisitionIndexPolicy: 'one-look-index-per-physical-acquisition-v1',
+      detectedPowerCapturePolicy: 'no-automatic-detected-power-capture-v1',
+    } as const),
+    qualifiedEnvelope: Object.freeze({
+      id: 'shared-monotonic-source-clock-v1',
+      acquisitionIndexPolicy: 'one-look-index-per-physical-acquisition-v1',
+      detectedPowerCapturePolicy: PINNED_DETECTED_POWER_CAPTURE_POLICY_ID,
+      captureTargetSelectionPolicy: PINNED_CAPTURE_TARGET_SELECTION_POLICY_ID,
+      postCaptureSpectrumPolicy: 'continue-at-next-shared-look-index-v1',
+    } as const),
+  } as const),
+  spectrumReleaseGateSourcePlan: PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN,
+  qualifiedEnvelopeReleaseGateSourcePlan:
+    PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN,
+  temporalSchedulePairs: Object.freeze(
+    PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES.map(
+      (spectrumTemporalSchedule, index) => Object.freeze({
+        id: `live-release-gate-independent-branches-${spectrumTemporalSchedule.sourcePlanProfileId}-v3`,
+        sourcePlanProfileId: spectrumTemporalSchedule.sourcePlanProfileId,
+        spectrumTemporalSchedule,
+        qualifiedEnvelopeTemporalSchedule:
+          PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES[index]!,
+      }),
+    ),
+  ),
   componentFitIncluded: true,
   tailCalibrationIncluded: true,
 } as const);
+const pinnedSpectrumReleaseGateSourcePlanValid = PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN.every(
+  (sourcePlan, index, plans) => sourcePlan.profileOrdinal === index
+    && sourcePlan.automaticDetectedPowerCaptures === 0
+    && sourcePlan.sourceLookIndexOffset === (index === 0
+      ? 0
+      : plans[index - 1]!.sourceLookIndexOffset + plans[index - 1]!.spectrumOpportunities)
+    && PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES[index]?.sourcePlanProfileId === sourcePlan.profileId
+    && PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES[index]?.sourceLookIndexOffset === sourcePlan.sourceLookIndexOffset,
+) && PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN.at(-1)!.sourceLookIndexOffset
+  + PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN.at(-1)!.spectrumOpportunities === 512;
+const pinnedQualifiedEnvelopeReleaseGateSourcePlanValid = PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN.every(
+  (sourcePlan, index, plans) => sourcePlan.profileOrdinal === index
+    && sourcePlan.admittedDetectedPowerCaptures === 1
+    && sourcePlan.sourceLookIndexOffset === (index === 0
+      ? 0
+      : plans[index - 1]!.sourceLookIndexOffset
+        + plans[index - 1]!.spectrumOpportunities
+        + plans[index - 1]!.admittedDetectedPowerCaptures)
+    && PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES[index]?.sourcePlanProfileId === sourcePlan.profileId
+    && PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES[index]?.sourceLookIndexOffset === sourcePlan.sourceLookIndexOffset,
+) && PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN.at(-1)!.sourceLookIndexOffset
+  + PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN.at(-1)!.spectrumOpportunities
+  + PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN.at(-1)!.admittedDetectedPowerCaptures === 524;
+const pinnedReleaseGateSourcePlanValid = pinnedSpectrumReleaseGateSourcePlanValid
+  && pinnedQualifiedEnvelopeReleaseGateSourcePlanValid;
 const PINNED_DETECTED_POWER_SYNTHESIS_FILTER_POLICY = Object.freeze({
   id: 'explicit-generator-filter-width-by-acquisition-regime-v1',
   divisorAcquisitionRegimes: 'match-swept-spectrum-actual-rbw-nuisance-v1',
@@ -173,27 +365,46 @@ const PINNED_DETECTED_POWER_SYNTHESIS_FILTER_POLICY = Object.freeze({
   measurementActualRbwQualification: 'unavailable',
 } as const);
 const PINNED_PRODUCTION_ACQUISITION_REGIME_HIGH_SNR_SEED_COVERAGE_POLICY = Object.freeze({
-  id: 'detector-conditioned-production-regime-presence-v1',
-  minimumDistinctSeedsPerHighSnrCell: 1,
+  id: 'branch-conditional-production-regime-presence-v2',
+  spectrumOnly: Object.freeze({
+    minimumDistinctObservationDomainEligibleSeedsPerHighSnrCell: 1,
+  }),
+  qualifiedEnvelope: Object.freeze({
+    minimumDistinctPhysicalCaptureSeedsPerHighSnrCell: 1,
+    observationDomainEligibilityPolicy:
+      'pooled-by-scenario-and-view-after-causal-capture-v1',
+    outOfDomainCapturePolicy:
+      'honest-abstention-excluded-from-envelope-likelihood-v1',
+  }),
   globalCoveragePolicy: 'all-seeds-at-one-or-more-regimes-except-declared-sparse-asynchronous-scenarios-v1',
 } as const);
 type PinnedCalibrationAcquisitionRegime = Readonly<{
   id: string;
   rbwDivisor: number | null;
-  temporalSchedule: PinnedTemporalSchedule;
+  spectrumTemporalSchedule: PinnedTemporalSchedule;
+  qualifiedEnvelopeTemporalSchedule: PinnedTemporalSchedule;
 }>;
-const PINNED_BASELINE_TEMPORAL_SCHEDULE = PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES[0]!;
+const PINNED_BASELINE_SPECTRUM_TEMPORAL_SCHEDULE =
+  PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES[0]!;
+const PINNED_BASELINE_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE =
+  PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES[0]!;
 const PINNED_TAIL_CALIBRATION_ACQUISITION_REGIMES: readonly PinnedCalibrationAcquisitionRegime[] = Object.freeze([
   ...PINNED_TAIL_CALIBRATION_RBW_DIVISORS.map((rbwDivisor) => Object.freeze({
-    id: `occupied-bandwidth-rbw-divisor:${rbwDivisor}/${PINNED_BASELINE_TEMPORAL_SCHEDULE.id}`,
+    id: `occupied-bandwidth-rbw-divisor:${rbwDivisor}/independent-production-branch-baselines-v1`,
     rbwDivisor,
-    temporalSchedule: PINNED_BASELINE_TEMPORAL_SCHEDULE,
+    spectrumTemporalSchedule: PINNED_BASELINE_SPECTRUM_TEMPORAL_SCHEDULE,
+    qualifiedEnvelopeTemporalSchedule:
+      PINNED_BASELINE_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
   })),
-  ...PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES.map((temporalSchedule) => Object.freeze({
-    id: `${PINNED_SIGNAL_LAB_PRODUCTION_GEOMETRY.id}/${temporalSchedule.id}`,
-    rbwDivisor: null,
-    temporalSchedule,
-  })),
+  ...PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME.temporalSchedulePairs.map(
+    (temporalSchedulePair) => Object.freeze({
+      id: `${PINNED_SIGNAL_LAB_PRODUCTION_GEOMETRY.id}/${temporalSchedulePair.id}`,
+      rbwDivisor: null,
+      spectrumTemporalSchedule: temporalSchedulePair.spectrumTemporalSchedule,
+      qualifiedEnvelopeTemporalSchedule:
+        temporalSchedulePair.qualifiedEnvelopeTemporalSchedule,
+    }),
+  ),
 ]);
 const PINNED_TAIL_CALIBRATION_ACQUISITION_REGIME_IDS = PINNED_TAIL_CALIBRATION_ACQUISITION_REGIMES
   .map((regime) => regime.id);
@@ -229,7 +440,7 @@ const REPORT_TEMP_PATH = resolve(REPORT_DIRECTORY, 'report.json.tmp');
 const FAILED_REPORT_PATH = resolve(REPORT_DIRECTORY, 'report.failed.json');
 const FAILED_REPORT_TEMP_PATH = resolve(REPORT_DIRECTORY, 'report.failed.json.tmp');
 const VALIDATION_ACCEPTANCE_POLICY_ID = 'synthetic-observable-classifier-full-corpus-release-gates-v1';
-const PINNED_SIGNAL_LAB_COMMIT = 'c036e063bce6c6cc1515750a4d5614f1c2ab5df8';
+const PINNED_SIGNAL_LAB_COMMIT = '03bc13eb9d5efcfc5f2f9c1792042f670b71ef9a';
 const SIGNAL_LAB_REPOSITORY_ROOT = resolve('../TinySA_SignalLab');
 mkdirSync(REPORT_DIRECTORY, { recursive: true });
 for (const path of [REPORT_PATH, REPORT_TEMP_PATH, FAILED_REPORT_PATH, FAILED_REPORT_TEMP_PATH]) {
@@ -258,6 +469,7 @@ const invalidDiagnosticScenarioIds = diagnosticScenarioIds
 if (invalidDiagnosticScenarioIds.length > 0) {
   throw new Error(`Unknown diagnostic validation scenario IDs: ${invalidDiagnosticScenarioIds.join(', ')}`);
 }
+const heldOutSourceSpanAudit = auditHeldOutSourceSpan(canonicalClassificationScenarios);
 const PRODUCTION_DETECTION_CONFIG: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
   minimumBandwidthHz: 0,
@@ -299,7 +511,7 @@ const checkedOutCorpusSha256 = createHash('sha256')
   .update(JSON.stringify(checkedOutCorpusSourceManifest))
   .digest('hex');
 const checkedInModelAssetSha256 = createHash('sha256')
-  .update(readFileSync(resolve('packages/analysis/src/models/bayesian-observable-v5.generated.ts')))
+  .update(readFileSync(resolve('packages/analysis/src/models/bayesian-observable.generated.ts')))
   .digest('hex');
 const identity: DeviceIdentity = {
   model: 'SignalLab production-pipeline synthetic validation corpus', hardwareVersion: 'offline', firmwareVersion: CLASSIFICATION_CORPUS_VERSION,
@@ -324,6 +536,22 @@ interface AdmissionAttempt {
   everReady: boolean;
   admitted: boolean;
   everReadyRepresentativeCount: number;
+  firstReadyRepresentativeCount: number;
+  provenanceUnavailableWindowCount: number;
+  detectedPowerCaptureCount: number;
+  detectedPowerCaptureReceiptVerified: boolean;
+  detectedPowerCaptureReceiptSchemaVersion?: 3;
+  physicalCaptureId?: string;
+  captureProjectionKind?: DetectedPowerCaptureProjectionKind;
+  projectedAssociationMode?: NonNullable<DetectedSignal['associationMode']>;
+  classificationEvidenceView?: ObservableEvidenceView;
+  envelopeFeatureAvailable: boolean;
+  detectedPowerEvidenceDisposition?: DetectedPowerEvidenceDisposition;
+  envelopeEvidenceCensoringPolicyId?:
+    typeof PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID;
+  detectedPowerAcquisitionQualification?:
+    typeof PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION;
+  envelopeFeatureUnavailableCode?: ObservableEvidenceUnavailableError['code'];
   finalReadyRepresentativeCount: number;
   finalActiveRepresentativeCount: number;
   selectedTrackAdmissions: number;
@@ -368,12 +596,24 @@ interface ValidationCase {
   selectedTrackAdmissions: number;
   localTrackAdmissions: number;
   associationMode: NonNullable<DetectedSignal['associationMode']>;
+  rawCaptureTargetAssociationMode: NonNullable<DetectedSignal['associationMode']>;
+  rawCaptureTargetState: 'candidate' | 'active';
+  captureProjectionKind: DetectedPowerCaptureProjectionKind;
+  physicalCaptureId: string;
+  detectedPowerCaptureReceiptSchemaVersion: 3;
+  detectedPowerEvidenceDisposition: DetectedPowerEvidenceDisposition;
+  envelopeEvidenceCensoringPolicyId?:
+    typeof PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID;
   associationId?: string;
   associationModelId?: string;
   associationMemberCount?: number;
   associationRegionBandwidthHz?: number;
   knownSupportRank: number;
   associationEvidenceQualification?: ObservableFeatureObservation['associationEvidenceQualification'];
+  zeroSpanCaptureId?: string;
+  detectedPowerAcquisitionQualification?:
+    typeof PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION;
+  views: ObservableFeatureObservation['views'];
   limitations: readonly string[];
   features: Readonly<Record<string, number>>;
 }
@@ -404,6 +644,7 @@ interface RollingWindowCase {
   representativeKey: string;
   readyOpportunity: number;
   scenario: string;
+  corpusTruth: ObservableSignalClass;
   modelTruth: ObservableLeafClass;
   allowedModelTruths: readonly ObservableLeafClass[];
   snrDb: number;
@@ -413,6 +654,30 @@ interface RollingWindowCase {
   acceptedHierarchy: boolean;
   truthClassDomainEligible: boolean;
   knownSupportRank: number;
+  nominalBandwidthHz: number;
+  occupiedStartHz: number;
+  occupiedStopHz: number;
+  centerHz: number;
+  measuredBandwidthHz: number;
+  binWidthHz: number;
+  limitations: readonly ObservableFeatureObservation['limitations'][number][];
+  views: ObservableFeatureObservation['views'];
+  associationEvidenceQualification?: ObservableFeatureObservation['associationEvidenceQualification'];
+  topLeaf: string;
+  topLeafPosterior: number;
+  posterior: Readonly<Record<string, number>>;
+  features: Readonly<Record<string, number>>;
+  associationMode: NonNullable<DetectedSignal['associationMode']>;
+}
+
+interface SpectrumOnlineAssociationSample {
+  attemptId: string;
+  scenario: string;
+  snrDb: number;
+  rbwDivisor: number;
+  seed: number;
+  readyOpportunity: number;
+  representativeKey: string;
   associationMode: NonNullable<DetectedSignal['associationMode']>;
 }
 
@@ -420,19 +685,20 @@ interface ExactEquivalenceDiscrepancy {
   pair: string;
   nuisanceCell: string;
   representativeIndex?: number;
-  view?: EvidenceViewCase['view'];
+  view?: EvidenceViewCase['view'] | 'spectrum-online';
   field: string;
   reference: unknown;
   null: unknown;
 }
 
 type TailCalibrationView = 'spectrum-only' | 'envelope-untimed' | 'envelope-timed';
+type ProductionAcquisitionBranch = 'consecutive-spectrum' | 'qualified-envelope';
 
 interface RecomputedTailCalibrationAudit {
   valid: boolean;
   scoreTolerance: number;
-  recomputedAttemptCountsByScenario: Readonly<Record<string, number>>;
-  attemptCountMismatches: readonly { scenarioId: string; expected: number; observed: number }[];
+  recomputedAttemptCountsByScenarioByView: Readonly<Record<string, Readonly<Record<TailCalibrationView, number>>>>;
+  attemptCountMismatches: readonly { scenarioId: string; view: TailCalibrationView; expected: number; observed: number }[];
   scoreComparisons: readonly {
     classId: ObservableLeafClass;
     view: TailCalibrationView;
@@ -444,6 +710,10 @@ interface RecomputedTailCalibrationAudit {
   }[];
   lateMinimumCount: number;
   allOnlineAttemptCount: number;
+  runtimeBranchClockAudits: {
+    consecutiveSpectrum: ReturnType<typeof summarizeCausalAcquisitionTraces>;
+    qualifiedEnvelope: ReturnType<typeof summarizeCausalAcquisitionTraces>;
+  };
   aggregationRegression: {
     firstOpportunity: number;
     minimumOpportunity: number;
@@ -460,6 +730,7 @@ interface ExactEquivalencePairAudit {
   matchedAdmissionCells: number;
   matchedRepresentativePairs: number;
   matchedEvidenceViewPairs: number;
+  matchedOnlineSpectrumPairs: number;
   discrepancyCount: number;
   discrepancies: readonly ExactEquivalenceDiscrepancy[];
 }
@@ -471,6 +742,11 @@ interface FirstReadyRepresentative {
   localTrackAdmissions: number;
   firstReadyOpportunity: number;
   evidenceSweeps: readonly Sweep[];
+  spectrumObservation: ObservableFeatureObservation;
+  /** Present only in the qualified-envelope branch. */
+  rawCaptureTarget?: DetectedSignal;
+  /** Present only in the qualified-envelope branch. */
+  captureProjectionKind?: DetectedPowerCaptureProjectionKind;
 }
 
 interface OnlineReadyRepresentative {
@@ -480,12 +756,42 @@ interface OnlineReadyRepresentative {
   localTrackAdmissions: number;
   readyOpportunity: number;
   evidenceSweeps: readonly Sweep[];
+  spectrumObservation: ObservableFeatureObservation;
+}
+
+interface LiveEnvelopeCapture {
+  representative: FirstReadyRepresentative;
+  zeroSpan: ZeroSpanCapture;
+  detectedPowerCaptureReceipt: DetectedPowerCaptureReceipt;
+  sourceLookIndex: number;
+  classifierObservation: ObservableFeatureObservation;
+  detectedPowerEvidenceDisposition: DetectedPowerEvidenceDisposition;
+  envelopeEvidenceCensoringPolicyId?:
+    typeof PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID;
+  envelopeObservation?: ObservableFeatureObservation;
+  unavailableCode?: ObservableEvidenceUnavailableError['code'];
+}
+
+interface CausalAcquisitionTrace {
+  readonly branch: ProductionAcquisitionBranch;
+  readonly scheduleId: string;
+  readonly sourceLookIndexStart: number;
+  readonly sourceLookIndexStop: number;
+  readonly sourceLookIndices: readonly number[];
+  readonly spectrumSourceLookIndices: readonly number[];
+  readonly detectedPowerSourceLookIndices: readonly number[];
+  readonly captureTriggerSpectrumLookIndex?: number;
+  readonly captureTriggerOpportunity?: number;
+  readonly uniqueSourceLookIndices: boolean;
+  readonly strictlyIncreasingSourceLookIndices: boolean;
+  readonly captureImmediatelyFollowsTrigger: boolean;
 }
 
 interface ProductionOnlineSelection {
   representatives: readonly FirstReadyRepresentative[];
   onlineReadyRepresentatives: readonly OnlineReadyRepresentative[];
   everReadyRepresentativeKeys: readonly string[];
+  provenanceUnavailableWindowCount: number;
   finalReadyRepresentativeCount: number;
   finalActiveRepresentativeCount: number;
   maximumActiveAdmissions: number;
@@ -496,12 +802,97 @@ interface ProductionOnlineSelection {
   regularAssociationIds: readonly string[];
   agileAssociationIds: readonly string[];
   regularAssociationExpirations: number;
+  liveEnvelopeCapture?: LiveEnvelopeCapture;
+  acquisitionTrace: CausalAcquisitionTrace;
+}
+
+// This class must be initialized before the validator's top-level acquisition
+// matrix starts below.  Keeping it beside the trace contract prevents bundlers
+// from lowering a later class declaration to an uninitialized `var` at the
+// first acquireProductionAttempt call.
+class IndependentCausalSourceClock {
+  readonly #sourceLookIndices: number[] = [];
+  readonly #spectrumSourceLookIndices: number[] = [];
+  readonly #detectedPowerSourceLookIndices: number[] = [];
+  #nextSourceLookIndex: number;
+  #captureTriggerSpectrumLookIndex: number | undefined;
+  #captureTriggerOpportunity: number | undefined;
+
+  constructor(
+    private readonly temporalSchedule: PinnedTemporalSchedule,
+    private readonly branch: ProductionAcquisitionBranch,
+  ) {
+    this.#nextSourceLookIndex = temporalSchedule.sourceLookIndexOffset;
+  }
+
+  acquireSpectrum(): number {
+    const sourceLookIndex = this.#consumeSourceLookIndex();
+    this.#spectrumSourceLookIndices.push(sourceLookIndex);
+    return sourceLookIndex;
+  }
+
+  acquireDetectedPower(triggerSpectrumLookIndex: number, triggerOpportunity: number): number {
+    if (this.branch !== 'qualified-envelope') {
+      throw new Error(`${this.temporalSchedule.id} forbids detected-power acquisition on the consecutive-spectrum branch`);
+    }
+    if (this.#detectedPowerSourceLookIndices.length !== 0) {
+      throw new Error(`${this.temporalSchedule.id} attempted more than one live detected-power acquisition`);
+    }
+    if (this.#spectrumSourceLookIndices.at(-1) !== triggerSpectrumLookIndex) {
+      throw new Error(`${this.temporalSchedule.id} detected-power capture was not triggered by the immediately preceding spectrum`);
+    }
+    this.#captureTriggerSpectrumLookIndex = triggerSpectrumLookIndex;
+    this.#captureTriggerOpportunity = triggerOpportunity;
+    const sourceLookIndex = this.#consumeSourceLookIndex();
+    this.#detectedPowerSourceLookIndices.push(sourceLookIndex);
+    return sourceLookIndex;
+  }
+
+  trace(): CausalAcquisitionTrace {
+    const sourceLookIndices = [...this.#sourceLookIndices];
+    const uniqueSourceLookIndices = new Set(sourceLookIndices).size === sourceLookIndices.length;
+    const strictlyIncreasingSourceLookIndices = sourceLookIndices.every(
+      (sourceLookIndex, index) => index === 0 || sourceLookIndex > sourceLookIndices[index - 1]!,
+    );
+    const captureSourceLookIndex = this.#detectedPowerSourceLookIndices[0];
+    const captureImmediatelyFollowsTrigger = captureSourceLookIndex === undefined
+      || (this.#captureTriggerSpectrumLookIndex !== undefined
+        && captureSourceLookIndex === this.#captureTriggerSpectrumLookIndex + 1);
+    return Object.freeze({
+      branch: this.branch,
+      scheduleId: this.temporalSchedule.id,
+      sourceLookIndexStart: sourceLookIndices[0] ?? this.temporalSchedule.sourceLookIndexOffset,
+      sourceLookIndexStop: sourceLookIndices.at(-1) ?? this.temporalSchedule.sourceLookIndexOffset - 1,
+      sourceLookIndices: Object.freeze(sourceLookIndices),
+      spectrumSourceLookIndices: Object.freeze([...this.#spectrumSourceLookIndices]),
+      detectedPowerSourceLookIndices: Object.freeze([...this.#detectedPowerSourceLookIndices]),
+      ...(this.#captureTriggerSpectrumLookIndex === undefined
+        ? {}
+        : { captureTriggerSpectrumLookIndex: this.#captureTriggerSpectrumLookIndex }),
+      ...(this.#captureTriggerOpportunity === undefined
+        ? {}
+        : { captureTriggerOpportunity: this.#captureTriggerOpportunity }),
+      uniqueSourceLookIndices,
+      strictlyIncreasingSourceLookIndices,
+      captureImmediatelyFollowsTrigger,
+    });
+  }
+
+  #consumeSourceLookIndex(): number {
+    const sourceLookIndex = this.#nextSourceLookIndex;
+    this.#nextSourceLookIndex += 1;
+    this.#sourceLookIndices.push(sourceLookIndex);
+    return sourceLookIndex;
+  }
 }
 
 const cases: ValidationCase[] = [];
 const evidenceViewCases: EvidenceViewCase[] = [];
 const rollingWindowCases: RollingWindowCase[] = [];
+const spectrumOnlineAssociationSamples: SpectrumOnlineAssociationSample[] = [];
 const admissionAttempts: AdmissionAttempt[] = [];
+const validationSpectrumAcquisitionTraces: CausalAcquisitionTrace[] = [];
+const validationQualifiedEnvelopeAcquisitionTraces: CausalAcquisitionTrace[] = [];
 for (const scenario of validationScenarios) {
   for (const snrDb of SNR_DB) {
     for (const rbwDivisor of RBW_DIVISORS) {
@@ -511,29 +902,34 @@ for (const scenario of validationScenarios) {
         const detectedPowerSynthesisFilterWidthHz = actualRbwHz;
         const attemptId = validationAttemptId(scenario.id, snrDb, rbwDivisor, seed);
         const observationHorizon = observationOpportunityHorizon(scenario);
-        const observations = Array.from({ length: observationHorizon }, (_, spectrumOpportunity) => synthesizeCanonicalObservation(scenario.id, {
-          lookIndex: pinnedSourceLookIndex(PINNED_VALIDATION_TEMPORAL_SCHEDULE, spectrumOpportunity),
+        const spectrumSelection = acquireProductionAttempt({
+          scenario,
+          temporalSchedule: PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE,
+          observationHorizon,
           seed,
           snrDb,
           actualRbwHz,
           detectedPowerSynthesisFilterWidthHz,
-          points: SWEEP_POINTS,
-          sweepTimeSeconds: SWEEP_TIME_SECONDS,
-          zeroSpanPoints: ZERO_SPAN_POINTS,
-          zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
-        }));
-        for (const observation of observations) {
-          assertDetectedPowerSynthesisProvenance(
-            observation,
-            detectedPowerSynthesisFilterWidthHz,
-            `${attemptId} swept observation`,
-          );
-        }
-        const sweeps = observations.map((observation) => asSweep(scenario, observation));
-        const selection = selectProductionFirstReady(sweeps);
+          context: `${attemptId}:consecutive-spectrum`,
+          branch: 'consecutive-spectrum',
+        });
+        const envelopeSelection = acquireProductionAttempt({
+          scenario,
+          temporalSchedule: PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
+          observationHorizon,
+          seed,
+          snrDb,
+          actualRbwHz,
+          detectedPowerSynthesisFilterWidthHz,
+          context: `${attemptId}:qualified-envelope`,
+          branch: 'qualified-envelope',
+        });
+        validationSpectrumAcquisitionTraces.push(spectrumSelection.acquisitionTrace);
+        validationQualifiedEnvelopeAcquisitionTraces.push(envelopeSelection.acquisitionTrace);
         const mappedTruth = modelTruth(scenario.truthClass);
         const allowedModelTruths = [...new Set(scenario.allowedObservableClasses.map(modelTruth))];
-        const selectedAdmissions = selection.representatives.map((item) => item.classificationAdmissions);
+        const selectedAdmissions = envelopeSelection.representatives
+          .map((item) => item.classificationAdmissions);
         admissionAttempts.push({
           attemptId,
           scenario: scenario.id,
@@ -547,92 +943,217 @@ for (const scenario of validationScenarios) {
           binWidthHz: nominalBinWidthHz,
           seed,
           observationHorizon,
-          everReady: selection.everReadyRepresentativeKeys.length > 0,
-          admitted: selection.representatives.length > 0,
-          everReadyRepresentativeCount: selection.everReadyRepresentativeKeys.length,
-          finalReadyRepresentativeCount: selection.finalReadyRepresentativeCount,
-          finalActiveRepresentativeCount: selection.finalActiveRepresentativeCount,
+          everReady: envelopeSelection.everReadyRepresentativeKeys.length > 0,
+          admitted: envelopeSelection.representatives.length > 0,
+          everReadyRepresentativeCount: envelopeSelection.everReadyRepresentativeKeys.length,
+          firstReadyRepresentativeCount: envelopeSelection.representatives.length,
+          provenanceUnavailableWindowCount: envelopeSelection.provenanceUnavailableWindowCount,
+          detectedPowerCaptureCount:
+            envelopeSelection.acquisitionTrace.detectedPowerSourceLookIndices.length,
+          detectedPowerCaptureReceiptVerified:
+            envelopeSelection.liveEnvelopeCapture !== undefined,
+          ...(envelopeSelection.liveEnvelopeCapture === undefined
+            ? {}
+            : {
+                detectedPowerCaptureReceiptSchemaVersion:
+                  envelopeSelection.liveEnvelopeCapture
+                    .detectedPowerCaptureReceipt.schemaVersion,
+                physicalCaptureId:
+                  envelopeSelection.liveEnvelopeCapture.zeroSpan.id,
+                captureProjectionKind:
+                  envelopeSelection.liveEnvelopeCapture.representative
+                    .captureProjectionKind,
+                projectedAssociationMode:
+                  envelopeSelection.liveEnvelopeCapture.representative
+                    .detection.associationMode ?? 'frequency-local',
+                classificationEvidenceView: observableModelView(
+                  envelopeSelection.liveEnvelopeCapture.classifierObservation,
+                ),
+              }),
+          envelopeFeatureAvailable:
+            envelopeSelection.liveEnvelopeCapture?.envelopeObservation !== undefined,
+          ...(envelopeSelection.liveEnvelopeCapture === undefined
+            ? {}
+            : {
+                detectedPowerEvidenceDisposition:
+                  envelopeSelection.liveEnvelopeCapture
+                    .detectedPowerEvidenceDisposition,
+              }),
+          ...(envelopeSelection.liveEnvelopeCapture
+            ?.envelopeEvidenceCensoringPolicyId === undefined
+            ? {}
+            : {
+                envelopeEvidenceCensoringPolicyId:
+                  envelopeSelection.liveEnvelopeCapture
+                    .envelopeEvidenceCensoringPolicyId,
+              }),
+          ...(envelopeSelection.liveEnvelopeCapture?.envelopeObservation
+            ?.detectedPowerAcquisitionQualification === undefined
+            ? {}
+            : {
+                detectedPowerAcquisitionQualification:
+                  envelopeSelection.liveEnvelopeCapture.envelopeObservation
+                    .detectedPowerAcquisitionQualification,
+              }),
+          ...(envelopeSelection.liveEnvelopeCapture?.unavailableCode === undefined
+            ? {}
+            : {
+                envelopeFeatureUnavailableCode:
+                  envelopeSelection.liveEnvelopeCapture.unavailableCode,
+              }),
+          finalReadyRepresentativeCount: envelopeSelection.finalReadyRepresentativeCount,
+          finalActiveRepresentativeCount: envelopeSelection.finalActiveRepresentativeCount,
           selectedTrackAdmissions: selectedAdmissions.length ? Math.max(...selectedAdmissions) : 0,
-          maximumActiveAdmissions: selection.maximumActiveAdmissions,
-          maximumLocalTrackAdmissions: selection.maximumLocalTrackAdmissions,
-          ...(selection.firstReadyOpportunity === undefined ? {} : { firstReadyOpportunity: selection.firstReadyOpportunity }),
-          everAssociationModes: selection.everAssociationModes,
-          finalAssociationModes: selection.finalAssociationModes,
-          regularAssociationsObserved: selection.regularAssociationIds.length,
-          agileAssociationsObserved: selection.agileAssociationIds.length,
-          regularAssociationExpirations: selection.regularAssociationExpirations,
+          maximumActiveAdmissions: envelopeSelection.maximumActiveAdmissions,
+          maximumLocalTrackAdmissions: envelopeSelection.maximumLocalTrackAdmissions,
+          ...(envelopeSelection.firstReadyOpportunity === undefined
+            ? {}
+            : { firstReadyOpportunity: envelopeSelection.firstReadyOpportunity }),
+          everAssociationModes: envelopeSelection.everAssociationModes,
+          finalAssociationModes: envelopeSelection.finalAssociationModes,
+          regularAssociationsObserved: envelopeSelection.regularAssociationIds.length,
+          agileAssociationsObserved: envelopeSelection.agileAssociationIds.length,
+          regularAssociationExpirations: envelopeSelection.regularAssociationExpirations,
         });
-        if (mappedTruth !== 'unknown-signal' && snrDb >= HIGH_SNR_MINIMUM_DB) {
-          for (const representative of selection.onlineReadyRepresentatives) {
-            const detection = representative.detection;
-            const featureObservation = extractObservableFeatures(detection, { sweeps: representative.evidenceSweeps });
-            if (featureObservation.sweepIds.length !== CLASSIFICATION_ADMISSIONS) {
-              throw new Error(`${scenario.id} rolling classifier extracted ${featureObservation.sweepIds.length} source sweeps, expected exactly ${CLASSIFICATION_ADMISSIONS}`);
-            }
-            const fitEligible = observableRepresentativeIsInClassDomain(
-              mappedTruth,
-              featureObservation,
-            );
-            const result = await classifier.classify(detection, { sweeps: representative.evidenceSweeps });
-            rollingWindowCases.push({
-              attemptId,
-              representativeKey: representative.representativeKey,
-              readyOpportunity: representative.readyOpportunity,
-              scenario: scenario.id,
-              modelTruth: mappedTruth,
-              allowedModelTruths,
-              snrDb,
-              rbwDivisor,
-              seed,
-              result: result.label,
-              acceptedHierarchy: acceptsAnyTruth(
-                result.label,
-                allowedModelTruths,
-                scenario.occupiedBandwidthHz,
-                featureObservation.bandwidthHz,
-              ),
-              truthClassDomainEligible: fitEligible,
-              knownSupportRank: knownModelSupportRank(featureObservation),
-              associationMode: detection.associationMode ?? 'frequency-local',
-            });
-          }
+        for (const representative of spectrumSelection.onlineReadyRepresentatives) {
+          spectrumOnlineAssociationSamples.push({
+            attemptId,
+            scenario: scenario.id,
+            snrDb,
+            rbwDivisor,
+            seed,
+            readyOpportunity: representative.readyOpportunity,
+            representativeKey: representative.representativeKey,
+            associationMode: representative.detection.associationMode ?? 'frequency-local',
+          });
         }
-        for (const representative of selection.representatives) {
+        for (const representative of spectrumSelection.onlineReadyRepresentatives) {
           const detection = representative.detection;
+          const featureObservation = representative.spectrumObservation;
+          if (featureObservation.sweepIds.length !== CLASSIFICATION_ADMISSIONS) {
+            throw new Error(`${scenario.id} rolling classifier extracted ${featureObservation.sweepIds.length} source sweeps, expected exactly ${CLASSIFICATION_ADMISSIONS}`);
+          }
+          const fitEligible = observableRepresentativeIsInClassDomain(
+            mappedTruth,
+            featureObservation,
+          );
+          const posterior = inferPosterior(featureObservation);
+          const topLeaf = posterior[0]!;
+          const result = await classifier.classify(detection, { sweeps: representative.evidenceSweeps });
+          rollingWindowCases.push({
+            attemptId,
+            representativeKey: representative.representativeKey,
+            readyOpportunity: representative.readyOpportunity,
+            scenario: scenario.id,
+            corpusTruth: scenario.truthClass,
+            modelTruth: mappedTruth,
+            allowedModelTruths,
+            snrDb,
+            rbwDivisor,
+            seed,
+            result: result.label,
+            acceptedHierarchy: acceptsAnyTruth(
+              result.label,
+              allowedModelTruths,
+              scenario.occupiedBandwidthHz,
+              featureObservation.bandwidthHz,
+            ),
+            truthClassDomainEligible: fitEligible,
+            knownSupportRank: knownModelSupportRank(featureObservation),
+            nominalBandwidthHz: scenario.occupiedBandwidthHz,
+            occupiedStartHz: featureObservation.occupiedStartHz,
+            occupiedStopHz: featureObservation.occupiedStopHz,
+            centerHz: featureObservation.centerHz,
+            measuredBandwidthHz: featureObservation.bandwidthHz,
+            binWidthHz: featureObservation.binWidthHz,
+            limitations: featureObservation.limitations,
+            views: featureObservation.views,
+            ...(featureObservation.associationEvidenceQualification === undefined
+              ? {}
+              : {
+                  associationEvidenceQualification:
+                    featureObservation.associationEvidenceQualification,
+                }),
+            topLeaf: topLeaf.id,
+            topLeafPosterior: topLeaf.probability,
+            posterior: Object.fromEntries(posterior.map((item) => [item.id, item.probability])),
+            features: featureObservation.values,
+            associationMode: detection.associationMode ?? 'frequency-local',
+          });
+        }
+        const spectrumEvidenceRepresentative = spectrumSelection.representatives[0];
+        if (spectrumEvidenceRepresentative) {
+          const representative = spectrumEvidenceRepresentative;
+          const spectrumObservation = {
+            ...representative.spectrumObservation,
+            values: spectrumOnly(representative.spectrumObservation.values),
+          };
+          const spectrumPosterior = inferPosterior(spectrumObservation);
+          const spectrumDecision = selectObservableDecision(spectrumPosterior, spectrumObservation);
+          const spectrumResult = spectrumDecision.label === 'unknown'
+            ? 'unknown'
+            : `observable:${spectrumDecision.label}`;
+          evidenceViewCases.push({
+            attemptId,
+            representativeKey: representative.representativeKey,
+            view: 'spectrum-only',
+            scenario: scenario.id,
+            corpusTruth: scenario.truthClass,
+            modelTruth: mappedTruth,
+            allowedModelTruths,
+            componentFitEligible: observableRepresentativeIsInClassDomain(mappedTruth, spectrumObservation),
+            nominalBandwidthHz: scenario.occupiedBandwidthHz,
+            measuredBandwidthHz: spectrumObservation.bandwidthHz,
+            result: spectrumResult,
+            topLeaf: spectrumPosterior[0]!.id,
+            topLeafPosterior: spectrumPosterior[0]!.probability,
+            truthPosterior: spectrumPosterior.find((item) => item.id === mappedTruth)?.probability ?? 0,
+            posterior: Object.fromEntries(spectrumPosterior.map((item) => [item.id, item.probability])),
+            acceptedHierarchy: acceptsAnyTruth(
+              spectrumResult,
+              allowedModelTruths,
+              scenario.occupiedBandwidthHz,
+              spectrumObservation.bandwidthHz,
+            ),
+            supportRank: knownModelSupportRank(spectrumObservation),
+            features: spectrumObservation.values,
+          });
+        }
+        const capture = envelopeSelection.liveEnvelopeCapture;
+        if (capture) {
+          const representative = capture.representative;
+          const detection = representative.detection;
+          const rawCaptureTarget = representative.rawCaptureTarget;
+          const captureProjectionKind = representative.captureProjectionKind;
+          if (!rawCaptureTarget || !captureProjectionKind) {
+            throw new Error(
+              `${scenario.id} qualified envelope lacks its physical raw target projection`,
+            );
+          }
           const evidenceSweeps = representative.evidenceSweeps;
           const expectedSweepIds = classificationSourceSweepIds(detection).slice(-CLASSIFICATION_ADMISSIONS);
           const classificationAdmissions = expectedSweepIds.length;
           if (classificationAdmissions !== CLASSIFICATION_ADMISSIONS) throw new Error(`${scenario.id} classifier admission window has ${classificationAdmissions} sweeps, expected exactly ${CLASSIFICATION_ADMISSIONS}`);
-
-          // This is a fresh capture explicitly tuned when this production
-          // representative first becomes ready. No later sweep is available
-          // to either feature extraction or classification.
-          const zeroSpanTuneHz = projectDetectedPowerTuneHz(
-            detection.peakHz,
-            SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
-          );
-          const zeroSpanObservation = synthesizeCanonicalObservation(scenario.id, {
-            lookIndex: pinnedInterleavedCaptureLookIndex(
-              PINNED_VALIDATION_TEMPORAL_SCHEDULE,
-              representative.firstReadyOpportunity - 1,
-            ),
-            seed,
-            snrDb,
-            actualRbwHz,
-            detectedPowerSynthesisFilterWidthHz,
-            points: SWEEP_POINTS,
-            sweepTimeSeconds: SWEEP_TIME_SECONDS,
-            zeroSpanPoints: ZERO_SPAN_POINTS,
-            zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
-            zeroSpanFrequencyHz: zeroSpanTuneHz,
-          });
-          assertDetectedPowerSynthesisProvenance(
-            zeroSpanObservation,
-            detectedPowerSynthesisFilterWidthHz,
-            `${attemptId} detected-power observation`,
-          );
-          const zeroSpan = asZeroSpan(zeroSpanObservation, detection);
-          const featureObservation = extractObservableFeatures(detection, { sweeps: evidenceSweeps, zeroSpan });
+          const zeroSpan = capture.zeroSpan;
+          const featureObservation = capture.classifierObservation;
+          const agileEnvelopeCensored =
+            capture.detectedPowerEvidenceDisposition
+              === 'censored-frequency-agile-spectrum-only';
+          if (agileEnvelopeCensored
+            ? detection.associationMode !== 'frequency-agile-2g4-activity'
+              || capture.envelopeObservation !== undefined
+              || featureObservation.views.includes('detected-power-envelope')
+              || featureObservation.zeroSpanCaptureId !== undefined
+              || featureObservation.detectedPowerAcquisitionQualification
+                !== undefined
+              || capture.envelopeEvidenceCensoringPolicyId
+                !== PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID
+            : capture.envelopeObservation !== featureObservation
+              || !featureObservation.views.includes('detected-power-envelope')) {
+            throw new Error(
+              `${scenario.id} physical capture does not obey the frequency-agile envelope-censoring boundary`,
+            );
+          }
           const componentFitEligible = observableRepresentativeIsInClassDomain(
             mappedTruth,
             featureObservation,
@@ -644,7 +1165,13 @@ for (const scenario of validationScenarios) {
             throw new Error(`${scenario.id} classifier did not preserve its latest ${CLASSIFICATION_ADMISSIONS} positive source sweeps`);
           }
           const posterior = inferPosterior(featureObservation);
-          const result = await classifier.classify(detection, { sweeps: evidenceSweeps, zeroSpan });
+          const result = await classifyValidatorReceiptQualifiedObservation({
+            detection,
+            evidenceSweeps,
+            spectrumObservation: representative.spectrumObservation,
+            zeroSpan,
+            detectedPowerCaptureReceipt: capture.detectedPowerCaptureReceipt,
+          }, featureObservation, classifier);
           const topLeaf = posterior[0]!;
           const posteriorRecord = Object.fromEntries(posterior.map((item) => [item.id, item.probability]));
           cases.push({
@@ -678,6 +1205,21 @@ for (const scenario of validationScenarios) {
             selectedTrackAdmissions: representative.classificationAdmissions,
             localTrackAdmissions: representative.localTrackAdmissions,
             associationMode: detection.associationMode ?? 'frequency-local',
+            rawCaptureTargetAssociationMode:
+              rawCaptureTarget.associationMode ?? 'frequency-local',
+            rawCaptureTargetState: rawCaptureTarget.state as 'candidate' | 'active',
+            captureProjectionKind,
+            physicalCaptureId: zeroSpan.id,
+            detectedPowerCaptureReceiptSchemaVersion:
+              capture.detectedPowerCaptureReceipt.schemaVersion,
+            detectedPowerEvidenceDisposition:
+              capture.detectedPowerEvidenceDisposition,
+            ...(capture.envelopeEvidenceCensoringPolicyId === undefined
+              ? {}
+              : {
+                  envelopeEvidenceCensoringPolicyId:
+                    capture.envelopeEvidenceCensoringPolicyId,
+                }),
             ...(detection.associationId === undefined ? {} : { associationId: detection.associationId }),
             ...(detection.associationModelId === undefined ? {} : { associationModelId: detection.associationModelId }),
             ...(detection.associationMemberTrackIds === undefined ? {} : { associationMemberCount: detection.associationMemberTrackIds.length }),
@@ -688,36 +1230,53 @@ for (const scenario of validationScenarios) {
             ...(featureObservation.associationEvidenceQualification === undefined
               ? {}
               : { associationEvidenceQualification: featureObservation.associationEvidenceQualification }),
+            ...(featureObservation.zeroSpanCaptureId === undefined
+              ? {}
+              : { zeroSpanCaptureId: featureObservation.zeroSpanCaptureId }),
+            ...(featureObservation.detectedPowerAcquisitionQualification === undefined
+              ? {}
+              : {
+                  detectedPowerAcquisitionQualification:
+                    featureObservation.detectedPowerAcquisitionQualification,
+                }),
+            views: featureObservation.views,
             limitations: result.evidence.limitations ?? [],
             features: featureObservation.values,
           });
-          for (const [view, values] of [
-            ['spectrum-only', spectrumOnly(featureObservation.values)],
-            ['envelope-untimed', envelopeUntimed(featureObservation.values)],
-          ] as const) {
-            const viewObservation = { ...featureObservation, values };
-            const viewPosterior = inferPosterior(viewObservation);
-            const viewDecision = selectObservableDecision(viewPosterior, viewObservation);
-            const viewResult = viewDecision.label === 'unknown' ? 'unknown' : `observable:${viewDecision.label}`;
+          if (!agileEnvelopeCensored) {
+            const envelopeUntimedObservation = {
+              ...featureObservation,
+              values: envelopeUntimed(featureObservation.values),
+            };
+            const envelopeUntimedPosterior = inferPosterior(envelopeUntimedObservation);
+            const envelopeUntimedDecision = selectObservableDecision(envelopeUntimedPosterior, envelopeUntimedObservation);
+            const envelopeUntimedResult = envelopeUntimedDecision.label === 'unknown'
+              ? 'unknown'
+              : `observable:${envelopeUntimedDecision.label}`;
             evidenceViewCases.push({
               attemptId,
               representativeKey: representative.representativeKey,
-              view,
+              view: 'envelope-untimed',
               scenario: scenario.id,
               corpusTruth: scenario.truthClass,
               modelTruth: mappedTruth,
               allowedModelTruths,
-              componentFitEligible,
+              componentFitEligible: observableRepresentativeIsInClassDomain(mappedTruth, envelopeUntimedObservation),
               nominalBandwidthHz: scenario.occupiedBandwidthHz,
-              measuredBandwidthHz: featureObservation.bandwidthHz,
-              result: viewResult,
-              topLeaf: viewPosterior[0]!.id,
-              topLeafPosterior: viewPosterior[0]!.probability,
-              truthPosterior: viewPosterior.find((item) => item.id === mappedTruth)?.probability ?? 0,
-              posterior: Object.fromEntries(viewPosterior.map((item) => [item.id, item.probability])),
-              acceptedHierarchy: acceptsAnyTruth(viewResult, allowedModelTruths, scenario.occupiedBandwidthHz, featureObservation.bandwidthHz),
-              supportRank: knownModelSupportRank(viewObservation),
-              features: values,
+              measuredBandwidthHz: envelopeUntimedObservation.bandwidthHz,
+              result: envelopeUntimedResult,
+              topLeaf: envelopeUntimedPosterior[0]!.id,
+              topLeafPosterior: envelopeUntimedPosterior[0]!.probability,
+              truthPosterior: envelopeUntimedPosterior.find((item) => item.id === mappedTruth)?.probability ?? 0,
+              posterior: Object.fromEntries(envelopeUntimedPosterior.map((item) => [item.id, item.probability])),
+              acceptedHierarchy: acceptsAnyTruth(
+                envelopeUntimedResult,
+                allowedModelTruths,
+                scenario.occupiedBandwidthHz,
+                envelopeUntimedObservation.bandwidthHz,
+              ),
+              supportRank: knownModelSupportRank(envelopeUntimedObservation),
+              features: envelopeUntimedObservation.values,
             });
           }
         }
@@ -726,11 +1285,30 @@ for (const scenario of validationScenarios) {
   }
 }
 
-const exactEquivalencePairAudit = auditExactEquivalencePairs(admissionAttempts, cases, evidenceViewCases);
+const exactEquivalencePairAudit = auditExactEquivalencePairs(
+  admissionAttempts,
+  cases,
+  evidenceViewCases,
+  rollingWindowCases,
+);
 const exactEquivalenceDiscrepancies = exactEquivalencePairAudit.flatMap((audit) => audit.discrepancies);
 const exactEquivalenceDiscrepancyCount = exactEquivalencePairAudit.reduce((sum, audit) => sum + audit.discrepancyCount, 0);
+const validationSpectrumClockAudit = summarizeCausalAcquisitionTraces(
+  validationSpectrumAcquisitionTraces,
+  'consecutive-spectrum',
+);
+const validationQualifiedEnvelopeClockAudit = summarizeCausalAcquisitionTraces(
+  validationQualifiedEnvelopeAcquisitionTraces,
+  'qualified-envelope',
+);
 const expectedAttempts = validationScenarios.length * SNR_DB.length * RBW_DIVISORS.length * NUISANCE_SHIFT_SEEDS.length;
 const modelFittingSeeds = [...BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.seeds];
+const modelAttemptSamplingWorkerRuntimeSha256 =
+  BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.attemptSamplingWorkerRuntimeSha256;
+const modelTrainingRuntimeIdentity =
+  BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.trainingRuntimeIdentity;
+const trainingRuntimeIdentityPinsValid = JSON.stringify(modelTrainingRuntimeIdentity)
+  === JSON.stringify(PINNED_TRAINING_RUNTIME_IDENTITY);
 const modelCalibrationSeeds = [...(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationSeeds ?? [])];
 const modelFittingRbwDivisors = [...BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.rbwDivisors];
 const modelCalibrationRbwDivisors = [...(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRbwDivisors ?? [])];
@@ -741,55 +1319,132 @@ const validationFittingSeedOverlap = numericIntersection(NUISANCE_SHIFT_SEEDS, m
 const validationCalibrationSeedOverlap = numericIntersection(NUISANCE_SHIFT_SEEDS, modelCalibrationSeeds);
 const validationFittingRbwOverlap = numericIntersection(RBW_DIVISORS, modelFittingRbwDivisors);
 const validationCalibrationRbwOverlap = numericIntersection(RBW_DIVISORS, modelCalibrationRbwDivisors);
-const modelTailCalibrationAttemptCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAttemptCountsByScenario ?? {};
+const modelTailCalibrationAttemptCountsByView =
+  BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAttemptCountsByScenarioByView ?? {};
+const modelComponentScenarioIdsByView = Object.fromEntries(OBSERVABLE_EVIDENCE_VIEWS.map((view) => [
+  view,
+  [...new Set(BAYESIAN_OBSERVABLE_MODEL.classModels
+    .flatMap((model) => observableModelComponents(model, view)
+      .map(componentSourceScenarioId)))].sort(),
+])) as Record<ObservableEvidenceView, string[]>;
+const componentScenarioPopulationMismatches = OBSERVABLE_EVIDENCE_VIEWS
+  .filter((view) => {
+    const expected = view === 'spectrum-only'
+      ? modelComponentScenarioIdsByView['spectrum-only']
+      : modelComponentScenarioIdsByView['spectrum-only'].filter((scenarioId) =>
+          !(PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS as readonly string[])
+            .includes(scenarioId));
+    return JSON.stringify(modelComponentScenarioIdsByView[view])
+      !== JSON.stringify(expected);
+  });
 const expectedTailCalibrationScenarioIds = BAYESIAN_OBSERVABLE_MODEL.classModels
   .filter((model) => model.id !== 'unknown-signal')
-  .flatMap((model) => model.components.map((component) => component.id))
-  .sort();
-const modelTailCalibrationScenarioIds = Object.keys(modelTailCalibrationAttemptCounts).sort();
-const missingTailCalibrationScenarioIds = setDifference(expectedTailCalibrationScenarioIds, modelTailCalibrationScenarioIds);
-const unexpectedTailCalibrationScenarioIds = setDifference(modelTailCalibrationScenarioIds, expectedTailCalibrationScenarioIds);
-const invalidTailCalibrationAttemptCounts = Object.entries(modelTailCalibrationAttemptCounts)
-  .filter(([, count]) => !Number.isInteger(count) || count < 40)
-  .map(([scenarioId, count]) => ({ scenarioId, count }));
+  .flatMap((model) => observableModelComponents(model, 'spectrum-only')
+    .map(componentSourceScenarioId));
+const uniqueExpectedTailCalibrationScenarioIds = [...new Set(expectedTailCalibrationScenarioIds)].sort();
+const modelTailCalibrationScenarioIds = Object.keys(modelTailCalibrationAttemptCountsByView).sort();
+const missingTailCalibrationScenarioIds = setDifference(uniqueExpectedTailCalibrationScenarioIds, modelTailCalibrationScenarioIds);
+const unexpectedTailCalibrationScenarioIds = setDifference(modelTailCalibrationScenarioIds, uniqueExpectedTailCalibrationScenarioIds);
+const invalidTailCalibrationAttemptCounts = uniqueExpectedTailCalibrationScenarioIds.flatMap((scenarioId) =>
+  (['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const).flatMap((view) => {
+    const count = modelTailCalibrationAttemptCountsByView[scenarioId]?.[view];
+    const censoredEnvelope = view !== 'spectrum-only'
+      && (PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS as readonly string[])
+        .includes(scenarioId);
+    return count !== undefined
+      && Number.isInteger(count)
+      && (censoredEnvelope ? count === 0 : count >= 40)
+      ? []
+      : [{ scenarioId, view, count: count ?? null }];
+  }));
 const tailCalibrationViewCountMismatches = BAYESIAN_OBSERVABLE_MODEL.classModels
   .filter((model) => model.id !== 'unknown-signal')
-  .flatMap((model) => {
-    const expected = model.components.reduce((sum, component) =>
-      sum + (modelTailCalibrationAttemptCounts[component.id] ?? 0), 0);
-    return (['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const).flatMap((view) => {
+  .flatMap((model) =>
+    (['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const).flatMap((view) => {
+      const sourceScenarioIds = [...new Set(observableModelComponents(model, view)
+        .map(componentSourceScenarioId))];
+      const expected = sourceScenarioIds.reduce((sum, sourceScenarioId) =>
+        sum + (modelTailCalibrationAttemptCountsByView[sourceScenarioId]?.[view] ?? 0), 0);
       const observed = model.tailCalibrationScoresByView?.[view]?.length ?? 0;
       return observed === expected ? [] : [{ classId: model.id, view, expected, observed }];
-    });
-  });
+    }));
 const tailCalibrationMatrixPinsValid = JSON.stringify(modelCalibrationSeeds) === JSON.stringify(PINNED_TAIL_CALIBRATION_SEEDS)
   && JSON.stringify(modelCalibrationRbwDivisors) === JSON.stringify(PINNED_TAIL_CALIBRATION_RBW_DIVISORS)
   && JSON.stringify(modelCalibrationAcquisitionRegimeIds) === JSON.stringify(PINNED_TAIL_CALIBRATION_ACQUISITION_REGIME_IDS)
   && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.snrDb) === JSON.stringify(PINNED_TAIL_CALIBRATION_SNR_DB);
 const productionAcquisitionRegimePinsValid =
-  JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.signalLabProductionAcquisitionRegime)
+  pinnedReleaseGateSourcePlanValid
+  && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.signalLabProductionAcquisitionRegime)
     === JSON.stringify(PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME)
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.acquisitionBranchPolicy
+    === PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME.branchPolicy
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.selectionPolicy === SELECTION_POLICY
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.likelihoodPopulationPolicy
+    === LIKELIHOOD_POPULATION_POLICY
+  && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.likelihoodComponentDecompositionPolicy)
+    === JSON.stringify(PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY)
+  && JSON.stringify(OBSERVABLE_EVIDENCE_CENSORING_POLICY)
+    === JSON.stringify(PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY)
+  && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.frequencyAgileFixedTuneEnvelopeCensoringPolicy)
+    === JSON.stringify(PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY)
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.causalSamplingAudit?.schemaVersion === 3
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.causalSamplingAudit
+    ?.attributedSourceClockTraceAudit.serialization
+    === 'canonical-attempt-id-branch-attributed-trace-and-capture-disposition-digest-v3'
+  && BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.representativeWeightingPolicy === REPRESENTATIVE_WEIGHTING_POLICY
   && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.productionAcquisitionRegimeHighSnrSeedCoveragePolicy)
     === JSON.stringify(PINNED_PRODUCTION_ACQUISITION_REGIME_HIGH_SNR_SEED_COVERAGE_POLICY)
   && JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerSynthesisFilterPolicy)
     === JSON.stringify(PINNED_DETECTED_POWER_SYNTHESIS_FILTER_POLICY)
   && JSON.stringify(modelFittingAcquisitionRegimeIds) === JSON.stringify(PINNED_TAIL_CALIBRATION_ACQUISITION_REGIME_IDS)
   && JSON.stringify(modelCalibrationAcquisitionRegimeIds) === JSON.stringify(PINNED_TAIL_CALIBRATION_ACQUISITION_REGIME_IDS);
-const validationTemporalScheduleIdOverlap = PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES
+const validationTemporalScheduleIdOverlap = [
+  ...PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES,
+  ...PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES,
+]
   .map((schedule) => schedule.id)
-  .filter((id) => id === PINNED_VALIDATION_TEMPORAL_SCHEDULE.id);
-const pinnedFitTemporalSourceLookIndices = [...new Set(PINNED_SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES.flatMap(
-  (schedule) => Array.from({ length: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES }, (_, opportunity) =>
-    pinnedSourceLookIndex(schedule, opportunity)),
-))];
-const pinnedValidationTemporalSourceLookIndices = Array.from(
-  { length: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES },
-  (_, opportunity) => pinnedSourceLookIndex(PINNED_VALIDATION_TEMPORAL_SCHEDULE, opportunity),
+  .filter((id) => id === PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE.id
+    || id === PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE.id);
+const pinnedFitSpectrumSourceLookIndices = [...new Set(
+  PINNED_SIGNAL_LAB_PRODUCTION_SPECTRUM_TEMPORAL_SCHEDULES.flatMap(
+    (schedule) => possibleBranchSourceLookIndices(
+      schedule,
+      FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+      'consecutive-spectrum',
+    ),
+  ),
+)];
+const pinnedFitQualifiedEnvelopeSourceLookIndices = [...new Set(
+  PINNED_SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES.flatMap(
+    (schedule) => possibleBranchSourceLookIndices(
+      schedule,
+      FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+      'qualified-envelope',
+    ),
+  ),
+)];
+const pinnedValidationSpectrumSourceLookIndices = possibleBranchSourceLookIndices(
+    PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE,
+    FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+    'consecutive-spectrum',
+  );
+const pinnedValidationQualifiedEnvelopeSourceLookIndices = possibleBranchSourceLookIndices(
+    PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
+    FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+    'qualified-envelope',
+  );
+const validationFitSpectrumSourceLookIndexOverlap = numericIntersection(
+  pinnedValidationSpectrumSourceLookIndices,
+  pinnedFitSpectrumSourceLookIndices,
 );
-const validationFitTemporalSourceLookIndexOverlap = numericIntersection(
-  pinnedValidationTemporalSourceLookIndices,
-  pinnedFitTemporalSourceLookIndices,
+const validationFitQualifiedEnvelopeSourceLookIndexOverlap = numericIntersection(
+  pinnedValidationQualifiedEnvelopeSourceLookIndices,
+  pinnedFitQualifiedEnvelopeSourceLookIndices,
 );
+const validationFitTemporalSourceLookIndexOverlap = [
+  ...validationFitSpectrumSourceLookIndexOverlap,
+  ...validationFitQualifiedEnvelopeSourceLookIndexOverlap,
+];
 const validationTemporalPartitionDisjoint = validationTemporalScheduleIdOverlap.length === 0
   && validationFitTemporalSourceLookIndexOverlap.length === 0;
 const tailCalibrationPolicyValid = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit
@@ -931,9 +1586,92 @@ const exactEquivalenceWithoutDeclaredAlternativeIds = exactEquivalenceSplit
   .filter((item) => !item.allowedModelTruths.includes('unknown-signal')
     || !item.allowedModelTruths.some((truth) => truth !== 'unknown-signal'))
   .map((item) => item.scenarioId);
-const fittedComponentIds = new Set(BAYESIAN_OBSERVABLE_MODEL.classModels.flatMap((model) => model.components.map((component) => component.id)));
+const componentAssignmentsByView = Object.fromEntries(OBSERVABLE_EVIDENCE_VIEWS.map((view) => [view,
+  [...new Map(BAYESIAN_OBSERVABLE_MODEL.classModels
+    .flatMap((model) => observableModelComponents(model, view)
+      .map((component) => {
+        const scenarioId = componentSourceScenarioId(component);
+        return [`${model.id}:${scenarioId}`, { scenarioId, classId: model.id }] as const;
+      }))).values()]
+    .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId)),
+])) as Record<ObservableEvidenceView, { scenarioId: string; classId: ObservableLeafClass }[]>;
+const componentAssignmentViewMismatches = OBSERVABLE_EVIDENCE_VIEWS.slice(1)
+  .filter((view) => {
+    const expected = componentAssignmentsByView['spectrum-only'].filter(
+      (assignment) =>
+        !(PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS as readonly string[])
+          .includes(assignment.scenarioId),
+    );
+    return JSON.stringify(componentAssignmentsByView[view])
+      !== JSON.stringify(expected);
+  });
+const componentArchitectureMismatches = OBSERVABLE_EVIDENCE_VIEWS.flatMap((view) => {
+  const scenarioCount = componentAssignmentsByView[view].length;
+  const componentCount = BAYESIAN_OBSERVABLE_MODEL.classModels.reduce(
+    (sum, model) => sum + observableModelComponents(model, view).length,
+    0,
+  );
+  return [
+    ...(scenarioCount === PINNED_COMPONENT_SOURCE_SCENARIO_COUNTS_BY_VIEW[view]
+      ? []
+      : [`${view}:source-scenarios-${scenarioCount}-expected-${PINNED_COMPONENT_SOURCE_SCENARIO_COUNTS_BY_VIEW[view]}`]),
+    ...(componentCount === PINNED_LIKELIHOOD_COMPONENT_COUNTS_BY_VIEW[view]
+      ? []
+      : [`${view}:components-${componentCount}-expected-${PINNED_LIKELIHOOD_COMPONENT_COUNTS_BY_VIEW[view]}`]),
+  ];
+});
+const frequencyAgileCensoringMatrixMismatches =
+  PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS.flatMap((scenarioId) => {
+    const fittingCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix
+      .fittingRepresentativeCountsByScenarioByView?.[scenarioId];
+    const calibrationCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix
+      .tailCalibrationAttemptCountsByScenarioByView?.[scenarioId];
+    const censoredCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix
+      .censoredFrequencyAgileFixedTuneCaptureCountsByScenario;
+    return [
+      ...((fittingCounts?.['spectrum-only'] ?? 0) > 0
+        ? []
+        : [`${scenarioId}:missing-spectrum-fitting-population`]),
+      ...(fittingCounts?.['envelope-untimed'] === 0
+        && fittingCounts?.['envelope-timed'] === 0
+        ? []
+        : [`${scenarioId}:nonzero-envelope-fitting-population`]),
+      ...((calibrationCounts?.['spectrum-only'] ?? 0) > 0
+        ? []
+        : [`${scenarioId}:missing-spectrum-calibration-population`]),
+      ...(calibrationCounts?.['envelope-untimed'] === 0
+        && calibrationCounts?.['envelope-timed'] === 0
+        ? []
+        : [`${scenarioId}:nonzero-envelope-calibration-population`]),
+      ...((censoredCounts?.fitting[scenarioId] ?? 0) > 0
+        ? []
+        : [`${scenarioId}:missing-fitted-censored-capture-audit`]),
+      ...((censoredCounts?.tailCalibration[scenarioId] ?? 0) > 0
+        ? []
+        : [`${scenarioId}:missing-calibration-censored-capture-audit`]),
+    ];
+  });
+const bluetoothModel = BAYESIAN_OBSERVABLE_MODEL.classModels.find(
+  (model) => model.id === 'bluetooth-like',
+);
+if (!bluetoothModel
+  || observableModelComponents(bluetoothModel, 'spectrum-only').length <= 0
+  || observableModelComponents(bluetoothModel, 'envelope-untimed').length !== 0
+  || observableModelComponents(bluetoothModel, 'envelope-timed').length !== 0
+  || (bluetoothModel.tailCalibrationScoresByView?.['spectrum-only']?.length ?? 0) <= 0
+  || (bluetoothModel.tailCalibrationScoresByView?.['envelope-untimed']?.length ?? 0) !== 0
+  || (bluetoothModel.tailCalibrationScoresByView?.['envelope-timed']?.length ?? 0) !== 0) {
+  componentArchitectureMismatches.push(
+    'bluetooth-like:requires-positive-spectrum-and-exact-empty-envelope-support',
+  );
+}
+const fittedComponentIds = new Set(componentAssignmentsByView['spectrum-only']
+  .map((assignment) => assignment.scenarioId));
 const fittedUnknownModel = BAYESIAN_OBSERVABLE_MODEL.classModels.find((model) => model.id === 'unknown-signal');
-const modelFittedUnknownScenarioIds = (fittedUnknownModel?.components.map((component) => component.id) ?? []).sort();
+const modelFittedUnknownScenarioIds = (fittedUnknownModel
+  ? [...new Set(observableModelComponents(fittedUnknownModel, 'spectrum-only')
+    .map(componentSourceScenarioId))]
+  : []).sort();
 const fittedUnknownMissingPinnedIds = setDifference(PINNED_FITTED_UNKNOWN_SCENARIO_IDS, modelFittedUnknownScenarioIds);
 const fittedUnknownUnexpectedIds = setDifference(modelFittedUnknownScenarioIds, PINNED_FITTED_UNKNOWN_SCENARIO_IDS);
 const exactEquivalenceFittedComponentIds = [...exactEquivalenceIds].filter((scenarioId) => fittedComponentIds.has(scenarioId)).sort();
@@ -944,12 +1682,112 @@ const expectedComponentAssignments = canonicalClassificationScenarios
   .filter((scenario) => !scenarioExcludedIds.has(scenario.id))
   .map((scenario) => ({ scenarioId: scenario.id, classId: modelTruth(scenario.truthClass) }))
   .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId));
+const likelihoodComponentOwnershipMismatches = OBSERVABLE_EVIDENCE_VIEWS.flatMap((view) =>
+  BAYESIAN_OBSERVABLE_MODEL.classModels.flatMap((model) => {
+    const components = observableModelComponents(model, view);
+    const bySourceScenario = new Map<string, typeof components>();
+    const mismatches = components.flatMap((component) => {
+      if (component.sourceScenarioId === undefined || component.modeId === undefined
+        || component.fitSampleCount === undefined) {
+        return [`${view}/${model.id}/${component.id}:missing-explicit-ownership`];
+      }
+      const owned = bySourceScenario.get(component.sourceScenarioId) ?? [];
+      bySourceScenario.set(component.sourceScenarioId, [...owned, component]);
+      return [];
+    });
+    for (const [sourceScenarioId, sourceComponents] of bySourceScenario) {
+      const scenario = corpusScenarioById.get(sourceScenarioId);
+      if (!scenario) {
+        mismatches.push(`${view}/${model.id}/${sourceScenarioId}:not-in-corpus`);
+        continue;
+      }
+      const expectedModeCount = scenario.envelopeModel
+        === PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.csmaEnvelopeModel
+        ? PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.csmaModeCount
+        : 1;
+      if (sourceComponents.length !== expectedModeCount) {
+        mismatches.push(`${view}/${model.id}/${sourceScenarioId}:component-count-${sourceComponents.length}-expected-${expectedModeCount}`);
+        continue;
+      }
+      const expectedFitSampleCount = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix
+        .fittingRepresentativeCountsByScenarioByView?.[sourceScenarioId]?.[view];
+      const observedFitSampleCount = sourceComponents.reduce(
+        (sum, component) => sum + (component.fitSampleCount ?? 0),
+        0,
+      );
+      if (!Number.isSafeInteger(expectedFitSampleCount) || expectedFitSampleCount! <= 0
+        || observedFitSampleCount !== expectedFitSampleCount) {
+        mismatches.push(`${view}/${model.id}/${sourceScenarioId}:fit-count-${observedFitSampleCount}-expected-${expectedFitSampleCount ?? 'missing'}`);
+      }
+      if (expectedModeCount === 1) {
+        const component = sourceComponents[0]!;
+        if (component.id !== sourceScenarioId || component.modeId !== 'single-population') {
+          mismatches.push(`${view}/${model.id}/${sourceScenarioId}:invalid-single-population-identity`);
+        }
+      } else {
+        const sharedScale = JSON.stringify(sourceComponents[0]!.scale);
+        sourceComponents.forEach((component, index) => {
+          const expectedModeId = `csma-activity-mode-${index + 1}-of-${expectedModeCount}`;
+          if (component.id !== `${sourceScenarioId}/${expectedModeId}`
+            || component.modeId !== expectedModeId
+            || JSON.stringify(component.scale) !== sharedScale) {
+            mismatches.push(`${view}/${model.id}/${sourceScenarioId}:invalid-mode-${index + 1}-identity-or-scale`);
+          }
+          if (!Number.isSafeInteger(component.fitSampleCount)
+            || component.fitSampleCount!
+              < PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.minimumModeFitSampleCount) {
+            mismatches.push(`${view}/${model.id}/${sourceScenarioId}:mode-${index + 1}-fit-count-${component.fitSampleCount ?? 'missing'}`);
+          }
+        });
+        const partitionDimensionIndex = sourceComponents[0]!.dimensions.indexOf(
+          PINNED_LIKELIHOOD_COMPONENT_DECOMPOSITION_POLICY.csmaPartitionFeature,
+        );
+        const partitionCenters = sourceComponents.map((component) =>
+          component.location[partitionDimensionIndex]);
+        if (partitionDimensionIndex < 0 || partitionCenters.some((center, index) =>
+          !Number.isFinite(center) || (index > 0 && center! <= partitionCenters[index - 1]!))) {
+          mismatches.push(`${view}/${model.id}/${sourceScenarioId}:non-increasing-partition-centers`);
+        }
+      }
+      for (const component of sourceComponents) {
+        const expectedWeight = (1 / bySourceScenario.size)
+          * ((component.fitSampleCount ?? 0) / observedFitSampleCount);
+        if (!Number.isFinite(component.logWeight)
+          || Math.abs(Math.exp(component.logWeight) - expectedWeight) > 1e-9) {
+          mismatches.push(`${view}/${model.id}/${component.id}:invalid-source-owned-weight`);
+        }
+      }
+    }
+    return mismatches;
+  }));
+const modelDecomposedSourceScenarioIds = [...new Set(BAYESIAN_OBSERVABLE_MODEL.classModels
+  .flatMap((model) => {
+    const components = observableModelComponents(model, 'spectrum-only');
+    const ownerCounts = counts(components.map(componentSourceScenarioId));
+    return components.map(componentSourceScenarioId)
+      .filter((sourceScenarioId) => ownerCounts[sourceScenarioId] === 3);
+  }))].sort();
+if (JSON.stringify(modelDecomposedSourceScenarioIds)
+  !== JSON.stringify(PINNED_CSMA_DECOMPOSED_SOURCE_SCENARIO_IDS)) {
+  likelihoodComponentOwnershipMismatches.push(
+    `spectrum-only:decomposed-source-set-${modelDecomposedSourceScenarioIds.join(',')}`,
+  );
+}
+const decomposedModeFitSampleCounts = OBSERVABLE_EVIDENCE_VIEWS.flatMap((view) =>
+  BAYESIAN_OBSERVABLE_MODEL.classModels.flatMap((model) => {
+    const components = observableModelComponents(model, view);
+    const ownerCounts = counts(components.map(componentSourceScenarioId));
+    return components
+      .filter((component) => ownerCounts[componentSourceScenarioId(component)] === 3)
+      .map((component) => component.fitSampleCount ?? 0);
+  }));
+const minimumDecomposedModeFitSampleCount = decomposedModeFitSampleCounts.length > 0
+  ? Math.min(...decomposedModeFitSampleCounts)
+  : 0;
 const independentTailCalibrationAudit = recomputeTailCalibrationAudit(expectedComponentAssignments);
 const expectedComponentClassByScenario = new Map(expectedComponentAssignments
   .map((assignment) => [assignment.scenarioId, assignment.classId] as const));
-const actualComponentAssignments = BAYESIAN_OBSERVABLE_MODEL.classModels
-  .flatMap((model) => model.components.map((component) => ({ scenarioId: component.id, classId: model.id })))
-  .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId));
+const actualComponentAssignments = componentAssignmentsByView['spectrum-only'];
 const actualComponentScenarioIds = actualComponentAssignments.map((assignment) => assignment.scenarioId);
 const expectedComponentScenarioIds = expectedComponentAssignments.map((assignment) => assignment.scenarioId);
 const duplicateFittedComponentScenarioIds = duplicateStrings(actualComponentScenarioIds);
@@ -998,6 +1836,11 @@ const manifestSplitValid = invalidExcludedScenarioIds.length === 0
   && missingFittedComponentScenarioIds.length === 0
   && unexpectedFittedComponentScenarioIds.length === 0
   && wrongClassFittedComponents.length === 0
+  && likelihoodComponentOwnershipMismatches.length === 0
+  && componentScenarioPopulationMismatches.length === 0
+  && componentAssignmentViewMismatches.length === 0
+  && componentArchitectureMismatches.length === 0
+  && frequencyAgileCensoringMatrixMismatches.length === 0
   && duplicateModelClassIds.length === 0
   && missingModelClassIds.length === 0
   && unexpectedModelClassIds.length === 0
@@ -1168,29 +2011,177 @@ const falseAcceptedUnknown = unknown.filter((item) => !item.acceptedHierarchy);
 const falseAcceptedUnknownAttemptIds = [...new Set(falseAcceptedUnknown.map((item) => item.attemptId))].sort();
 const everReadyAttempts = admissionAttempts.filter((item) => item.everReady);
 const firstReadyAttempts = admissionAttempts.filter((item) => item.admitted);
-const expectedFirstReadyRepresentativeSamples = admissionAttempts.reduce((sum, item) => sum + item.everReadyRepresentativeCount, 0);
-const uniqueFirstReadyRepresentativeSamples = new Set(cases.map((item) => `${item.attemptId}|${item.representativeKey}`)).size;
+const physicalEnvelopeCaptureAttempts = admissionAttempts.filter((item) => item.detectedPowerCaptureCount === 1);
+const censoredFrequencyAgileCaptureAttempts = physicalEnvelopeCaptureAttempts
+  .filter((item) => item.detectedPowerEvidenceDisposition
+    === 'censored-frequency-agile-spectrum-only');
+const expectedCausalEnvelopeSamples = physicalEnvelopeCaptureAttempts.length
+  - censoredFrequencyAgileCaptureAttempts.length;
+const unavailablePhysicalEnvelopeCaptureAttempts = physicalEnvelopeCaptureAttempts
+  .filter((item) => item.detectedPowerEvidenceDisposition === 'admitted-envelope'
+    && !item.envelopeFeatureAvailable);
+const qualifiedCausalEnvelopeSamples = cases.filter((item) =>
+  item.detectedPowerEvidenceDisposition === 'admitted-envelope'
+  && item.views.includes('detected-power-envelope')
+  && item.detectedPowerAcquisitionQualification
+    === PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION);
+const censoredFrequencyAgileCaptureCases = cases.filter((item) =>
+  item.detectedPowerEvidenceDisposition
+    === 'censored-frequency-agile-spectrum-only');
+const invalidCensoredFrequencyAgileCaptureCases =
+  censoredFrequencyAgileCaptureCases.filter((item) =>
+    item.associationMode !== 'frequency-agile-2g4-activity'
+    || item.captureProjectionKind !== 'current-qualified-agile-latest-member'
+    || item.envelopeEvidenceCensoringPolicyId
+      !== PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID
+    || item.detectedPowerCaptureReceiptSchemaVersion !== 3
+    || !item.physicalCaptureId
+    || item.views.length !== 1
+    || item.views[0] !== 'scalar-spectrum'
+    || item.zeroSpanCaptureId !== undefined
+    || item.detectedPowerAcquisitionQualification !== undefined
+    || !item.limitations.includes(
+      PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_LIMITATION,
+    ));
+const invalidUncensoredEnvelopeCases = qualifiedCausalEnvelopeSamples.filter(
+  (item) => item.envelopeEvidenceCensoringPolicyId !== undefined
+    || !item.views.includes('detected-power-envelope')
+    || item.zeroSpanCaptureId !== item.physicalCaptureId
+    || item.detectedPowerCaptureReceiptSchemaVersion !== 3,
+);
+const unqualifiedCausalEnvelopeSamples = cases.filter((item) =>
+  item.detectedPowerEvidenceDisposition === 'admitted-envelope'
+  && item.views.includes('detected-power-envelope')
+  && item.detectedPowerAcquisitionQualification
+    !== PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION);
+const missingOrUnissuedReceiptEnvelopeSamples = cases.filter((item) =>
+  item.zeroSpanCaptureId !== undefined
+  && item.detectedPowerAcquisitionQualification
+    !== PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION);
+const missingOrUnissuedReceiptEnvelopeFeatureAttempts = admissionAttempts.filter((item) =>
+  item.envelopeFeatureAvailable
+  && item.detectedPowerAcquisitionQualification
+    !== PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION);
+const invalidCausalCaptureSemantics = admissionAttempts.filter((item) =>
+  item.detectedPowerCaptureCount > 1
+  || item.detectedPowerCaptureCount !== (item.admitted ? 1 : 0)
+  || item.detectedPowerCaptureReceiptVerified
+    !== (item.detectedPowerCaptureCount === 1)
+  || (item.detectedPowerCaptureCount === 1
+    && (item.detectedPowerCaptureReceiptSchemaVersion !== 3
+      || !item.physicalCaptureId
+      || item.captureProjectionKind === undefined
+      || item.projectedAssociationMode === undefined
+      || item.classificationEvidenceView === undefined))
+  || (item.envelopeFeatureAvailable && item.detectedPowerCaptureCount !== 1)
+  || (item.detectedPowerEvidenceDisposition
+      === 'censored-frequency-agile-spectrum-only'
+    && (item.envelopeFeatureAvailable
+      || item.envelopeEvidenceCensoringPolicyId
+        !== PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID
+      || item.captureProjectionKind
+        !== 'current-qualified-agile-latest-member'
+      || item.projectedAssociationMode
+        !== 'frequency-agile-2g4-activity'
+      || item.classificationEvidenceView !== 'spectrum-only'))
+  || (item.detectedPowerEvidenceDisposition === 'admitted-envelope'
+    && (item.captureProjectionKind
+        !== 'current-active-physical-representative'
+      || item.projectedAssociationMode
+        === 'frequency-agile-2g4-activity'
+      || item.classificationEvidenceView === 'spectrum-only')));
+const causalEnvelopeAvailabilityCells = admissionAttempts.map((item) => ({
+  attemptId: item.attemptId,
+  scenario: item.scenario,
+  snrDb: item.snrDb,
+  rbwDivisor: item.rbwDivisor,
+  seed: item.seed,
+  spectrumRuntimeAdmitted: item.admitted,
+  detectedPowerCaptureCount: item.detectedPowerCaptureCount,
+  detectedPowerCaptureReceiptVerified:
+    item.detectedPowerCaptureReceiptVerified,
+  ...(item.detectedPowerCaptureReceiptSchemaVersion === undefined
+    ? {}
+    : {
+        detectedPowerCaptureReceiptSchemaVersion:
+          item.detectedPowerCaptureReceiptSchemaVersion,
+      }),
+  ...(item.physicalCaptureId === undefined
+    ? {}
+    : { physicalCaptureId: item.physicalCaptureId }),
+  ...(item.captureProjectionKind === undefined
+    ? {}
+    : { captureProjectionKind: item.captureProjectionKind }),
+  ...(item.projectedAssociationMode === undefined
+    ? {}
+    : { projectedAssociationMode: item.projectedAssociationMode }),
+  ...(item.classificationEvidenceView === undefined
+    ? {}
+    : { classificationEvidenceView: item.classificationEvidenceView }),
+  envelopeFeatureAvailable: item.envelopeFeatureAvailable,
+  ...(item.detectedPowerEvidenceDisposition === undefined
+    ? {}
+    : {
+        detectedPowerEvidenceDisposition:
+          item.detectedPowerEvidenceDisposition,
+      }),
+  ...(item.envelopeEvidenceCensoringPolicyId === undefined
+    ? {}
+    : {
+        envelopeEvidenceCensoringPolicyId:
+          item.envelopeEvidenceCensoringPolicyId,
+      }),
+  detectedPowerAcquisitionReceiptQualified:
+    item.detectedPowerCaptureReceiptVerified,
+  ...(item.detectedPowerAcquisitionQualification === undefined
+    ? {}
+    : {
+        detectedPowerAcquisitionQualification:
+          item.detectedPowerAcquisitionQualification,
+      }),
+  ...(item.envelopeFeatureUnavailableCode === undefined
+    ? {}
+    : { envelopeFeatureUnavailableCode: item.envelopeFeatureUnavailableCode }),
+}));
+const uniqueCaptureConditionalClassificationSamples = new Set(
+  cases.map((item) => `${item.attemptId}|${item.representativeKey}`),
+).size;
+const uniqueCausalEnvelopeSamples = new Set(
+  qualifiedCausalEnvelopeSamples.map(
+    (item) => `${item.attemptId}|${item.representativeKey}`,
+  ),
+).size;
 const associationModes = [
   'frequency-local',
   'frequency-agile-2g4-activity',
   'regular-spectral-component-activity',
+  'multicomponent-swept-region-activity',
 ] as const;
 const associationByMode = Object.fromEntries(associationModes.map((associationMode) => {
   const selected = cases.filter((item) => item.associationMode === associationMode);
-  const selectedUnknown = selected.filter((item) => item.modelTruth === 'unknown-signal');
+  return [associationMode, summarizeAssociationCases(selected)];
+}));
+const soleEnvelopeAssociationByMode = Object.fromEntries(associationModes.map((associationMode) => {
+  const selected = qualifiedCausalEnvelopeSamples.filter(
+    (item) => item.associationMode === associationMode,
+  );
+  return [associationMode, summarizeAssociationCases(selected)];
+}));
+const spectrumOnlineAssociationByMode = Object.fromEntries(associationModes.map((associationMode) => {
+  const selected = spectrumOnlineAssociationSamples.filter((item) => item.associationMode === associationMode);
   return [associationMode, {
-    firstReadyRepresentativeSamples: selected.length,
+    samples: selected.length,
+    attempts: new Set(selected.map((item) => item.attemptId)).size,
     scenarios: [...new Set(selected.map((item) => item.scenario))].sort(),
-    results: counts(selected.map((item) => item.result)),
-    hierarchicalAccuracy: fraction(selected, (item) => item.acceptedHierarchy),
-    unknownRejection: fraction(selectedUnknown, (item) => item.result === 'unknown'),
-    falseAcceptedUnknownCount: selectedUnknown.filter((item) => !item.acceptedHierarchy).length,
-    effectiveAdmissions: numericSummary(selected.map((item) => item.selectedTrackAdmissions)),
-    localTrackAdmissions: numericSummary(selected.map((item) => item.localTrackAdmissions)),
-    memberCount: numericSummary(selected.flatMap((item) => item.associationMemberCount === undefined ? [] : [item.associationMemberCount])),
-    regionBandwidthHz: numericSummary(selected.flatMap((item) => item.associationRegionBandwidthHz === undefined ? [] : [item.associationRegionBandwidthHz])),
   }];
 }));
+const spectrumOnlineAssociationKeys = spectrumOnlineAssociationSamples.map((item) =>
+  `${item.attemptId}:${item.readyOpportunity}:${item.representativeKey}`);
+const duplicateSpectrumOnlineAssociationKeys = duplicateStrings(spectrumOnlineAssociationKeys);
+const associationModesWithoutCoverage = associationModes.filter((associationMode) => {
+  const metrics = spectrumOnlineAssociationByMode[associationMode];
+  return !metrics || metrics.samples <= 0 || metrics.scenarios.length <= 0;
+});
 const associationByScenario = Object.fromEntries(canonicalClassificationScenarios.map((scenario) => {
   const selectedAttempts = admissionAttempts.filter((item) => item.scenario === scenario.id);
   const selectedCases = cases.filter((item) => item.scenario === scenario.id);
@@ -1207,6 +2198,102 @@ const associationByScenario = Object.fromEntries(canonicalClassificationScenario
     regularAssociationExpirations: selectedAttempts.reduce((sum, item) => sum + item.regularAssociationExpirations, 0),
   }];
 }));
+
+function summarizeAssociationCases(selected: readonly ValidationCase[]) {
+  const selectedUnknown = selected.filter(
+    (item) => item.modelTruth === 'unknown-signal',
+  );
+  return {
+    firstReadyRepresentativeSamples: selected.length,
+    scenarios: [...new Set(selected.map((item) => item.scenario))].sort(),
+    results: counts(selected.map((item) => item.result)),
+    hierarchicalAccuracy: fraction(selected, (item) => item.acceptedHierarchy),
+    unknownRejection: fraction(
+      selectedUnknown,
+      (item) => item.result === 'unknown',
+    ),
+    falseAcceptedUnknownCount: selectedUnknown.filter(
+      (item) => !item.acceptedHierarchy,
+    ).length,
+    effectiveAdmissions: numericSummary(
+      selected.map((item) => item.selectedTrackAdmissions),
+    ),
+    localTrackAdmissions: numericSummary(
+      selected.map((item) => item.localTrackAdmissions),
+    ),
+    memberCount: numericSummary(selected.flatMap((item) =>
+      item.associationMemberCount === undefined
+        ? []
+        : [item.associationMemberCount])),
+    regionBandwidthHz: numericSummary(selected.flatMap((item) =>
+      item.associationRegionBandwidthHz === undefined
+        ? []
+        : [item.associationRegionBandwidthHz])),
+  };
+}
+function summarizeDetectedPowerCaptureOutcomes(
+  selected: readonly ValidationCase[],
+) {
+  const qualifiedEnvelope = selected.filter((item) =>
+    item.detectedPowerEvidenceDisposition === 'admitted-envelope');
+  const censoredSpectrum = selected.filter((item) =>
+    item.detectedPowerEvidenceDisposition
+      === 'censored-frequency-agile-spectrum-only');
+  return {
+    physicalCaptureCount: selected.length,
+    receiptQualifiedPhysicalCaptureCount: selected.filter((item) =>
+      item.detectedPowerCaptureReceiptSchemaVersion === 3
+      && Boolean(item.physicalCaptureId)).length,
+    qualifiedEnvelopeSampleCount: qualifiedEnvelope.length,
+    censoredDetectedPowerCaptureCount: censoredSpectrum.length,
+    censoredSpectrumClassificationCount: censoredSpectrum.filter((item) =>
+      item.views.length === 1 && item.views[0] === 'scalar-spectrum').length,
+    selectedEvidenceViews: counts(selected.map((item) =>
+      observableModelView({ values: item.features }))),
+  };
+}
+const detectedPowerCaptureOutcomesByProjectedMode = Object.fromEntries(
+  associationModes.map((associationMode) => [
+    associationMode,
+    summarizeDetectedPowerCaptureOutcomes(cases.filter(
+      (item) => item.associationMode === associationMode,
+    )),
+  ]),
+);
+const detectedPowerCaptureOutcomesByProjectionKind = Object.fromEntries(([
+  'current-active-physical-representative',
+  'current-qualified-agile-latest-member',
+] as const).map((projectionKind) => [
+  projectionKind,
+  summarizeDetectedPowerCaptureOutcomes(cases.filter(
+    (item) => item.captureProjectionKind === projectionKind,
+  )),
+]));
+const detectedPowerCaptureOutcomesByScenario = Object.fromEntries(
+  canonicalClassificationScenarios.map((scenario) => [
+    scenario.id,
+    summarizeDetectedPowerCaptureOutcomes(cases.filter(
+      (item) => item.scenario === scenario.id,
+    )),
+  ]),
+);
+const invalidBluetoothCaptureOutcomeScenarios = [
+  'bluetooth-classic-connected',
+  'bluetooth-le-advertising',
+].filter((scenarioId) => {
+  const outcome = detectedPowerCaptureOutcomesByScenario[scenarioId];
+  return !outcome
+    || outcome.physicalCaptureCount <= 0
+    || outcome.receiptQualifiedPhysicalCaptureCount
+      !== outcome.physicalCaptureCount
+    || outcome.censoredDetectedPowerCaptureCount
+      !== outcome.physicalCaptureCount
+    || outcome.censoredSpectrumClassificationCount
+      !== outcome.physicalCaptureCount
+    || outcome.qualifiedEnvelopeSampleCount !== 0
+    || outcome.selectedEvidenceViews['spectrum-only']
+      !== outcome.physicalCaptureCount;
+});
 const limitationCounts = counts(cases.flatMap((item) => item.limitations));
 const scenariosWithoutHighSnrAdmission = Object.entries(admissionByScenario)
   .filter(([, value]) => value.highSnr.admitted === 0)
@@ -1253,18 +2340,49 @@ const expectedRollingKnownScenarioIds = expectedComponentAssignments
   .filter((assignment) => assignment.classId !== 'unknown-signal')
   .map((assignment) => assignment.scenarioId)
   .sort();
-const observedRollingKnownScenarioIds = [...new Set(rollingWindowCases.map((item) => item.scenario))].sort();
+const highSnrKnownRollingWindowCases = rollingWindowCases.filter((item) =>
+  item.modelTruth !== 'unknown-signal' && item.snrDb >= HIGH_SNR_MINIMUM_DB);
+const observedRollingKnownScenarioIds = [...new Set(highSnrKnownRollingWindowCases.map((item) => item.scenario))].sort();
 const missingRollingKnownScenarioIds = setDifference(expectedRollingKnownScenarioIds, observedRollingKnownScenarioIds);
-const rollingWindowKeys = rollingWindowCases.map((item) =>
+const onlineSpectrumKeys = rollingWindowCases.map((item) =>
+  `${item.attemptId}:${item.readyOpportunity}:${item.representativeKey}`);
+const uniqueOnlineSpectrumCases = new Set(onlineSpectrumKeys).size;
+const duplicateOnlineSpectrumKeys = duplicateStrings(onlineSpectrumKeys);
+const rollingWindowKeys = highSnrKnownRollingWindowCases.map((item) =>
   `${item.attemptId}:${item.readyOpportunity}:${item.representativeKey}`);
 const uniqueRollingWindowCases = new Set(rollingWindowKeys).size;
 const duplicateRollingWindowKeys = duplicateStrings(rollingWindowKeys);
-const rollingKnownCoverage = fraction(rollingWindowCases, (item) => item.result !== 'unknown');
-const rollingKnownHierarchicalAccuracy = fraction(rollingWindowCases, (item) => item.acceptedHierarchy);
-const rollingIncompatibleNonUnknown = rollingWindowCases.filter((item) => item.result !== 'unknown' && !item.acceptedHierarchy);
-const truthClassDomainRollingWindowCases = rollingWindowCases.filter((item) => item.truthClassDomainEligible);
+const rollingKnownCoverage = fraction(highSnrKnownRollingWindowCases, (item) => item.result !== 'unknown');
+const rollingKnownHierarchicalAccuracy = fraction(highSnrKnownRollingWindowCases, (item) => item.acceptedHierarchy);
+const rollingIncompatibleNonUnknown = highSnrKnownRollingWindowCases
+  .filter((item) => item.result !== 'unknown' && !item.acceptedHierarchy);
+const onlineSpectrumIncompatibleNonUnknown = rollingWindowCases
+  .filter((item) => item.result !== 'unknown' && !item.acceptedHierarchy);
+const onlineUnknownSpectrumCases = rollingWindowCases.filter((item) => item.modelTruth === 'unknown-signal');
+const onlineUnknownFalseAccepts = onlineUnknownSpectrumCases.filter((item) => !item.acceptedHierarchy);
+const onlineSpectrumSingletonTruthFittedDomain = rollingWindowCases.filter((item) =>
+  !scenarioExcludedIds.has(item.scenario)
+  && item.truthClassDomainEligible
+  && item.allowedModelTruths.length === 1);
+const onlineSpectrumFittedTemplateLogLoss = -mean(onlineSpectrumSingletonTruthFittedDomain
+  .map((item) => Math.log(Math.max(1e-15, item.posterior[item.modelTruth] ?? 0))));
+const onlineSpectrumFittedTemplateMulticlassBrier = mean(onlineSpectrumSingletonTruthFittedDomain.map((item) =>
+  labels.reduce((sum, label) => {
+    const probability = item.posterior[label] ?? 0;
+    const target = label === item.modelTruth ? 1 : 0;
+    return sum + (probability - target) ** 2;
+  }, 0)));
+const onlineSpectrumFittedTemplateExpectedCalibrationError = expectedCalibrationError(
+  onlineSpectrumSingletonTruthFittedDomain.map((item) => ({
+    confidence: item.topLeafPosterior,
+    correct: item.topLeaf === item.modelTruth,
+  })),
+  10,
+);
+const truthClassDomainRollingWindowCases = highSnrKnownRollingWindowCases
+  .filter((item) => item.truthClassDomainEligible);
 const rollingByScenario = Object.fromEntries(expectedRollingKnownScenarioIds.map((scenarioId) => {
-  const selected = rollingWindowCases.filter((item) => item.scenario === scenarioId);
+  const selected = highSnrKnownRollingWindowCases.filter((item) => item.scenario === scenarioId);
   return [scenarioId, {
     cases: selected.length,
     knownCoverage: fraction(selected, (item) => item.result !== 'unknown'),
@@ -1277,14 +2395,24 @@ const minimumRollingScenarioCoverage = Math.min(...Object.values(rollingByScenar
 const minimumRollingScenarioHierarchicalAccuracy = Math.min(
   ...Object.values(rollingByScenario).map((item) => item.hierarchicalAccuracy),
 );
-const priorSensitivityAudit = auditPriorSensitivity(cases);
+const priorSensitivityAudit = auditPriorSensitivity(
+  cases,
+  'capture-qualified-selected-view',
+);
+const completeOnlineSpectrumPriorSensitivityAudit = auditPriorSensitivity(
+  rollingWindowCases,
+  'complete-online-spectrum',
+);
 
 const report = {
   qualification: 'production-detector-conditioned-mixed-nuisance-shift-and-scenario-excluded-synthetic-only',
-  interpretation: 'This is development-regression evidence from re-simulated SignalLab scalar formulas. The primary matrix uses the production detector and tracker and classifies each production representative exactly once, at the first opportunity where that representative has eight admitted effective sweeps. Evidence is restricted to the prefix ending at that opportunity; no endpoint, future-look, or retrospective best-track selection is used. A separate high-SNR spectrum-only rolling-window matrix classifies every current-qualified production representative at every subsequent online-ready opportunity; no corpus-truth or nominal-bandwidth oracle removes cases from its primary denominator. Acquisition runs for 24 opportunities under standard geometry and 96 only when the swept geometry covers the complete 2402-2480 MHz activity band. Each first-ready representative receives a separately synthesized zero-span capture tuned at its then-current peak. Local fragments that later participate in an activity association remain separate production-validation cases. The fitted formulas, SNR grid, and acquisition geometry overlap development, so this is not untouched validation, physical receiver calibration, waveform conformance, emitter identity, or protocol validation.',
+  interpretation: 'This is development-regression evidence from re-simulated SignalLab scalar formulas. Every nuisance cell is acquired twice with fresh detector, tracker, history, and source-clock state. The App-compatible consecutive-spectrum branch begins at held-out source look 512, consumes only sequential swept spectra, and supplies every spectrum likelihood, rolling decision, association, proper-score, and spectrum-prior audit. The separately qualified envelope branch begins at held-out source look 524, triggers at most one physical detected-power acquisition immediately after its first runtime-admitted spectrum representative, continues later spectra at the next source look, and exclusively supplies timed and untimed envelope audits. No spectrum event from the envelope session enters a spectrum population. Evidence is restricted to the prefix available at each decision; no endpoint, future-look, or retrospective best-track selection is used. A separate audit proves declared absolute-look drift remains inside each scenario span. The fitted formulas, SNR grid, and acquisition geometry overlap development, so this is not untouched validation, physical receiver calibration, waveform conformance, emitter identity, or protocol validation.',
   selectionPolicy: SELECTION_POLICY,
   model: BAYESIAN_WAVEFORM_MODEL,
-  priorSensitivity: priorSensitivityAudit,
+  priorSensitivity: {
+    ...priorSensitivityAudit,
+    completeOnlineSpectrum: completeOnlineSpectrumPriorSensitivityAudit,
+  },
   integrity: {
     checkedOutCorpusSourceManifest,
     checkedOutCorpusSha256,
@@ -1303,14 +2431,24 @@ const report = {
         observableAmbiguityStress: PINNED_OBSERVABLE_AMBIGUITY_STRESS_SCENARIO_IDS,
         exactObservableEquivalencePairs: PINNED_EXACT_OBSERVABLE_EQUIVALENCE_PAIRS,
         knownAcquisitionValidationOnly: PINNED_KNOWN_ACQUISITION_VALIDATION_ONLY_SCENARIO_IDS,
+        frequencyAgileEnvelopeCensoredScenarios:
+          PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORED_SCENARIO_IDS,
+        componentSourceScenarioCountsByView:
+          PINNED_COMPONENT_SOURCE_SCENARIO_COUNTS_BY_VIEW,
+        likelihoodComponentCountsByView:
+          PINNED_LIKELIHOOD_COMPONENT_COUNTS_BY_VIEW,
         excludedFromComponentFit: PINNED_SCENARIO_EXCLUDED_FROM_COMPONENT_FIT_IDS,
       },
       modelDeclared: {
         fittedUnknown: modelFittedUnknownScenarioIds,
+        likelihoodComponentDecompositionPolicy:
+          BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.likelihoodComponentDecompositionPolicy,
+        minimumDecomposedModeFitSampleCount,
         exactObservableEquivalenceNulls: modelExactEquivalenceIdList,
         knownAcquisitionValidationOnly: modelKnownAcquisitionValidationIdList,
         excludedFromComponentFit: modelScenarioExcludedIdList,
         componentAssignments: actualComponentAssignments,
+        componentAssignmentsByView,
       },
       expectedComponentAssignments,
       excludedScenarios: excludedScenarioSplit,
@@ -1343,6 +2481,11 @@ const report = {
       missingFittedComponentScenarioIds,
       unexpectedFittedComponentScenarioIds,
       wrongClassFittedComponents,
+      likelihoodComponentOwnershipMismatches,
+      componentScenarioPopulationMismatches,
+      componentAssignmentViewMismatches,
+      componentArchitectureMismatches,
+      frequencyAgileCensoringMatrixMismatches,
       duplicateModelClassIds,
       missingModelClassIds,
       unexpectedModelClassIds,
@@ -1364,7 +2507,7 @@ const report = {
   },
   productionRollingWindowValidation: {
     qualification: 'held-out-high-snr-spectrum-only-all-online-ready-representatives',
-    cases: rollingWindowCases.length,
+    cases: highSnrKnownRollingWindowCases.length,
     uniqueCases: uniqueRollingWindowCases,
     knownCoverage: rollingKnownCoverage,
     hierarchicalAccuracy: rollingKnownHierarchicalAccuracy,
@@ -1379,7 +2522,21 @@ const report = {
     },
     missingScenarios: missingRollingKnownScenarioIds,
     byScenario: rollingByScenario,
-    failures: rollingWindowCases.filter((item) => !item.acceptedHierarchy).slice(0, 50),
+    failures: highSnrKnownRollingWindowCases.filter((item) => !item.acceptedHierarchy).slice(0, 50),
+    completeOnlineSpectrumAudit: {
+      qualification: 'held-out-all-truths-all-snrs-all-online-ready-representatives',
+      cases: rollingWindowCases.length,
+      uniqueCases: uniqueOnlineSpectrumCases,
+      unknownTruthCases: onlineUnknownSpectrumCases.length,
+      unknownTruthFalseAcceptCount: onlineUnknownFalseAccepts.length,
+      incompatibleNonUnknownCount: onlineSpectrumIncompatibleNonUnknown.length,
+      singletonAllowedTruthProperScoreSamples: onlineSpectrumSingletonTruthFittedDomain.length,
+      fittedTemplateLogLoss: onlineSpectrumFittedTemplateLogLoss,
+      fittedTemplateMulticlassBrier: onlineSpectrumFittedTemplateMulticlassBrier,
+      fittedTemplateExpectedCalibrationError: onlineSpectrumFittedTemplateExpectedCalibrationError,
+      byTruth: counts(rollingWindowCases.map((item) => item.modelTruth)),
+      failures: onlineSpectrumIncompatibleNonUnknown.slice(0, 50),
+    },
     truthConditionedClassDomainDiagnostic: {
       qualification: 'secondary-diagnostic-not-primary-denominator',
       cases: truthClassDomainRollingWindowCases.length,
@@ -1388,13 +2545,29 @@ const report = {
     },
   },
   matrix: {
+    attemptSamplingWorkerRuntimeSha256: modelAttemptSamplingWorkerRuntimeSha256,
+    trainingRuntimeIdentity: modelTrainingRuntimeIdentity,
     scenarioSelection: diagnosticScenarioIdSet.size === 0
       ? { mode: 'full-corpus', scenarioIds: validationScenarios.map((scenario) => scenario.id) }
       : { mode: 'diagnostic-subset', scenarioIds: validationScenarios.map((scenario) => scenario.id) },
     nuisanceShiftSeeds: NUISANCE_SHIFT_SEEDS,
     snrDb: SNR_DB,
     rbwDivisors: RBW_DIVISORS,
-    temporalSchedule: PINNED_VALIDATION_TEMPORAL_SCHEDULE,
+    temporalSchedules: {
+      consecutiveSpectrum: PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE,
+      qualifiedEnvelope: PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
+    },
+    sourceClocks: PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME.sourceClocks,
+    runtimeBranchClockAudits: {
+      consecutiveSpectrum: validationSpectrumClockAudit,
+      qualifiedEnvelope: validationQualifiedEnvelopeClockAudit,
+    },
+    pairedNuisanceCells: admissionAttempts.length,
+    runtimeBranchAttempts: {
+      consecutiveSpectrum: validationSpectrumAcquisitionTraces.length,
+      qualifiedEnvelope: validationQualifiedEnvelopeAcquisitionTraces.length,
+    },
+    heldOutSourceSpanAudit,
     observationOpportunityHorizons: {
       standard: STANDARD_OBSERVATION_OPPORTUNITIES,
       fullBand2g4: FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
@@ -1406,8 +2579,11 @@ const report = {
     zeroSpanPoints: ZERO_SPAN_POINTS,
     zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
     detectedPowerSynthesisFilterPolicy: PINNED_DETECTED_POWER_SYNTHESIS_FILTER_POLICY,
+    frequencyAgileFixedTuneEnvelopeCensoringPolicy:
+      PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY,
     detectionConfig: PRODUCTION_DETECTION_CONFIG,
     selectionPolicy: SELECTION_POLICY,
+    representativeWeightingPolicy: REPRESENTATIVE_WEIGHTING_POLICY,
     representativeEligibilityPolicy: 'observation-only-hypothesis-domain-v5',
     samplingPartitionAudit: {
       valid: samplingPartitionsDisjoint,
@@ -1426,6 +2602,8 @@ const report = {
       validationCalibrationRbwOverlap,
       validationTemporalPartitionDisjoint,
       validationTemporalScheduleIdOverlap,
+      validationFitSpectrumSourceLookIndexOverlap,
+      validationFitQualifiedEnvelopeSourceLookIndexOverlap,
       validationFitTemporalSourceLookIndexOverlap,
     },
     tailCalibrationAudit: {
@@ -1440,13 +2618,14 @@ const report = {
       modelRuntimeInterpretationPolicy: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy,
       pinnedStatisticalInterpretation: PINNED_TAIL_CALIBRATION_STATISTICAL_INTERPRETATION,
       modelStatisticalInterpretation: BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation,
-      attemptCountsByScenario: modelTailCalibrationAttemptCounts,
+      attemptCountsByScenarioByView: modelTailCalibrationAttemptCountsByView,
       missingScenarioIds: missingTailCalibrationScenarioIds,
       unexpectedScenarioIds: unexpectedTailCalibrationScenarioIds,
       invalidAttemptCounts: invalidTailCalibrationAttemptCounts,
       viewCountMismatches: tailCalibrationViewCountMismatches,
       matrixPinsValid: tailCalibrationMatrixPinsValid,
       productionAcquisitionRegimePinsValid,
+      pinnedReleaseGateSourcePlanValid,
       pinnedSignalLabProductionAcquisitionRegime: PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME,
       validatorOwnedMatrix: {
         snrDb: PINNED_TAIL_CALIBRATION_SNR_DB,
@@ -1462,9 +2641,74 @@ const report = {
     everReady: everReadyAttempts.length,
     firstReady: firstReadyAttempts.length,
     admitted: firstReadyAttempts.length,
-    firstReadyRepresentativeSamples: cases.length,
-    expectedFirstReadyRepresentativeSamples,
-    uniqueFirstReadyRepresentativeSamples,
+    captureConditionalClassificationSamples: cases.length,
+    expectedCaptureConditionalClassificationSamples:
+      physicalEnvelopeCaptureAttempts.length,
+    uniqueCaptureConditionalClassificationSamples,
+    causalEnvelopeSamples: qualifiedCausalEnvelopeSamples.length,
+    expectedCausalEnvelopeSamples,
+    uniqueCausalEnvelopeSamples,
+    physicalDetectedPowerCaptures: physicalEnvelopeCaptureAttempts.length,
+    physicalEnvelopeCaptures: qualifiedCausalEnvelopeSamples.length,
+    detectedPowerCaptureOutcomes: {
+      schemaVersion: 1,
+      censoringPolicy:
+        PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY,
+      physicalDetectedPowerCaptureCount:
+        physicalEnvelopeCaptureAttempts.length,
+      receiptQualifiedPhysicalCaptureCount: cases.filter((item) =>
+        item.detectedPowerCaptureReceiptSchemaVersion === 3
+        && Boolean(item.physicalCaptureId)).length,
+      qualifiedEnvelopeSampleCount: qualifiedCausalEnvelopeSamples.length,
+      censoredDetectedPowerCaptureCount:
+        censoredFrequencyAgileCaptureCases.length,
+      censoredSpectrumClassificationCount:
+        censoredFrequencyAgileCaptureCases.filter((item) =>
+          item.views.length === 1
+          && item.views[0] === 'scalar-spectrum').length,
+      selectedEvidenceViews: counts(cases.map((item) =>
+        observableModelView({ values: item.features }))),
+      byProjectedMode: detectedPowerCaptureOutcomesByProjectedMode,
+      byProjectionKind: detectedPowerCaptureOutcomesByProjectionKind,
+      byScenario: detectedPowerCaptureOutcomesByScenario,
+    },
+    frequencyAgileEnvelopeCensoring: {
+      policyId: PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID,
+      limitation:
+        PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_LIMITATION,
+      physicalCapturesCensored:
+        censoredFrequencyAgileCaptureAttempts.length,
+      spectrumOnlyClassifications:
+        censoredFrequencyAgileCaptureCases.length,
+      uncensoredFrequencyAgileEnvelopeSamples:
+        qualifiedCausalEnvelopeSamples.filter((item) =>
+          item.associationMode === 'frequency-agile-2g4-activity').length,
+    },
+    detectedPowerAcquisitionQualification: {
+      required: PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION,
+      modelDeclared:
+        BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerAcquisitionQualification,
+      qualifiedEnvelopeSamples: qualifiedCausalEnvelopeSamples.length,
+      unqualifiedEnvelopeSamples: unqualifiedCausalEnvelopeSamples.length,
+      missingOrUnissuedReceiptEnvelopeSamples:
+        missingOrUnissuedReceiptEnvelopeSamples.length,
+      missingOrUnissuedReceiptEnvelopeFeatureAttempts:
+        missingOrUnissuedReceiptEnvelopeFeatureAttempts.length,
+    },
+    unavailablePhysicalEnvelopeCaptures: unavailablePhysicalEnvelopeCaptureAttempts.length,
+    unavailablePhysicalEnvelopeCaptureExamples: unavailablePhysicalEnvelopeCaptureAttempts.slice(0, 50),
+    invalidCausalCaptureSemantics: invalidCausalCaptureSemantics.slice(0, 50),
+    causalEnvelopeAvailabilityCells,
+    trackerFirstReadyRepresentativeSamples: admissionAttempts.reduce(
+      (sum, item) => sum + item.firstReadyRepresentativeCount,
+      0,
+    ),
+    runtimeBranchClockAudits: {
+      consecutiveSpectrum: validationSpectrumClockAudit,
+      qualifiedEnvelope: validationQualifiedEnvelopeClockAudit,
+    },
+    envelopeFeatureUnavailableByCode: counts(admissionAttempts.flatMap((item) =>
+      item.envelopeFeatureUnavailableCode === undefined ? [] : [item.envelopeFeatureUnavailableCode])),
     misses: admissionMisses.length,
     everReadyRate: fraction(admissionAttempts, (item) => item.everReady),
     firstReadyRate: fraction(admissionAttempts, (item) => item.admitted),
@@ -1544,10 +2788,31 @@ const report = {
     bySnr,
     byRbwDivisor,
     association: {
-      firstReadySelectionModes: counts(cases.map((item) => item.associationMode)),
+      firstReadySelectionModes: counts(cases.map(
+        (item) => item.rawCaptureTargetAssociationMode,
+      )),
+      soleEnvelopeTargetModes: counts(qualifiedCausalEnvelopeSamples.map(
+        (item) => item.rawCaptureTargetAssociationMode,
+      )),
+      captureProjectionKinds: counts(cases.map(
+        (item) => item.captureProjectionKind,
+      )),
+      rawCaptureTargetStates: counts(cases.map(
+        (item) => item.rawCaptureTargetState,
+      )),
+      detectedPowerEvidenceDispositions: counts(cases.map(
+        (item) => item.detectedPowerEvidenceDisposition,
+      )),
+      completeSpectrumOnline: {
+        samples: spectrumOnlineAssociationSamples.length,
+        uniqueSamples: new Set(spectrumOnlineAssociationKeys).size,
+        duplicateKeys: duplicateSpectrumOnlineAssociationKeys,
+        byMode: spectrumOnlineAssociationByMode,
+      },
       everAttemptModes: counts(admissionAttempts.flatMap((item) => item.everAssociationModes)),
       finalAttemptModes: counts(admissionAttempts.flatMap((item) => item.finalAssociationModes)),
       byMode: associationByMode,
+      soleEnvelopeByMode: soleEnvelopeAssociationByMode,
       byScenario: associationByScenario,
     },
     limitations: limitationCounts,
@@ -1556,9 +2821,13 @@ const report = {
   },
 };
 const conditional = report.classificationConditionalOnAdmission;
+const nonFiniteReportNumbers = nonFiniteReportNumberPaths(report);
 const acceptanceFailures = [
+  nonFiniteReportNumbers.length !== 0
+    ? `validator report contains non-finite numbers before serialization: ${nonFiniteReportNumbers.slice(0, 50).join(', ')}${nonFiniteReportNumbers.length > 50 ? ` (+${nonFiniteReportNumbers.length - 50} more)` : ''}`
+    : undefined,
   diagnosticScenarioIdSet.size > 0 ? 'diagnostic scenario subset is never an acceptance run' : undefined,
-  BAYESIAN_OBSERVABLE_MODEL.classModels.length !== 12 ? `expected 12 v5 model classes, observed ${BAYESIAN_OBSERVABLE_MODEL.classModels.length}` : undefined,
+  BAYESIAN_OBSERVABLE_MODEL.classModels.length !== 12 ? `expected 12 v8 model classes, observed ${BAYESIAN_OBSERVABLE_MODEL.classModels.length}` : undefined,
   BAYESIAN_OBSERVABLE_MODEL.sourceCommit !== PINNED_SIGNAL_LAB_COMMIT ? `model source commit ${BAYESIAN_OBSERVABLE_MODEL.sourceCommit} does not match pinned ${PINNED_SIGNAL_LAB_COMMIT}` : undefined,
   BAYESIAN_OBSERVABLE_MODEL.corpusVersion !== CLASSIFICATION_CORPUS_VERSION ? `model corpus version ${BAYESIAN_OBSERVABLE_MODEL.corpusVersion} does not match checked-out ${CLASSIFICATION_CORPUS_VERSION}` : undefined,
   JSON.stringify(BAYESIAN_OBSERVABLE_MODEL.corpusSourceManifest) !== JSON.stringify(checkedOutCorpusSourceManifest)
@@ -1566,13 +2835,83 @@ const acceptanceFailures = [
     : undefined,
   BAYESIAN_OBSERVABLE_MODEL.corpusSha256 !== checkedOutCorpusSha256 ? `model corpus SHA-256 ${BAYESIAN_OBSERVABLE_MODEL.corpusSha256} does not match checked-out ${checkedOutCorpusSha256}` : undefined,
   checkedInModelAssetSha256 !== BAYESIAN_OBSERVABLE_MODEL_SHA256 ? `model asset SHA-256 ${checkedInModelAssetSha256} does not match manifest ${BAYESIAN_OBSERVABLE_MODEL_SHA256}` : undefined,
+  !/^[a-f0-9]{64}$/.test(modelAttemptSamplingWorkerRuntimeSha256)
+    ? `attempt-sampling worker runtime SHA-256 is malformed: ${modelAttemptSamplingWorkerRuntimeSha256}`
+    : undefined,
+  !trainingRuntimeIdentityPinsValid
+    ? `training runtime identity ${JSON.stringify(modelTrainingRuntimeIdentity)} does not match pinned ${JSON.stringify(PINNED_TRAINING_RUNTIME_IDENTITY)}`
+    : undefined,
   admissionAttempts.length !== expectedAttempts ? `expected ${expectedAttempts} production-pipeline attempts, observed ${admissionAttempts.length}` : undefined,
-  cases.length !== expectedFirstReadyRepresentativeSamples ? `classified ${cases.length} first-ready representatives, expected ${expectedFirstReadyRepresentativeSamples}` : undefined,
-  uniqueFirstReadyRepresentativeSamples !== cases.length ? `first-ready classification contains ${cases.length - uniqueFirstReadyRepresentativeSamples} duplicate attempt/representative samples` : undefined,
+  validationSpectrumAcquisitionTraces.length !== expectedAttempts
+    ? `expected ${expectedAttempts} consecutive-spectrum branch attempts, observed ${validationSpectrumAcquisitionTraces.length}`
+    : undefined,
+  validationQualifiedEnvelopeAcquisitionTraces.length !== expectedAttempts
+    ? `expected ${expectedAttempts} qualified-envelope branch attempts, observed ${validationQualifiedEnvelopeAcquisitionTraces.length}`
+    : undefined,
+  validationSpectrumClockAudit.violationCount !== 0
+    ? `validation consecutive-spectrum branch has ${validationSpectrumClockAudit.violationCount} source-clock violations`
+    : undefined,
+  validationSpectrumClockAudit.maximumDetectedPowerCapturesPerAttempt !== 0
+    ? `validation consecutive-spectrum branch consumed ${validationSpectrumClockAudit.maximumDetectedPowerCapturesPerAttempt} detected-power captures in one attempt`
+    : undefined,
+  validationQualifiedEnvelopeClockAudit.violationCount !== 0
+    ? `validation qualified-envelope branch has ${validationQualifiedEnvelopeClockAudit.violationCount} source-clock violations`
+    : undefined,
+  !heldOutSourceSpanAudit.valid
+    ? `held-out source clock moves declared signal geometry outside its admitted span for ${heldOutSourceSpanAudit.scenarios.filter((item) => !item.valid).map((item) => item.scenarioId).join(', ')}`
+    : undefined,
+  validationQualifiedEnvelopeClockAudit.maximumDetectedPowerCapturesPerAttempt > 1
+    ? `validation qualified-envelope branch consumed ${validationQualifiedEnvelopeClockAudit.maximumDetectedPowerCapturesPerAttempt} detected-power captures in one attempt`
+    : undefined,
+  invalidCausalCaptureSemantics.length !== 0
+    ? `${invalidCausalCaptureSemantics.length} validation attempts violated capture-once-after-runtime-admission semantics`
+    : undefined,
+  unavailablePhysicalEnvelopeCaptureAttempts.length !== 0
+    ? `${unavailablePhysicalEnvelopeCaptureAttempts.length} physical detected-power captures produced unavailable envelope evidence`
+    : undefined,
+  invalidCensoredFrequencyAgileCaptureCases.length !== 0
+    ? `${invalidCensoredFrequencyAgileCaptureCases.length} frequency-agile captures violated the fixed-tune spectrum-only censoring policy`
+    : undefined,
+  invalidUncensoredEnvelopeCases.length !== 0
+    ? `${invalidUncensoredEnvelopeCases.length} uncensored envelope cases contradicted their receipt-qualified evidence binding`
+    : undefined,
+  censoredFrequencyAgileCaptureCases.length
+      !== censoredFrequencyAgileCaptureAttempts.length
+    ? `frequency-agile censored classifications ${censoredFrequencyAgileCaptureCases.length} do not reconcile to censored physical captures ${censoredFrequencyAgileCaptureAttempts.length}`
+    : undefined,
+  invalidBluetoothCaptureOutcomeScenarios.length !== 0
+    ? `Bluetooth fixed-tune capture outcomes violate spectrum-only censoring for ${invalidBluetoothCaptureOutcomeScenarios.join(', ')}`
+    : undefined,
+  BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.detectedPowerAcquisitionQualification
+    !== PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION
+    ? 'model does not declare the pinned receipt-verified detected-power acquisition qualification'
+    : undefined,
+  qualifiedCausalEnvelopeSamples.length !== expectedCausalEnvelopeSamples
+    || qualifiedCausalEnvelopeSamples.length
+      + censoredFrequencyAgileCaptureCases.length !== cases.length
+    ? `qualified causal envelope samples ${qualifiedCausalEnvelopeSamples.length} plus censored spectrum-only captures ${censoredFrequencyAgileCaptureCases.length} do not reconcile to classified ${cases.length} and physical captures ${physicalEnvelopeCaptureAttempts.length}`
+    : undefined,
+  unqualifiedCausalEnvelopeSamples.length !== 0
+    || missingOrUnissuedReceiptEnvelopeSamples.length !== 0
+    || missingOrUnissuedReceiptEnvelopeFeatureAttempts.length !== 0
+    ? `detected-power receipt boundary admitted unqualified=${unqualifiedCausalEnvelopeSamples.length}, missing-or-unissued=${missingOrUnissuedReceiptEnvelopeSamples.length}, missing-or-unissued-attempts=${missingOrUnissuedReceiptEnvelopeFeatureAttempts.length}`
+    : undefined,
+  cases.length !== physicalEnvelopeCaptureAttempts.length ? `classified ${cases.length} capture-conditional representatives, expected ${physicalEnvelopeCaptureAttempts.length}` : undefined,
+  uniqueCaptureConditionalClassificationSamples !== cases.length ? `capture-conditional classification contains ${cases.length - uniqueCaptureConditionalClassificationSamples} duplicate attempt/representative samples` : undefined,
+  uniqueCausalEnvelopeSamples !== qualifiedCausalEnvelopeSamples.length ? `causal envelope classification contains ${qualifiedCausalEnvelopeSamples.length - uniqueCausalEnvelopeSamples} duplicate attempt/representative samples` : undefined,
   cases.length === 0 ? 'production detector/tracker admitted no validation cases' : undefined,
-  rollingWindowCases.length === 0 ? 'production rolling-window validation admitted no current-qualified known cases' : undefined,
+  associationModesWithoutCoverage.length !== 0
+    ? `production validation has no complete spectrum-online scenario coverage for association modes: ${associationModesWithoutCoverage.join(', ')}`
+    : undefined,
+  duplicateSpectrumOnlineAssociationKeys.length !== 0
+    ? `complete spectrum-online association audit contains ${duplicateSpectrumOnlineAssociationKeys.length} duplicate attempt/opportunity/representative keys`
+    : undefined,
+  highSnrKnownRollingWindowCases.length === 0 ? 'production rolling-window validation admitted no current-qualified known cases' : undefined,
   duplicateRollingWindowKeys.length !== 0
-    ? `production rolling-window validation contains ${rollingWindowCases.length - uniqueRollingWindowCases} extra samples across ${duplicateRollingWindowKeys.length} duplicate attempt/opportunity/representative keys`
+    ? `production rolling-window validation contains ${highSnrKnownRollingWindowCases.length - uniqueRollingWindowCases} extra samples across ${duplicateRollingWindowKeys.length} duplicate attempt/opportunity/representative keys`
+    : undefined,
+  duplicateOnlineSpectrumKeys.length !== 0
+    ? `complete online spectrum validation contains ${rollingWindowCases.length - uniqueOnlineSpectrumCases} extra samples across ${duplicateOnlineSpectrumKeys.length} duplicate attempt/opportunity/representative keys`
     : undefined,
   missingRollingKnownScenarioIds.length !== 0
     ? `production rolling-window validation is missing fitted known scenarios: ${missingRollingKnownScenarioIds.join(', ')}`
@@ -1586,6 +2925,24 @@ const acceptanceFailures = [
   rollingIncompatibleNonUnknown.length !== 0
     ? `production rolling-window validation emitted ${rollingIncompatibleNonUnknown.length} incompatible non-unknown decisions`
     : undefined,
+  onlineSpectrumIncompatibleNonUnknown.length !== 0
+    ? `complete online spectrum validation emitted ${onlineSpectrumIncompatibleNonUnknown.length} incompatible non-unknown decisions across all truths and SNRs`
+    : undefined,
+  onlineUnknownFalseAccepts.length !== 0
+    ? `complete online spectrum validation falsely accepted ${onlineUnknownFalseAccepts.length} unknown-truth representatives`
+    : undefined,
+  onlineSpectrumSingletonTruthFittedDomain.length === 0
+    ? 'complete online spectrum validation has no singleton-allowed-truth fit-domain cases for proper scores'
+    : undefined,
+  !Number.isFinite(onlineSpectrumFittedTemplateLogLoss) || onlineSpectrumFittedTemplateLogLoss > 0.5
+    ? `complete online spectrum fitted-template log loss ${onlineSpectrumFittedTemplateLogLoss} > 0.5 or non-finite`
+    : undefined,
+  !Number.isFinite(onlineSpectrumFittedTemplateMulticlassBrier) || onlineSpectrumFittedTemplateMulticlassBrier > 0.2
+    ? `complete online spectrum fitted-template Brier score ${onlineSpectrumFittedTemplateMulticlassBrier} > 0.2 or non-finite`
+    : undefined,
+  !Number.isFinite(onlineSpectrumFittedTemplateExpectedCalibrationError) || onlineSpectrumFittedTemplateExpectedCalibrationError > 0.1
+    ? `complete online spectrum fitted-template ECE ${onlineSpectrumFittedTemplateExpectedCalibrationError} > 0.1 or non-finite`
+    : undefined,
   minimumRollingScenarioCoverage < ROLLING_MINIMUM_PER_SCENARIO_KNOWN_COVERAGE
     ? `minimum per-scenario production rolling-window known coverage ${minimumRollingScenarioCoverage} < ${ROLLING_MINIMUM_PER_SCENARIO_KNOWN_COVERAGE}`
     : undefined,
@@ -1596,7 +2953,7 @@ const acceptanceFailures = [
     ? `sampling partitions overlap or lack metadata (fit/cal seeds=${fittingCalibrationSeedOverlap.join(',') || 'none'}; validation/fit seeds=${validationFittingSeedOverlap.join(',') || 'none'}; validation/cal seeds=${validationCalibrationSeedOverlap.join(',') || 'none'}; validation/fit RBWs=${validationFittingRbwOverlap.join(',') || 'none'}; validation/cal RBWs=${validationCalibrationRbwOverlap.join(',') || 'none'}; validation/fit temporal IDs=${validationTemporalScheduleIdOverlap.join(',') || 'none'}; validation/fit temporal source indices=${validationFitTemporalSourceLookIndexOverlap.join(',') || 'none'}; calibration-seed-count=${modelCalibrationSeeds.length}; calibration-RBW-count=${modelCalibrationRbwDivisors.length}; production-regime-pins=${productionAcquisitionRegimePinsValid})`
     : undefined,
   !tailCalibrationPolicyValid
-    ? `tail-calibration policy/manifest is invalid (score-unit=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit ?? 'missing'}; selection=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy ?? 'missing'}; aggregation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy ?? 'missing'}; runtime-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy ?? 'missing'}; statistical-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation ?? 'missing'}; matrix-pins=${tailCalibrationMatrixPinsValid}; production-regime-pins=${productionAcquisitionRegimePinsValid}; missing-scenarios=${missingTailCalibrationScenarioIds.join(',') || 'none'}; unexpected-scenarios=${unexpectedTailCalibrationScenarioIds.join(',') || 'none'}; invalid-counts=${invalidTailCalibrationAttemptCounts.map((item) => `${item.scenarioId}:${item.count}`).join(',') || 'none'}; view-count-mismatches=${tailCalibrationViewCountMismatches.map((item) => `${item.classId}/${item.view}:${item.observed}/${item.expected}`).join(',') || 'none'})`
+    ? `tail-calibration policy/manifest is invalid (score-unit=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationScoreUnit ?? 'missing'}; selection=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeSelectionPolicy ?? 'missing'}; aggregation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRepresentativeAggregationPolicy ?? 'missing'}; runtime-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationRuntimeInterpretationPolicy ?? 'missing'}; statistical-interpretation=${BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationStatisticalInterpretation ?? 'missing'}; matrix-pins=${tailCalibrationMatrixPinsValid}; production-regime-pins=${productionAcquisitionRegimePinsValid}; missing-scenarios=${missingTailCalibrationScenarioIds.join(',') || 'none'}; unexpected-scenarios=${unexpectedTailCalibrationScenarioIds.join(',') || 'none'}; invalid-counts=${invalidTailCalibrationAttemptCounts.map((item) => `${item.scenarioId}/${item.view}:${item.count ?? 'missing'}`).join(',') || 'none'}; view-count-mismatches=${tailCalibrationViewCountMismatches.map((item) => `${item.classId}/${item.view}:${item.observed}/${item.expected}`).join(',') || 'none'})`
     : undefined,
   !independentTailCalibrationAudit.valid
     ? `independent tail-calibration recomputation failed (attempt-count-mismatches=${independentTailCalibrationAudit.attemptCountMismatches.length}; score-mismatches=${independentTailCalibrationAudit.scoreComparisons.filter((item) => item.expectedCount !== item.observedCount || item.maximumAbsoluteDifference > independentTailCalibrationAudit.scoreTolerance).length}; late-minima=${independentTailCalibrationAudit.lateMinimumCount}; aggregation-regression=${independentTailCalibrationAudit.aggregationRegression.passed})`
@@ -1604,8 +2961,11 @@ const acceptanceFailures = [
   !priorSensitivityAudit.valid
     ? `engineering-prior sensitivity failed (model-prior-pin=${priorSensitivityAudit.modelPriorMatchesPinned}; baseline-mismatches=${priorSensitivityAudit.baselineDecisionMismatchCount}; failing-variants=${priorSensitivityAudit.variants.filter((variant) => !variant.passed).map((variant) => variant.id).join(',') || 'none'})`
     : undefined,
+  !completeOnlineSpectrumPriorSensitivityAudit.valid
+    ? `complete-online spectrum engineering-prior sensitivity failed (model-prior-pin=${completeOnlineSpectrumPriorSensitivityAudit.modelPriorMatchesPinned}; baseline-mismatches=${completeOnlineSpectrumPriorSensitivityAudit.baselineDecisionMismatchCount}; failing-variants=${completeOnlineSpectrumPriorSensitivityAudit.variants.filter((variant) => !variant.passed).map((variant) => variant.id).join(',') || 'none'})`
+    : undefined,
   !manifestSplitValid ? `model manifest split is invalid (missing-pinned-exclusions=${modelExcludedMissingPinnedIds.join(',') || 'none'}; unexpected-model-exclusions=${modelExcludedUnexpectedIds.join(',') || 'none'}; missing-pinned-exact=${modelExactEquivalenceMissingPinnedIds.join(',') || 'none'}; unexpected-model-exact=${modelExactEquivalenceUnexpectedIds.join(',') || 'none'}; missing-pinned-known-acquisition=${modelKnownAcquisitionMissingPinnedIds.join(',') || 'none'}; unexpected-model-known-acquisition=${modelKnownAcquisitionUnexpectedIds.join(',') || 'none'}; missing-fitted-unknown=${fittedUnknownMissingPinnedIds.join(',') || 'none'}; unexpected-fitted-unknown=${fittedUnknownUnexpectedIds.join(',') || 'none'}; missing-exclusions=${invalidExcludedScenarioIds.join(',') || 'none'}; unexpected-non-unknown-exclusions=${nonUnknownExcludedScenarioIds.join(',') || 'none'}; duplicate-exclusions=${duplicateExcludedScenarioIds.join(',') || 'none'}; invalid-known-acquisition=${invalidKnownAcquisitionValidationIds.join(',') || 'none'}; unknown-truth-known-acquisition=${unknownTruthKnownAcquisitionValidationIds.join(',') || 'none'}; known-acquisition-not-excluded=${knownAcquisitionValidationNotExcludedIds.join(',') || 'none'}; fitted-known-acquisition=${knownAcquisitionValidationFittedComponentIds.join(',') || 'none'}; missing-exact=${invalidExactEquivalenceScenarioIds.join(',') || 'none'}; non-unknown-exact=${nonUnknownExactEquivalenceScenarioIds.join(',') || 'none'}; exact-not-excluded=${exactEquivalenceNotExcludedScenarioIds.join(',') || 'none'}; exact-without-alternative=${exactEquivalenceWithoutDeclaredAlternativeIds.join(',') || 'none'}; fitted-exact-components=${exactEquivalenceFittedComponentIds.join(',') || 'none'}; fitted-ambiguous-unknown=${ambiguousUnknownIncludedInComponentFitIds.join(',') || 'none'}; fitted-unknown=${fittedUnknownScenarioIds.length}; excluded-unknown=${excludedUnknownScenarioIds.length})` : undefined,
-  !manifestSplitValid ? `component assignment audit (duplicate=${duplicateFittedComponentScenarioIds.join(',') || 'none'}; missing=${missingFittedComponentScenarioIds.join(',') || 'none'}; unexpected=${unexpectedFittedComponentScenarioIds.join(',') || 'none'}; wrong-class=${wrongClassFittedComponents.map((item) => `${item.scenarioId}:${item.classId}->${item.expectedClassId}`).join(',') || 'none'}; duplicate-classes=${duplicateModelClassIds.join(',') || 'none'}; missing-classes=${missingModelClassIds.join(',') || 'none'}; unexpected-classes=${unexpectedModelClassIds.join(',') || 'none'})` : undefined,
+  !manifestSplitValid ? `component assignment audit (duplicate=${duplicateFittedComponentScenarioIds.join(',') || 'none'}; missing=${missingFittedComponentScenarioIds.join(',') || 'none'}; unexpected=${unexpectedFittedComponentScenarioIds.join(',') || 'none'}; wrong-class=${wrongClassFittedComponents.map((item) => `${item.scenarioId}:${item.classId}->${item.expectedClassId}`).join(',') || 'none'}; ownership=${likelihoodComponentOwnershipMismatches.join(',') || 'none'}; scenario-view-mismatches=${componentScenarioPopulationMismatches.join(',') || 'none'}; assignment-view-mismatches=${componentAssignmentViewMismatches.join(',') || 'none'}; architecture=${componentArchitectureMismatches.join(',') || 'none'}; frequency-agile-censoring=${frequencyAgileCensoringMatrixMismatches.join(',') || 'none'}; duplicate-classes=${duplicateModelClassIds.join(',') || 'none'}; missing-classes=${missingModelClassIds.join(',') || 'none'}; unexpected-classes=${unexpectedModelClassIds.join(',') || 'none'})` : undefined,
   exactEquivalenceDiscrepancyCount !== 0 ? `${exactEquivalenceDiscrepancyCount} exact-equivalence paired nuisance checks differ` : undefined,
   knownAdmissionSeedCoverageFailures.length ? `${knownAdmissionSeedCoverageFailures.length} per-scenario/per-SNR known admission seed-coverage cells failed` : undefined,
   expectedNonAdmissionScenariosWithAdmission.length
@@ -1620,20 +2980,31 @@ const acceptanceFailures = [
   exactEquivalenceCompatibleRate < 1 ? `exact observable-equivalence compatibility ${exactEquivalenceCompatibleRate} < 1` : undefined,
   falseAcceptedUnknown.length !== 0 ? `false-accepted ${falseAcceptedUnknown.length} admitted unknown scenarios` : undefined,
   falseAcceptedUnknownAttemptIds.length !== 0 ? `${falseAcceptedUnknownAttemptIds.length} attempts had at least one false-accepted unknown first-ready representative` : undefined,
-  conditional.hierarchicalAccuracy < 0.95 ? `admission-conditional hierarchical accuracy ${conditional.hierarchicalAccuracy} < 0.95` : undefined,
-  conditional.knownTopLeafAccuracy < 0.85 ? `admission-conditional known top-leaf accuracy ${conditional.knownTopLeafAccuracy} < 0.85` : undefined,
-  conditional.knownCoverage < 0.95 ? `admission-conditional known coverage ${conditional.knownCoverage} < 0.95` : undefined,
-  conditional.minimumHighSnrKnownClassHierarchicalAccuracy < 0.9
-    ? `minimum >=${HIGH_SNR_MINIMUM_DB} dB known-class hierarchical accuracy ${conditional.minimumHighSnrKnownClassHierarchicalAccuracy} < 0.9` : undefined,
-  conditional.fittedTemplateLogLoss > 0.5 ? `fitted-template log loss ${conditional.fittedTemplateLogLoss} > 0.5` : undefined,
-  conditional.fittedTemplateMulticlassBrier > 0.2 ? `fitted-template Brier score ${conditional.fittedTemplateMulticlassBrier} > 0.2` : undefined,
-  conditional.fittedTemplateExpectedCalibrationError > 0.1 ? `fitted-template ECE ${conditional.fittedTemplateExpectedCalibrationError} > 0.1` : undefined,
+  !Number.isFinite(conditional.hierarchicalAccuracy) || conditional.hierarchicalAccuracy < 0.95
+    ? `admission-conditional hierarchical accuracy ${conditional.hierarchicalAccuracy} < 0.95 or non-finite` : undefined,
+  !Number.isFinite(conditional.knownTopLeafAccuracy) || conditional.knownTopLeafAccuracy < 0.85
+    ? `admission-conditional known top-leaf accuracy ${conditional.knownTopLeafAccuracy} < 0.85 or non-finite` : undefined,
+  !Number.isFinite(conditional.knownCoverage) || conditional.knownCoverage < 0.95
+    ? `admission-conditional known coverage ${conditional.knownCoverage} < 0.95 or non-finite` : undefined,
+  !Number.isFinite(conditional.minimumHighSnrKnownClassHierarchicalAccuracy)
+    || conditional.minimumHighSnrKnownClassHierarchicalAccuracy < 0.9
+    ? `minimum >=${HIGH_SNR_MINIMUM_DB} dB known-class hierarchical accuracy ${conditional.minimumHighSnrKnownClassHierarchicalAccuracy} < 0.9 or non-finite` : undefined,
+  !Number.isFinite(conditional.fittedTemplateLogLoss) || conditional.fittedTemplateLogLoss > 0.5
+    ? `fitted-template log loss ${conditional.fittedTemplateLogLoss} > 0.5 or non-finite` : undefined,
+  !Number.isFinite(conditional.fittedTemplateMulticlassBrier) || conditional.fittedTemplateMulticlassBrier > 0.2
+    ? `fitted-template Brier score ${conditional.fittedTemplateMulticlassBrier} > 0.2 or non-finite` : undefined,
+  !Number.isFinite(conditional.fittedTemplateExpectedCalibrationError) || conditional.fittedTemplateExpectedCalibrationError > 0.1
+    ? `fitted-template ECE ${conditional.fittedTemplateExpectedCalibrationError} > 0.1 or non-finite` : undefined,
   !Number.isFinite(conditional.fittedUnknownPosteriorAuroc) || conditional.fittedUnknownPosteriorAuroc < 0.9
     ? `fitted-unknown posterior AUROC ${conditional.fittedUnknownPosteriorAuroc} < 0.9 or non-finite` : undefined,
   !Number.isFinite(conditional.scenarioExcludedStrictTypicalityAuroc) || conditional.scenarioExcludedStrictTypicalityAuroc < 0.9
     ? `strict scenario-excluded support AUROC ${conditional.scenarioExcludedStrictTypicalityAuroc} < 0.9 or non-finite` : undefined,
-  ...Object.entries(conditional.evidenceViews).flatMap(([view, metrics]) => [
-    metrics.admittedSamples !== cases.length ? `${view} expected ${cases.length} admission-conditional cases, observed ${metrics.admittedSamples}` : undefined,
+  ...Object.entries(conditional.evidenceViews).flatMap(([view, metrics]) => {
+    const expectedViewSamples = view === 'envelope-untimed'
+      ? qualifiedCausalEnvelopeSamples.length
+      : cases.length;
+    return [
+    metrics.admittedSamples !== expectedViewSamples ? `${view} expected ${expectedViewSamples} admission-conditional cases, observed ${metrics.admittedSamples}` : undefined,
     metrics.falseAcceptedUnknownCount !== 0 ? `${view} false-accepted ${metrics.falseAcceptedUnknownCount} admitted unknown scenarios` : undefined,
     metrics.anyFalseAcceptAttemptCount !== 0 ? `${view} has ${metrics.anyFalseAcceptAttemptCount} attempts with at least one false-accepted unknown first-ready representative` : undefined,
     metrics.exactEquivalenceSamples === 0 ? `${view} has no admitted exact observable-equivalence null cases` : undefined,
@@ -1642,9 +3013,18 @@ const acceptanceFailures = [
     metrics.strictHoldoutRejectionRate < 1 ? `${view} strict unknown holdout rejection rate ${metrics.strictHoldoutRejectionRate} < 1` : undefined,
     metrics.knownCoverage < 0.8 ? `${view} known coverage ${metrics.knownCoverage} < 0.8` : undefined,
     metrics.coveredKnownHierarchicalAccuracy < 0.9 ? `${view} covered-known hierarchical accuracy ${metrics.coveredKnownHierarchicalAccuracy} < 0.9` : undefined,
+    metrics.singletonAllowedTruthProperScoreSamples === 0
+      ? `${view} has no singleton-allowed-truth fit-domain cases for proper scores` : undefined,
+    !Number.isFinite(metrics.fittedTemplateLogLoss) || metrics.fittedTemplateLogLoss > 0.5
+      ? `${view} fitted-template log loss ${metrics.fittedTemplateLogLoss} > 0.5 or non-finite` : undefined,
+    !Number.isFinite(metrics.fittedTemplateMulticlassBrier) || metrics.fittedTemplateMulticlassBrier > 0.2
+      ? `${view} fitted-template Brier score ${metrics.fittedTemplateMulticlassBrier} > 0.2 or non-finite` : undefined,
+    !Number.isFinite(metrics.fittedTemplateExpectedCalibrationError) || metrics.fittedTemplateExpectedCalibrationError > 0.1
+      ? `${view} fitted-template ECE ${metrics.fittedTemplateExpectedCalibrationError} > 0.1 or non-finite` : undefined,
     !Number.isFinite(metrics.scenarioExcludedStrictSupportAuroc) || metrics.scenarioExcludedStrictSupportAuroc < 0.9
       ? `${view} strict scenario-excluded support AUROC ${metrics.scenarioExcludedStrictSupportAuroc} < 0.9 or non-finite` : undefined,
-  ]),
+  ];
+  }),
 ].filter((value): value is string => value !== undefined);
 const validationAcceptance = {
   schemaVersion: 1,
@@ -1653,6 +3033,8 @@ const validationAcceptance = {
   scope: diagnosticScenarioIdSet.size === 0 ? 'full-corpus' : 'diagnostic-subset',
   failureCount: acceptanceFailures.length,
   modelAssetSha256: checkedInModelAssetSha256,
+  attemptSamplingWorkerRuntimeSha256: modelAttemptSamplingWorkerRuntimeSha256,
+  trainingRuntimeIdentity: modelTrainingRuntimeIdentity,
   modelId: BAYESIAN_OBSERVABLE_MODEL.id,
   sourceCommit: BAYESIAN_OBSERVABLE_MODEL.sourceCommit,
   corpusVersion: BAYESIAN_OBSERVABLE_MODEL.corpusVersion,
@@ -1719,6 +3101,7 @@ function auditExactEquivalencePairs(
   attempts: readonly AdmissionAttempt[],
   validationCases: readonly ValidationCase[],
   viewCases: readonly EvidenceViewCase[],
+  onlineSpectrumCases: readonly RollingWindowCase[],
 ): ExactEquivalencePairAudit[] {
   return PINNED_EXACT_OBSERVABLE_EQUIVALENCE_PAIRS.map(({ referenceScenarioId, nullScenarioId }) => {
     const pair = `${referenceScenarioId}<=>${nullScenarioId}`;
@@ -1727,13 +3110,14 @@ function auditExactEquivalencePairs(
     let matchedAdmissionCells = 0;
     let matchedRepresentativePairs = 0;
     let matchedEvidenceViewPairs = 0;
+    let matchedOnlineSpectrumPairs = 0;
     const add = (
       nuisanceCell: string,
       field: string,
       reference: unknown,
       nullValue: unknown,
       representativeIndex?: number,
-      view?: EvidenceViewCase['view'],
+      view?: EvidenceViewCase['view'] | 'spectrum-online',
     ) => discrepancies.push({
       pair,
       nuisanceCell,
@@ -1760,6 +3144,11 @@ function auditExactEquivalencePairs(
         'everReady',
         'admitted',
         'everReadyRepresentativeCount',
+        'firstReadyRepresentativeCount',
+        'provenanceUnavailableWindowCount',
+        'detectedPowerCaptureCount',
+        'envelopeFeatureAvailable',
+        'envelopeFeatureUnavailableCode',
         'finalReadyRepresentativeCount',
         'finalActiveRepresentativeCount',
         'selectedTrackAdmissions',
@@ -1816,9 +3205,26 @@ function auditExactEquivalencePairs(
           compareExactEvidenceView(referenceViews[index]!, nullViews[index]!, nuisanceCell, index, view, add);
         }
       }
+
+      const referenceOnline = onlineSpectrumCases
+        .filter((item) => item.scenario === referenceScenarioId
+          && item.snrDb === snrDb && item.rbwDivisor === rbwDivisor && item.seed === seed)
+        .sort(compareOnlineSpectrumCasesForPairing);
+      const nullOnline = onlineSpectrumCases
+        .filter((item) => item.scenario === nullScenarioId
+          && item.snrDb === snrDb && item.rbwDivisor === rbwDivisor && item.seed === seed)
+        .sort(compareOnlineSpectrumCasesForPairing);
+      if (referenceOnline.length !== nullOnline.length) {
+        add(nuisanceCell, 'online-spectrum-count', referenceOnline.length, nullOnline.length, undefined, 'spectrum-online');
+      }
+      for (let index = 0; index < Math.min(referenceOnline.length, nullOnline.length); index++) {
+        matchedOnlineSpectrumPairs += 1;
+        compareExactOnlineSpectrumCase(referenceOnline[index]!, nullOnline[index]!, nuisanceCell, index, add);
+      }
     }
     if (matchedRepresentativePairs === 0) add('all', 'matched-representative-pairs', '>0', matchedRepresentativePairs);
     if (matchedEvidenceViewPairs === 0) add('all', 'matched-evidence-view-pairs', '>0', matchedEvidenceViewPairs);
+    if (matchedOnlineSpectrumPairs === 0) add('all', 'matched-online-spectrum-pairs', '>0', matchedOnlineSpectrumPairs);
     return {
       pair,
       referenceScenarioId,
@@ -1827,10 +3233,44 @@ function auditExactEquivalencePairs(
       matchedAdmissionCells,
       matchedRepresentativePairs,
       matchedEvidenceViewPairs,
+      matchedOnlineSpectrumPairs,
       discrepancyCount: discrepancies.length,
       discrepancies: discrepancies.slice(0, 50),
     };
   });
+}
+
+function compareExactOnlineSpectrumCase(
+  referenceCase: RollingWindowCase,
+  nullCase: RollingWindowCase,
+  nuisanceCell: string,
+  representativeIndex: number,
+  add: (
+    nuisanceCell: string,
+    field: string,
+    reference: unknown,
+    nullValue: unknown,
+    representativeIndex?: number,
+    view?: EvidenceViewCase['view'] | 'spectrum-online',
+  ) => void,
+): void {
+  for (const field of [
+    'readyOpportunity',
+    'result',
+    'topLeaf',
+    'topLeafPosterior',
+    'measuredBandwidthHz',
+    'knownSupportRank',
+    'associationMode',
+  ] as const) {
+    if (!equivalentValue(referenceCase[field], nullCase[field])) {
+      add(nuisanceCell, `online-spectrum.${field}`, referenceCase[field], nullCase[field], representativeIndex, 'spectrum-online');
+    }
+  }
+  compareNumericRecords(referenceCase.features, nullCase.features, 'online-spectrum.features', nuisanceCell, representativeIndex,
+    (cell, field, reference, nullValue, index) => add(cell, field, reference, nullValue, index, 'spectrum-online'));
+  compareNumericRecords(referenceCase.posterior, nullCase.posterior, 'online-spectrum.posterior', nuisanceCell, representativeIndex,
+    (cell, field, reference, nullValue, index) => add(cell, field, reference, nullValue, index, 'spectrum-online'));
 }
 
 function compareExactCase(
@@ -1930,6 +3370,13 @@ function compareEvidenceViewCasesForPairing(left: EvidenceViewCase, right: Evide
     || left.representativeKey.localeCompare(right.representativeKey);
 }
 
+function compareOnlineSpectrumCasesForPairing(left: RollingWindowCase, right: RollingWindowCase): number {
+  return left.readyOpportunity - right.readyOpportunity
+    || left.associationMode.localeCompare(right.associationMode)
+    || left.measuredBandwidthHz - right.measuredBandwidthHz
+    || left.representativeKey.localeCompare(right.representativeKey);
+}
+
 function assertCanonicalCorpusSourceArtifactPaths(paths: readonly string[]): void {
   if (new Set(paths).size !== paths.length) throw new Error('SignalLab corpus source manifest contains duplicate artifact paths');
   for (const path of paths) assertRepositoryRelativePath(path, 'SignalLab corpus source artifact');
@@ -2016,10 +3463,36 @@ function gitOutput(arguments_: readonly string[]): Buffer {
   });
 }
 
-function selectProductionFirstReady(sweeps: readonly Sweep[]): ProductionOnlineSelection {
+interface CausalProductionAttemptOptions {
+  readonly scenario: CanonicalClassificationScenario;
+  readonly temporalSchedule: PinnedTemporalSchedule;
+  readonly observationHorizon: number;
+  readonly seed: number;
+  readonly snrDb: number;
+  readonly actualRbwHz: number;
+  readonly detectedPowerSynthesisFilterWidthHz: number;
+  readonly context: string;
+  readonly branch: ProductionAcquisitionBranch;
+}
+
+function acquireProductionAttempt(options: CausalProductionAttemptOptions): ProductionOnlineSelection {
+  const {
+    scenario,
+    temporalSchedule,
+    observationHorizon,
+    seed,
+    snrDb,
+    actualRbwHz,
+    detectedPowerSynthesisFilterWidthHz,
+    context,
+    branch,
+  } = options;
   const detector = new SignalDetector(PRODUCTION_DETECTION_CONFIG);
   const tracker = new SignalTracker(PRODUCTION_DETECTION_CONFIG);
+  const clock = new IndependentCausalSourceClock(temporalSchedule, branch);
+  const sweeps: Sweep[] = [];
   const everReadyRepresentativeKeys = new Set<string>();
+  const admittedRepresentativeKeys = new Set<string>();
   const representatives: FirstReadyRepresentative[] = [];
   const onlineReadyRepresentatives: OnlineReadyRepresentative[] = [];
   const everAssociationModes = new Set<string>();
@@ -2030,39 +3503,264 @@ function selectProductionFirstReady(sweeps: readonly Sweep[]): ProductionOnlineS
   let finalTracks: readonly DetectedSignal[] = [];
   let maximumActiveAdmissions = 0;
   let maximumLocalTrackAdmissions = 0;
+  let provenanceUnavailableWindowCount = 0;
   let firstReadyOpportunity: number | undefined;
-  for (const [lookIndex, sweep] of sweeps.entries()) {
+  let liveEnvelopeCapture: LiveEnvelopeCapture | undefined;
+  for (let lookIndex = 0; lookIndex < observationHorizon; lookIndex++) {
+    const sourceLookIndex = clock.acquireSpectrum();
+    const sourceObservation = synthesizeCanonicalObservation(scenario.id, {
+      lookIndex: sourceLookIndex,
+      seed,
+      snrDb,
+      actualRbwHz,
+      detectedPowerSynthesisFilterWidthHz,
+      points: SWEEP_POINTS,
+      sweepTimeSeconds: SWEEP_TIME_SECONDS,
+      zeroSpanPoints: ZERO_SPAN_POINTS,
+      zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
+    });
+    assertDetectedPowerSynthesisProvenance(
+      sourceObservation,
+      detectedPowerSynthesisFilterWidthHz,
+      `${context} swept observation`,
+    );
+    const sweep = asSweep(scenario, sourceObservation);
+    if (sweep.sequence !== sourceLookIndex + 1) {
+      throw new Error(`${context} spectrum sequence ${sweep.sequence} does not bind source look ${sourceLookIndex}`);
+    }
+    sweeps.push(sweep);
     const tracks = tracker.update(sweep, detector.analyze(sweep));
     finalTracks = tracks;
-    const activeRepresentatives = classificationRepresentatives(tracks.filter((track) => track.state === 'active'));
-    const readyRepresentatives = activeRepresentatives
-      .filter((track) => classificationSourceSweepIds(track).length >= CLASSIFICATION_ADMISSIONS)
-      // Retained operator-visible associations below their current promotion
-      // gate are honest insufficient-evidence results, not observation-domain-eligible
-      // rolling classifier windows.
-      .filter(observableAssociationEvidenceIsCurrentlyQualified)
-      .map((detection) => ({ detection, representativeKey: classificationRepresentativeKey(detection) }))
-      .sort((left, right) => left.representativeKey.localeCompare(right.representativeKey));
-    if (readyRepresentatives.length > 0 && firstReadyOpportunity === undefined) firstReadyOpportunity = lookIndex + 1;
-    for (const { detection, representativeKey } of readyRepresentatives) {
-      onlineReadyRepresentatives.push({
-        detection: structuredClone(detection),
-        representativeKey,
-        classificationAdmissions: classificationSourceSweepIds(detection).length,
-        localTrackAdmissions: detection.sweepIds.length,
-        readyOpportunity: lookIndex + 1,
-        evidenceSweeps: sweeps.slice(0, lookIndex + 1),
-      });
-      if (everReadyRepresentativeKeys.has(representativeKey)) continue;
+    const activeTracks = tracks.filter((track) => track.state === 'active');
+    const captureTargetProjections = branch === 'qualified-envelope'
+      ? classificationCaptureTargetProjections(tracks)
+      : [];
+    const activeRepresentatives = branch === 'qualified-envelope'
+      ? captureTargetProjections.map((projection) =>
+          projection.projectedRepresentative)
+      : classificationRepresentatives(activeTracks);
+    if (branch === 'qualified-envelope') {
+      const independentlyRanked = independentlyReplayCaptureTargetProjections(tracks);
+      if (captureTargetProjections.length !== independentlyRanked.length
+        || captureTargetProjections.some((projection, index) => {
+          const independent = independentlyRanked[index];
+          return independent === undefined
+            || projection.rawTarget.id !== independent.rawTarget.id
+            || projection.projectedRepresentative.id
+              !== independent.projectedRepresentative.id
+            || projection.projectionKind !== independent.projectionKind;
+        })) {
+        throw new Error(
+          `${context} shared detected-power target selection disagrees with the independent v3 physical/agile-member replay`,
+        );
+      }
+    }
+    const readyRepresentatives: readonly {
+      detection: DetectedSignal;
+      representativeKey: string;
+      rawTarget?: DetectedSignal;
+      projectionKind?: DetectedPowerCaptureProjectionKind;
+    }[] = branch === 'qualified-envelope'
+      ? captureTargetProjections
+          .filter(({ projectedRepresentative }) =>
+            classificationSourceSweepIds(projectedRepresentative).length
+              >= CLASSIFICATION_ADMISSIONS)
+          .filter(({ projectedRepresentative }) =>
+            observableAssociationEvidenceIsCurrentlyQualified(
+              projectedRepresentative,
+            ))
+          .map(({ rawTarget, projectedRepresentative, projectionKind }) => ({
+            detection: projectedRepresentative,
+            rawTarget,
+            projectionKind,
+            representativeKey: classificationRepresentativeKey(
+              projectedRepresentative,
+            ),
+          }))
+      : activeRepresentatives
+          .filter((track) =>
+            classificationSourceSweepIds(track).length
+              >= CLASSIFICATION_ADMISSIONS)
+          // Retained operator-visible associations below their current
+          // promotion gate are honest insufficient-evidence results, not
+          // observation-domain-eligible rolling classifier windows.
+          .filter(observableAssociationEvidenceIsCurrentlyQualified)
+          .map((detection) => ({
+            detection,
+            representativeKey: classificationRepresentativeKey(detection),
+          }));
+    for (const readyRepresentative of readyRepresentatives) {
+      const { detection, representativeKey, rawTarget, projectionKind } =
+        readyRepresentative;
       everReadyRepresentativeKeys.add(representativeKey);
-      representatives.push({
-        detection: structuredClone(detection),
-        representativeKey,
-        classificationAdmissions: classificationSourceSweepIds(detection).length,
-        localTrackAdmissions: detection.sweepIds.length,
-        firstReadyOpportunity: lookIndex + 1,
-        evidenceSweeps: sweeps.slice(0, lookIndex + 1),
+      const evidenceSweeps = sweeps.slice(0, lookIndex + 1);
+      let spectrumObservation: ObservableFeatureObservation;
+      try {
+        // Match runtime admission before recording either the first-ready
+        // representative or an online tail-calibration window. A tracker can
+        // be ready while its latest local history remains non-unique; runtime
+        // reports that case as insufficient evidence rather than classifying.
+        spectrumObservation = extractObservableFeatures(detection, { sweeps: evidenceSweeps });
+      } catch (error) {
+        if (error instanceof ObservableEvidenceUnavailableError
+          && (error.code === 'local-history-not-uniquely-replayable'
+            || error.code === 'insufficient-roi-bins')) {
+          provenanceUnavailableWindowCount += 1;
+          continue;
+        }
+        throw error;
+      }
+      if (firstReadyOpportunity === undefined) firstReadyOpportunity = lookIndex + 1;
+      if (branch === 'consecutive-spectrum') {
+        onlineReadyRepresentatives.push({
+          detection: structuredClone(detection),
+          representativeKey,
+          classificationAdmissions: classificationSourceSweepIds(detection).length,
+          localTrackAdmissions: detection.sweepIds.length,
+          readyOpportunity: lookIndex + 1,
+          evidenceSweeps,
+          spectrumObservation,
+        });
+      }
+      let firstReadyRepresentative = representatives.find((item) => item.representativeKey === representativeKey);
+      if (!admittedRepresentativeKeys.has(representativeKey)) {
+        admittedRepresentativeKeys.add(representativeKey);
+        firstReadyRepresentative = {
+          detection: structuredClone(detection),
+          representativeKey,
+          classificationAdmissions: classificationSourceSweepIds(detection).length,
+          localTrackAdmissions: detection.sweepIds.length,
+          firstReadyOpportunity: lookIndex + 1,
+          evidenceSweeps,
+          spectrumObservation,
+          ...(rawTarget === undefined
+            ? {}
+            : { rawCaptureTarget: structuredClone(rawTarget) }),
+          ...(projectionKind === undefined ? {} : { captureProjectionKind: projectionKind }),
+        };
+        representatives.push(firstReadyRepresentative);
+      }
+      if (branch === 'consecutive-spectrum' || liveEnvelopeCapture !== undefined) continue;
+      if (firstReadyRepresentative === undefined) {
+        throw new Error(`${context} could not retain the representative that triggered its sole detected-power capture`);
+      }
+      if (!rawTarget || !projectionKind) {
+        throw new Error(
+          `${context} qualified-envelope admission lacks its physical raw target projection`,
+        );
+      }
+      const detectedPowerSourceLookIndex = clock.acquireDetectedPower(sourceLookIndex, lookIndex + 1);
+      const zeroSpanTuneHz = projectDetectedPowerTuneHz(
+        rawTarget.peakHz,
+        SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+      );
+      const detectedPowerObservation = synthesizeCanonicalObservation(scenario.id, {
+        lookIndex: detectedPowerSourceLookIndex,
+        seed,
+        snrDb,
+        actualRbwHz,
+        detectedPowerSynthesisFilterWidthHz,
+        points: SWEEP_POINTS,
+        sweepTimeSeconds: SWEEP_TIME_SECONDS,
+        zeroSpanPoints: ZERO_SPAN_POINTS,
+        zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
+        zeroSpanFrequencyHz: zeroSpanTuneHz,
       });
+      assertDetectedPowerSynthesisProvenance(
+        detectedPowerObservation,
+        detectedPowerSynthesisFilterWidthHz,
+        `${context} detected-power observation`,
+      );
+      const zeroSpan = asZeroSpan(detectedPowerObservation, rawTarget);
+      if (zeroSpan.sequence !== detectedPowerSourceLookIndex + 1) {
+        throw new Error(`${context} detected-power sequence ${zeroSpan.sequence} does not bind source look ${detectedPowerSourceLookIndex}`);
+      }
+      const detectedPowerCaptureReceipt = createDetectedPowerCaptureReceipt({
+        activeSignals: tracks,
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        admittedTargetTuneHz: zeroSpanTuneHz,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+      });
+      assertIndependentDetectedPowerCaptureReceipt({
+        receipt: detectedPowerCaptureReceipt,
+        tracks,
+        evidenceSweeps: sweeps,
+        capture: zeroSpan,
+        selectedRawTarget: rawTarget,
+        selectedRepresentative: detection,
+        selectedProjectionKind: projectionKind,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+        admittedTargetTuneHz: zeroSpanTuneHz,
+        context,
+      });
+      assertDetectedPowerCaptureReceiptMatches({
+        receipt: detectedPowerCaptureReceipt,
+        detection,
+        capture: zeroSpan,
+        spectrumSweepIds: spectrumObservation.sweepIds,
+      });
+      const frequencyAgileCapture =
+        detection.associationMode === 'frequency-agile-2g4-activity';
+      if (frequencyAgileCapture) {
+        if (projectionKind !== 'current-qualified-agile-latest-member') {
+          throw new Error(
+            `${context} frequency-agile classifier evidence was not projected from its exact current physical member`,
+          );
+        }
+      }
+      try {
+        // Always give production the complete receipt-qualified capture. For
+        // agile activity, the extractor must verify the receipt and enact its
+        // fixed-tune censoring; the validator must not synthesize that result.
+        const receiptQualifiedObservation =
+          extractValidatorReceiptQualifiedObservation({
+            detection,
+            evidenceSweeps,
+            spectrumObservation,
+            zeroSpan,
+            detectedPowerCaptureReceipt,
+          });
+        if (frequencyAgileCapture) {
+          liveEnvelopeCapture = {
+            representative: firstReadyRepresentative,
+            zeroSpan,
+            detectedPowerCaptureReceipt,
+            sourceLookIndex: detectedPowerSourceLookIndex,
+            classifierObservation: receiptQualifiedObservation,
+            detectedPowerEvidenceDisposition:
+              'censored-frequency-agile-spectrum-only',
+            envelopeEvidenceCensoringPolicyId:
+              PINNED_FREQUENCY_AGILE_ENVELOPE_CENSORING_POLICY_ID,
+          };
+          continue;
+        }
+        if (receiptQualifiedObservation.detectedPowerAcquisitionQualification
+          !== PINNED_DETECTED_POWER_ACQUISITION_QUALIFICATION) {
+          throw new Error(`${context} causal detected-power capture was not admitted into its bound envelope view`);
+        }
+        liveEnvelopeCapture = {
+          representative: firstReadyRepresentative,
+          zeroSpan,
+          detectedPowerCaptureReceipt,
+          sourceLookIndex: detectedPowerSourceLookIndex,
+          classifierObservation: receiptQualifiedObservation,
+          detectedPowerEvidenceDisposition: 'admitted-envelope',
+          envelopeObservation: receiptQualifiedObservation,
+        };
+      } catch (error) {
+        if (!(error instanceof ObservableEvidenceUnavailableError)
+          || frequencyAgileCapture) throw error;
+        liveEnvelopeCapture = {
+          representative: firstReadyRepresentative,
+          zeroSpan,
+          detectedPowerCaptureReceipt,
+          sourceLookIndex: detectedPowerSourceLookIndex,
+          classifierObservation: spectrumObservation,
+          detectedPowerEvidenceDisposition: 'admitted-envelope',
+          unavailableCode: error.code,
+        };
+      }
     }
     for (const representative of activeRepresentatives) {
       const associationMode = representative.associationMode ?? 'frequency-local';
@@ -2084,12 +3782,24 @@ function selectProductionFirstReady(sweeps: readonly Sweep[]): ProductionOnlineS
   const finalActiveRepresentatives = classificationRepresentatives(finalTracks.filter((track) => track.state === 'active'));
   const finalReadyRepresentatives = finalActiveRepresentatives
     .filter((track) => classificationSourceSweepIds(track).length >= CLASSIFICATION_ADMISSIONS);
+  const acquisitionTrace = clock.trace();
+  const expectedDetectedPowerCaptures = branch === 'qualified-envelope'
+    && liveEnvelopeCapture !== undefined ? 1 : 0;
+  if (acquisitionTrace.spectrumSourceLookIndices.length !== observationHorizon
+    || acquisitionTrace.detectedPowerSourceLookIndices.length
+      !== expectedDetectedPowerCaptures
+    || acquisitionTrace.sourceLookIndices.length
+      !== observationHorizon + expectedDetectedPowerCaptures
+    || (branch === 'consecutive-spectrum' && liveEnvelopeCapture !== undefined)) {
+    throw new Error(`${context} did not preserve its exact ${branch} physical-acquisition contract`);
+  }
   return {
     representatives: representatives.sort((left, right) => left.firstReadyOpportunity - right.firstReadyOpportunity
       || left.representativeKey.localeCompare(right.representativeKey)),
     onlineReadyRepresentatives: onlineReadyRepresentatives.sort((left, right) => left.readyOpportunity - right.readyOpportunity
       || left.representativeKey.localeCompare(right.representativeKey)),
     everReadyRepresentativeKeys: [...everReadyRepresentativeKeys].sort(),
+    provenanceUnavailableWindowCount,
     finalReadyRepresentativeCount: finalReadyRepresentatives.length,
     finalActiveRepresentativeCount: finalActiveRepresentatives.length,
     maximumActiveAdmissions,
@@ -2100,6 +3810,8 @@ function selectProductionFirstReady(sweeps: readonly Sweep[]): ProductionOnlineS
     regularAssociationIds: [...regularAssociationIds].sort(),
     agileAssociationIds: [...agileAssociationIds].sort(),
     regularAssociationExpirations: expiredRegularAssociationIds.size,
+    ...(liveEnvelopeCapture === undefined ? {} : { liveEnvelopeCapture }),
+    acquisitionTrace,
   };
 }
 
@@ -2118,6 +3830,222 @@ function validationAttemptId(scenarioId: string, snrDb: number, rbwDivisor: numb
 function classificationRepresentativeKey(track: DetectedSignal): string {
   const associationMode = track.associationMode ?? 'frequency-local';
   return `${associationMode}:${associationMode === 'frequency-local' ? track.id : track.associationId ?? track.id}`;
+}
+
+function assertIndependentDetectedPowerCaptureReceipt({
+  receipt,
+  tracks,
+  evidenceSweeps,
+  capture,
+  selectedRawTarget,
+  selectedRepresentative,
+  selectedProjectionKind,
+  spectrumSweepIds,
+  admittedTargetTuneHz,
+  context,
+}: {
+  receipt: DetectedPowerCaptureReceipt;
+  tracks: readonly DetectedSignal[];
+  evidenceSweeps: readonly Sweep[];
+  capture: ZeroSpanCapture;
+  selectedRawTarget: DetectedSignal;
+  selectedRepresentative: DetectedSignal;
+  selectedProjectionKind: DetectedPowerCaptureProjectionKind;
+  spectrumSweepIds: readonly string[];
+  admittedTargetTuneHz: number;
+  context: string;
+}): void {
+  const independentlyRanked = independentlyReplayCaptureTargetProjections(tracks);
+  const eligibleRawTargetIds = new Set(
+    independentlyRanked.map((projection) => projection.rawTarget.id),
+  );
+  const inputOrdinalById = new Map(
+    tracks.filter((track) => eligibleRawTargetIds.has(track.id))
+      .map((track, inputOrdinal) => [track.id, inputOrdinal] as const),
+  );
+  const expectedRuntimeAdmissionByRawTargetId = new Map(
+    independentlyRanked.map((projection) => [
+      projection.rawTarget.id,
+      independentlyReplayRuntimeAdmission(
+        projection.projectedRepresentative,
+        evidenceSweeps,
+      ),
+    ] as const),
+  );
+  const sameOptionalStrings = (
+    left: readonly string[] | undefined,
+    right: readonly string[] | undefined,
+  ) => left === undefined
+    ? right === undefined
+    : right !== undefined
+      && left.length === right.length
+      && left.every((value, index) => value === right[index]);
+  const candidateOrderMatches = receipt.candidates.length === independentlyRanked.length
+    && receipt.candidates.every((candidate, rank) => {
+      const projection: IndependentlyReplayedCaptureTargetProjection =
+        independentlyRanked[rank]!;
+      const { rawTarget, projectedRepresentative, projectionKind } = projection;
+      const expectedRuntimeAdmission =
+        expectedRuntimeAdmissionByRawTargetId.get(rawTarget.id);
+      return candidate.rank === rank
+        && candidate.inputOrdinal === inputOrdinalById.get(rawTarget.id)
+        && candidate.rawTargetId === rawTarget.id
+        && candidate.currentPeakDbm === rawTarget.peakDbm
+        && candidate.currentPeakHz === rawTarget.peakHz
+        && candidate.currentStartHz === rawTarget.startHz
+        && candidate.currentStopHz === rawTarget.stopHz
+        && candidate.state === rawTarget.state
+        && candidate.missedSweeps === rawTarget.missedSweeps
+        && candidate.lastSeenAt === rawTarget.lastSeenAt
+        && candidate.associationMode === rawTarget.associationMode
+        && candidate.associationId === rawTarget.associationId
+        && sameOptionalStrings(
+          candidate.associationMemberTrackIds,
+          rawTarget.associationMemberTrackIds,
+        )
+        && candidate.associationMissedSweeps
+          === rawTarget.associationMissedSweeps
+        && candidate.projectionKind === projectionKind
+        && candidate.projectedRepresentativeId === projectedRepresentative.id
+        && expectedRuntimeAdmission !== undefined
+        && sameRuntimeAdmission(
+          candidate.runtimeAdmission,
+          expectedRuntimeAdmission,
+        );
+    });
+  if (!candidateOrderMatches) {
+    throw new Error(
+      `${context} detected-power receipt candidate evidence disagrees with the independent peak/key/ID ordering`,
+    );
+  }
+  const sameSpectrumWindow = receipt.spectrumSweepIds.length === spectrumSweepIds.length
+    && receipt.spectrumSweepIds.every(
+      (sweepId, index) => sweepId === spectrumSweepIds[index],
+    );
+  const selectedCandidate = receipt.candidates.find(
+    (candidate) => candidate.rawTargetId === receipt.selection.rawTargetId,
+  );
+  const independentlySelectedProjection = independentlyRanked.find(
+    (projection) => projection.rawTarget.id === selectedRawTarget.id,
+  );
+  const firstIndependentlyAdmittedProjection = independentlyRanked.find(
+    (projection) => expectedRuntimeAdmissionByRawTargetId
+      .get(projection.rawTarget.id)?.status === 'admitted',
+  );
+  const selectedAdmissionWindowMatches = selectedCandidate?.runtimeAdmission.status === 'admitted'
+    && selectedCandidate.runtimeAdmission.spectrumSweepIds.length
+      === spectrumSweepIds.length
+    && selectedCandidate.runtimeAdmission.spectrumSweepIds.every(
+      (sweepId, index) => sweepId === spectrumSweepIds[index],
+    );
+  const projectedRepresentativeSnapshotMatches =
+    receipt.projectedRepresentative.id === selectedRepresentative.id
+    && receipt.projectedRepresentative.startHz === selectedRepresentative.startHz
+    && receipt.projectedRepresentative.stopHz === selectedRepresentative.stopHz
+    && receipt.projectedRepresentative.peakHz === selectedRepresentative.peakHz
+    && receipt.projectedRepresentative.peakDbm === selectedRepresentative.peakDbm
+    && receipt.projectedRepresentative.bandwidthHz
+      === selectedRepresentative.bandwidthHz
+    && receipt.projectedRepresentative.missedSweeps
+      === selectedRepresentative.missedSweeps
+    && receipt.projectedRepresentative.lastSeenAt
+      === selectedRepresentative.lastSeenAt
+    && receipt.projectedRepresentative.associationMode
+      === selectedRepresentative.associationMode
+    && receipt.projectedRepresentative.associationId
+      === selectedRepresentative.associationId
+    && sameOptionalStrings(
+      receipt.projectedRepresentative.associationMemberTrackIds,
+      selectedRepresentative.associationMemberTrackIds,
+    )
+    && receipt.projectedRepresentative.associationMissedSweeps
+      === selectedRepresentative.associationMissedSweeps;
+  const independentlyProjectedTuneHz = projectDetectedPowerTuneHz(
+    selectedRawTarget.peakHz,
+    SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+  );
+  if (receipt.schemaVersion !== 3
+    || receipt.capturePolicyId !== PINNED_DETECTED_POWER_CAPTURE_POLICY_ID
+    || receipt.targetSelectionPolicyId
+      !== PINNED_CAPTURE_TARGET_SELECTION_POLICY_ID
+    || receipt.runtimeAdmissionPolicyId
+      !== PINNED_CAPTURE_RUNTIME_ADMISSION_POLICY_ID
+    || receipt.selection.mode !== 'strongest-current'
+    || receipt.selection.preferredRawTargetId !== undefined
+    || independentlySelectedProjection?.projectedRepresentative.id
+      !== selectedRepresentative.id
+    || independentlySelectedProjection?.projectionKind !== selectedProjectionKind
+    || firstIndependentlyAdmittedProjection?.rawTarget.id
+      !== selectedRawTarget.id
+    || receipt.selection.rawTargetId !== selectedRawTarget.id
+    || receipt.selection.projectedRepresentativeId !== selectedRepresentative.id
+    || selectedCandidate?.projectedRepresentativeId !== selectedRepresentative.id
+    || selectedCandidate?.projectionKind !== selectedProjectionKind
+    || !selectedAdmissionWindowMatches
+    || !projectedRepresentativeSnapshotMatches
+    || admittedTargetTuneHz !== independentlyProjectedTuneHz
+    || receipt.capture.id !== capture.id
+    || receipt.capture.sequence !== capture.sequence
+    || receipt.capture.capturedAt !== capture.capturedAt
+    || receipt.capture.measurementIdentityKey
+      !== measurementIdentityKey(capture.identity)
+    || receipt.capture.targetDetectionId !== selectedRawTarget.id
+    || receipt.capture.targetDetectionId !== capture.targetDetectionId
+    || receipt.capture.admittedTargetTuneHz !== admittedTargetTuneHz
+    || receipt.capture.frequencyHz !== capture.frequencyHz
+    || receipt.capture.requestedCenterHz !== capture.requested.centerHz
+    || receipt.capture.payloadBinding.algorithm !== 'sha256'
+    || receipt.capture.payloadBinding.canonicalization
+      !== 'zero-span-capture-canonical-json-v1'
+    || receipt.capture.payloadBinding.sha256
+      !== independentDetectedPowerCapturePayloadSha256(capture)
+    || capture.frequencyHz !== admittedTargetTuneHz
+    || capture.requested.centerHz !== admittedTargetTuneHz
+    || !sameSpectrumWindow) {
+    throw new Error(
+      `${context} detected-power receipt does not bind the independently selected current target, tune, exact spectrum window, and complete canonical capture payload`,
+    );
+  }
+}
+
+function independentlyReplayRuntimeAdmission(
+  projectedRepresentative: DetectedSignal,
+  evidenceSweeps: readonly Sweep[],
+): DetectedPowerCaptureReceipt['candidates'][number]['runtimeAdmission'] {
+  if (!observableAssociationEvidenceIsCurrentlyQualified(
+    projectedRepresentative,
+  )) {
+    return {
+      status: 'unavailable',
+      reason: 'association-not-currently-qualified',
+    };
+  }
+  try {
+    const observation = extractObservableFeatures(projectedRepresentative, {
+      sweeps: evidenceSweeps,
+    });
+    return observation.sweepIds.length === CLASSIFICATION_ADMISSIONS
+      ? { status: 'admitted', spectrumSweepIds: [...observation.sweepIds] }
+      : { status: 'unavailable', reason: 'insufficient-spectrum-history' };
+  } catch (error) {
+    if (!(error instanceof ObservableEvidenceUnavailableError)) throw error;
+    return { status: 'unavailable', reason: error.code };
+  }
+}
+
+function sameRuntimeAdmission(
+  left: DetectedPowerCaptureReceipt['candidates'][number]['runtimeAdmission'],
+  right: DetectedPowerCaptureReceipt['candidates'][number]['runtimeAdmission'],
+): boolean {
+  if (left.status !== right.status) return false;
+  if (left.status === 'unavailable') {
+    return right.status === 'unavailable' && left.reason === right.reason;
+  }
+  return right.status === 'admitted'
+    && left.spectrumSweepIds.length === right.spectrumSweepIds.length
+    && left.spectrumSweepIds.every(
+      (sweepId, index) => sweepId === right.spectrumSweepIds[index],
+    );
 }
 
 function classificationSourceSweepIds(track: DetectedSignal): readonly string[] {
@@ -2177,7 +4105,7 @@ function asZeroSpan(observation: ReturnType<typeof synthesizeCanonicalObservatio
     controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
   });
   return {
-    kind: 'zero-span', id: `zero-${observation.scenarioId}-${observation.seed}-${observation.lookIndex}`, sequence: 1,
+    kind: 'zero-span', id: `zero-${observation.scenarioId}-${observation.seed}-${observation.lookIndex}`, sequence: observation.lookIndex + 1,
     capturedAt: new Date(Date.UTC(2026, 0, 1) + observation.lookIndex * observation.sweepTimeSeconds * 1_000).toISOString(), elapsedMilliseconds: sweepTimeSeconds * 1_000,
     frequencyHz: observation.zeroSpanFrequencyHz, samplePeriodSeconds: observation.zeroSpanSamplePeriodSeconds, timingQualification: 'simulation-exact',
     targetDetectionId: detection.id,
@@ -2189,7 +4117,10 @@ function asZeroSpan(observation: ReturnType<typeof synthesizeCanonicalObservatio
   };
 }
 
-function auditPriorSensitivity(validationCases: readonly ValidationCase[]) {
+function auditPriorSensitivity(
+  validationCases: readonly (ValidationCase | RollingWindowCase)[],
+  population: 'capture-qualified-selected-view' | 'complete-online-spectrum',
+) {
   const variants = [
     {
       id: 'engineering-baseline-v1',
@@ -2229,6 +4160,9 @@ function auditPriorSensitivity(validationCases: readonly ValidationCase[]) {
   const evaluated = variants.map((variant) => {
     const priorTotal = OBSERVABLE_LEAF_CLASSES.reduce((sum, id) => sum + variant.prior[id], 0);
     const decisions = validationCases.map((item) => {
+      const bandwidthHz = 'bandwidthHz' in item
+        ? item.bandwidthHz
+        : item.measuredBandwidthHz;
       const observation: ObservableFeatureObservation = {
         values: item.features,
         limitations: item.limitations as ObservableFeatureObservation['limitations'],
@@ -2238,14 +4172,20 @@ function auditPriorSensitivity(validationCases: readonly ValidationCase[]) {
         occupiedStartHz: item.occupiedStartHz,
         occupiedStopHz: item.occupiedStopHz,
         centerHz: item.centerHz,
-        bandwidthHz: item.bandwidthHz,
+        bandwidthHz,
         binWidthHz: item.binWidthHz,
         sweepIds: Array.from({ length: CLASSIFICATION_ADMISSIONS }, (_unused, index) => `prior-audit-${index}`),
-        views: item.features['envelope.logTransitionRateHz'] === undefined
-          ? Object.keys(item.features).some((name) => name.startsWith('envelope.'))
-            ? ['scalar-spectrum', 'detected-power-envelope']
-            : ['scalar-spectrum']
-          : ['scalar-spectrum', 'detected-power-envelope'],
+        views: item.views,
+        ...('zeroSpanCaptureId' in item && item.zeroSpanCaptureId !== undefined
+          ? { zeroSpanCaptureId: item.zeroSpanCaptureId }
+          : {}),
+        ...('detectedPowerAcquisitionQualification' in item
+          && item.detectedPowerAcquisitionQualification !== undefined
+          ? {
+              detectedPowerAcquisitionQualification:
+                item.detectedPowerAcquisitionQualification,
+            }
+          : {}),
       };
       const posterior = posteriorUnderDeclaredPrior(observation, variant.prior);
       const selected = item.limitations.includes('partial-span-boundary-censoring')
@@ -2256,7 +4196,7 @@ function auditPriorSensitivity(validationCases: readonly ValidationCase[]) {
         result,
         item.allowedModelTruths,
         item.nominalBandwidthHz,
-        item.bandwidthHz,
+        bandwidthHz,
       );
       return { item, result, acceptedHierarchy };
     });
@@ -2304,27 +4244,13 @@ function auditPriorSensitivity(validationCases: readonly ValidationCase[]) {
     qualification: 'deterministic-synthetic-engineering-prior-sensitivity-not-field-prevalence-calibration',
     fieldPrevalenceCalibrated: false,
     fieldValidationLimitation: 'Operational class prevalence and prior calibration remain unmeasured release limitations requiring representative physical survey data.',
+    population,
+    samples: validationCases.length,
     gates: PRIOR_SENSITIVITY_GATES,
     modelPriorMatchesPinned,
     baselineDecisionMismatchCount,
     variants: evaluated,
   };
-}
-
-function posteriorUnderDeclaredPrior(
-  observation: ObservableFeatureObservation,
-  prior: Readonly<Record<ObservableLeafClass, number>>,
-): readonly PosteriorCandidate[] {
-  const values = BAYESIAN_OBSERVABLE_MODEL.classModels.map((model) => {
-    const logLikelihood = mixtureLogLikelihood(observation.values, model.components);
-    const logJoint = observableRepresentativeIsInClassDomain(model.id, observation)
-      ? Math.log(prior[model.id]) + logLikelihood
-      : Number.NEGATIVE_INFINITY;
-    return { id: model.id, logLikelihood, logJoint };
-  });
-  const normalization = logSumExp(values.map((value) => value.logJoint));
-  return values.map((value) => ({ ...value, probability: Math.exp(value.logJoint - normalization) }))
-    .sort((left, right) => right.probability - left.probability);
 }
 
 function priorWithUnknownMass(unknownMass: number): Record<ObservableLeafClass, number> {
@@ -2378,22 +4304,131 @@ function pinnedCalibrationDetectedPowerSynthesisFilterWidthHz(
     : actualRbwHz;
 }
 
-function pinnedSourceLookIndex(
-  temporalSchedule: PinnedTemporalSchedule,
-  zeroBasedSpectrumOpportunity: number,
-): number {
-  const skipped = temporalSchedule.skipAfterSpectrumOpportunities !== null
-    && zeroBasedSpectrumOpportunity >= temporalSchedule.skipAfterSpectrumOpportunities
-    ? temporalSchedule.skippedSourceOpportunities
-    : 0;
-  return temporalSchedule.sourceLookIndexOffset + zeroBasedSpectrumOpportunity + skipped;
+function branchSchedule(
+  branch: ProductionAcquisitionBranch,
+  sourcePlanProfileId: string,
+  sourceLookIndexOffset: number,
+  sourcePlanSpectrumOpportunities: number,
+): PinnedTemporalSchedule {
+  return Object.freeze({
+    id: branch === 'consecutive-spectrum'
+      ? `live-spectrum-release-gate-${sourcePlanProfileId}-start-v3`
+      : `live-qualified-envelope-release-gate-${sourcePlanProfileId}-start-v3`,
+    sourcePlanProfileId,
+    sourceLookIndexOffset,
+    sourcePlanSpectrumOpportunities,
+  });
 }
 
-function pinnedInterleavedCaptureLookIndex(
+function possibleBranchSourceLookIndices(
   temporalSchedule: PinnedTemporalSchedule,
-  zeroBasedSpectrumOpportunity: number,
-): number {
-  return pinnedSourceLookIndex(temporalSchedule, zeroBasedSpectrumOpportunity) + 1;
+  maximumSpectrumOpportunities: number,
+  branch: ProductionAcquisitionBranch,
+): readonly number[] {
+  return Array.from(
+    { length: maximumSpectrumOpportunities + (branch === 'qualified-envelope' ? 1 : 0) },
+    (_, offset) => temporalSchedule.sourceLookIndexOffset + offset,
+  );
+}
+
+function auditHeldOutSourceSpan(scenarios: readonly CanonicalClassificationScenario[]) {
+  const possibleSourceLookIndices = [
+    ...possibleBranchSourceLookIndices(
+      PINNED_VALIDATION_SPECTRUM_TEMPORAL_SCHEDULE,
+      FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+      'consecutive-spectrum',
+    ),
+    ...possibleBranchSourceLookIndices(
+      PINNED_VALIDATION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
+      FULL_BAND_2G4_OBSERVATION_OPPORTUNITIES,
+      'qualified-envelope',
+    ),
+  ];
+  const scenariosAudit = scenarios.map((scenario) => {
+    const driftHzPerLook = scenario.parameters.driftHzPerLook ?? 0;
+    const maximumAbsoluteDeclaredDriftHz = Math.max(
+      ...possibleSourceLookIndices.map((lookIndex) => Math.abs((lookIndex - 4) * driftHzPerLook)),
+    );
+    const availableCenterDriftMarginHz = Math.max(
+      0,
+      (scenario.recommendedSpanHz - scenario.occupiedBandwidthHz) / 2,
+    );
+    const declaredDriftRemainsInSpan = maximumAbsoluteDeclaredDriftHz <= availableCenterDriftMarginHz;
+    let minimumInjectedSignalGainDb: number | null = null;
+    if (driftHzPerLook !== 0) {
+      const actualRbwHz = Math.max(scenario.recommendedSpanHz / (SWEEP_POINTS - 1), 1_000);
+      const perLookSignalGainDb = possibleSourceLookIndices.map((lookIndex) => {
+        const common = {
+          lookIndex,
+          seed: NUISANCE_SHIFT_SEEDS[0],
+          actualRbwHz,
+          detectedPowerSynthesisFilterWidthHz: actualRbwHz,
+          points: SWEEP_POINTS,
+          sweepTimeSeconds: SWEEP_TIME_SECONDS,
+          zeroSpanPoints: ZERO_SPAN_POINTS,
+          zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
+        } as const;
+        const signal = synthesizeCanonicalObservation(scenario.id, { ...common, snrDb: 32 });
+        const noiseReference = synthesizeCanonicalObservation(scenario.id, { ...common, snrDb: -120 });
+        return Math.max(...signal.powerDbm.map((powerDbm, index) =>
+          powerDbm - noiseReference.powerDbm[index]!));
+      });
+      minimumInjectedSignalGainDb = Math.min(...perLookSignalGainDb);
+    }
+    const signalVisibilityValid = minimumInjectedSignalGainDb === null || minimumInjectedSignalGainDb > 1;
+    return {
+      scenarioId: scenario.id,
+      driftHzPerLook,
+      maximumAbsoluteDeclaredDriftHz,
+      availableCenterDriftMarginHz,
+      declaredDriftRemainsInSpan,
+      minimumInjectedSignalGainDb,
+      signalVisibilityValid,
+      valid: declaredDriftRemainsInSpan && signalVisibilityValid,
+    };
+  });
+  return {
+    sourceLookIndexStart: possibleSourceLookIndices[0]!,
+    sourceLookIndexStop: possibleSourceLookIndices.at(-1)!,
+    qualification: 'declared-linear-drift-and-injected-signal-visibility-audit-v1',
+    valid: scenariosAudit.every((item) => item.valid),
+    scenarios: scenariosAudit,
+  };
+}
+
+function summarizeCausalAcquisitionTraces(
+  traces: readonly CausalAcquisitionTrace[],
+  expectedBranch: ProductionAcquisitionBranch,
+) {
+  const violations = traces.filter((trace) => !trace.uniqueSourceLookIndices
+    || !trace.strictlyIncreasingSourceLookIndices
+    || !trace.captureImmediatelyFollowsTrigger
+    || trace.branch !== expectedBranch
+    || trace.sourceLookIndices.length !== trace.spectrumSourceLookIndices.length
+      + trace.detectedPowerSourceLookIndices.length
+    || (expectedBranch === 'consecutive-spectrum'
+      ? trace.detectedPowerSourceLookIndices.length !== 0
+      : trace.detectedPowerSourceLookIndices.length > 1));
+  return {
+    branch: expectedBranch,
+    sourceClock: expectedBranch === 'consecutive-spectrum'
+      ? PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME.sourceClocks.spectrum
+      : PINNED_SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME.sourceClocks.qualifiedEnvelope,
+    attempts: traces.length,
+    allSourceLookIndicesUniqueWithinAttempt: traces.every((trace) => trace.uniqueSourceLookIndices),
+    allSourceLookIndicesStrictlyIncreasingWithinAttempt: traces.every((trace) => trace.strictlyIncreasingSourceLookIndices),
+    allCapturesImmediatelyFollowTriggerSpectrum: traces.every((trace) => trace.captureImmediatelyFollowsTrigger),
+    maximumDetectedPowerCapturesPerAttempt: Math.max(
+      0,
+      ...traces.map((trace) => trace.detectedPowerSourceLookIndices.length),
+    ),
+    attemptsWithDetectedPowerCapture: traces.filter((trace) => trace.detectedPowerSourceLookIndices.length === 1).length,
+    attemptsWithoutDetectedPowerCapture: traces.filter((trace) => trace.detectedPowerSourceLookIndices.length === 0).length,
+    spectrumAcquisitionCount: numericSummary(traces.map((trace) => trace.spectrumSourceLookIndices.length)),
+    detectedPowerAcquisitionCount: numericSummary(traces.map((trace) => trace.detectedPowerSourceLookIndices.length)),
+    violationCount: violations.length,
+    violations: violations.slice(0, 20),
+  };
 }
 
 function recomputeTailCalibrationAudit(
@@ -2401,7 +4436,9 @@ function recomputeTailCalibrationAudit(
 ): RecomputedTailCalibrationAudit {
   const views = ['spectrum-only', 'envelope-untimed', 'envelope-timed'] as const;
   const scoresByClass = new Map<ObservableLeafClass, Record<TailCalibrationView, number[]>>();
-  const recomputedAttemptCountsByScenario: Record<string, number> = {};
+  const recomputedAttemptCountsByScenarioByView: Record<string, Record<TailCalibrationView, number>> = {};
+  const spectrumAcquisitionTraces: CausalAcquisitionTrace[] = [];
+  const qualifiedEnvelopeAcquisitionTraces: CausalAcquisitionTrace[] = [];
   let lateMinimumCount = 0;
   let allOnlineAttemptCount = 0;
   for (const assignment of assignments) {
@@ -2415,36 +4452,41 @@ function recomputeTailCalibrationAudit(
       'envelope-timed': [],
     };
     scoresByClass.set(assignment.classId, classScores);
-    let scenarioAttemptCount = 0;
+    const scenarioAttemptCounts: Record<TailCalibrationView, number> = {
+      'spectrum-only': 0,
+      'envelope-untimed': 0,
+      'envelope-timed': 0,
+    };
     for (const snrDb of PINNED_TAIL_CALIBRATION_SNR_DB) {
       for (const acquisitionRegime of PINNED_TAIL_CALIBRATION_ACQUISITION_REGIMES) {
         for (const seed of PINNED_TAIL_CALIBRATION_SEEDS) {
           const actualRbwHz = pinnedCalibrationActualRbwHz(scenario, acquisitionRegime);
           const detectedPowerSynthesisFilterWidthHz =
             pinnedCalibrationDetectedPowerSynthesisFilterWidthHz(actualRbwHz, acquisitionRegime);
-          const observations = Array.from(
-            { length: observationOpportunityHorizon(scenario) },
-            (_, spectrumOpportunity) => synthesizeCanonicalObservation(scenario.id, {
-              lookIndex: pinnedSourceLookIndex(acquisitionRegime.temporalSchedule, spectrumOpportunity),
-              seed,
-              snrDb,
-              actualRbwHz,
-              detectedPowerSynthesisFilterWidthHz,
-              points: SWEEP_POINTS,
-              sweepTimeSeconds: SWEEP_TIME_SECONDS,
-              zeroSpanPoints: ZERO_SPAN_POINTS,
-              zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
-            }),
-          );
-          for (const observation of observations) {
-            assertDetectedPowerSynthesisProvenance(
-              observation,
-              detectedPowerSynthesisFilterWidthHz,
-              `${assignment.scenarioId} tail-calibration swept observation`,
-            );
-          }
-          const sweeps = observations.map((observation) => asSweep(scenario, observation));
-          const selection = selectProductionFirstReady(sweeps);
+          const spectrumSelection = acquireProductionAttempt({
+            scenario,
+            temporalSchedule: acquisitionRegime.spectrumTemporalSchedule,
+            observationHorizon: observationOpportunityHorizon(scenario),
+            seed,
+            snrDb,
+            actualRbwHz,
+            detectedPowerSynthesisFilterWidthHz,
+            context: `${assignment.scenarioId} tail-calibration consecutive-spectrum`,
+            branch: 'consecutive-spectrum',
+          });
+          const envelopeSelection = acquireProductionAttempt({
+            scenario,
+            temporalSchedule: acquisitionRegime.qualifiedEnvelopeTemporalSchedule,
+            observationHorizon: observationOpportunityHorizon(scenario),
+            seed,
+            snrDb,
+            actualRbwHz,
+            detectedPowerSynthesisFilterWidthHz,
+            context: `${assignment.scenarioId} tail-calibration qualified-envelope`,
+            branch: 'qualified-envelope',
+          });
+          spectrumAcquisitionTraces.push(spectrumSelection.acquisitionTrace);
+          qualifiedEnvelopeAcquisitionTraces.push(envelopeSelection.acquisitionTrace);
           const representativeScores: Record<TailCalibrationView, Array<{
             opportunity: number;
             representativeKey: string;
@@ -2454,63 +4496,56 @@ function recomputeTailCalibrationAudit(
             'envelope-untimed': [],
             'envelope-timed': [],
           };
-          for (const representative of selection.onlineReadyRepresentatives) {
-            const zeroSpanTuneHz = projectDetectedPowerTuneHz(
-              representative.detection.peakHz,
-              SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
-            );
-            const zeroSpanObservation = synthesizeCanonicalObservation(scenario.id, {
-              lookIndex: pinnedInterleavedCaptureLookIndex(
-                acquisitionRegime.temporalSchedule,
-                representative.readyOpportunity - 1,
-              ),
-              seed,
-              snrDb,
-              actualRbwHz,
-              detectedPowerSynthesisFilterWidthHz,
-              points: SWEEP_POINTS,
-              sweepTimeSeconds: SWEEP_TIME_SECONDS,
-              zeroSpanPoints: ZERO_SPAN_POINTS,
-              zeroSpanSamplePeriodSeconds: ZERO_SPAN_SAMPLE_PERIOD_SECONDS,
-              zeroSpanFrequencyHz: zeroSpanTuneHz,
-            });
-            assertDetectedPowerSynthesisProvenance(
-              zeroSpanObservation,
-              detectedPowerSynthesisFilterWidthHz,
-              `${assignment.scenarioId} tail-calibration detected-power observation`,
-            );
-            const observation = extractObservableFeatures(representative.detection, {
-              sweeps: representative.evidenceSweeps,
-              zeroSpan: asZeroSpan(zeroSpanObservation, representative.detection),
-            });
-            if (!observableRepresentativeIsInClassDomain(assignment.classId, observation)) continue;
-            const valuesByView: Record<TailCalibrationView, Readonly<Record<string, number>>> = {
-              'spectrum-only': spectrumOnly(observation.values),
-              'envelope-untimed': envelopeUntimed(observation.values),
-              'envelope-timed': observation.values,
+          for (const representative of spectrumSelection.onlineReadyRepresentatives) {
+            const spectrumObservation = {
+              ...representative.spectrumObservation,
+              values: spectrumOnly(representative.spectrumObservation.values),
             };
-            for (const view of views) {
+            if (!observableRepresentativeIsInClassDomain(assignment.classId, spectrumObservation)) continue;
+            representativeScores['spectrum-only'].push({
+              opportunity: representative.readyOpportunity,
+              representativeKey: representative.representativeKey,
+              support: Math.max(...observableModelComponents(model, 'spectrum-only').map((component) =>
+                studentTModelTailProbability(spectrumObservation.values, component))),
+            });
+          }
+          const capture = envelopeSelection.liveEnvelopeCapture;
+          if (capture?.envelopeObservation) {
+            for (const view of ['envelope-untimed', 'envelope-timed'] as const) {
+              const values = view === 'envelope-untimed'
+                ? envelopeUntimed(capture.envelopeObservation.values)
+                : capture.envelopeObservation.values;
+              const observation = { ...capture.envelopeObservation, values };
+              if (!observableRepresentativeIsInClassDomain(assignment.classId, observation)) continue;
               representativeScores[view].push({
-                opportunity: representative.readyOpportunity,
-                representativeKey: representative.representativeKey,
-                support: Math.max(...model.components.map((component) =>
-                  studentTModelTailProbability(valuesByView[view], component))),
+                opportunity: capture.representative.firstReadyOpportunity,
+                representativeKey: capture.representative.representativeKey,
+                support: Math.max(...observableModelComponents(model, view).map((component) =>
+                  studentTModelTailProbability(values, component))),
               });
             }
           }
-          if (representativeScores['envelope-timed'].length === 0) continue;
-          scenarioAttemptCount++;
-          allOnlineAttemptCount++;
-          for (const view of views) {
-            const minimum = aggregateAttemptMinimum(representativeScores[view]);
-            classScores[view].push(minimum.minimumSupport);
+          if (representativeScores['spectrum-only'].length > 0) {
+            const minimum = aggregateAttemptMinimum(representativeScores['spectrum-only']);
+            classScores['spectrum-only'].push(minimum.minimumSupport);
+            scenarioAttemptCounts['spectrum-only'] += 1;
+            allOnlineAttemptCount += 1;
             if (minimum.minimumOpportunity > minimum.firstOpportunity
               && minimum.minimumSupport < minimum.firstSupport - Number.EPSILON) lateMinimumCount++;
+          }
+          for (const view of ['envelope-untimed', 'envelope-timed'] as const) {
+            const soleCaptureScore = representativeScores[view][0];
+            if (!soleCaptureScore) continue;
+            if (representativeScores[view].length !== 1) {
+              throw new Error(`${assignment.scenarioId} tail-calibration ${view} synthesized more than the sole live capture`);
+            }
+            classScores[view].push(soleCaptureScore.support);
+            scenarioAttemptCounts[view] += 1;
           }
         }
       }
     }
-    recomputedAttemptCountsByScenario[scenario.id] = scenarioAttemptCount;
+    recomputedAttemptCountsByScenarioByView[scenario.id] = scenarioAttemptCounts;
   }
 
   const scoreComparisons = BAYESIAN_OBSERVABLE_MODEL.classModels
@@ -2531,15 +4566,16 @@ function recomputeTailCalibrationAudit(
         observedSha256: sha256Canonical(observed),
       };
     }));
-  const modelAttemptCounts = BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAttemptCountsByScenario ?? {};
+  const modelAttemptCounts =
+    BAYESIAN_OBSERVABLE_MODEL.trainingMatrix.tailCalibrationAttemptCountsByScenarioByView ?? {};
   const attemptCountMismatches = [...new Set([
     ...Object.keys(modelAttemptCounts),
-    ...Object.keys(recomputedAttemptCountsByScenario),
-  ])].sort().flatMap((scenarioId) => {
-    const expected = modelAttemptCounts[scenarioId] ?? 0;
-    const observed = recomputedAttemptCountsByScenario[scenarioId] ?? 0;
-    return expected === observed ? [] : [{ scenarioId, expected, observed }];
-  });
+    ...Object.keys(recomputedAttemptCountsByScenarioByView),
+  ])].sort().flatMap((scenarioId) => views.flatMap((view) => {
+    const expected = modelAttemptCounts[scenarioId]?.[view] ?? 0;
+    const observed = recomputedAttemptCountsByScenarioByView[scenarioId]?.[view] ?? 0;
+    return expected === observed ? [] : [{ scenarioId, view, expected, observed }];
+  }));
   const aggregationRegressionResult = aggregateAttemptMinimum([
     { opportunity: 8, representativeKey: 'first-ready', support: 0.8 },
     { opportunity: 9, representativeKey: 'later-online', support: 0.2 },
@@ -2552,19 +4588,34 @@ function recomputeTailCalibrationAudit(
       && aggregationRegressionResult.minimumOpportunity === 9
       && aggregationRegressionResult.minimumSupport === 0.2,
   };
+  const runtimeBranchClockAudits = {
+    consecutiveSpectrum: summarizeCausalAcquisitionTraces(
+      spectrumAcquisitionTraces,
+      'consecutive-spectrum',
+    ),
+    qualifiedEnvelope: summarizeCausalAcquisitionTraces(
+      qualifiedEnvelopeAcquisitionTraces,
+      'qualified-envelope',
+    ),
+  };
   const valid = attemptCountMismatches.length === 0
     && scoreComparisons.every((comparison) => comparison.expectedCount === comparison.observedCount
       && comparison.maximumAbsoluteDifference <= TAIL_CALIBRATION_NUMERICAL_TOLERANCE)
     && lateMinimumCount > 0
-    && aggregationRegression.passed;
+    && aggregationRegression.passed
+    && runtimeBranchClockAudits.consecutiveSpectrum.violationCount === 0
+    && runtimeBranchClockAudits.consecutiveSpectrum.maximumDetectedPowerCapturesPerAttempt === 0
+    && runtimeBranchClockAudits.qualifiedEnvelope.violationCount === 0
+    && runtimeBranchClockAudits.qualifiedEnvelope.maximumDetectedPowerCapturesPerAttempt <= 1;
   return {
     valid,
     scoreTolerance: TAIL_CALIBRATION_NUMERICAL_TOLERANCE,
-    recomputedAttemptCountsByScenario,
+    recomputedAttemptCountsByScenarioByView,
     attemptCountMismatches,
     scoreComparisons,
     lateMinimumCount,
     allOnlineAttemptCount,
+    runtimeBranchClockAudits,
     aggregationRegression,
   };
 }
@@ -2589,10 +4640,68 @@ function sha256Canonical(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+function independentDetectedPowerCapturePayloadSha256(
+  capture: ZeroSpanCapture,
+): string {
+  const canonical = independentCanonicalJson(capture, '$', new Set<object>());
+  return createHash('sha256')
+    .update(`tinysa-detected-power-capture-payload-v1\0${canonical}`)
+    .digest('hex');
+}
+
+function independentCanonicalJson(
+  value: unknown,
+  path: string,
+  ancestors: Set<object>,
+): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Validator cannot canonicalize non-finite capture value at ${path}`);
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value !== 'object') {
+    throw new Error(`Validator cannot canonicalize ${typeof value} capture value at ${path}`);
+  }
+  if (ancestors.has(value)) {
+    throw new Error(`Validator cannot canonicalize cyclic capture value at ${path}`);
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item, index) => {
+        if (item === undefined) {
+          throw new Error(`Validator cannot canonicalize undefined capture array value at ${path}[${index}]`);
+        }
+        return independentCanonicalJson(item, `${path}[${index}]`, ancestors);
+      }).join(',')}]`;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`Validator cannot canonicalize non-plain capture object at ${path}`);
+    }
+    if (Object.getOwnPropertySymbols(value).length > 0) {
+      throw new Error(`Validator cannot canonicalize symbol-keyed capture value at ${path}`);
+    }
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${independentCanonicalJson(record[key], `${path}.${key}`, ancestors)}`)
+      .join(',')}}`;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 function modelTruth(truth: ObservableSignalClass): ObservableLeafClass {
   if (truth === 'bluetooth-classic-like' || truth === 'bluetooth-le-like') return 'bluetooth-like';
   if (OBSERVABLE_LEAF_CLASSES.includes(truth as ObservableLeafClass)) return truth as ObservableLeafClass;
-  throw new Error(`Corpus truth ${truth} has no v4 observable-model mapping`);
+  throw new Error(`Corpus truth ${truth} has no current observable-model mapping`);
 }
 
 function acceptsTruth(
@@ -2636,6 +4745,11 @@ function admissionSummary(values: readonly AdmissionAttempt[]) {
     admissionRate: fraction(values, (item) => item.admitted),
     observationHorizons: counts(values.map((item) => String(item.observationHorizon))),
     everReadyRepresentativeCount: numericSummary(values.map((item) => item.everReadyRepresentativeCount)),
+    firstReadyRepresentativeCount: numericSummary(values.map((item) => item.firstReadyRepresentativeCount)),
+    provenanceUnavailableWindowCount: values.reduce(
+      (sum, item) => sum + item.provenanceUnavailableWindowCount,
+      0,
+    ),
     finalReadyRepresentativeCount: numericSummary(values.map((item) => item.finalReadyRepresentativeCount)),
     finalActiveRepresentativeCount: numericSummary(values.map((item) => item.finalActiveRepresentativeCount)),
     selectedTrackAdmissions: numericSummary(admitted.map((item) => item.selectedTrackAdmissions)),
@@ -2673,6 +4787,9 @@ function auroc(values: readonly { score: number; positive: boolean }[]): number 
 }
 
 function counts(values: readonly string[]): Record<string, number> { return values.reduce<Record<string, number>>((result, value) => ({ ...result, [value]: (result[value] ?? 0) + 1 }), {}); }
+function componentSourceScenarioId(component: Readonly<{ id: string; sourceScenarioId?: string }>): string {
+  return component.sourceScenarioId ?? component.id;
+}
 function duplicateStrings(values: readonly string[]): string[] {
   return [...new Set(values.filter((value, index) => values.indexOf(value) !== index))].sort();
 }

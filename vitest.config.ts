@@ -1,7 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
+import { createOptionalBayesianClassifierVitePlugin } from './apps/desktop/src/main/optional-bayesian-classifier-vite.ts';
 
 export default defineConfig({
+  plugins: [createOptionalBayesianClassifierVitePlugin()],
   resolve: { alias: {
     '@tinysa/contracts': fileURLToPath(new URL('./packages/contracts/src/index.ts', import.meta.url)),
     '@tinysa/instrument-runtime': fileURLToPath(new URL('./packages/instrument-runtime/src/index.ts', import.meta.url)),

@@ -76,6 +76,10 @@ const physicalEdge = trio.edges.find((edge) => edgeKey(edge) === 'physical-zs407
 if (physicalEdge?.assumptions?.includes('OS discovery completes successfully')) {
   throw new Error('Physical discovery still claims an all-or-nothing OS enumeration result');
 }
+const requiredZeroReadbackAssumption = 'firmware exposes the complete required command set including zero offset readback';
+if (!physicalEdge?.assumptions?.includes(requiredZeroReadbackAssumption)) {
+  throw new Error('Physical composition no longer requires zero offset readback');
+}
 if (!trio.safetyInvariants.some((invariant) => invariant.includes('Complex-IQ v1 is a bounded single-buffer acquisition of at most 64 MiB'))) {
   throw new Error('The future NeptuneSDR boundary does not state the bounded single-buffer I/Q semantics');
 }
@@ -167,6 +171,8 @@ const physicalContractSource = [
   await readFile(resolve(root, 'packages/contracts/src/index.ts'), 'utf8'),
   await readFile(resolve(root, 'packages/contracts/src/firmware-provenance.ts'), 'utf8'),
 ].join('\n');
+const physicalDeviceSource = await readFile(resolve(root, 'packages/tinysa/src/device.ts'), 'utf8');
+requireSource(physicalDeviceSource, "'sweep', 'zero', 'rbw'", 'composition-required zero command admission');
 requireSource(physicalContractSource, 'export const TINYSA_PROTOCOL_CONTRACT_VERSION = 3 as const', 'TinySA protocol contract version');
 for (const identity of trio.parties.atomizer.physicalFirmwareCompatibility.identities) {
   requireSource(physicalContractSource, identity.firmwareVersion, `${identity.reportedRevision} operational firmware version`);
