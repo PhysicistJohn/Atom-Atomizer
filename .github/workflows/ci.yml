@@ -16,14 +16,27 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: TinySA_Atomizer
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          path: TinySA_Atomizer
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: PhysicistJohn/TinySA_SignalLab
+          ref: 03bc13eb9d5efcfc5f2f9c1792042f670b71ef9a
+          path: TinySA_SignalLab
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.23.1
           cache: npm
+          cache-dependency-path: |
+            TinySA_Atomizer/package-lock.json
+            TinySA_SignalLab/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@10.9.8
       - name: Verify exact Node and npm versions
@@ -33,7 +46,11 @@ jobs:
           npm --version
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
-      - run: npm ci
+      - name: Install SignalLab runtime dependencies
+        working-directory: TinySA_SignalLab
+        run: npm ci --omit=dev --ignore-scripts
+      - name: Install Atomizer
+        run: npm ci
       - run: npm run check:launcher
       - run: npm run check:packaged-resources
       - if: runner.os == 'Windows'
@@ -44,13 +61,7 @@ jobs:
       - run: npm test
       - run: npm audit --audit-level=high
 
-  # Disabled: this job needs a checkout of the private PhysicistJohn/TinySA_SignalLab
-  # repo, which requires a token scoped to that repo (the default GITHUB_TOKEN
-  # only covers this repo, even for same-owner private repos). No such secret
-  # is configured. Re-enable by adding a read-only PAT for TinySA_SignalLab as
-  # a repo secret and passing it as `token:` on both checkout steps below.
   signal-lab-interop:
-    if: false
     runs-on: ubuntu-latest
     # Cache-independent model regeneration plus calibration and held-out
     # validation deliberately exceeds 90 minutes on a clean runner.
