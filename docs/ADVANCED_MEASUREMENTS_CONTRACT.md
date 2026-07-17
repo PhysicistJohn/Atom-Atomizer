@@ -4,7 +4,7 @@ Status: implemented baseline
 Version: 1.1.0
 Updated: 2026-07-17
 
-This document is normative for the TinySA Atomizer Spectrum, Waterfall, and
+This document is normative for the Atomizer Spectrum, Waterfall, and
 Channel renderer views and for the non-rendered Envelope STFT analysis API. It
 defines what is calculated, which evidence supports the result, how the UI
 remains bounded, and how Atom operates the same analysis state.
@@ -34,7 +34,7 @@ References are official primary documentation:
 - Anritsu MS2760A Spectrum Master user guide:
   https://dl.cdn-anritsu.com/en-us/test-measurement/files/Manuals/Users-Guide/10580-00427M.pdf
 
-TinySA Atomizer implements the transferable measurement workflow and vocabulary.
+Atomizer implements the transferable measurement workflow and vocabulary.
 It does not copy vendor trade dress, claim numerical equivalence, or imply that
 host calculations are firmware features.
 

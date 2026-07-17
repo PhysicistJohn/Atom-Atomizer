@@ -1,4 +1,4 @@
-# TinySA Atomizer UI/UX and Analysis Contracts
+# Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
 Version: 2.3.0

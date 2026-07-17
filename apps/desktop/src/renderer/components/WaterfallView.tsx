@@ -22,7 +22,7 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
     const element = canvas.current;
     if (!element) throw new Error('Waterfall canvas did not mount');
     const context = element.getContext('2d');
-    if (!context) throw new Error('TinySA Atomizer requires a 2D canvas context for the waterfall');
+    if (!context) throw new Error('Atomizer requires a 2D canvas context for the waterfall');
     const { width, height } = element;
     context.fillStyle = '#070b10';
     context.fillRect(0, 0, width, height);

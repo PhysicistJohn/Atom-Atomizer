@@ -51,7 +51,7 @@ let mainWindow: BrowserWindow | undefined;
 let rendererTrust: RendererTrust | undefined;
 const shutdownGate = new SafeShutdownGate();
 const ipcAdmission = new BoundedPrivilegedIpcAdmission();
-app.setName('TinySA Atomizer');
+app.setName('Atomizer');
 const instrumentManager = new InstrumentManager(new InstrumentDriverRegistry([
   new TinySaZs407InstrumentDriver(device),
   new SignalLabInstrumentDriver({
@@ -102,7 +102,7 @@ function registerIpc(): void {
     throw error;
   }
 }
-function requireWindow():BrowserWindow{if(!mainWindow||mainWindow.isDestroyed())throw new Error('TinySA Atomizer window is unavailable');return mainWindow;}
+function requireWindow():BrowserWindow{if(!mainWindow||mainWindow.isDestroyed())throw new Error('Atomizer window is unavailable');return mainWindow;}
 
 function assertTrustedIpcEvent(event: IpcMainInvokeEvent): void {
   const webContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined;
@@ -163,7 +163,7 @@ async function createWindow(): Promise<void> {
   win.webContents.on('render-process-gone', (_event, details) => {
     if (details.reason === 'clean-exit') return;
     void disconnectAfterRendererFailure(details.reason).catch((error) => {
-      console.error('TinySA Atomizer could not present renderer-failure instrument recovery', error);
+      console.error('Atomizer could not present renderer-failure instrument recovery', error);
     });
   });
   if (developmentUrl) await win.loadURL(developmentUrl.href);
@@ -205,7 +205,7 @@ app.whenReady().then(async () => {
   await createWindow();
   await connectDefaultInstrument();
 }).catch((error) => {
-  console.error('TinySA Atomizer startup failed', error);
+  console.error('Atomizer startup failed', error);
   process.exitCode = 1;
   // Route startup failure through the same RF-safe shutdown gate. A partially
   // admitted instrument session must never be abandoned by an immediate exit.
@@ -216,13 +216,13 @@ app.on('before-quit', (event) => {
   if (decision !== 'start') return;
   void instrumentHost.shutdown().then(() => {
     shutdownGate.complete();
-    try { ai.close(); } catch (error) { console.error('TinySA Atomizer AI cleanup failed after safe instrument shutdown', error); }
-    try { device.dispose(); } catch (error) { console.error('TinySA Atomizer device cleanup failed after safe instrument shutdown', error); }
-    try { unregisterIpc?.(); } catch (error) { console.error('TinySA Atomizer IPC cleanup failed after safe instrument shutdown', error); }
+    try { ai.close(); } catch (error) { console.error('Atomizer AI cleanup failed after safe instrument shutdown', error); }
+    try { device.dispose(); } catch (error) { console.error('Atomizer device cleanup failed after safe instrument shutdown', error); }
+    try { unregisterIpc?.(); } catch (error) { console.error('Atomizer IPC cleanup failed after safe instrument shutdown', error); }
     unregisterIpc = undefined;
     app.quit();
   }, (error) => {
-    console.error('TinySA Atomizer shutdown failed while commanding RF off and disconnecting the instrument', error);
+    console.error('Atomizer shutdown failed while commanding RF off and disconnecting the instrument', error);
     shutdownGate.retry();
     void (async () => {
       if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
@@ -231,14 +231,14 @@ app.on('before-quit', (event) => {
       mainWindow?.focus();
       await dialog.showMessageBox({
         type: 'error',
-        title: 'TinySA Atomizer remains open',
+        title: 'Atomizer remains open',
         message: 'RF output-off or instrument disconnect could not be confirmed.',
         detail: 'The app did not quit. Inspect the instrument, then quit again to retry the safe shutdown.',
         buttons: ['OK'],
         defaultId: 0,
         noLink: true,
       });
-    })().catch((restoreError) => console.error('TinySA Atomizer could not restore its shutdown-failure window', restoreError));
+    })().catch((restoreError) => console.error('Atomizer could not restore its shutdown-failure window', restoreError));
   });
 });
 app.on('window-all-closed', () => app.quit());

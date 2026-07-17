@@ -1,4 +1,4 @@
-# TinySA Atomizer delivery plan
+# Atomizer delivery plan
 
 Status: active implementation baseline
 Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 9, application contract 6, trio composition 4

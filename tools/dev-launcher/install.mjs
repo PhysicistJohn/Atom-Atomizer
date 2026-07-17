@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
 
-const APP_NAME = 'TinySA Atomizer Dev';
+const APP_NAME = 'Atomizer Dev';
 const BUNDLE_ID = 'org.tinysa.atomizer.dev';
 const CONTRACT_VERSION = 3;
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +37,7 @@ function replacePlistValue(plist, key, value) {
 
 function generateIcon(resources) {
   const sourceSvg = join(here, 'AtomizerDevIcon.svg');
-  const temporary = mkdtempSync(join(tmpdir(), 'tinysa-atomizer-icon-'));
+  const temporary = mkdtempSync(join(tmpdir(), 'atomizer-icon-'));
   try {
     run('/usr/bin/qlmanage', ['-t', '-s', '1024', '-o', temporary, sourceSvg]);
     const thumbnail = join(temporary, `${basename(sourceSvg)}.png`);
@@ -133,7 +133,7 @@ function installApplication() {
   replacePlistValue(plist, 'CFBundleName', APP_NAME);
   replacePlistValue(plist, 'CFBundleIdentifier', BUNDLE_ID);
   replacePlistValue(plist, 'CFBundleIconFile', 'atomizer-dev.icns');
-  replacePlistValue(plist, 'NSMicrophoneUsageDescription', 'TinySA Atomizer uses the microphone for native voice interaction with Atom.');
+  replacePlistValue(plist, 'NSMicrophoneUsageDescription', 'Atomizer uses the microphone for native voice interaction with Atom.');
   try {
     run(plistBuddy, ['-c', 'Delete :ElectronAsarIntegrity', plist]);
   } catch {

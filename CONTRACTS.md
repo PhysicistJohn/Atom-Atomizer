@@ -660,7 +660,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 ## WP-20 — Text agent transport and app-scoped computer use
 
-**Outcome:** multi-step text agent and semantic computer operation confined to TinySA Atomizer.  
+**Outcome:** multi-step text agent and semantic computer operation confined to Atomizer.  
 **Estimate:** 6–10 ED.  
 **Dependencies:** WP-18.
 
@@ -674,7 +674,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 **Acceptance**
 
 - AI-01–03, AI-06–16 and AI-21–24 pass.
-- Computer actions are screenshot-relative, bounded to the TinySA Atomizer content area, and cannot address URLs, other windows or RF enable.
+- Computer actions are screenshot-relative, bounded to the Atomizer content area, and cannot address URLs, other windows or RF enable.
 - Native tools are selected over computer actions for exact measurement configuration in evals.
 
 ## WP-21 — Agent security, privacy, RF evals, and release qualification

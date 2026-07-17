@@ -98,7 +98,7 @@ function exportIdentity(sweep: Sweep): {
 
 export function defaultSweepFilename(sweep: Sweep, format: 'csv' | 'json'): string {
   const timestamp = instrumentTimestampSchema.parse(sweep.capturedAt).replace(/[:.]/g, '-');
-  return `tinysa-atomizer-${timestamp}.${format}`;
+  return `atomizer-${timestamp}.${format}`;
 }
 
 function requireBoundedOutput(content: string): string {

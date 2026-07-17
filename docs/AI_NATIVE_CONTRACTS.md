@@ -9,7 +9,7 @@ VAD lock: `server_vad`, threshold `0.97`
 Input-transcription lock: `gpt-realtime-whisper`
 Updated: 2026-07-17
 
-This document is normative. “Atom” is the application-layer AI inside TinySA Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
+This document is normative. “Atom” is the application-layer AI inside Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
 
 ## 1. Exact model contract
 
@@ -291,7 +291,7 @@ A feature is not complete when only its visual control exists.
 
 ## 8. App-scoped computer use
 
-Atom’s computer use is confined to TinySA Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
+Atom’s computer use is confined to Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
 
 1. Electron captures only its own bounded visible `BrowserWindow` content—never the desktop—with animations, transitions, and caret painting temporarily normalized.
 2. The CSS-sized bitmap is hashed, assigned a 15-second one-use coordinate ID and a rotating main-owned focus grant, and sent as explicitly untrusted image input with its focused-target identity on the active trusted Realtime transport.
@@ -420,7 +420,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-10:** RF enable always requests action-time approval.
 - **AI-11:** RF disable never waits for approval.
 - **AI-12:** Denial cannot be retried around automatically.
-- **AI-13:** Computer action cannot escape TinySA Atomizer.
+- **AI-13:** Computer action cannot escape Atomizer.
 - **AI-14:** Computer action cannot enable RF output.
 - **AI-15:** Device disconnect interrupts affected tools coherently.
 - **AI-16:** Simulated/unknown/stale state is disclosed in answers.

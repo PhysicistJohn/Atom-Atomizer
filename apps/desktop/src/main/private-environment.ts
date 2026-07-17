@@ -49,7 +49,7 @@ export async function loadPrivateEnvironmentFromCandidates(
   options: PrivateEnvironmentOptions & { explicitFirstCandidate?: boolean } = {},
 ): Promise<PrivateEnvironmentLoadResult | undefined> {
   if (options.explicitFirstCandidate && (candidates.length === 0 || !candidates[0]?.trim())) {
-    throw new Error('TinySA Atomizer explicit environment file path must not be blank');
+    throw new Error('Atomizer explicit environment file path must not be blank');
   }
   const uniqueCandidates = [...new Set(candidates.filter((candidate) => candidate.trim().length > 0))];
   if (!hasSecureNoFollowOpen(options)) {
@@ -106,7 +106,7 @@ export async function loadPrivateEnvironmentFile(
     const contents = await readBoundedUtf8(handle, path);
     const after = await handle.stat();
     if (!sameOpenedFileState(before, after)) {
-      throw new Error(`TinySA Atomizer environment file changed while it was being read: ${path}`);
+      throw new Error(`Atomizer environment file changed while it was being read: ${path}`);
     }
     const parsed = parse(contents);
     const environment = options.environment ?? process.env;
@@ -133,7 +133,7 @@ async function readBoundedUtf8(handle: FileHandle, path: string): Promise<string
     offset += bytesRead;
   }
   if (offset > MAX_PRIVATE_ENVIRONMENT_FILE_BYTES) {
-    throw new Error(`TinySA Atomizer environment file grew beyond ${MAX_PRIVATE_ENVIRONMENT_FILE_BYTES} bytes while being read: ${path}`);
+    throw new Error(`Atomizer environment file grew beyond ${MAX_PRIVATE_ENVIRONMENT_FILE_BYTES} bytes while being read: ${path}`);
   }
   return buffer.subarray(0, offset).toString('utf8');
 }
@@ -147,36 +147,36 @@ function hasSecureNoFollowOpen(options: PrivateEnvironmentOptions): boolean {
 
 function unsupportedEnvironmentFilePlatform(path: string): Error {
   return new Error(
-    `TinySA Atomizer cannot securely consume an environment file on this platform: ${path}. `
+    `Atomizer cannot securely consume an environment file on this platform: ${path}. `
     + 'Supply private values through the inherited process environment instead.',
   );
 }
 
 function validatePrivateMetadata(path: string, metadata: Stats, configuredUid: number | undefined): void {
   if (!metadata.isFile()) {
-    throw new Error(`TinySA Atomizer environment file must be a regular non-symlink file: ${path}`);
+    throw new Error(`Atomizer environment file must be a regular non-symlink file: ${path}`);
   }
   if (!Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > MAX_PRIVATE_ENVIRONMENT_FILE_BYTES) {
     throw new Error(
-      `TinySA Atomizer environment file must not exceed ${MAX_PRIVATE_ENVIRONMENT_FILE_BYTES} bytes `
+      `Atomizer environment file must not exceed ${MAX_PRIVATE_ENVIRONMENT_FILE_BYTES} bytes `
       + `(found ${metadata.size}): ${path}`,
     );
   }
   const currentUid = configuredUid
     ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
   if (!Number.isSafeInteger(currentUid) || currentUid! < 0) {
-    throw new Error(`TinySA Atomizer cannot verify ownership of its environment file on this platform: ${path}`);
+    throw new Error(`Atomizer cannot verify ownership of its environment file on this platform: ${path}`);
   }
   if (metadata.uid !== currentUid) {
-    throw new Error(`TinySA Atomizer environment file must be owned by the current user (expected UID ${currentUid}, found UID ${metadata.uid}): ${path}`);
+    throw new Error(`Atomizer environment file must be owned by the current user (expected UID ${currentUid}, found UID ${metadata.uid}): ${path}`);
   }
   const permissionBits = metadata.mode & 0o777;
   const displayedMode = `0${permissionBits.toString(8).padStart(3, '0')}`;
   if ((permissionBits & 0o077) !== 0) {
-    throw new Error(`TinySA Atomizer environment file must grant no permissions to group or other users (found mode ${displayedMode}): ${path}`);
+    throw new Error(`Atomizer environment file must grant no permissions to group or other users (found mode ${displayedMode}): ${path}`);
   }
   if ((permissionBits & 0o400) === 0) {
-    throw new Error(`TinySA Atomizer environment file must be readable by its owner (found mode ${displayedMode}): ${path}`);
+    throw new Error(`Atomizer environment file must be readable by its owner (found mode ${displayedMode}): ${path}`);
   }
 }
 
@@ -190,7 +190,7 @@ function sameOpenedFileState(left: Stats, right: Stats): boolean {
 }
 
 function environmentFileError(reason: string, path: string, cause: unknown): Error {
-  return new Error(`TinySA Atomizer environment file ${reason}: ${path}`, { cause });
+  return new Error(`Atomizer environment file ${reason}: ${path}`, { cause });
 }
 
 function isMissing(error: unknown): boolean {

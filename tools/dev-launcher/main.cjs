@@ -18,7 +18,7 @@ const {
   rendererProcessMetricSnapshot,
 } = require('./renderer-diagnostics.cjs');
 
-const APP_NAME = 'TinySA Atomizer Dev';
+const APP_NAME = 'Atomizer Dev';
 const LAUNCHER_CONTRACT_VERSION = 3;
 const SIGNAL_LAB_INSTRUMENT_POLICY = 'signal-lab-default-no-fallback';
 const SIGNAL_LAB_BRIDGE_CONTRACT_ID = 'tinysa-signal-lab-atomizer-measurement';

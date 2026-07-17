@@ -34,7 +34,7 @@ describe('Atomizer renderer trust', () => {
   });
 
   it('requires the exact packaged file URL or exact development origin and port', () => {
-    const production = productionRendererTrust('/Applications/TinySA Atomizer.app/Contents/Resources/renderer/index.html');
+    const production = productionRendererTrust('/Applications/Atomizer.app/Contents/Resources/renderer/index.html');
     const development = developmentRendererTrust(validateDevelopmentServerUrl('http://localhost:5173/app'));
     expect(isTrustedRendererUrl(production.url, production)).toBe(true);
     expect(isTrustedRendererUrl(`${production.url}?forged=1`, production)).toBe(false);

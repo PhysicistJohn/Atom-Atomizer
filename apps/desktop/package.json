@@ -40,8 +40,9 @@
     "wait-on": "9.0.3"
   },
   "build": {
-    "appId": "com.physicistjohn.tinysa-atomizer",
-    "productName": "TinySA Atomizer",
+    "appId": "com.physicistjohn.atomizer",
+    "productName": "Atomizer",
+    "icon": "build/icon.icns",
     "directories": {
       "output": "../../release"
     },

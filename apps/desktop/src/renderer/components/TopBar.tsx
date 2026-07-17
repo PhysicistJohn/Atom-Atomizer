@@ -18,7 +18,7 @@ export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, o
   const labels = sessionLabels(session);
   const rfStatus = rfStatusLabel(session);
   return <header className="topbar">
-    <div className="brand-lockup"><div className="brand-symbol"><AtomicMark size={27}/></div><div><small>tinySA</small><strong>Atomizer</strong></div></div>
+    <div className="brand-lockup"><div className="brand-symbol"><AtomicMark size={27}/></div><div><small>AtomOS</small><strong>Atomizer</strong></div></div>
     <div className="topbar-actions">
       {synthetic && <span className="environment-badge">SIGNALLAB SIMULATION</span>}
       {twin && <span className="environment-badge">FIRMWARE TWIN</span>}

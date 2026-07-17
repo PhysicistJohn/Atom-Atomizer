@@ -385,7 +385,7 @@ export function App({
       rendererMounted.current = false;
       for (const waiter of renderCommitWaiters.current.values()) {
         window.clearTimeout(waiter.timeout);
-        waiter.reject(new Error('TinySA Atomizer renderer unmounted before the requested controller state committed'));
+        waiter.reject(new Error('Atomizer renderer unmounted before the requested controller state committed'));
       }
       renderCommitWaiters.current.clear();
     };
@@ -394,12 +394,12 @@ export function App({
   function awaitControllerRenderCommit(): Promise<void> {
     const targetRevision = renderMutationRevision.current;
     if (committedRenderRevision.current >= targetRevision) return Promise.resolve();
-    if (!rendererMounted.current) return Promise.reject(new Error('TinySA Atomizer renderer is unavailable'));
+    if (!rendererMounted.current) return Promise.reject(new Error('Atomizer renderer is unavailable'));
     return new Promise<void>((resolve, reject) => {
       const id = Symbol('renderer-commit-waiter');
       const timeout = window.setTimeout(() => {
         renderCommitWaiters.current.delete(id);
-        reject(new Error('TinySA Atomizer renderer did not commit the staged controller state before the bounded computer-action deadline'));
+        reject(new Error('Atomizer renderer did not commit the staged controller state before the bounded computer-action deadline'));
       }, RENDER_COMMIT_TIMEOUT_MILLISECONDS);
       renderCommitWaiters.current.set(id, { targetRevision, resolve, reject, timeout });
     });
@@ -1911,7 +1911,7 @@ export function App({
   function systemTopology() {
     const active = instrumentRef.current.session;
     return {
-      atomizer: { owner: 'tinysa-atomizer', instrumentApiVersion: window.atomizerInstrument.version, role: 'instrument-host' },
+      atomizer: { owner: 'atomizer', instrumentApiVersion: window.atomizerInstrument.version, role: 'instrument-host' },
       instrument: active ? {
         driverId: active.driverId,
         sourceKind: active.provenance.sourceKind,
@@ -2462,7 +2462,7 @@ async function writeInstrumentPreference(selection: AtomizerInstrumentPreference
 }
 
 function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
-  const key = `tinysa-atomizer:v2:${name}`;
+  const key = `atomizer:v2:${name}`;
   try {
     const raw = localStorage.getItem(key);
     return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
@@ -2479,7 +2479,7 @@ function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): 
   }
 }
 function saveStored(name: string, value: unknown): void {
-  try { localStorage.setItem(`tinysa-atomizer:v2:${name}`, JSON.stringify(value)); }
+  try { localStorage.setItem(`atomizer:v2:${name}`, JSON.stringify(value)); }
   catch (failure) {
     // Persistence failure must remain non-fatal; the in-memory controller
     // state is still authoritative for the current renderer lifetime.

@@ -227,7 +227,7 @@ export const agentApiCoverage = {
 if (Object.keys(agentApiCoverage).length !== ATOMIZER_DRIVER_API_METHODS.length) throw new Error('Atom generic driver API coverage is not exhaustive');
 
 const agentToolDescriptors: readonly AgentToolDescriptor[] = [
-  { type: 'function', name: 'get_application_state', description: 'Read the current TinySA Atomizer workspace, operation state, simulation status, history count, and visible errors.' },
+  { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, operation state, simulation status, history count, and visible errors.' },
   { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer driver host plus active SignalLab, physical TinySA, or firmware-twin source without conflating USB, firmware execution, or synthetic evidence.' },
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
   { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance, declared capabilities, active configuration, streaming state, startup preference, and RF command state.' },
@@ -238,13 +238,13 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'list_connection_candidates', description: 'List current connection candidates and issue opaque IDs bound to this exact result. Call immediately before connect_device; raw OS paths and serials are withheld.' },
   { type: 'function', name: 'connect_device', description: 'Connect exactly one opaque candidate issued by the latest multi-driver discovery result. Stale, changed, unknown, or disappeared candidates fail; no driver or source is substituted.' },
   { type: 'function', name: 'disconnect_device', description: 'Disconnect the active instrument. Unknown RF state remains unknown after uncertain transport loss.' },
-  { type: 'function', name: 'inspect_interface', description: 'Inspect the semantic TinySA Atomizer interface map and which app-scoped controls are enabled.' },
-  { type: 'function', name: 'computer_action', description: 'Activate one closed, allow-listed semantic control inside TinySA Atomizer. High-impact controls are excluded and fail closed.' },
-  { type: 'function', name: 'computer_screenshot', description: 'Capture only current TinySA Atomizer application content and issue a short-lived one-use screenshot ID plus focused-target identity. Required before every coordinate action.' },
-  { type: 'function', name: 'computer_click', description: 'Click coordinates from exactly one latest, unconsumed TinySA Atomizer screenshot. Before hit-testing, Atomizer recaptures under the same visual normalization and requires the exact bitmap, window geometry, and display scale to match; stale IDs, changed visual state, and high-impact targets fail closed.' },
-  { type: 'function', name: 'computer_type', description: 'Type bounded text only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when the focused editable TinySA Atomizer control exactly matches expectedTarget through native delivery.' },
-  { type: 'function', name: 'computer_key', description: 'Send one allow-listed key only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when TinySA Atomizer focus exactly matches expectedTarget through native delivery.' },
-  { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed TinySA Atomizer screenshot. Before hit-testing, Atomizer recaptures under the same visual normalization and requires the exact bitmap, window geometry, and display scale to match; stale IDs, changed visual state, and protected targets fail closed.' },
+  { type: 'function', name: 'inspect_interface', description: 'Inspect the semantic Atomizer interface map and which app-scoped controls are enabled.' },
+  { type: 'function', name: 'computer_action', description: 'Activate one closed, allow-listed semantic control inside Atomizer. High-impact controls are excluded and fail closed.' },
+  { type: 'function', name: 'computer_screenshot', description: 'Capture only current Atomizer application content and issue a short-lived one-use screenshot ID plus focused-target identity. Required before every coordinate action.' },
+  { type: 'function', name: 'computer_click', description: 'Click coordinates from exactly one latest, unconsumed Atomizer screenshot. Before hit-testing, Atomizer recaptures under the same visual normalization and requires the exact bitmap, window geometry, and display scale to match; stale IDs, changed visual state, and high-impact targets fail closed.' },
+  { type: 'function', name: 'computer_type', description: 'Type bounded text only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when the focused editable Atomizer control exactly matches expectedTarget through native delivery.' },
+  { type: 'function', name: 'computer_key', description: 'Send one allow-listed key only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when Atomizer focus exactly matches expectedTarget through native delivery.' },
+  { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed Atomizer screenshot. Before hit-testing, Atomizer recaptures under the same visual normalization and requires the exact bitmap, window geometry, and display scale to match; stale IDs, changed visual state, and protected targets fail closed.' },
   { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output guard as the visual UI. The legacy detection route resolves to the merged classification workspace.' },
   { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty patch to visible swept-spectrum staging. Receiver controls are capability-validated; synthetic sources accept only geometry and their exact timing. Omitted fields are preserved, and staging is distinct from the host-admitted configuration.' },
   { type: 'function', name: 'acquire_sweep', description: 'Apply the latest staged analyzer revision and acquire exactly one complete sweep; mismatched requested configuration is rejected before measurement reducers.' },
@@ -512,7 +512,7 @@ const loadedAgentToolNamesSchema = z.array(z.enum(agentToolNames))
 export const atomToolLoaderDefinition: AtomToolLoaderDefinition = Object.freeze({
   type: 'function',
   name: ATOM_TOOL_LOADER_NAME,
-  description: `Load one to ${ATOM_MAX_LOADED_TOOLS} exact TinySA Atomizer function schemas for the current operation. This loader must be the only call in its response. The selected concrete schemas are available in the next response only; load another set when the operation changes.`,
+  description: `Load one to ${ATOM_MAX_LOADED_TOOLS} exact Atomizer function schemas for the current operation. This loader must be the only call in its response. The selected concrete schemas are available in the next response only; load another set when the operation changes.`,
   parameters: Object.freeze({
     type: 'object',
     additionalProperties: false,
@@ -580,7 +580,7 @@ export function approvalSummary(name: AgentToolName, args: unknown): string {
 }
 
 export const ATOM_AGENT_INSTRUCTIONS = `# Role and objective
-You are Atom, the native AI copilot inside TinySA Atomizer. Help RF hobbyists learn and RF engineers work quickly without overstating certainty. Use the application as an RF instrument, not as a generic chatbot.
+You are Atom, the native AI copilot inside Atomizer. Help RF hobbyists learn and RF engineers work quickly without overstating certainty. Use the application as an RF instrument, not as a generic chatbot.
 
 # Response style
 - Lead with the answer. Every word must earn its place.

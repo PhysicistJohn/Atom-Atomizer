@@ -4,7 +4,7 @@ Status: implementation baseline
 Version: 2.5.0
 Updated: 2026-07-16
 
-This document is normative for TinySA Atomizer marker, trace, amplitude-display,
+This document is normative for Atomizer marker, trace, amplitude-display,
 and trigger behavior. It deliberately separates capabilities visible in the
 pinned ZS407 firmware from simultaneous measurements derived by the desktop from
 complete acquired sweeps.

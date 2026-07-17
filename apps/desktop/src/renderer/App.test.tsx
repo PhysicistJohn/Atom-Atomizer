@@ -206,7 +206,7 @@ function readyClassifierRuntime(
 }
 
 function persistOneLookDetector(): void {
-  localStorage.setItem('tinysa-atomizer:v2:detector', JSON.stringify({
+  localStorage.setItem('atomizer:v2:detector', JSON.stringify({
     threshold: { strategy: 'absolute', levelDbm: -80 },
     minimumBandwidthHz: 0,
     minimumProminenceDb: 6,
@@ -432,13 +432,13 @@ describe('operator vertical slice', () => {
 
   it('quarantines a corrupt persisted preference and keeps reload startup usable', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    localStorage.setItem('tinysa-atomizer:v2:analyzer', '{not-json');
+    localStorage.setItem('atomizer:v2:analyzer', '{not-json');
 
     render(<App/>);
 
     expect(await screen.findByRole('navigation', { name: /Primary navigation/i })).toBeTruthy();
-    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
-    await waitFor(() => expect(() => JSON.parse(localStorage.getItem('tinysa-atomizer:v2:analyzer') ?? '')).not.toThrow());
+    expect(screen.queryByText(/Atomizer could not start/i)).toBeNull();
+    await waitFor(() => expect(() => JSON.parse(localStorage.getItem('atomizer:v2:analyzer') ?? '')).not.toThrow());
     expect(warning).toHaveBeenCalledWith(
       expect.stringContaining('quarantined invalid analyzer state'),
       expect.anything(),
@@ -481,7 +481,7 @@ describe('operator vertical slice', () => {
   });
 
   it('shows persisted pre-model capture geometry as compact status without restoring the removed envelope editor', async () => {
-    localStorage.setItem('tinysa-atomizer:v2:zero-span', JSON.stringify({
+    localStorage.setItem('atomizer:v2:zero-span', JSON.stringify({
       frequencyHz: 433_920_000,
       points: 290,
       rbwKhz: 100,
@@ -708,7 +708,7 @@ describe('operator vertical slice', () => {
   });
 
   it('stages the selected detection on the admitted tuning lattice and captures at that exact center', async () => {
-    localStorage.setItem('tinysa-atomizer:v2:zero-span', JSON.stringify({
+    localStorage.setItem('atomizer:v2:zero-span', JSON.stringify({
       frequencyHz: 433_920_000,
       points: 290,
       rbwKhz: 100,
@@ -767,7 +767,7 @@ describe('operator vertical slice', () => {
   });
 
   it('fails Auto capture closed instead of substituting a weaker runtime-ready row', async () => {
-    localStorage.setItem('tinysa-atomizer:v2:detector', JSON.stringify({
+    localStorage.setItem('atomizer:v2:detector', JSON.stringify({
       threshold: { strategy: 'absolute', levelDbm: -70 },
       minimumBandwidthHz: 0,
       minimumProminenceDb: 6,
@@ -883,7 +883,7 @@ describe('operator vertical slice', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
     expect(within(navigation).getByRole('button', { name: /^Detect$/i }).getAttribute('aria-current')).toBe('page');
-    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
+    expect(screen.queryByText(/Atomizer could not start/i)).toBeNull();
   });
 
   it.each([
@@ -1184,7 +1184,7 @@ describe('operator vertical slice', () => {
 
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
     expect(await screen.findByText(/Instrument event rejected at the renderer boundary/i)).toBeTruthy();
-    expect(screen.queryByText(/TinySA Atomizer could not start/i)).toBeNull();
+    expect(screen.queryByText(/Atomizer could not start/i)).toBeNull();
   });
 
   it('coalesces an invalid measurement flood into one fail-safe stream stop', async () => {
@@ -1289,7 +1289,7 @@ describe('operator vertical slice', () => {
   });
 
   it('renders every implemented atomic instrument workspace without dead affordances', async () => {
-    localStorage.setItem('tinysa-atomizer:v2:measurement-view', JSON.stringify('envelope-stft'));
+    localStorage.setItem('atomizer:v2:measurement-view', JSON.stringify('envelope-stft'));
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
@@ -2064,7 +2064,7 @@ describe('operator vertical slice', () => {
 
   it('does not leave a phantom render revision when navigation is already current', async () => {
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
-    vi.mocked(window.atomAgent.computerScreenshot).mockResolvedValue({ kind: 'tinysa-atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' });
+    vi.mocked(window.atomAgent.computerScreenshot).mockResolvedValue({ kind: 'atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'noop-route-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'noop-route-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","computer_screenshot"]}' }] })
       .mockResolvedValueOnce({ conversationId: 'noop-route-1', transport: 'realtime-websocket', text: '', toolCalls: [
@@ -2172,7 +2172,7 @@ describe('operator vertical slice', () => {
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.computerScreenshot).mockImplementation(async () => {
       expect(document.querySelector('.classification-workspace')).toBeTruthy();
-      return { kind: 'tinysa-atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' };
+      return { kind: 'atomizer-screenshot', screenshotId: '123e4567-e89b-42d3-a456-426614174000', imageDataUrl: 'data:image/jpeg;base64,aW1hZ2U=', width: 1200, height: 800, capturedAt: '2026-07-10T00:00:00.000Z', focusedTarget: 'APPLICATION' };
     });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'view-sync-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'view-sync-load', name: 'load_atom_tools', arguments: '{"toolNames":["acquire_sweep","configure_channel_measurement","get_channel_measurement_results","auto_scale_spectrum_display","export_latest_sweep","navigate_workspace","computer_screenshot","inspect_interface"]}' }] })

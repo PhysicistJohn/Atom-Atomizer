@@ -1,5 +1,5 @@
 {
-  "name": "tinysa-atomizer-dev-launcher",
+  "name": "atomizer-dev-launcher",
   "version": "1.0.0",
   "private": true,
   "main": "main.cjs"

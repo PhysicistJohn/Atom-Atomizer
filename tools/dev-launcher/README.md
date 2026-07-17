@@ -1,7 +1,7 @@
-# TinySA Atomizer Dev launcher
+# Atomizer Dev launcher
 
 `npm run dev:install-app` installs a dedicated macOS application at
-`~/Applications/TinySA Atomizer Dev.app`, adds it to the Dock, and launches it.
+`~/Applications/Atomizer Dev.app`, adds it to the Dock, and launches it.
 
 Before installation, `.env` must be a regular file at the repository root—not
 a symlink—owned by the current user, readable by that owner, and inaccessible
@@ -31,7 +31,7 @@ Atomizer honors later explicit device selections, and startup admission never fa
 through to another driver when the preferred driver fails. SignalLab build, bridge
 handshake, discovery, evidence, insecure or missing `.env`, or occupied-port
 failure aborts visibly and writes details to
-`~/Library/Logs/TinySA Atomizer Dev.log`. The current log and its sole `.1`
+`~/Library/Logs/Atomizer Dev.log`. The current log and its sole `.1`
 rotation are each capped at 4 MiB; one child-process write is capped at 64 KiB,
 so repeated live-edit sessions cannot grow diagnostics without bound.
 

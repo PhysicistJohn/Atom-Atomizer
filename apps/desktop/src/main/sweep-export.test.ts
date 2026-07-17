@@ -111,7 +111,7 @@ describe('sweep export', () => {
   });
 
   it('creates a filesystem-safe default filename', () => {
-    expect(defaultSweepFilename(sweep, 'csv')).toBe('tinysa-atomizer-2026-07-10T12-34-56-000Z.csv');
+    expect(defaultSweepFilename(sweep, 'csv')).toBe('atomizer-2026-07-10T12-34-56-000Z.csv');
   });
 
   it('neutralizes spreadsheet formulas in untrusted metadata without changing numeric samples', () => {
