@@ -222,6 +222,21 @@ describe('device fail-loud lifecycle', () => {
     expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
   });
 
+  it('rejects a physical firmware surface without the composition-required zero offset readback command', async () => {
+    const bytes = new FakeTinySaTransport({
+      helpCommands: [
+        'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+      ],
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(/missing required commands: zero/i);
+
+    expect(bytes.writes.slice(0, 4)).toEqual(['output off', 'version', 'info', 'help']);
+    expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
+  });
+
   it('invalidates an older RF-off acknowledgement when a later output-off attempt is rejected', async () => {
     const bytes = new FakeTinySaTransport({
       commandResponseSequences: { 'output off': ['', '', 'output?', ''] },
@@ -393,7 +408,7 @@ describe('device fail-loud lifecycle', () => {
       versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
       infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
       helpCommands: [
-        'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+        'version', 'info', 'help', 'output', 'mode', 'sweep', 'zero', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
         'scan', 'trace', 'sweeptime', 'calc', 'spur', 'avoid', 'lna', 'trigger', 'capture', 'touch', 'release',
       ],
       commandResponses: {
@@ -435,7 +450,10 @@ describe('device fail-loud lifecycle', () => {
             controls: expect.objectContaining({ triggerModes: ['auto'] }),
           }),
         ]),
-        features: [],
+        features: [{
+          kind: 'diagnostics',
+          reports: ['identity', 'health', 'configuration'],
+        }],
       },
     });
     const spectrum = connected.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
@@ -478,7 +496,7 @@ describe('device fail-loud lifecycle', () => {
       versionResponse: 'tinySA4_v1.4-999-gdeadbee\r\nHW Version:V0.5.4 max2871',
       infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-999-gdeadbee',
       helpCommands: [
-        'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+        'version', 'info', 'help', 'output', 'mode', 'sweep', 'zero', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
         'sweeptime',
       ],
     });

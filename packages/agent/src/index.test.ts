@@ -54,6 +54,10 @@ describe('Atom agent contracts',()=>{
     expect(verification.checks).toEqual(expect.arrayContaining([expect.objectContaining({path:'session.audio.output.voice',sent:'ballad',returned:'marin',matches:false})]));
   });
   it('has unique, closed tool names',()=>expect(new Set(agentToolDefinitions.map(t=>t.name)).size).toBe(agentToolDefinitions.length));
+  it('keeps both legacy analysis workspace routes valid while the renderer presents one merged surface',()=>{
+    expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'detection'}).success).toBe(true);
+    expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'classification'}).success).toBe(true);
+  });
   it('gives every tool one closed concrete object input schema',()=>{
     expect(agentToolDefinitions).toHaveLength(50);
     for(const tool of agentToolDefinitions){
@@ -103,6 +107,23 @@ describe('Atom agent contracts',()=>{
     expect(description).toContain('2.4 GHz frequency-agile activity');
     expect(description).toContain('neither physical emissions nor common-process, simultaneity, emitter, or protocol identity');
   });
+  it('describes exact physical and qualified-agile classification selection without raw-member ambiguity',()=>{
+    const description=agentToolDefinitions.find(tool=>tool.name==='select_classification_candidate')?.description??'';
+    expect(description).toContain('promotion-qualified frequency-agile evidence representative');
+    expect(description).toContain('raw agile-member IDs');
+    expect(description).toContain('fail closed');
+    const binding=agentControlBinding('classification.candidate.agile-2g4-activity-0001.select');
+    expect(binding.guarantee).toContain('uniquely bound current raw tune owner');
+  });
+  it('advertises the exact visual-state recapture required by every coordinate action',()=>{
+    for(const name of ['computer_click','computer_scroll'] as const){
+      const tool=agentToolDefinitions.find(candidate=>candidate.name===name);
+      expect(tool?.description).toContain('recaptures under the same visual normalization');
+      expect(tool?.description).toContain('exact bitmap, window geometry, and display scale');
+      const properties=tool?.parameters.properties as Record<string,{description?:string}>|undefined;
+      expect(properties?.screenshotId?.description).toContain('normalized application bitmap');
+    }
+  });
   it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);
     expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(12_000);
@@ -135,6 +156,8 @@ describe('Atom agent contracts',()=>{
       expect(binding.risk).not.toBe('high-impact');
     }
     for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
+    expect(agentComputerActionControlIds).toContain('classification.auto-select');
+    expect(agentControlBinding('classification.auto-select').preferredTool).toBe('computer_action');
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
     expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
     expect(agentControlBinding('classification.envelope.trigger-level').preferredTool).toBe('configure_zero_span');

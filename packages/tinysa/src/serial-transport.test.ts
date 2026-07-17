@@ -237,6 +237,30 @@ describe('NodeSerialTransport bounded native operations', () => {
     await expect(transport.open(unverified)).rejects.toThrow('only exact physical TinySA ZS407');
     expect(createCalls).toBe(0);
   });
+
+  it('requests an exclusive native CDC lock for every admitted physical session', async () => {
+    const port = new FakeSerialPort({ open: 'immediate', close: 'immediate' });
+    let openedWith: Parameters<NodeSerialTransportRuntime['createPort']>[0] | undefined;
+    const transport = new NodeSerialTransport({
+      runtime: {
+        listPorts: async () => [],
+        createPort: (options) => {
+          openedWith = options;
+          return port;
+        },
+      },
+    });
+
+    await transport.open(exactCandidate('/dev/tty.exclusive-owner'));
+
+    expect(openedWith).toEqual({
+      path: '/dev/tty.exclusive-owner',
+      baudRate: 115_200,
+      autoOpen: false,
+      lock: true,
+    });
+    await transport.close();
+  });
 });
 
 type CompletionMode = 'immediate' | 'manual';

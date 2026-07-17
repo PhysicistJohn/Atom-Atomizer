@@ -77,9 +77,16 @@ describe('SignalLab bridge client', () => {
   const atomizerRepositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
   const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'TinySA_SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
   const electronExecutable = findElectronExecutable(atomizerRepositoryRoot);
-  // Standalone Atomizer CI does not check out sibling repositories. The trio
-  // release gate builds SignalLab first, so this remains a required live
-  // interoperability test whenever the shipped bridge artifact is present.
+  const signalLabIntegrationRequired = process.env.SIGNAL_LAB_INTEGRATION_REQUIRED === '1';
+  if (signalLabIntegrationRequired && !existsSync(shippedBridge)) {
+    throw new Error(`Required SignalLab integration bridge is missing at ${shippedBridge}`);
+  }
+  if (signalLabIntegrationRequired && !electronExecutable) {
+    throw new Error('Required Electron Node-mode integration runtime is missing');
+  }
+  // Source-only Atomizer checks may omit the built bridge. The trio release
+  // gate builds SignalLab first, so this remains a required live
+  // interoperability test whenever that artifact is present.
   it.skipIf(!existsSync(shippedBridge))('interoperates with the sibling repository\'s shipped bridge contract', async () => {
     const client = await SignalLabBridgeClient.launch(await resolveSignalLabBridgeLocation({
       atomizerRepositoryRoot,

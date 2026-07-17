@@ -40,7 +40,7 @@ const REQUIRED_COMMANDS = [
   // These commands prove identity, a non-emitting state, teardown, and the
   // readback needed to describe even a conservative scalar receiver. Every
   // other command is optional and appears only in derived capabilities.
-  'version', 'info', 'help', 'output', 'mode', 'sweep', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
+  'version', 'info', 'help', 'output', 'mode', 'sweep', 'zero', 'rbw', 'attenuate', 'status', 'vbat', 'deviceid',
 ] as const;
 const CUSTOM_RECEIVER_PROBES = [
   ['sweep', 'sweep ?'],
