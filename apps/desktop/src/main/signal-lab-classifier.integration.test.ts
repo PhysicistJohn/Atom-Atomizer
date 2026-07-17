@@ -2,19 +2,25 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  classificationCaptureTargetProjections,
   classificationRepresentatives,
+  createDetectedPowerCaptureReceipt,
   extractObservableFeatures,
+  ObservableEvidenceUnavailableError,
   observableAssociationEvidenceIsCurrentlyQualified,
   observableRepresentativeIsInClassDomain,
+  SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN,
+  SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN,
   SignalDetector,
-  SignalLabBayesianClassifier,
   SignalTracker,
   type ObservableLeafClass,
   type WaveformEvidence,
 } from '@tinysa/analysis';
+import { SignalLabBayesianClassifier } from '../../../../packages/analysis/src/signal-lab-classifier.js';
 import { projectDetectedPowerTuneHz } from '@tinysa/contracts';
 import type {
   DetectedSignal,
+  InstrumentMeasurement,
   InstrumentConfiguration,
   InstrumentFeatureCapability,
   SignalDetectionConfig,
@@ -101,80 +107,34 @@ if (profileFilter && activeProfileGates.length !== 1) {
   throw new Error(`Unknown SignalLab classifier profile filter ${profileFilter}`);
 }
 
-describe('SignalLab live observable-classification release gate', () => {
+describe('SignalLab live observable-classification release gates', () => {
   // Standalone Atomizer checkouts can omit sibling repositories. `npm run
-  // check` and the trio release gate build SignalLab first, so this test is
+  // check` and the trio release gate build SignalLab first, so these tests are
   // mandatory there and skipped only when the owned executable is absent.
   it.skipIf(!existsSync(shippedBridge))(
-    'admits every canonized profile through bridge, host, projection, and the production classifier',
+    'matches the App-compatible consecutive-spectrum branch with no automatic detected-power capture',
     async () => {
-      const driver = new SignalLabInstrumentDriver({
-        atomizerRepositoryRoot,
-        environment: {},
-        bridge: { readyTimeoutMs: 10_000, requestTimeoutMs: 7_000, shutdownTimeoutMs: 3_000 },
-      });
-      const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]));
-      const host = new AtomizerInstrumentHost(manager, {
-        load: async () => ({
-          source: 'factory-default',
-          preference: { schemaVersion: 1, driverId: 'signal-lab', updatedAt: new Date(0).toISOString() },
-        }),
-        save: async () => { throw new Error('Live classifier gate never persists preferences'); },
-      });
-
+      const host = createLiveSignalLabHost();
       try {
-        const discovery = await host.discover();
-        expect(discovery.failures).toEqual([]);
-        expect(discovery.candidates).toHaveLength(1);
-        const connected = await host.connect(discovery.candidates[0]!);
-        expect(connected.provenance).toMatchObject({
-          sourceKind: 'signal-lab',
-          execution: 'signal-lab-simulation',
-          qualification: 'synthetic-visual-projection',
-          claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
-        });
-        const profileCapability = connected.capabilities.features.find(
-          (candidate) => candidate.kind === 'signal-lab-profile-selection',
-        );
-        if (!profileCapability || profileCapability.kind !== 'signal-lab-profile-selection') {
-          throw new Error('SignalLab session omitted profile-selection capability');
-        }
-        const detectedPowerCapability = connected.capabilities.acquisitions.find(
-          (candidate) => candidate.kind === 'detected-power-timeseries',
-        );
-        if (!detectedPowerCapability || detectedPowerCapability.kind !== 'detected-power-timeseries') {
-          throw new Error('SignalLab session omitted detected-power capability');
-        }
-        expect(profileCapability.profiles).toHaveLength(34);
-        expect(CANONIZED_PROFILE_GATES.map((item) => item.profileId).every((profileId) =>
-          profileCapability.profiles.some((item) => item.profileId === profileId))).toBe(true);
-
+        const { profileCapability } = await connectLiveSignalLabHost(host);
+        assertSourcePlanMatchesProfiles(SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN);
+        let expectedSourceSequence = 0;
         let aggregateRollingCases = 0;
         let aggregateCoveredRollingCases = 0;
         let aggregateHierarchicalRollingCases = 0;
         let aggregateIncompatibleNonUnknownCases = 0;
-        let envelopeCases = 0;
-        let compatibleEnvelopeCases = 0;
-        const envelopeOutcomes = new Map<string, Readonly<Record<string, unknown>>>();
-        for (const gate of activeProfileGates) {
-          const currentProfileCapability = requireProfileCapability(host.state().session?.capabilities.features);
-          if (currentProfileCapability.selectedProfileId !== gate.profileId) {
-            await host.executeFeature({
-              kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: gate.profileId,
-            });
-          }
-          const selectedCapability = requireProfileCapability(host.state().session?.capabilities.features);
-          expect(selectedCapability.selectedProfileId).toBe(gate.profileId);
-          const geometry = selectedCapability.profiles.find((item) => item.profileId === gate.profileId);
-          if (!geometry) throw new Error(`SignalLab omitted admitted geometry for ${gate.profileId}`);
 
+        for (const gate of activeProfileGates) {
+          const sourcePlan = SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN
+            .find((item) => item.profileId === gate.profileId)!;
+          expect(sourcePlan.automaticDetectedPowerCaptures).toBe(0);
+          if (!profileFilter) expect(expectedSourceSequence).toBe(sourcePlan.sourceLookIndexOffset);
+          const geometry = await selectProfileGeometry(host, gate, profileCapability.profiles);
           const spectrumConfiguration = syntheticSpectrumConfiguration(
             geometry.centerFrequencyHz,
             geometry.recommendedSpanHz,
           );
-          let spectrumState = await host.configure(spectrumConfiguration);
-          expect(spectrumState.configuration).toEqual(spectrumConfiguration);
-          expect(host.state().session?.configuration).toEqual(spectrumState);
+          const spectrumState = await host.configure(spectrumConfiguration);
           const detector = new SignalDetector(DETECTION_CONFIG);
           const tracker = new SignalTracker(DETECTION_CONFIG);
           const classifier = new SignalLabBayesianClassifier();
@@ -184,7 +144,6 @@ describe('SignalLab live observable-classification release gate', () => {
           let hierarchicalRollingCases = 0;
           let incompatibleNonUnknownCases = 0;
           let truthClassDomainCases = 0;
-          let envelopeConsumed = false;
           const unknownReasons = new Map<string, number>();
           const supportRanks: number[] = [];
           const representativeGeometry = new Map<string, number>();
@@ -193,62 +152,35 @@ describe('SignalLab live observable-classification release gate', () => {
 
           for (let opportunity = 1; opportunity <= gate.opportunities; opportunity++) {
             const measurement = await host.acquire();
+            expectedSourceSequence++;
+            expect(measurement.sequence).toBe(expectedSourceSequence);
             if (measurement.kind !== 'swept-spectrum') {
-              throw new Error(`Expected swept-spectrum measurement for ${gate.profileId}`);
+              throw new Error(`App-compatible branch unexpectedly acquired ${measurement.kind}`);
             }
             expect(measurement.configurationRevision).toBe(spectrumState.configurationRevision);
             assertNoClassificationLabels(measurement, gate);
-            const session = host.state().session;
-            if (!session) throw new Error('SignalLab session disappeared during spectrum projection');
-            const sweep = projectSpectrumMeasurement(measurement, session, spectrumConfiguration);
-            expect(sweep).toMatchObject({
-              source: 'signal-lab-synthetic',
-              resolutionBandwidthQualification: 'synthetic-grid-equivalent',
-              actualAttenuationDb: null,
-              attenuationQualification: 'not-applicable',
-            });
-            expect(sweep.requested).toEqual(spectrumConfiguration);
-            const minimumExportedGridSpacing = Math.min(...sweep.frequencyHz.slice(1).map(
-              (frequency, index) => frequency - sweep.frequencyHz[index]!,
-            ));
-            expect(sweep.actualRbwHz).toBe(minimumExportedGridSpacing);
-            assertNoClassificationLabels(sweep, gate);
+            const sweep = projectLiveSpectrum(host, measurement, spectrumConfiguration, gate);
             history = [sweep, ...history].slice(0, HISTORY_LIMIT);
-
             const rawCandidates = detector.analyze(sweep);
-            const rawPattern = JSON.stringify(rawCandidates
-              .map((candidate) => ({
-                startHz: candidate.startHz,
-                stopHz: candidate.stopHz,
-                bandwidthHz: candidate.bandwidthHz,
-                centerHz: (candidate.startHz + candidate.stopHz) / 2,
-              }))
-              .sort((left, right) => left.centerHz - right.centerHz));
+            const rawPattern = JSON.stringify(rawCandidates.map((candidate) => ({
+              startHz: candidate.startHz,
+              stopHz: candidate.stopHz,
+              bandwidthHz: candidate.bandwidthHz,
+              centerHz: (candidate.startHz + candidate.stopHz) / 2,
+            })).sort((left, right) => left.centerHz - right.centerHz));
             rawCandidatePatterns.set(rawPattern, (rawCandidatePatterns.get(rawPattern) ?? 0) + 1);
-            const detections = tracker.update(sweep, rawCandidates);
             const representatives = classificationRepresentatives(
-              detections.filter((item) => item.state === 'active'),
+              tracker.update(sweep, rawCandidates).filter((item) => item.state === 'active'),
             );
             for (const detection of representatives) {
-              const geometryKey = JSON.stringify({
-                bandwidthHz: detection.bandwidthHz,
-                startHz: detection.startHz,
-                stopHz: detection.stopHz,
-                classificationRegionStartHz: detection.classificationRegionStartHz,
-                classificationRegionStopHz: detection.classificationRegionStopHz,
-                associationMode: detection.associationMode,
-                associationRegionStartHz: detection.associationRegionStartHz,
-                associationRegionStopHz: detection.associationRegionStopHz,
-                associationMemberCount: detection.associationMemberTrackIds?.length,
-              });
+              const geometryKey = representativeGeometryKey(detection);
               representativeGeometry.set(geometryKey, (representativeGeometry.get(geometryKey) ?? 0) + 1);
               assertNoClassificationLabels(detection, gate);
-              if (!observableAssociationEvidenceIsCurrentlyQualified(detection)
-                || classificationSourceSweepIds(detection).length < CLASSIFICATION_SWEEPS) continue;
+              if (!runtimeRepresentativeIsReady(detection)) continue;
               const evidence = { sweeps: history } satisfies WaveformEvidence;
               assertNoClassificationLabels(evidence, gate);
               const result = await classifier.classify(detection, evidence);
-              assertSpectrumOnlyResult(result, gate);
+              assertSpectrumOnlyResult(result, gate, 'zero-span-missing');
               expect(result.evidence.sweepIds).toHaveLength(CLASSIFICATION_SWEEPS);
               rollingCases++;
               const compatible = gate.allowedLabels.includes(result.label);
@@ -271,91 +203,15 @@ describe('SignalLab live observable-classification release gate', () => {
                 observedBandwidthHz: observation.bandwidthHz,
                 label: result.label,
                 unknownReason: result.unknownReason,
-                supportRank: result.evidence.features?.['model.maximumKnownSyntheticSupportRank'],
+                supportRank,
               });
               classificationOutcomes.set(outcomeKey, (classificationOutcomes.get(outcomeKey) ?? 0) + 1);
-              expect(observation.sweepIds).toHaveLength(CLASSIFICATION_SWEEPS);
               if (observableRepresentativeIsInClassDomain(gate.modelTruth, observation)) truthClassDomainCases++;
               if (result.label !== 'unknown') expect(result.decisionSupport?.kind).toBe('model-posterior');
-
-              if (!envelopeConsumed) {
-                const detectedPowerTuneHz = projectDetectedPowerTuneHz(
-                  detection.peakHz,
-                  detectedPowerCapability.centerFrequencyHz,
-                );
-                expect(Number.isInteger(detectedPowerTuneHz)).toBe(true);
-                expect(Math.abs(detectedPowerTuneHz - detection.peakHz))
-                  .toBeLessThanOrEqual((detectedPowerCapability.centerFrequencyHz.step ?? 1) / 2);
-                const detectedPowerConfiguration = syntheticDetectedPowerConfiguration(detectedPowerTuneHz);
-                const detectedPowerState = await host.configure(detectedPowerConfiguration);
-                expect(detectedPowerState.configuration).toEqual(detectedPowerConfiguration);
-                expect(host.state().session?.configuration).toEqual(detectedPowerState);
-                const detectedPowerMeasurement = await host.acquire();
-                if (detectedPowerMeasurement.kind !== 'detected-power-timeseries') {
-                  throw new Error(`Expected detected-power measurement for ${gate.profileId}`);
-                }
-                expect(detectedPowerMeasurement.centerHz).toBe(detectedPowerTuneHz);
-                expect(detectedPowerMeasurement.configurationRevision).toBe(detectedPowerState.configurationRevision);
-                assertNoClassificationLabels(detectedPowerMeasurement, gate);
-                const detectedPowerSession = host.state().session;
-                if (!detectedPowerSession) throw new Error('SignalLab session disappeared during detected-power projection');
-                const projectedEnvelope = projectDetectedPowerMeasurement(
-                  detectedPowerMeasurement,
-                  detectedPowerSession,
-                  detectedPowerConfiguration,
-                  detection.id,
-                );
-                expect(projectedEnvelope).toMatchObject({
-                  targetDetectionId: detection.id,
-                  frequencyHz: detectedPowerTuneHz,
-                  actualRbwHz: null,
-                  resolutionBandwidthQualification: 'unavailable',
-                  actualAttenuationDb: null,
-                  attenuationQualification: 'not-applicable',
-                  timingQualification: 'simulation-exact',
-                });
-                expect(projectedEnvelope.requested).toEqual(detectedPowerConfiguration);
-                expect(projectedEnvelope.requested.centerHz).toBe(detectedPowerTuneHz);
-                assertNoClassificationLabels(projectedEnvelope, gate);
-                const envelopeEvidence = {
-                  sweeps: history,
-                  zeroSpan: projectedEnvelope,
-                  zeroSpanSpectrumSweepIds: classificationWindowSweepIds(detection, history),
-                } satisfies WaveformEvidence;
-                const envelopeObservation = extractObservableFeatures(detection, envelopeEvidence);
-                expect(
-                  envelopeObservation.zeroSpanCaptureId,
-                  `live ${gate.profileId} envelope rejection at ${detectedPowerTuneHz} Hz for peak ${detection.peakHz} Hz, bandwidth ${detection.bandwidthHz} Hz, bin ${envelopeObservation.binWidthHz} Hz: ${envelopeObservation.limitations.join(', ')}`,
-                ).toBe(projectedEnvelope.id);
-                expect(envelopeObservation.sweepIds).toHaveLength(CLASSIFICATION_SWEEPS);
-                expect(envelopeObservation.views).toEqual(['scalar-spectrum', 'detected-power-envelope']);
-                expect(envelopeObservation.limitations).toContain('zero-span-rbw-unavailable');
-                expect(envelopeObservation.limitations).not.toEqual(expect.arrayContaining([
-                  'zero-span-missing', 'zero-span-provenance-mismatch', 'zero-span-tune-mismatch', 'zero-span-geometry-out-of-domain',
-                ]));
-                expect(envelopeObservation.values['envelope.logTransitionRateHz']).toBeTypeOf('number');
-                const envelopeResult = await classifier.classify(detection, envelopeEvidence);
-                assertEnvelopeResult(envelopeResult, projectedEnvelope.id, gate);
-                envelopeOutcomes.set(gate.profileId, {
-                  label: envelopeResult.label,
-                  unknownReason: envelopeResult.unknownReason,
-                  confidence: envelopeResult.confidence,
-                  supportRank: envelopeResult.evidence.features?.['model.maximumKnownSyntheticSupportRank'],
-                });
-                envelopeCases++;
-                if (gate.allowedLabels.includes(envelopeResult.label)) compatibleEnvelopeCases++;
-                envelopeConsumed = true;
-                spectrumState = await host.configure(spectrumConfiguration);
-                expect(spectrumState.configuration).toEqual(spectrumConfiguration);
-              }
             }
           }
 
-          expect(
-            rollingCases,
-            `${gate.profileId} produced no current-qualified online-ready production representatives; representatives=${JSON.stringify(Object.fromEntries(representativeGeometry))}; raw=${JSON.stringify(Object.fromEntries(rawCandidatePatterns))}`,
-          )
-            .toBeGreaterThan(0);
+          expect(rollingCases, `${gate.profileId} produced no current-qualified online-ready production representatives`).toBeGreaterThan(0);
           const supportRange = supportRanks.length
             ? `${Math.min(...supportRanks)}..${Math.max(...supportRanks)}`
             : 'unavailable';
@@ -363,23 +219,221 @@ describe('SignalLab live observable-classification release gate', () => {
             coveredRollingCases / rollingCases,
             `${gate.profileId} complete-denominator rolling known coverage; unknown=${JSON.stringify(Object.fromEntries(unknownReasons))}; support=${supportRange}; representatives=${JSON.stringify(Object.fromEntries(representativeGeometry))}; outcomes=${JSON.stringify(Object.fromEntries(classificationOutcomes))}; raw=${JSON.stringify(Object.fromEntries(rawCandidatePatterns))}`,
           ).toBeGreaterThanOrEqual(0.9);
-          expect(hierarchicalRollingCases / rollingCases, `${gate.profileId} complete-denominator rolling hierarchy`).toBeGreaterThanOrEqual(0.9);
-          expect(incompatibleNonUnknownCases, `${gate.profileId} emitted an incompatible non-unknown result`).toBe(0);
-          expect(truthClassDomainCases, `${gate.profileId} had no representatives in its shared observation-only class domain`).toBeGreaterThan(0);
-          expect(envelopeConsumed, `${gate.profileId} never consumed its live projected envelope`).toBe(true);
+          expect(hierarchicalRollingCases / rollingCases).toBeGreaterThanOrEqual(0.9);
+          expect(incompatibleNonUnknownCases).toBe(0);
+          expect(truthClassDomainCases).toBeGreaterThan(0);
+          if (!profileFilter) {
+            expect(expectedSourceSequence)
+              .toBe(sourcePlan.sourceLookIndexOffset + sourcePlan.spectrumOpportunities);
+          }
           aggregateRollingCases += rollingCases;
           aggregateCoveredRollingCases += coveredRollingCases;
           aggregateHierarchicalRollingCases += hierarchicalRollingCases;
           aggregateIncompatibleNonUnknownCases += incompatibleNonUnknownCases;
         }
+
         expect(aggregateCoveredRollingCases / aggregateRollingCases).toBeGreaterThanOrEqual(0.95);
         expect(aggregateHierarchicalRollingCases / aggregateRollingCases).toBeGreaterThanOrEqual(0.95);
         expect(aggregateIncompatibleNonUnknownCases).toBe(0);
+        expect(expectedSourceSequence).toBe(activeProfileGates.reduce(
+          (total, gate) => total + gate.opportunities,
+          0,
+        ));
+        if (!profileFilter) expect(expectedSourceSequence).toBe(512);
+      } finally {
+        await host.shutdown();
+      }
+    },
+    180_000,
+  );
+
+  it.skipIf(!existsSync(shippedBridge))(
+    'keeps a fresh qualified-envelope branch causal and excludes unqualified manual captures from Bayesian envelope evidence',
+    async () => {
+      const host = createLiveSignalLabHost();
+      try {
+        const { profileCapability, detectedPowerCapability } = await connectLiveSignalLabHost(host);
+        assertSourcePlanMatchesProfiles(
+          SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN,
+        );
+        let expectedSourceSequence = 0;
+        let envelopeCases = 0;
+        let compatibleEnvelopeCases = 0;
+        const envelopeOutcomes = new Map<string, Readonly<Record<string, unknown>>>();
+
+        for (const gate of activeProfileGates) {
+          const sourcePlan = SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN
+            .find((item) => item.profileId === gate.profileId)!;
+          expect(sourcePlan.admittedDetectedPowerCaptures).toBe(1);
+          if (!profileFilter) expect(expectedSourceSequence).toBe(sourcePlan.sourceLookIndexOffset);
+          const geometry = await selectProfileGeometry(host, gate, profileCapability.profiles);
+          const spectrumConfiguration = syntheticSpectrumConfiguration(
+            geometry.centerFrequencyHz,
+            geometry.recommendedSpanHz,
+          );
+          let spectrumState = await host.configure(spectrumConfiguration);
+          const detector = new SignalDetector(DETECTION_CONFIG);
+          const tracker = new SignalTracker(DETECTION_CONFIG);
+          const classifier = new SignalLabBayesianClassifier();
+          let history: readonly Sweep[] = [];
+          let envelopeConsumed = false;
+
+          for (let opportunity = 1; opportunity <= gate.opportunities; opportunity++) {
+            const measurement = await host.acquire();
+            expectedSourceSequence++;
+            expect(measurement.sequence).toBe(expectedSourceSequence);
+            if (measurement.kind !== 'swept-spectrum') {
+              throw new Error(`Expected swept-spectrum measurement for ${gate.profileId}`);
+            }
+            expect(measurement.configurationRevision).toBe(spectrumState.configurationRevision);
+            const sweep = projectLiveSpectrum(host, measurement, spectrumConfiguration, gate);
+            history = [sweep, ...history].slice(0, HISTORY_LIMIT);
+            const captureTargetSignals = tracker.update(sweep, detector.analyze(sweep));
+            const projections = classificationCaptureTargetProjections(captureTargetSignals);
+            for (const { rawTarget, projectedRepresentative: detection } of projections) {
+              if (envelopeConsumed || !runtimeRepresentativeIsReady(detection)) continue;
+              let spectrumObservation: ReturnType<typeof extractObservableFeatures>;
+              try {
+                spectrumObservation = extractObservableFeatures(detection, {
+                  sweeps: history,
+                });
+              } catch (error) {
+                if (error instanceof ObservableEvidenceUnavailableError) continue;
+                throw error;
+              }
+              if (spectrumObservation.sweepIds.length !== CLASSIFICATION_SWEEPS) {
+                continue;
+              }
+              const detectedPowerTuneHz = projectDetectedPowerTuneHz(
+                rawTarget.peakHz,
+                detectedPowerCapability.centerFrequencyHz,
+              );
+              const detectedPowerConfiguration = syntheticDetectedPowerConfiguration(detectedPowerTuneHz);
+              const detectedPowerState = await host.configure(detectedPowerConfiguration);
+              const detectedPowerMeasurement = await host.acquire();
+              expectedSourceSequence++;
+              expect(detectedPowerMeasurement.sequence).toBe(expectedSourceSequence);
+              if (detectedPowerMeasurement.kind !== 'detected-power-timeseries') {
+                throw new Error(`Expected detected-power measurement for ${gate.profileId}`);
+              }
+              expect(detectedPowerMeasurement.centerHz).toBe(detectedPowerTuneHz);
+              expect(detectedPowerMeasurement.configurationRevision).toBe(detectedPowerState.configurationRevision);
+              const detectedPowerSession = host.state().session;
+              if (!detectedPowerSession) throw new Error('SignalLab session disappeared during detected-power projection');
+              const projectedEnvelope = projectDetectedPowerMeasurement(
+                detectedPowerMeasurement,
+                detectedPowerSession,
+                detectedPowerConfiguration,
+                rawTarget.id,
+              );
+              expect(projectedEnvelope).toMatchObject({
+                targetDetectionId: rawTarget.id,
+                frequencyHz: detectedPowerTuneHz,
+                actualRbwHz: null,
+                resolutionBandwidthQualification: 'unavailable',
+                actualAttenuationDb: null,
+                attenuationQualification: 'not-applicable',
+                timingQualification: 'simulation-exact',
+              });
+              const zeroSpanSpectrumSweepIds = spectrumObservation.sweepIds;
+              const unqualifiedManualEvidence = {
+                sweeps: history,
+                zeroSpan: projectedEnvelope,
+                zeroSpanSpectrumSweepIds,
+              } satisfies WaveformEvidence;
+              const unqualifiedObservation = extractObservableFeatures(
+                detection,
+                unqualifiedManualEvidence,
+              );
+              expect(unqualifiedObservation.views).toEqual(['scalar-spectrum']);
+              expect(unqualifiedObservation).not.toHaveProperty('zeroSpanCaptureId');
+              expect(unqualifiedObservation.limitations).toEqual(expect.arrayContaining([
+                'zero-span-acquisition-policy-unqualified',
+                'zero-span-missing',
+              ]));
+              const unqualifiedResult = await classifier.classify(
+                detection,
+                unqualifiedManualEvidence,
+              );
+              assertSpectrumOnlyResult(
+                unqualifiedResult,
+                gate,
+                'zero-span-acquisition-policy-unqualified',
+              );
+
+              const qualifiedEvidence = {
+                ...unqualifiedManualEvidence,
+                detectedPowerCaptureReceipt: createDetectedPowerCaptureReceipt({
+                  activeSignals: captureTargetSignals,
+                  evidenceSweeps: history,
+                  capture: projectedEnvelope,
+                  admittedTargetTuneHz: detectedPowerTuneHz,
+                  spectrumSweepIds: zeroSpanSpectrumSweepIds,
+                }),
+              } satisfies WaveformEvidence;
+              const envelopeObservation = extractObservableFeatures(detection, qualifiedEvidence);
+              expect(envelopeObservation.sweepIds).toHaveLength(CLASSIFICATION_SWEEPS);
+              const agileFixedTuneCensored =
+                detection.associationMode === 'frequency-agile-2g4-activity';
+              if (agileFixedTuneCensored) {
+                expect(envelopeObservation.views).toEqual(['scalar-spectrum']);
+                expect(envelopeObservation.values).toEqual(spectrumObservation.values);
+                expect(envelopeObservation.zeroSpanCaptureId).toBeUndefined();
+                expect(envelopeObservation.detectedPowerAcquisitionQualification).toBeUndefined();
+                expect(envelopeObservation.limitations)
+                  .toContain('frequency-agile-fixed-tune-envelope-censored');
+              } else {
+                expect(
+                  envelopeObservation.zeroSpanCaptureId,
+                  `live ${gate.profileId} envelope rejection: ${envelopeObservation.limitations.join(', ')}`,
+                ).toBe(projectedEnvelope.id);
+                expect(envelopeObservation.views).toEqual(['scalar-spectrum', 'detected-power-envelope']);
+                expect(envelopeObservation.detectedPowerAcquisitionQualification)
+                  .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+                expect(envelopeObservation.values['envelope.logTransitionRateHz']).toBeTypeOf('number');
+              }
+              const envelopeResult = await classifier.classify(detection, qualifiedEvidence);
+              if (agileFixedTuneCensored) {
+                assertSpectrumOnlyResult(
+                  envelopeResult,
+                  gate,
+                  'frequency-agile-fixed-tune-envelope-censored',
+                );
+              } else {
+                assertEnvelopeResult(envelopeResult, projectedEnvelope.id, gate);
+              }
+              envelopeOutcomes.set(gate.profileId, {
+                label: envelopeResult.label,
+                unknownReason: envelopeResult.unknownReason,
+                confidence: envelopeResult.confidence,
+                supportRank: envelopeResult.evidence.features?.['model.maximumKnownSyntheticSupportRank'],
+              });
+              envelopeCases++;
+              if (gate.allowedLabels.includes(envelopeResult.label)) compatibleEnvelopeCases++;
+              envelopeConsumed = true;
+              spectrumState = await host.configure(spectrumConfiguration);
+            }
+          }
+          expect(envelopeConsumed, `${gate.profileId} never consumed its sole qualified envelope`).toBe(true);
+          if (!profileFilter) {
+            expect(expectedSourceSequence).toBe(
+              sourcePlan.sourceLookIndexOffset
+                + sourcePlan.spectrumOpportunities
+                + sourcePlan.admittedDetectedPowerCaptures,
+            );
+          }
+        }
+
         expect(envelopeCases).toBe(activeProfileGates.length);
         expect(
           compatibleEnvelopeCases / envelopeCases,
           `complete live envelope compatibility: ${JSON.stringify(Object.fromEntries(envelopeOutcomes))}`,
         ).toBeGreaterThanOrEqual(0.95);
+        expect(expectedSourceSequence).toBe(activeProfileGates.reduce(
+          (total, gate) => total + gate.opportunities + 1,
+          0,
+        ));
+        if (!profileFilter) expect(expectedSourceSequence).toBe(524);
       } finally {
         await host.shutdown();
       }
@@ -387,6 +441,138 @@ describe('SignalLab live observable-classification release gate', () => {
     180_000,
   );
 });
+
+function createLiveSignalLabHost(): AtomizerInstrumentHost {
+  const driver = new SignalLabInstrumentDriver({
+    atomizerRepositoryRoot,
+    environment: {},
+    bridge: { readyTimeoutMs: 10_000, requestTimeoutMs: 7_000, shutdownTimeoutMs: 3_000 },
+  });
+  const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]));
+  return new AtomizerInstrumentHost(manager, {
+    load: async () => ({
+      source: 'factory-default',
+      preference: {
+        schemaVersion: 1,
+        driverId: 'signal-lab',
+        updatedAt: new Date(0).toISOString(),
+      },
+    }),
+    save: async () => { throw new Error('Live classifier gate never persists preferences'); },
+  });
+}
+
+async function connectLiveSignalLabHost(host: AtomizerInstrumentHost) {
+  const discovery = await host.discover();
+  expect(discovery.failures).toEqual([]);
+  expect(discovery.candidates).toHaveLength(1);
+  const connected = await host.connect(discovery.candidates[0]!);
+  expect(connected.provenance).toMatchObject({
+    sourceKind: 'signal-lab',
+    execution: 'signal-lab-simulation',
+    qualification: 'synthetic-visual-projection',
+    claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+  });
+  const profileCapability = connected.capabilities.features.find(
+    (candidate) => candidate.kind === 'signal-lab-profile-selection',
+  );
+  if (!profileCapability || profileCapability.kind !== 'signal-lab-profile-selection') {
+    throw new Error('SignalLab session omitted profile-selection capability');
+  }
+  const detectedPowerCapability = connected.capabilities.acquisitions.find(
+    (candidate) => candidate.kind === 'detected-power-timeseries',
+  );
+  if (!detectedPowerCapability || detectedPowerCapability.kind !== 'detected-power-timeseries') {
+    throw new Error('SignalLab session omitted detected-power capability');
+  }
+  expect(profileCapability.profiles).toHaveLength(34);
+  expect(CANONIZED_PROFILE_GATES.every((gate) =>
+    profileCapability.profiles.some((item) => item.profileId === gate.profileId))).toBe(true);
+  return { profileCapability, detectedPowerCapability } as const;
+}
+
+function assertSourcePlanMatchesProfiles(
+  sourcePlan: readonly Readonly<{
+    profileId: string;
+    sourceLookIndexOffset: number;
+    spectrumOpportunities: number;
+  }>[],
+): void {
+  expect(sourcePlan.map((item) => ({
+    profileId: item.profileId,
+    spectrumOpportunities: item.spectrumOpportunities,
+  }))).toEqual(CANONIZED_PROFILE_GATES.map((item) => ({
+    profileId: item.profileId,
+    spectrumOpportunities: item.opportunities,
+  })));
+  for (let index = 1; index < sourcePlan.length; index++) {
+    expect(sourcePlan[index]!.sourceLookIndexOffset)
+      .toBeGreaterThan(sourcePlan[index - 1]!.sourceLookIndexOffset);
+  }
+}
+
+async function selectProfileGeometry(
+  host: AtomizerInstrumentHost,
+  gate: CanonizedProfileGate,
+  profiles: Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>['profiles'],
+) {
+  const current = requireProfileCapability(host.state().session?.capabilities.features);
+  if (current.selectedProfileId !== gate.profileId) {
+    await host.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: gate.profileId,
+    });
+  }
+  const selected = requireProfileCapability(host.state().session?.capabilities.features);
+  expect(selected.selectedProfileId).toBe(gate.profileId);
+  const geometry = profiles.find((item) => item.profileId === gate.profileId);
+  if (!geometry) throw new Error(`SignalLab omitted admitted geometry for ${gate.profileId}`);
+  return geometry;
+}
+
+function projectLiveSpectrum(
+  host: AtomizerInstrumentHost,
+  measurement: Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }>,
+  configuration: Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>,
+  gate: CanonizedProfileGate,
+): Sweep {
+  const session = host.state().session;
+  if (!session) throw new Error('SignalLab session disappeared during spectrum projection');
+  const sweep = projectSpectrumMeasurement(measurement, session, configuration);
+  expect(sweep).toMatchObject({
+    source: 'signal-lab-synthetic',
+    resolutionBandwidthQualification: 'synthetic-grid-equivalent',
+    actualAttenuationDb: null,
+    attenuationQualification: 'not-applicable',
+  });
+  expect(sweep.requested).toEqual(configuration);
+  const minimumExportedGridSpacing = Math.min(...sweep.frequencyHz.slice(1).map(
+    (frequency, index) => frequency - sweep.frequencyHz[index]!,
+  ));
+  expect(sweep.actualRbwHz).toBe(minimumExportedGridSpacing);
+  assertNoClassificationLabels(sweep, gate);
+  return sweep;
+}
+
+function runtimeRepresentativeIsReady(detection: DetectedSignal): boolean {
+  return observableAssociationEvidenceIsCurrentlyQualified(detection)
+    && classificationSourceSweepIds(detection).length >= CLASSIFICATION_SWEEPS;
+}
+
+function representativeGeometryKey(detection: DetectedSignal): string {
+  return JSON.stringify({
+    bandwidthHz: detection.bandwidthHz,
+    startHz: detection.startHz,
+    stopHz: detection.stopHz,
+    classificationRegionStartHz: detection.classificationRegionStartHz,
+    classificationRegionStopHz: detection.classificationRegionStopHz,
+    associationMode: detection.associationMode,
+    associationRegionStartHz: detection.associationRegionStartHz,
+    associationRegionStopHz: detection.associationRegionStopHz,
+    associationMemberCount: detection.associationMemberTrackIds?.length,
+  });
+}
 
 function profile(
   profileId: string,
@@ -435,11 +621,19 @@ function requireProfileCapability(
   return capability;
 }
 
-function assertSpectrumOnlyResult(result: WaveformClassification, gate: CanonizedProfileGate): void {
+function assertSpectrumOnlyResult(
+  result: WaveformClassification,
+  gate: CanonizedProfileGate,
+  expectedLimitation:
+    | 'zero-span-missing'
+    | 'zero-span-acquisition-policy-unqualified'
+    | 'frequency-agile-fixed-tune-envelope-censored',
+): void {
   expect(result.qualification).toBe('bayesian-observable-equivalence');
   expect(result.evidence.views).toEqual(['scalar-spectrum']);
-  expect(result.evidence.limitations).toContain('zero-span-missing');
+  expect(result.evidence.limitations).toContain(expectedLimitation);
   expect(result.evidence).not.toHaveProperty('zeroSpanCaptureId');
+  expect(result.evidence).not.toHaveProperty('detectedPowerAcquisitionQualification');
   assertNoClassificationLabels(result.evidence, gate);
 }
 
@@ -451,6 +645,8 @@ function assertEnvelopeResult(
   expect(result.qualification).toBe('bayesian-observable-equivalence');
   expect(result.evidence.views).toEqual(['scalar-spectrum', 'detected-power-envelope']);
   expect(result.evidence.zeroSpanCaptureId).toBe(captureId);
+  expect(result.evidence.detectedPowerAcquisitionQualification)
+    .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
   expect(result.evidence.limitations).toContain('zero-span-rbw-unavailable');
   expect(result.evidence.limitations).not.toEqual(expect.arrayContaining([
     'zero-span-missing', 'zero-span-provenance-mismatch', 'zero-span-tune-mismatch', 'zero-span-geometry-out-of-domain',
@@ -462,18 +658,6 @@ function classificationSourceSweepIds(detection: DetectedSignal): readonly strin
   return detection.associationMode !== undefined && detection.associationMode !== 'frequency-local'
     ? detection.associationRegionSweepIds ?? []
     : detection.sweepIds;
-}
-
-function classificationWindowSweepIds(
-  detection: DetectedSignal,
-  history: readonly Sweep[],
-): readonly string[] {
-  const admitted = new Set(classificationSourceSweepIds(detection));
-  return history
-    .filter((sweep) => admitted.has(sweep.id))
-    .sort((left, right) => right.sequence - left.sequence)
-    .slice(0, CLASSIFICATION_SWEEPS)
-    .map((sweep) => sweep.id);
 }
 
 function assertNoClassificationLabels(value: unknown, gate: CanonizedProfileGate): void {

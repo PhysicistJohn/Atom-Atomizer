@@ -46,7 +46,7 @@ const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() 
 const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));
 const device = new TinySaDeviceService(transport);
 const ai = new OpenAiGateway();
-const computer = new AppComputerHarness();
+const computer = new AppComputerHarness((bounds) => screen.getDisplayMatching(bounds).scaleFactor);
 let mainWindow: BrowserWindow | undefined;
 let rendererTrust: RendererTrust | undefined;
 const shutdownGate = new SafeShutdownGate();
