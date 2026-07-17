@@ -11,6 +11,22 @@ Atomizer originally composed `TinySaDeviceService` directly in Electron main. Th
 
 Atomizer interacts with measurement sources only through a statically registered `InstrumentDriver`. A driver owns discovery, connection, capability declaration, configuration, acquisition, optional features, source-specific protocol adaptation, and safe disconnect for one or more explicit source kinds.
 
+The transport-neutral lifecycle code lives in
+`@tinysa/instrument-runtime`. It owns the driver/session interfaces, static
+registry, serialized manager, and measurement fingerprinting and depends only
+on `@tinysa/contracts` and Zod. It imports no adapter, but it is contract-aware
+and enforces the current closed source/provenance and SignalLab feature
+variants. `@tinysa/signal-lab-driver` depends only on that runtime and the
+contracts and owns the SignalLab adapter and bridge client; it has no TinySA or
+`serialport` dependency. `@tinysa/device` separately owns the `tinysa-zs407`
+adapter plus TinySA-specific serial, Renode, parser, scheduler, and
+device-service code. Its old generic module paths and runtime re-export are
+removed; host and driver code imports the runtime and each source adapter
+from their owning packages. This package
+direction keeps source provenance and consumer evolution explicit and prevents
+a future driver from acquiring another adapter's protocol or transport
+dependency merely to participate in the lifecycle.
+
 `InstrumentManager` is the application-owned lifecycle boundary. It:
 
 - runs each registered driver's discovery independently and retains per-driver failures;
@@ -51,11 +67,26 @@ Candidate descriptors are a strict discriminated union:
 - `signal-lab` carries only a SignalLab-owned synthetic source identifier; and
 - any future NeptuneSDR source kind must define its own identity and provenance instead of borrowing TinySA fields.
 
-SignalLab is a high-level measurement producer. Its driver launches the separately built, versioned NDJSON bridge and maps only admitted scalar spectrum and detected-power results. It is never a `ByteTransport`, never receives TinySA shell commands, and never claims a USB identity, firmware version, RF generator, display, touch surface, or complex-I/Q capability.
+SignalLab is a high-level measurement producer. Atomizer's private
+`@tinysa/signal-lab-driver` workspace package launches the separately built,
+versioned NDJSON bridge and maps only admitted scalar spectrum and detected-power results.
+It depends only on contracts and the transport-neutral runtime. It is never a
+`ByteTransport`, never receives TinySA shell commands, and never claims a USB
+identity, firmware version, RF generator, display, touch surface, or
+complex-I/Q capability.
 
-TinySA's driver is the sole adapter allowed to know the ZS407 shell, USB admission, executable-twin bridge, firmware identity, screen/touch behavior, or generator safety semantics. The existing low-level TinySA service remains internal to that driver.
+Within Atomizer, TinySA's driver is the sole adapter allowed to know the ZS407 shell, USB admission, executable-twin bridge, firmware identity, screen/touch behavior, or generator safety semantics. The existing low-level TinySA service remains internal to that driver.
 
 Physical serial discovery admits only exact `0483:5740` endpoints and bounds enumeration, open, and close. A handle returned after open timeout is closed as an orphan; uncertain close blocks later writes. Unrelated endpoint bytes never enter a TinySA session.
+
+Every physical open requests the platform serial library's exclusive native
+lock. A lock denial is a failed connection, never permission to share a CDC
+stream with TinySA Flasher or another process. This is deliberately narrower
+than a cross-application lease: composition v4 contains no Atomizer↔Flasher
+runtime edge, so current ownership handoff remains an explicit local-human
+disconnect/finish action. A durable or automatic handoff requires a newly
+versioned contract implemented and tested by both applications; port absence,
+DFU appearance, or updater write-lock state alone cannot establish it.
 
 Unknown but syntactically valid physical firmware revisions may be warning-admitted only as `custom-unqualified`, without invented source provenance or hardware/RF qualification. Operational compatibility never grants firmware-installation authority. Standalone `TinySA_Flasher` owns OEM and custom artifact admission and physical update transactions. Its active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen.
 
@@ -65,7 +96,7 @@ Withholding the public generator feature does not weaken RF safety. `output off`
 
 ## Default selection
 
-Main process persists a strict `{driverId, candidateKind?}` startup preference. With no persisted choice, the factory default is `signal-lab`. A corrupt preference, failed preferred driver, unavailable preferred source, or ambiguous preferred match is visible and does not fall through to another driver. Connecting one candidate does not silently rewrite the default; a separate explicit operator preference action does.
+Main process persists a strict `{driverId, candidateKind, candidateId}` startup preference for every new selection. Legacy version-1 records without `candidateId` remain readable but never manufacture identity and fail on ambiguous broad matching. With no persisted choice, the factory default is the exact `signal-lab:default` candidate. A corrupt preference, failed preferred driver, unavailable preferred source/candidate, or ambiguous legacy match is visible and does not fall through to another driver. Connecting one candidate does not silently rewrite the default; a separate explicit operator preference action does.
 
 This is a preference, not an availability heuristic. Connecting a physical TinySA must never silently replace SignalLab, and a failed SignalLab bridge must never silently activate hardware or the firmware twin.
 
@@ -104,19 +135,27 @@ The manager's successful configuration response is the authoritative admitted co
 
 Source provenance also constrains capability truth in v1. SignalLab may expose only synthetic scalar spectrum/detected-power acquisition and profile selection; complex I/Q, RF generator, screen, touch, diagnostics, or receiver controls are rejected at session admission. Serial and firmware-twin scalar acquisitions require receiver controls. Export admission mirrors this binding, binds the complete requested closed/half-open frequency grid to samples, and uses generic instrument ceilings rather than TinySA frequency limits. JSON preserves the full admitted request, and CSV carries it in `requested_configuration_json`.
 
-Instrument v1's source-provenance union remains closed to `serial-port`, `tinysa-firmware-twin`, and `signal-lab`, and the present renderer is a scalar UI backed by TinySA-shaped staging. NeptuneSDR can enter v1 through serial provenance and already use the generic complex-I/Q contract in non-renderer consumers, but a truthful first-class Neptune transport/provenance variant and I/Q renderer require a new published contract/UI evolution; they must not be smuggled through a false existing source or projected into scalar controls.
+Instrument v1's source-provenance union remains closed to `serial-port`,
+`tinysa-firmware-twin`, and `signal-lab`, and the present renderer is a scalar
+UI backed by TinySA-shaped staging. NeptuneSDR cannot borrow serial-port or any
+other existing provenance merely because its transport may be USB or serial.
+A truthful first-class Neptune transport/provenance variant and source-agnostic
+renderer/export evolution are required; it must not be smuggled through a
+false existing source or projected into scalar controls.
 
-The paired SignalLab bridge v1 is still pre-publication. Adding its strict `reservedShutdownRequests` ready field intentionally changes the exact contract hash, so an older strict Atomizer build rejects the producer before dispatch. Once this boundary has a stable external release, a wire-field or semantic change requires a new bridge contract version rather than mutation of v1.
+The paired SignalLab bridge v1 is still pre-publication. Its current exact schema includes the reserved shutdown budget and a required safe-integer detected-power center with an advertised 1 Hz tuning lattice. Coordinated pre-publication changes alter the exact contract hash, so an older strict Atomizer build rejects the producer before dispatch. Once this boundary has a stable external release, a wire-field or semantic change requires a new bridge contract version rather than mutation of v1.
 
 ## Capability growth and NeptuneSDR
 
 The base contract contains common acquisition variants—swept scalar spectrum, uniformly sampled detected power, and a reserved complete single-buffer complex-I/Q shape capped at 64 MiB—and narrowly typed optional features. Continuous complex-IQ acquisition is rejected; chunking, continuation, backpressure, or long-lived streaming requires a new contract version. Current drivers advertise only the variants, ranges, and formats they truthfully provide. Neither SignalLab nor `tinysa-zs407` claims complex I/Q. The UI and agent surface derive availability from those declarations.
 
-New common semantics require a versioned contract addition with manager validation and at least two credible consumers; they are not placed in an untyped options bag. Truly source-specific operations use a driver-owned, separately versioned extension and remain unavailable to other drivers. NeptuneSDR is not registered or supported today; adding it requires a distinct driver/source identity, truthful capabilities and provenance, consumers, contract tests, pre-session lease cleanup through the required driver hook, and a coordinated trio-contract revision.
+New common semantics require a versioned contract addition with manager validation and at least two credible consumers; they are not placed in an untyped options bag. A truly source-specific operation would require a driver-owned, separately versioned extension contract and would remain unavailable to other drivers; instrument v1 has no generic extension hook. NeptuneSDR is not registered or supported today. The transport-neutral runtime package solves only driver lifecycle coupling; it does not make source registration open-ended. Adding NeptuneSDR still requires a distinct driver/source identity, truthful capabilities and provenance, source-agnostic renderer and export paths, consumers, contract tests, pre-session lease cleanup through the required driver hook, and a coordinated trio-contract revision. Long-lived I/Q additionally requires a versioned streaming contract for chunking, ordering, backpressure, cancellation, and bounded retention; the existing complete single-buffer I/Q value is not a streaming protocol.
 
 ## Consequences
 
-- Adding a source is a registry/composition change plus one driver, not a rewrite of Atomizer's lifecycle.
+- The extracted runtime avoids a rewrite of Atomizer's lifecycle; adding a
+  source still requires the explicit contract, adapter, consumer, composition,
+  and validation evolution described above.
 - A new driver cannot enter the trusted registry without an explicit pre-session cleanup lifecycle; existing driver cleanup never implicitly covers its resources.
 - Source failures and evidence remain attributable to their owner.
 - Synthetic measurements can exercise Atomizer's real detection and classification path without becoming classifier ground truth or fake hardware evidence.

@@ -80,14 +80,17 @@ capability discovery:
 | --- | --- |
 | identity | `version`, `info`, `help` |
 | RF safety and receive mode | `output`, `mode` |
-| conservative readback | `sweep`, `rbw`, `attenuate`, `status` |
+| conservative readback | `sweep`, `zero`, `rbw`, `attenuate`, `status` |
 | telemetry | `vbat`, `deviceid` |
 
 An absent required command is an unsupported-firmware error, not a reason to try
-an alternate spelling or older protocol. `scan`, `scanraw`, `zero`, `trace`,
+an alternate spelling or older protocol. `scan`, `scanraw`, `trace`,
 `sweeptime`, `calc`, `spur`, `avoid`, `lna`, and `trigger` are optional inputs to
-the derived receiver capability. Generator, screen, remote-panel, firmware trace,
-and marker features are also optional. Source-qualified firmware receives only
+the derived receiver capability. Advertising required `zero` command presence
+does not itself authorize raw acquisition: the exact safe `zero ?` probe and
+`scanraw` surface must still prove usable offset readback. Generator, screen,
+remote-panel, firmware trace, and marker features are also optional.
+Source-qualified firmware receives only
 the optional features whose commands are advertised. An unqualified custom build
 receives only behavior established by the exact safe probes below; if the result
 cannot form a complete acquisition, the generic instrument connection is rejected.
@@ -145,11 +148,14 @@ tinySA ULTRA+ ZS407
 Atomizer accepts a physical session only with exact `0483:5740` USB,
 `tinySA4_` firmware, a hardware line, strict ZS407 evidence across `version` and
 `info`, the receive-safe command minimum, and acknowledged output-off framing.
-The closed source registry resolves `c5dd31f` to the shipped full commit and
-`c979386` to the pinned OEM/host full commit; only those entries receive
-source-qualified provenance and pinned ZS407 capability defaults. An unknown
-syntactically valid revision is warning-admitted as `custom-unqualified` only
-when its safe probes establish a usable receiver surface. It receives no source
+The closed shell-identity registry maps exactly
+`tinySA4_v1.4-217-gc5dd31f` to the shipped full commit and exactly
+`tinySA4_v1.4-224-gc979386` to the pinned OEM/host full commit; only those full
+version/revision/commit tuples receive source-qualified provenance and pinned
+ZS407 capability defaults. A decorated or alternate version carrying either
+known Git suffix is not equivalent and is warning-admitted as
+`custom-unqualified`, just like any other unknown syntactically valid revision,
+only when its safe probes establish a usable receiver surface. It receives no source
 commit, OEM metrology qualification, generator domain, or unprobed capability.
 Malformed revisions and failed/ambiguous probes remain unsupported. The
 test-only protocol double may return the same shell identity but must preserve
@@ -358,3 +364,6 @@ retried.
   and state lines, while rejecting partial/prose-contaminated variants.
 - `FW-PROTO-019`: custom text-scan discovery uses only
   `scan ? ? ? ? ?`; `scan ?` is never sent and cannot trigger an acquisition.
+- `FW-PROTO-020`: every admitted physical firmware surface advertises `zero` as
+  part of the composition-required command set; omission fails before session
+  admission, while malformed `zero ?` evidence still withholds raw acquisition.

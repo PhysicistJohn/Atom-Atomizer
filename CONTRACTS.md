@@ -1,6 +1,6 @@
 # tinySA Desktop — Master Statement of Work and Work-Package Contracts
 
-Status: active execution baseline, instrument API v1, TinySA protocol v3, trio composition v4, 2026-07-14
+Status: active execution baseline, instrument API v1, TinySA protocol v3, trio composition v4, 2026-07-17
 Companion: [PLAN.md](./PLAN.md)
 
 Trio authority: [contracts/trio-composition-v4.json](./contracts/trio-composition-v4.json)
@@ -40,13 +40,13 @@ Estimates are engineering ranges, not calendar promises. One engineering day (ED
 
 ### Accepted implementation slice
 
-The current repository has accepted automated evidence for `AtomizerInstrumentApiV1`, the driver registry/manager boundary, SignalLab producer-consumer interoperation, exact TinySA prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, export serialization, Atom surface v9, and five live workspaces. Firmware installation is intentionally absent. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification.
+The current repository has accepted automated evidence for `AtomizerInstrumentApiV1`, the driver registry/manager boundary, SignalLab producer-consumer interoperation, exact TinySA prompt/parser/scheduler behavior, physical serial and Renode bridge boundaries, analyzer text/raw/zero-span acquisition, diagnostics, screen/touch, generator safety sequencing, persistent detection, bounded classification, advanced scalar-sweep measurements, export serialization, Atom surface v9, five legacy `WorkspaceId` values, four rendered workspace surfaces, and six visible sidebar destinations. The legacy Detection and Classification route values converge on the one visible Detect surface; Spectrum, Waterfall, and Channel select the one measurement surface without a nested view-tab bar. Firmware installation is intentionally absent. The initial physical receive-only slice is accepted as recorded evidence, not general RF-hardware qualification. Generated classifier assets are optional application payloads, never a desktop startup prerequisite. If they are absent or rejected by the runtime contract, only Bayesian classification becomes explicitly unavailable/unknown; connection, acquisition, detection, Spectrum/Waterfall/Channel, Generate, and Device continue under their own capability gates.
 
-Atomizer statically registers `signal-lab` and `tinysa-zs407`. It discovers each driver independently, retains driver-scoped failures, and connects exactly one candidate selected by the owner-only version-1 preference. If no preference file exists, SignalLab is the explicit factory default. A corrupt preference, zero or multiple preferred matches, discovery failure, bridge failure, TinySA identity failure, or evidence mismatch is visible and never activates another driver or source kind. An operator may explicitly select and persist SignalLab, a physical ZS407, or the executable twin after safe disconnection.
+Atomizer statically registers `signal-lab` and `tinysa-zs407`. It discovers each driver independently, retains driver-scoped failures, and connects exactly one candidate selected by the owner-only version-1 driver/source/candidate preference. New writes bind the exact candidate ID; legacy v1 preferences without that field remain readable but fail closed when broad matching is ambiguous. If no preference file exists, exact candidate `signal-lab:default` is the explicit factory default. A corrupt preference, zero or multiple preferred matches, discovery failure, bridge failure, TinySA identity failure, or evidence mismatch is visible and never activates another driver or source kind. An operator may explicitly select and persist SignalLab, a physical ZS407, or the executable twin after safe disconnection.
 
-SignalLab is an independent repository, application, and active high-level measurement producer. Its bounded version-1 NDJSON bridge provides synthetic swept-spectrum and detected-power observations through the `signal-lab` driver and claims no USB emulation, firmware execution, RF emission, generator, display, touch, or complex-I/Q capability. SignalLab owns 79 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Selected profile is status/capability state, never measurement or classifier evidence. Its separate Firmware stimulus sink remains `reserved-not-connected`; activating that future edge requires a coordinated contract-version change in all three repositories.
+SignalLab is an independent repository, application, and active high-level measurement producer. Its bounded version-1 NDJSON bridge provides synthetic swept-spectrum and detected-power observations through the `signal-lab` driver and claims no USB emulation, firmware execution, RF emission, generator, display, touch, or complex-I/Q capability. Each detected-power request carries one required safe-integer center frequency on the advertised 1 Hz lattice; the source returns that exact tune and receiver-filters its source model there. A packaged Atomizer stages one self-contained `process.resourcesPath/signal-lab` root with the active contract, exact generator artifact inventory, ESM boundary, and SignalLab-pinned Zod runtime before Electron Builder runs; packaged discovery never reaches into a sibling checkout. SignalLab owns 34 closed waveform descriptors, deterministic AWGN/Rayleigh channel configuration, and `SignalLabStimulusIntent`. Named standards models are excluded from selection when the renderer does not reproduce their required allocation, PRB sequence, timing, or spectral partition. Selected profile is status/capability state, never measurement or classifier evidence. Its separate Firmware stimulus sink remains `reserved-not-connected`; activating that future edge requires a coordinated contract-version change in all three repositories.
 
-The `tinysa-zs407` driver is the only adapter that knows the TinySA shell, physical USB admission, installed-firmware identity, Renode bridge, screen/touch behavior, or generator safety semantics. The twin boots the pinned Firmware binary and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`; USB transactions are not modeled and USB identity is never claimed. The driver projects the exact connected session's derived `DeviceCapabilities`, never a constant OEM capability set. Unknown but syntactically valid physical firmware revisions are warning-admitted as `custom-unqualified` without invented source provenance or OEM defaults: parseable advertised receiver ranges/syntax and conservatively observed geometry determine the available acquisitions, while unproved generator domains and trigger thresholds remain unavailable. An incomplete or malformed custom surface fails closed and is cleaned up. Mandatory `output off` remains enforced even when generator control is not advertised. This operational admission is not firmware-installation authority or hardware/RF qualification.
+Within the Atomizer runtime, the `tinysa-zs407` driver is the only adapter that knows the TinySA shell, physical USB admission, installed-firmware identity, Renode bridge, screen/touch behavior, or generator safety semantics. The twin boots the pinned Firmware binary and yields firmware-executed sweeps, LCD state, touch, and generator state over `renode-monitor-bridge`; USB transactions are not modeled and USB identity is never claimed. The driver projects the exact connected session's derived `DeviceCapabilities`, never a constant OEM capability set. Unknown but syntactically valid physical firmware revisions are warning-admitted as `custom-unqualified` without invented source provenance or OEM defaults: parseable advertised receiver ranges/syntax and conservatively observed geometry determine the available acquisitions, while unproved generator domains and trigger thresholds remain unavailable. An incomplete or malformed custom surface fails closed and is cleaned up. Mandatory `output off` remains enforced even when generator control is not advertised. This operational admission is not firmware-installation authority or hardware/RF qualification.
 
 Spectrum now exposes four host-derived trace slots (`H1..H4`) and eight
 host-derived markers, off by default, over complete acquired sweeps. Every host
@@ -58,6 +58,13 @@ merged into the latest staged revision. Continuous edits use an explicit
 stop/apply/readback/resume transaction, and superseded in-flight sweeps are
 quarantined before any measurement reducer. Exact mode semantics, evidence
 labels, and acceptance tests are governed by the measurement and protocol contracts.
+Host or device trace evidence with mismatched arrays, nonfinite values,
+nonincreasing frequencies, or degenerate physical extent is likewise
+quarantined before accumulation, analysis, or rendering and cannot create
+invalid plot geometry.
+The renderer then derives every visible spectrum polyline and overlay from the
+current admitted React state. SVG is the live DOM drawing primitive, not a
+static graphic, cached screenshot, or alternative measurement source.
 
 Work-package status is therefore interpreted as follows:
 
@@ -74,6 +81,11 @@ Work-package status is therefore interpreted as follows:
 The former embedded updater expanded WP-01 identity/provenance, WP-06 device lifecycle, WP-10 Electron integration, WP-13 hardware qualification, WP-14 release safety, and WP-20 Atom governance. Its accepted physical transaction and safety reasoning remain recorded in `docs/FIRMWARE_UPDATE_CONTRACT.md` and `docs/PHYSICAL_ZS407_CHARACTERIZATION.md` as characterization evidence.
 
 Atomizer no longer exposes firmware-download, preflight, DFU, write, acknowledgement, updater UI, updater IPC, or updater-agent operations. The standalone sibling `../TinySA_Flasher` exclusively owns OEM release selection, manifested custom-firmware admission, content-addressed download/import, the local-human boundary, DFU admission, durable journals, and post-reboot continuity/identity verification. TinySA_Flasher's active interface catalog v3 retains the active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen and verified as historical publications. Atomizer retains only operational firmware compatibility, warning-admitted custom-firmware identity, diagnostics, device transport, traces, and twin behavior.
+
+For custom builds, Flasher's native picker begins in `../TinySA_Firmware` when
+that sibling directory exists and remembers another directory only after a
+manifest from it passes Flasher admission. This picker default is convenience,
+not artifact evidence, runtime coupling, or an Atomizer↔Flasher handoff edge.
 
 ### Global definition of done
 
@@ -119,7 +131,9 @@ Every package must:
 ```text
 apps/desktop/             Electron main, preload, and React renderer
 packages/contracts/       Pure serializable TypeScript contracts
-packages/tinysa/          Driver registry/manager, SignalLab driver, TinySA driver and its source-specific internals
+packages/instrument-runtime/ Transport-neutral driver/session interfaces, registry, manager, and measurement fingerprinting
+packages/signal-lab-driver/ SignalLab adapter and bridge client (`@tinysa/signal-lab-driver`); contracts/runtime only, no serialport
+packages/tinysa/          TinySA driver plus TinySA source-specific internals (`@tinysa/device`)
 packages/test-device/     Test-only protocol double and transcript fixtures
 packages/analysis/        Traces, markers, detection and characterization
 packages/agent/           Atom surface, schemas, policy and Realtime settings
@@ -188,7 +202,11 @@ commands; and SignalLab pauses input at 33 total reply obligations. Overflow is
 visible failure and never crowds out output-off/disconnect or activates another
 source. Physical serial enumeration/open/close are bounded, admit
 only exact `0483:5740` endpoints, clean up late opens, and block writes after an
-uncertain close.
+uncertain close. Every admitted native CDC open requests the operating system's
+exclusive serial lock. That lock prevents shared byte ownership but is not a
+durable Atomizer↔Flasher handoff lease: composition v4 requires a local-human
+disconnect/finish boundary, and any automatic cross-application coordination
+requires a new versioned edge in both applications.
 
 Connection ownership has a mandatory three-phase boundary. Before `connect()`
 returns a session candidate, the driver owns any opened transport, spawned
@@ -213,12 +231,29 @@ leases until child exit is confirmed.
 
 For each active producer→consumer edge, release composition is valid only when the producer guarantee implies every consumer assumption: `G_producer => A_consumer`. The three runtime repositories carry byte-identical copies of composition contract v4, and `npm run check:trio-contract` proves identity plus the pinned Firmware and SignalLab bridges, instrument API/driver registry, Atom surface, and external Flasher ownership versions.
 
-- SignalLab→Atomizer assumes an exact bridge-v1 ready declaration and separately built artifact identity; SignalLab guarantees bounded serial NDJSON execution, high-level synthetic spectrum/detected-power observations, explicit false-valued USB-emulation/firmware-execution/RF-emission claims, and selected-profile exclusion from measurement evidence.
-- Physical→Atomizer assumes completed discovery, exact ZS407 USB identity, and the required firmware shell; Atomizer guarantees `execution=physical`, `transport=usb-cdc-acm`, and verified USB only after identity.
+- SignalLab→Atomizer assumes an exact bridge-v1 ready declaration and separately built artifact identity; SignalLab guarantees bounded serial NDJSON execution, high-level synthetic spectrum/detected-power observations, exact required integer-Hz detected-power tuning with source-side receiver filtering, explicit false-valued USB-emulation/firmware-execution/RF-emission claims, and selected-profile exclusion from measurement evidence.
+- Physical→Atomizer assumes completed discovery, exact ZS407 USB identity, and the required firmware shell including advertised `zero` offset readback; Atomizer guarantees `execution=physical`, `transport=usb-cdc-acm`, and verified USB only after identity. `zero ?` remains separately probed before raw acquisition is advertised.
 - Firmware→Atomizer assumes an exact bridge-v1 ready declaration; Firmware guarantees executable-origin sweeps/LCD/touch/generator evidence, `execution=firmware-digital-twin`, and `usbTransactionsModeled=false`.
 - SignalLab→Firmware assumes a future explicit stimulus sink; SignalLab currently guarantees only versioned intent and non-impersonation. Because the sink is absent, the composition result must remain `reserved-not-connected`.
 
-SignalLab is the factory default only when no preference file exists. The physical ZS407 and Firmware twin are selectable source kinds owned by `tinysa-zs407`; availability never authorizes fallback. A future NeptuneSDR integration is not present: it requires a new driver/source identity, truthful complex-I/Q capability and provenance, consumer behavior, tests, required pre-session resource retention/cleanup, and coordinated contract evolution. The current TinySA and SignalLab cleanup hooks cover only resources owned by those drivers; they never automatically cover NeptuneSDR. NeptuneSDR composition must add its own hook to the registered driver and prove failed-connect cleanup failure followed by successful disconnect/quit retry.
+Exact candidate `signal-lab:default` is the factory default only when no preference file exists. The physical ZS407 and Firmware twin are selectable source kinds owned by `tinysa-zs407`; availability never authorizes fallback. A future NeptuneSDR integration is not present: it requires a new driver/source identity, source-discriminated provenance, truthful complex-I/Q capability, renderer/export paths that do not assume scalar TinySA-shaped staging, and a versioned I/Q streaming protocol with backpressure and bounded retention. It also requires consumer behavior, tests, pre-session resource retention/cleanup, and coordinated contract evolution. The current TinySA and SignalLab cleanup hooks cover only resources owned by those drivers; they never automatically cover NeptuneSDR. NeptuneSDR composition must add its own hook to the registered driver and prove failed-connect cleanup failure followed by successful disconnect/quit retry.
+
+The generic lifecycle implementation is separately owned by
+`@tinysa/instrument-runtime`. Its driver/session interfaces, static registry,
+serialized `InstrumentManager`, and measurement fingerprinting depend on
+`@tinysa/contracts` and Zod, not on TinySA protocols or `serialport`.
+The runtime imports no adapter, but it is contract-aware and enforces the
+current closed source/provenance and SignalLab feature variants.
+`@tinysa/signal-lab-driver` depends only on that transport-neutral runtime and
+the contracts and owns the SignalLab adapter and bridge client without
+serial-port coupling.
+`@tinysa/device` separately owns the `tinysa-zs407` adapter and all
+TinySA-specific protocol/transport code; its former generic compatibility
+entry points and runtime re-export are removed. Electron main imports lifecycle services
+from the transport-neutral package and each adapter from its source-owned package.
+A future driver must preserve that dependency direction and introduce its own
+source-discriminated provenance, cleanup, consumer behavior, and composition
+tests instead of depending on either current adapter bundle.
 
 Safety invariants hold in every reachable state; liveness requires every admitted request to settle exactly once; failure algebra defines a single visible terminal result for invalid input, discovery, identity, boot, evidence, policy, approval, and Realtime-setting failure. Retry, reroute, downgrade, fabrication, and implicit edge activation are outside the contract.
 
@@ -533,12 +568,12 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Versioned detector contract with absolute and noise-relative thresholds, minimum bandwidth and persistence.
 - Declared noise-floor estimator, deterministic contiguous-bin segmentation, quality flags and source-sweep provenance.
 - Stateful cross-sweep tracker with documented association, drift, merge/split, expiry and stable-ID behavior.
-- Detection workspace with active-only bandwidth shading and dashed region-center lines, synchronized table/detail, filtering, alert policy boundary and session persistence; Spectrum never renders those annotations.
+- Merged Detect workspace with current-active-only physical bandwidth shading and dashed region-center lines; synchronized active/qualifying/agile evidence groups; exact-visible-sweep Auto targeting of the strongest current physical row; compact non-scrolling detected-power status/capture strip; filtering, alert policy boundary, and session persistence; Spectrum never renders those annotations.
 - Synthetic golden corpus and labeled captured corpus; quality/performance report.
 
 **Acceptance**
 
-- DET-01 through DET-11 in `docs/UI_UX_CONTRACTS.md` pass and link to evidence.
+- DET-01 through DET-13 in `docs/UI_UX_CONTRACTS.md` pass and link to evidence.
 - Empty, zero-result, unavailable, cancelled and failed analysis remain semantically distinct.
 - Detector and tracker run outside serial/IPC ownership and cannot mutate device state.
 - Precision/recall, false alarms, SNR response and estimation error meet thresholds frozen after WP-01 capture characterization.
@@ -554,8 +589,8 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 - Versioned analysis-mode interface, candidate/evidence contracts, cancellable local inference adapter and pipeline state machine.
 - Inert signed model-package manifest, size/hash/schema/domain validation, installation/removal and compatibility reporting.
-- Classification workspace with candidate selection, pipeline stages, ranked results, calibrated confidence, unknown reasons and provenance; live labels omit synthetic-source prefixes/replay wording and positive decisions alone receive success green.
-- Model-independent fixtures proving that missing/invalid/out-of-domain packages cannot invent labels or execute arbitrary code.
+- The merged Detect workspace adds active-physical candidate selection, pipeline stages, ranked results, calibrated confidence, unknown reasons and provenance; live labels omit synthetic-source prefixes/replay wording and positive decisions alone receive success green.
+- Model-independent fixtures proving that missing/invalid/out-of-domain packages cannot invent labels or execute arbitrary code, and that absent/rejected generated assets localize unavailability to classification without preventing desktop startup or other workspaces.
 
 **Acceptance**
 
@@ -675,8 +710,9 @@ claims.
   contracts with explicit scalar-sweep/Not-I-Q provenance.
 - RBW-normalized band-power integration, lower/upper ACP/ACLR, configurable
   percent-power OBW, and deterministic Hann-windowed envelope STFT engines.
-- One fixed-height Spectrum/Waterfall/Channel/Time-STFT stage with setup and
-  trace/marker/display overlays; 1920 × 1100 work-area-clamped startup sizing.
+- One fixed-height Spectrum/Waterfall/Channel stage with setup and
+  trace/marker/display overlays; detected-envelope STFT remains a typed,
+  non-rendered analysis/Agent capability; 1920 × 1100 work-area-clamped startup sizing.
 - Typed Atom selection/configuration/result/acquisition hooks and pull-based
   current-state tools for every new view.
 - Official-vendor workflow research, evidence boundary, failure matrix, unit
@@ -684,7 +720,7 @@ claims.
 
 **Acceptance**
 
-- ADV-001 through ADV-014 in `docs/ADVANCED_MEASUREMENTS_CONTRACT.md` pass.
+- ADV-001 through ADV-018 in `docs/ADVANCED_MEASUREMENTS_CONTRACT.md` pass.
 - No frequency-grid interpolation, requested-RBW substitution, out-of-span
   partial result, or I/Q/vector claim is permitted.
 - Physical ZS407 validation records integration error versus a characterized

@@ -7,7 +7,7 @@ Reasoning lock: `high`
 Voice lock: `ballad`  
 VAD lock: `server_vad`, threshold `0.97`
 Input-transcription lock: `gpt-realtime-whisper`
-Updated: 2026-07-14
+Updated: 2026-07-17
 
 This document is normative. “Atom” is the application-layer AI inside TinySA Atomizer. It is not a general desktop agent and not a chat feature layered over the UI. It is an alternate, fully governed control surface for the same typed instrument capabilities used by the visual application.
 
@@ -56,7 +56,16 @@ Realtime API                typed device + UI APIs
 ### 2.1 Credential boundary
 
 - `OPENAI_KEY` is the sole credential name and is accepted only in the trusted Electron main process.
-- `.env` is loaded only by main and is git-ignored.
+- `.env` is loaded only by main and is git-ignored. On POSIX, main opens it with
+  `O_NOFOLLOW`; validates regular-file type, current-user ownership,
+  owner-readable mode with no group or other permission bits, and a maximum
+  size of 65,536 bytes on that same descriptor; reads from the descriptor; and
+  rejects metadata or content-state change during admission (`chmod 600 .env`
+  is the normal mode correction). The macOS development launcher repeats the
+  metadata-and-size preflight only as defense in depth. Direct `npm run dev`
+  uses the same main-process loader. Where a secure no-follow open is
+  unavailable, Atomizer refuses `.env` and accepts the key only from the
+  inherited process environment.
 - The credential is never placed in Vite variables, preload, renderer state, WebRTC events, logs, diagnostics, session files or exports.
 - Renderer IPC can ask whether AI is configured; it cannot read, set, validate or export the key.
 - Realtime uses the unified WebRTC interface: main posts SDP plus only the immutable exact-model bootstrap to `/v1/realtime/calls` with the standard key and returns only the SDP answer. The full mutable contract is enforced over the data channel before microphone capture is enabled.
@@ -78,7 +87,7 @@ Atomizer owns operator intent, instrument selection/lifecycle, OpenAI credential
 | Executable twin | `tinysa-zs407` / `renode-monitor-bridge` | `firmware-executed-twin` | Not verified; USB transactions not modeled |
 | Protocol test double | test-only / `protocol-test-double` | Test evidence only | Not verified or modeled |
 
-The byte-identical trio composition v4 manifest is normative. With no persisted preference, SignalLab is the factory default; a failed or ambiguous preference never falls back to a different source. Atom may observe and operate only capabilities declared by the active `AtomizerInstrumentApiV1` session. SignalLab's selected profile is status/capability state and cannot become detector or classifier evidence. The active SignalLab→Atomizer measurement edge is distinct from the SignalLab→Firmware stimulus edge, which remains `reserved-not-connected`; Atom cannot activate that edge or describe the twin as USB.
+The byte-identical trio composition v4 manifest is normative. With no persisted preference, the exact `signal-lab:default` candidate is the factory default; a failed or ambiguous preference never falls back to a different source. Atom may observe and operate only capabilities declared by the active `AtomizerInstrumentApiV1` session. SignalLab's selected profile is status/capability state and cannot become detector or classifier evidence. The active SignalLab→Atomizer measurement edge is distinct from the SignalLab→Firmware stimulus edge, which remains `reserved-not-connected`; Atom cannot activate that edge or describe the twin as USB.
 
 NeptuneSDR is a future driver and contract-evolution target, not a currently registered or supported instrument. Atom must not offer SDR or complex-I/Q tools until a versioned source identity, truthful capabilities/provenance, manager validation, consumer behavior, and coordinated composition contract exist.
 
@@ -183,7 +192,7 @@ No mutable application snapshot is injected by default. Atom loads only the narr
 - Simulation flag and visible error.
 - Device identity, firmware, capabilities, mode, RF output and verification.
 - Analyzer/generator/detector configuration.
-- Active measurement view; host trace bank; markers/readouts; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
+- Active measurement view; host trace bank; markers/readouts including trace-local half-power status, peak-to-robust-floor/prominence, and bounded current detector context; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
 - Versioned Atomizer/Firmware/SignalLab topology, active driver/source/qualification, transport, USB-verification state when applicable, active measurement edge, and reserved stimulus-edge status.
 - Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
 
@@ -201,33 +210,33 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `get_agent_surface` | Observe | Never | Reads compact tool/policy inventory, response-scoped loading contract, and UI-control bindings with projection and guarantee |
 | `get_instrument_state` | Observe | Never | Reads driver/source identity, qualification, capabilities, and only source-applicable mode/RF state |
 | `get_latest_sweep_summary` | Observe | Never | Reads minimized trace summary |
-| `get_measurement_state` | Observe | Never | Reads four host trace modes, D1–D4 overlay visibility, eight markers/readouts, searches, and host display scale |
-| `set_measurement_view` | Operate | Never | Selects Spectrum, Waterfall, Channel, or detected-envelope STFT |
+| `get_measurement_state` | Observe | Never | Reads four host trace modes, D1–D4 overlay visibility, eight markers/readouts with fail-closed local 3 dB evidence and separately labeled component-local 99% robust-floor OBW, searches, and host display scale |
+| `set_measurement_view` | Operate | Never | Selects the visible Spectrum, Waterfall, or Channel projection; the legacy `envelope-stft` value resolves to Spectrum while STFT computation remains available through its dedicated tools |
 | `configure_waterfall` | Operate | Never | Sets bounded coherent history depth and explicit dBm color scale |
 | `configure_channel_measurement` | Operate | Never | Sets main/adjacent bandwidths, spacing, offset pairs, and OBW behavior |
-| `get_channel_measurement_results` | Observe | Never | Calculates CHP/PSD/ACP/ACLR/OBW or returns the exact evidence failure |
+| `get_channel_measurement_results` | Observe | Never | Calculates CHP/PSD/ACP/ACLR, local interpolated 3 dB response width with explicit resolution status, and separate percent-power OBW, or returns the exact evidence failure |
 | `configure_envelope_stft` | Operate | Never | Sets Hann window, hop, DC removal, and display range for detected power |
 | `get_envelope_stft_results` | Observe | Never | Reads the latest detected-envelope STFT or exact failure |
 | `acquire_envelope_stft` | Operate | Never | Acquires staged zero-span evidence and returns its Not-I/Q STFT |
-| `get_detection_results` | Observe | Never | Reads tracked candidates, thresholds, persistence and release state |
-| `get_classification_results` | Observe | Never | Reads spectral morphology and zero-span envelope evidence |
+| `get_detection_results` | Observe | Never | Separates frequency-local detections, 2.4 GHz agile activity, and static classifier associations; multicomponent swept-region associations expose their bounded per-sweep member lineage and explicitly claim no merged emission, common process, simultaneity, protocol, or emitter identity |
+| `get_classification_results` | Observe | Never | Reads spectral and zero-span evidence while binding each grouped result to its exact current association members and multicomponent lineage; a departed hysteresis-only member cannot inherit or override the current group result |
 | `read_device_diagnostics` | Observe | Never | Refreshes identity, command catalog, readback and telemetry |
 | `list_connection_candidates` | Observe | Never | Lists opaque candidate IDs and safe labels; excludes paths/serials |
 | `connect_device` | Operate | Never | Connects exactly one previously listed instrument candidate; no default substitution |
 | `disconnect_device` | Operate | Never | Disconnects the active instrument and preserves unknown-RF semantics where applicable |
 | `inspect_interface` | Observe | Never | Derives rendered controls, availability, risk, preferred tool, projection, and guarantee from the live DOM |
 | `computer_action` | Operate | Never* | Activates only synchronous UI-only controls; domain operations are excluded |
-| `computer_screenshot` | Observe | Never | Captures only Atomizer and issues a short-lived one-use screenshot ID plus focused-target identity |
-| `computer_click` | Operate | Never* | Consumes the latest screenshot ID for one hit-tested coordinate click |
-| `computer_type` | Operate | Never | Inserts bounded text only when current focus equals `expectedTarget` |
-| `computer_key` | Operate | Never | Sends one allow-listed key only when current focus equals `expectedTarget` |
-| `computer_scroll` | Operate | Never | Consumes the latest screenshot ID for one bounded scroll |
-| `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI |
+| `computer_screenshot` | Observe | Never | Captures only Atomizer with animations/transitions/caret normalized and issues a short-lived one-use screenshot ID bound to the exact normalized bitmap plus focused-target identity |
+| `computer_click` | Operate | Never* | Consumes the latest screenshot ID, requires an exact normalized-bitmap recapture match, and performs one hit-tested coordinate click |
+| `computer_type` | Operate | Never | Consumes a current trusted focus grant and inserts bounded text only when focus still equals `expectedTarget` through native delivery |
+| `computer_key` | Operate | Never | Consumes a current trusted focus grant and sends one allow-listed key only when focus still equals `expectedTarget` through native delivery |
+| `computer_scroll` | Operate | Never | Consumes the latest screenshot ID, requires an exact normalized-bitmap recapture match, and performs one bounded scroll |
+| `navigate_workspace` | Operate | Never | Uses the same guarded route transition as UI; the legacy Detection route resolves to the merged Detect surface |
 | `configure_analyzer` | Operate | Never | Applies a non-empty partial patch to staged analyzer settings; omitted fields are preserved and the merged full config is validated |
 | `select_marker` | Operate | Never | Selects one marker for editing without changing its configuration |
-| `configure_marker` | Operate | Never | Configures one of eight host-derived markers through the measurement reducer |
+| `configure_marker` | Operate | Never | Configures one of eight host-derived markers through the measurement reducer and returns its current trace-local reading when available |
 | `configure_marker_search` | Operate | Never | Configures minimum level and local-peak excursion criteria |
-| `search_marker` | Operate | Never | Places the active marker using peak/min/next search and explicit thresholds |
+| `search_marker` | Operate | Never | Places the active marker using peak/min/next search and returns the same trace-local characterization shown by the UI; Peak is the sampled maximum for narrow, power-dominant, censored, or unqualified responses and the nearest measured bin to the noise-subtracted linear-power centroid for one bounded broad threshold component, including a component whose disjoint half-power islands make contiguous 3 dB width unavailable; floor-separated components are never merged; thresholds/excursion apply only to Next Left/Right |
 | `select_trace` | Operate | Never | Selects one trace for editing without changing its mode or accumulator |
 | `configure_trace` | Operate | Never | Configures one of four host-derived trace accumulators |
 | `configure_firmware_trace_visibility` | Operate | Never | Shows or hides one separately labeled firmware-readback overlay without changing the device trace |
@@ -237,8 +246,8 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `acquire_sweep` | Operate | Never | Runs one analyzer acquisition |
 | `start_continuous_sweeps` | Operate | Never | Starts serialized service-owned acquisition |
 | `stop_continuous_sweeps` | Operate | Never | Stops after the in-flight firmware operation |
-| `configure_signal_detector` | Operate | Never | Changes detector and opens Detection |
-| `select_classification_candidate` | Operate | Never | Selects one current detected-signal result for visual inspection |
+| `configure_signal_detector` | Operate | Never | Changes detector and opens Detect, the merged detector/classifier workspace |
+| `select_classification_candidate` | Operate | Never | Selects only the exact requested current-visible active physical representative or promotion-qualified frequency-agile evidence representative. A qualified agile representative maps to its uniquely bound current raw tune owner; ordinary candidates, raw agile-member IDs, stale/released rows, ambiguous ownership, and substitution fail closed |
 | `configure_zero_span` | Operate | Never | Stages detected-power-versus-time capture settings |
 | `acquire_zero_span` | Operate | Never | Captures and characterizes one envelope |
 | `configure_generator` | Operate | Never | Commands output off and stages generator |
@@ -247,7 +256,17 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
 | `export_latest_sweep` | Operate | Never | Opens a native save dialog for provenance-preserving CSV/JSON |
 
-Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry; another coordinate action requires another screenshot. Type/key actions compare current focus with the exact expected target returned by a screenshot or preceding action. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval.
+Computer tools cannot access other windows, open external URLs, or bypass tool policies. Each click/scroll consumes the newest screenshot ID within 15 seconds and rejects changed window geometry, display scale, or normalized bitmap; another coordinate action requires another screenshot. Type/key actions consume a 15-second rotating main-owned focus grant issued only by a screenshot or preceding successful focus-producing click/type/key action. They compare current focus with that exact expected target both while arming and at native input delivery; an intervening focus change is prevented in the renderer. Disabled state and protected boundaries are evaluated on both the hit element and its interactive ancestor. Spectrum marker coordinates dispatch one pointer event and succeed only when the renderer acknowledges the exact request token and returns a safe-integer placed frequency. Elements marked high-impact or `data-agent-exclusion` are refused. RF output and remote touch route to typed action-time approval.
+
+The UI-only `classification.auto-select` semantic control clears sticky manual
+selection and resumes the same reducer used by the visible Auto button. It ranks
+only eligible physical projections from the complete exact sweep currently
+drawn by strongest raw peak, with deterministic ties; stale, off-span,
+retained-miss, released, and synthetic summary rows cannot win. If that exact
+strongest projection lacks a capture-ready evidence window, capture fails
+visibly rather than substituting a weaker row.
+
+Legal application calls in one Realtime response execute sequentially against one synchronous controller snapshot, not render-time React closures. Every controller-domain mutation atomically updates the authoritative ref and its React projection; configure→operate and acquire→read chains therefore observe the preceding call. DOM-dependent inspection and computer calls additionally wait for the exact preceding mutation revision to reach a layout commit. That wait is bounded to two seconds, rejects on renderer unmount, returns immediately when no mutation is pending, and fails closed rather than inspecting stale DOM.
 
 All 50 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
@@ -274,12 +293,13 @@ A feature is not complete when only its visual control exists.
 
 Atom’s computer use is confined to TinySA Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
 
-1. Electron captures only its own `BrowserWindow` content—never the desktop.
-2. The screenshot is normalized to application CSS coordinates, assigned a 15-second one-use ID, and sent as explicitly untrusted image input with its focused-target identity on the active trusted Realtime transport.
+1. Electron captures only its own bounded visible `BrowserWindow` content—never the desktop—with animations, transitions, and caret painting temporarily normalized.
+2. The CSS-sized bitmap is hashed, assigned a 15-second one-use coordinate ID and a rotating main-owned focus grant, and sent as explicitly untrusted image input with its focused-target identity on the active trusted Realtime transport.
 3. Atom returns bounded click/scroll calls containing that exact ID, or type/key calls containing the exact expected focus target.
-4. Main consumes the coordinate token, verifies unchanged window dimensions or exact focus, validates input, and hit-tests the current app DOM.
+4. Main consumes the coordinate grant, recaptures under the same normalization, requires the exact bitmap hash plus unchanged dimensions/display scale, then hit-tests the current app DOM. Focus actions require the exact granted target. Native type/key/scroll input is guarded again at renderer event delivery; scroll also repeats native geometry, scale, bounds, and protected-target checks after the awaited hit-test immediately before injection.
 5. A high-impact target is blocked before activation and redirected to its typed approval tool.
-6. Atom captures again to verify the result.
+6. A spectrum-marker click requires renderer acknowledgement of the coordinate-bearing pointer event and placed frequency; generic DOM dispatch success is not accepted as placement.
+7. Atom captures again to verify the result.
 
 The harness has no OS-wide input injection, other processes, arbitrary URLs or files. Native domain tools remain preferred because they preserve exact units and provenance. Screenshot payloads are turn-scoped and excluded from logs/session persistence.
 
@@ -433,13 +453,15 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
 - **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the compact shared loader session is sent and exactly acknowledged before the muted microphone can be enabled.
-- **AI-46:** Every coordinate action consumes one current screenshot ID; focus-sensitive input fails when `expectedTarget` no longer matches.
+- **AI-46:** Every coordinate action consumes one current screenshot ID bound to an exact normalized application bitmap and requires an identical bounded recapture before dispatch; every focus-sensitive action consumes one current main-owned focus grant and fails closed before or during native delivery when `expectedTarget` no longer matches. Same-response controller calls read the preceding call's synchronous commit, while DOM calls require its bounded render commit.
 - **AI-47:** Every function schema is a closed top-level object with no Realtime-forbidden top-level combinator; runtime relational constraints remain authoritative.
 - **AI-48:** Host trace Off and D1–D4 overlay visibility are separate typed operations; firmware-readback visibility never mutates device trace state.
 - **AI-49:** The persistent text and voice session exposes only `load_atom_tools`; a loader response selects one to eight unique registered names and cannot mix loader and application calls.
 - **AI-50:** Every application call is rejected unless present in the exact selected response-scoped set, then passes the same concrete Zod validator and policy used by the UI host.
 - **AI-51:** Text sends its static `session.update` exactly once per socket and never rewrites instructions with mutable application context; current state is obtained through typed read tools.
 - **AI-52:** Atomizer parses and exposes API-supplied response usage and rate-limit telemetry while configuring no `max_output_tokens`, reduced context window, or truncation policy.
+- **AI-53:** `classification.auto-select` resumes strongest-raw-peak targeting over the complete exact visible sweep and cannot replace an ineligible strongest target with a weaker capture-ready row.
+- **AI-54:** Coordinate marker placement succeeds only after token-bound renderer acknowledgement of a safe-integer placed frequency; click admission applies disabled/protected semantics to both the hit element and its interactive ancestor.
 
 ## 16. Source traceability
 

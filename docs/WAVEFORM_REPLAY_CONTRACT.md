@@ -1,10 +1,15 @@
 # SignalLab measurement and stimulus ownership notice
 
-Status: ownership shim; updated for trio composition v4 on 2026-07-14.
+Status: ownership shim; updated for trio composition v4 on 2026-07-17.
 
-Waveform descriptors, the 79-profile closed catalog, AWGN/Rayleigh channel behavior, high-level synthetic measurements, and stimulus intent are owned by the independent `../TinySA_SignalLab` repository. Its normative boundary is [SignalLab CONTRACTS](../../TinySA_SignalLab/CONTRACTS.md).
+Waveform descriptors, the 34-profile closed catalog, AWGN/Rayleigh channel behavior, high-level synthetic measurements, and stimulus intent are owned by the independent `../TinySA_SignalLab` repository. Twelve public observable profiles share SignalLab's executable canonical-scenario source with the classifier corpus; the remaining 22 profiles are visual/standards fixtures, not classifier truth. Its normative boundary is [SignalLab CONTRACTS](../../TinySA_SignalLab/CONTRACTS.md).
 
-Atomizer does not contain SignalLab synthesis code. Its `signal-lab` driver launches SignalLab's separately built, version-1 NDJSON bridge and admits only bounded swept-spectrum and detected-power results qualified `synthetic-visual-projection`. This SignalLab→Atomizer measurement edge is active and is the factory default when no instrument preference exists. The selected profile remains source status/capability state and is never copied into measurement, detector, classifier, or export evidence. Bridge failure is terminal for that admission attempt and never falls back to a TinySA source.
+The closed catalog omits named test models whose required power-balanced
+allocation, per-slot PRB sequence, subslot/slot timing, or SBFD spectral
+partition is not implemented. Those omissions are unsupported capability, not
+negative evidence about the standards families.
+
+Atomizer does not contain SignalLab synthesis code. Its `signal-lab` driver launches SignalLab's separately built, version-1 NDJSON bridge and admits only bounded swept-spectrum and detected-power results qualified `synthetic-visual-projection`. Detected-power acquisition requires one safe-integer center frequency on the advertised 1 Hz lattice; the producer returns that exact value and receiver-filters the selected source model at the requested tune. This SignalLab→Atomizer measurement edge is active, and exact candidate `signal-lab:default` is the factory default when no instrument preference exists. The selected profile remains source status/capability state and is never copied into measurement, detector, classifier, or export evidence. Bridge failure is terminal for that admission attempt and never falls back to a TinySA source.
 
 The active measurement edge does not apply stimulus to executable firmware. SignalLab→Firmware remains a separate future `SignalLabStimulusIntent` edge with status `reserved-not-connected`; no current process supplies a Firmware-owned sink.
 

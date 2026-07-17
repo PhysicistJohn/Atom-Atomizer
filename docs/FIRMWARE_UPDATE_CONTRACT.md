@@ -2,7 +2,7 @@
 
 Status: historical Atomizer record; active implementation owned by `../TinySA_Flasher`
 Version: 1.2.0
-Updated: 2026-07-14
+Updated: 2026-07-17
 
 Beginning with Atomizer application contract 6 and device API v3, TinySA contains
 no firmware download, preflight, DFU detection, or flash implementation and no
@@ -11,11 +11,29 @@ application `../TinySA_Flasher` is their exclusive owner. References to Atomizer
 below describe the accepted pre-extraction implementation and preserved physical
 transaction evidence; they are not a current Atomizer capability or API contract.
 
-This contract governs Atomizer’s updater for one verified physical tinySA Ultra+ ZS407. It does not create a generic firmware browser or accept “latest” by filename, directory order, redirect, or server metadata.
+This record governed the former embedded Atomizer updater for one verified
+physical tinySA Ultra+ ZS407. It does not authorize a current Atomizer write
+path, and it is not the active TinySA Flasher contract. The preserved design did
+not create a generic firmware browser or accept “latest” by filename, directory
+order, redirect, or server metadata.
 
-## Pinned release
+## Current standalone handoff
 
-Atomizer accepts exactly:
+Atomizer owns normal CDC analyzer/generator sessions and requests the native
+exclusive serial lock for every admitted physical open. TinySA Flasher owns CDC
+discovery/preflight, DFU admission/write, and CDC post-write verification for a
+complete update session. The operator must disconnect or close Atomizer before
+starting Flasher and finish or safely exit Flasher before reconnecting; there is
+no current automatic cross-application lease or handoff protocol.
+
+For owner-built firmware, Flasher's native manifest picker starts in the sibling
+`../TinySA_Firmware` checkout when it exists and remembers another directory
+only after a selected manifest passes normal admission. The picker default is
+not artifact evidence and creates no Atomizer runtime dependency.
+
+## Historical pinned release
+
+The former embedded Atomizer updater accepted exactly:
 
 ```text
 product       tinySA Ultra / Ultra+
@@ -48,7 +66,7 @@ Every operation settles once. Network and DFU failures do not retry automaticall
 
 Beginning with preflight, every safety-relevant transition is atomically journaled in the private application cache and schema-validated on every process start. A corrupt or unreadable journal produces an `indeterminate` write disposition and locks flashing pending manual inspection. A restart from `ready-to-flash` requires fresh DFU discovery; a restart from `flashing` or `reconnecting` enters a do-not-flash recovery state.
 
-## Automatic behavior
+## Historical automatic behavior
 
 After one exact physical ZS407 is admitted, Atomizer compares the reported source revision with the pinned target. An older supported revision opens the updater and downloads/verifies the artifact. Automatic behavior stops at `verified`.
 
@@ -70,7 +88,7 @@ Atomizer never automatically:
 - clears configuration;
 - runs post-update calibration or self-test.
 
-## Human preflight boundary
+## Historical human preflight boundary
 
 The OEM procedure requires a pre-update self-test. For the admitted Ultra+ ZS407, the hardware-specific procedure is closed as `tinySA4-zs407-cal-rf-v1`:
 
@@ -88,7 +106,7 @@ The generic Basic/older-device wording “LOW and HIGH” is explicitly invalid 
 
 Main then refreshes exact identity, command catalog, analyzer readback, battery, and device ID; requires at least 4.000 V; captures and hashes the LCD; writes an immutable preflight JSON record; commands RF output off; and closes USB CDC. A failed check does not enter DFU guidance.
 
-## DFU admission
+## Historical DFU admission
 
 The known flashing engine is exactly `dfu-util 0.11`, resolved from `TINYSA_DFU_UTIL` or deterministic executable paths. Missing or different tooling disables the write path.
 
@@ -103,7 +121,7 @@ matching count   exactly one
 
 Zero STM32 matches remains `awaiting-dfu`. Multiple STM32 devices, multiple/missing exact internal-flash targets on a present STM32 device, malformed identity output, or another alternate rejects the transition.
 
-## One-shot write boundary
+## Historical one-shot write boundary
 
 Immediately before writing, Atomizer re-reads the cached artifact and repeats exact size and SHA-256 verification. Only the local control marked `human-flash-boundary` can submit the literal confirmation and execute:
 
@@ -123,11 +141,11 @@ Post-reboot identity proves only that the expected firmware returned over exact 
 
 The delivered ZS407 completed one human-authorized transaction on 2026-07-11. Durable evidence records `writeStartedAt=2026-07-11T23:24:37.404Z`, `writeCompletedAt=2026-07-11T23:25:15.429Z`, and final completion at `2026-07-11T23:25:17.966Z`. The write therefore occupied 38.025 seconds; exact USB admission then returned the pinned `tinySA4_v1.4-224-gc979386` / `c97938697b6c7485e7cab50bca9af76996b7d671` identity. The journal is `completed`, so the one-shot guard forbids using this transaction as permission to flash again.
 
-The build used for that transaction displayed an indeterminate wait animation during the write. This was an observability defect, not a second write or an uncertain outcome: subprocess output, timestamps, success confirmation, and post-reboot identity all completed. The current implementation replaces that wait with the contracted live parser and is covered by recorded-output parser, state-schema, renderer, and accessibility tests. It is intentionally not re-qualified by performing another unnecessary physical write.
+The build used for that transaction displayed an indeterminate wait animation during the write. This was an observability defect, not a second write or an uncertain outcome: subprocess output, timestamps, success confirmation, and post-reboot identity all completed. The final embedded implementation replaced that wait with the contracted live parser and retained recorded-output parser, state-schema, renderer, and accessibility evidence. That implementation was then removed from Atomizer; the standalone TinySA Flasher now owns all executable update behavior. The accepted transaction is intentionally not re-qualified by performing another unnecessary physical write.
 
-## Atom boundary
+## Historical Atom boundary
 
-Atom surface v4 can:
+The retired Atom surface v4 could:
 
 - read updater state and evidence;
 - open the updater;
@@ -137,7 +155,7 @@ Atom surface v4 can:
 
 Atom, coordinate computer use, keyboard/type/scroll computer paths, and semantic computer actions cannot set the safety attestations, disconnect for DFU, or activate the flash control. Those elements are explicitly excluded from the agent surface, and the two transition controls also require a trusted local UI event. This is a deliberate governed hook, not missing coverage.
 
-## Acceptance
+## Preserved historical acceptance evidence
 
 - A valid unknown installed revision is warning-admitted as custom firmware, never assigned OEM provenance, and cannot enter the OEM updater transaction.
 - Wrong URL response status, redirect, length, byte count, or hash cannot produce a verified artifact.

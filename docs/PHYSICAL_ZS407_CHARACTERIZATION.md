@@ -31,7 +31,7 @@ absent from this repository and owned exclusively by `../TinySA_Flasher`.
 | MCU/platform | STM32F303xC, ARMv7E-M Cortex-M4F |
 | Shell commands observed | 79 on the custom build; all required Atomizer commands present |
 
-The OEM source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before its reported build time. Atomizer admits that revision through a closed revision-to-full-commit registry. A syntactically valid unknown revision is not assigned the host or OEM commit: it may be admitted only as `custom-unqualified` after the same exact ZS407 identity, required-command, framing and output-off gates, with an explicit warning.
+The OEM source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before its reported build time. Atomizer admits that observation through a closed exact-version/revision/full-commit registry. A decorated known suffix or any syntactically valid unknown revision is not assigned the host or OEM commit: it may be admitted only as `custom-unqualified` after the same exact ZS407 identity, required-command, framing and output-off gates, with an explicit warning. This shell identity is reported evidence, not binary attestation: without a separately bound Flasher artifact receipt, an uncommitted/custom build could emit the same version string.
 
 The shipped `version` hardware line does not contain `ZS407`. The exact product
 line appears in `info`. Physical identity therefore requires all of: exact USB

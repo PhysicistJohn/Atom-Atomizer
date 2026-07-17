@@ -1,12 +1,13 @@
 # Advanced swept-measurement contract
 
 Status: implemented baseline  
-Version: 1.0.0  
-Updated: 2026-07-11
+Version: 1.1.0
+Updated: 2026-07-17
 
-This document is normative for TinySA Atomizer Spectrum, Waterfall, Channel,
-and Envelope STFT views. It defines what is calculated, which evidence supports
-the result, how the UI remains bounded, and how Atom operates the same surface.
+This document is normative for the TinySA Atomizer Spectrum, Waterfall, and
+Channel renderer views and for the non-rendered Envelope STFT analysis API. It
+defines what is calculated, which evidence supports the result, how the UI
+remains bounded, and how Atom operates the same analysis state.
 
 ## Product baseline
 
@@ -43,8 +44,8 @@ host calculations are firmware features.
 |---|---|---|---|
 | Spectrum | One complete scalar sweep | Power versus RF frequency, traces, markers, metrics | Host display of measured bins |
 | Waterfall | Complete scalar sweeps on one identical frequency grid | Power versus RF frequency and sweep age | Host spectrogram; no inter-sweep resampling |
-| Channel | One complete scalar sweep plus explicit channel definition | CHP, PSD, ACP/ACLR, OBW | Scalar-sweep engineering estimate |
-| Envelope STFT | One complete zero-span detected-power capture | Power versus time and modulation-frequency versus time | Detected envelope; explicitly not I/Q |
+| Channel | One complete scalar sweep plus explicit channel definition | CHP, PSD, local 3 dB response width, ACP/ACLR, OBW | Scalar-sweep engineering estimate |
+| Envelope STFT API (non-rendered) | One complete zero-span detected-power capture | Power versus time and modulation-frequency versus time | Detected envelope; explicitly not I/Q |
 
 Every result identifies its source sweep/capture and evidence class. Missing or
 incompatible evidence produces a visible error; another data source is never
@@ -52,19 +53,27 @@ substituted.
 
 ## Bounded measurement-stage contract
 
-Spectrum owns one fixed-height `MeasurementWorkspace`. It contains:
+Spectrum, Waterfall, and Channel select one shared fixed-height
+`MeasurementWorkspace`. It contains:
 
-1. one four-tab view bar (`Spectrum`, `Waterfall`, `Channel`, `Time / STFT`);
+1. one active renderer view selected by the first-class sidebar destinations
+   `Spectrum`, `Waterfall`, or `Channel`, with no nested view-tab bar;
 2. one active analysis canvas using all remaining height;
 3. `Sweep setup` and `Traces & markers` overlays that do not reflow or lengthen
    the document;
 4. the persistent application status bar and independent Atom rail.
 
-Only the active view is rendered. Spectrum metrics occupy a fixed footer inside
+Only the active visible view is rendered. Spectrum metrics occupy a fixed footer inside
 the stage. No Spectrum workflow requires body or workspace scrolling. The
 default Electron window is 1920 × 1100 CSS px, clamped to the primary display's
 work area; minimum size is 1280 × 800 where the display permits it. Atom's open
 rail remains reserved at the reference width.
+
+The visible plots are live state projections, not pre-rendered graphics.
+React recomputes Spectrum's SVG geometry from each current validated sweep,
+trace, marker, display, and Detect-overlay state; Waterfall and Channel likewise
+redraw from their current admitted evidence. SVG or canvas is only the bounded
+renderer primitive and never an independent or static data source.
 
 The overlays may obscure measurement pixels temporarily because the operator
 explicitly opened them. Closing an overlay returns the exact same plot state;
@@ -127,6 +136,33 @@ frequency points. It does not hide undersampling, receiver-shape, detector,
 calibration, or sweep-time uncertainty; results remain `engineering-estimate`
 until the physical ZS407 path is characterized.
 
+## Half-power bandwidth contract
+
+The 3 dB result is a local response-width measurement and is not percent-power
+OBW. The engine selects the strongest sampled peak inside the configured main
+channel, places the half-power level at `peak dBm - 10 log10(2)`, and searches
+outward for the nearest lower and upper crossings. Each crossing is interpolated
+linearly in dB versus frequency. Bracketing samples may lie just outside the main
+channel, but both interpolated crossings must lie inside it.
+
+The resolution scale is the coarser of measured RBW and nominal sweep-bin
+spacing. A measured response no wider than two such resolution elements is
+reported `resolution-limited`; it is never promoted to an exact emitter width or
+deconvolved through an assumed receiver-filter shape. Missing edge crossings,
+crossings outside the main channel, and a channel with no sampled peak return a
+typed `unavailable` reason. None of those cases substitutes the visible span.
+
+The active spectrum marker reuses this observed-response crossing estimator on
+its assigned host trace, but derives a bounded threshold-connected local
+component rather than using the configured channel window. The marker result
+adds an evidence-local prominence gate, peak-to-robust-floor context, and an
+optional candidate/active detector-row association. It remains available from a
+single complete trace without tracker promotion. A missing component,
+insufficient local prominence, or missing/truncated crossing produces no width
+and no bracket. The marker contract is normative in
+`MEASUREMENT_CONTROLS_CONTRACT.md`; neither marker path is OBW, calibrated SNR,
+or deconvolved emitter bandwidth.
+
 ## Occupied-bandwidth contract
 
 OBW is the frequency interval between equal-power tails that contains the
@@ -142,7 +178,12 @@ host visualization/engineering aid, not a standards-conformance default. Strong
 adjacent emissions can legitimately expand OBW because total displayed power is
 the integration domain.
 
-## Envelope STFT contract
+## Envelope STFT computation contract (Agent/API only)
+
+Envelope STFT is not a sidebar destination or renderer view. Its configuration
+and result remain available through the typed Atom tools and application state.
+Legacy `set_measurement_view({view: "envelope-stft"})` requests select Spectrum
+instead of opening a hidden or blank renderer surface.
 
 `EnvelopeStftConfiguration` contains a Hann window of 16, 32, 64, 128, or 256
 samples; an explicit hop no greater than the window; optional mean/DC removal;
@@ -170,10 +211,10 @@ Every view and calculation has a preferred typed hook:
 
 | Tool | Contract |
 |---|---|
-| `set_measurement_view` | Select one of the four bounded views |
+| `set_measurement_view` | Select Spectrum, Waterfall, or Channel; legacy `envelope-stft` aliases Spectrum |
 | `configure_waterfall` | Set depth and explicit dBm color bounds |
 | `configure_channel_measurement` | Set the complete channel definition |
-| `get_channel_measurement_results` | Return CHP/PSD/ACP/OBW or fail |
+| `get_channel_measurement_results` | Return CHP/PSD/local 3 dB response status/ACP/OBW or fail |
 | `configure_envelope_stft` | Set the complete STFT definition |
 | `get_envelope_stft_results` | Return the latest envelope STFT or fail |
 | `acquire_envelope_stft` | Acquire staged zero-span evidence and analyze it |
@@ -200,7 +241,7 @@ contracts.
 ## Acceptance inventory
 
 - `ADV-001`: Spectrum workspace has no body/workspace scroll at 1920 × 1100 with Atom open.
-- `ADV-002`: only one analysis view owns the measurement canvas.
+- `ADV-002`: only one of the three visible analysis views owns the measurement canvas, and no nested view-tab bar exists.
 - `ADV-003`: setup and measurement controls overlay without changing stage height.
 - `ADV-004`: waterfall retains at most 50 frames and excludes mismatched grids visibly.
 - `ADV-005`: waterfall color bounds reject inverted or non-finite ranges.
@@ -210,8 +251,10 @@ contracts.
 - `ADV-009`: OBW percent and noise treatment round-trip through schema, UI, storage, and Atom.
 - `ADV-010`: envelope STFT detects a deterministic bin-centered modulation fixture.
 - `ADV-011`: envelope STFT never carries an I/Q qualification.
-- `ADV-012`: every visible analysis view has a typed Atom selection/config/result path.
-- `ADV-013`: reference screenshots cover populated Spectrum, Waterfall, Channel, and Envelope STFT.
-- `ADV-014`: Classification uses a fixed-height pipeline/result-candidate/envelope composition; the document never scrolls and empty/result evidence remains visible with Atom open.
+- `ADV-012`: every visible analysis view has a typed Atom selection/config/result path; non-rendered STFT tools remain explicit.
+- `ADV-013`: reference screenshots cover populated Spectrum, Waterfall, and Channel and prove the Time/STFT route is absent.
+- `ADV-014`: Detect uses a fixed-height pipeline/result/candidate composition plus one compact non-scrolling detected-power status strip; the strip has no waveform plot or receiver editor, the document never scrolls, and empty/result evidence remains visible with Atom open.
 - `ADV-015`: analyzer-span changes reconcile stale channel geometry before render while actual-endpoint validation remains fail-closed.
-- `ADV-014`: invalid evidence produces a visible/typed error and never a substituted result.
+- `ADV-016`: narrow CW remains centered on its strongest sampled peak and any available response width is resolution-limited; bounded crossings are interpolated, while edge, truncated-window, and sparse-grid fixtures fail unavailable rather than substituting displayed-span OBW for 3 dB width.
+- `ADV-017`: marker-local N-dB-down results share the half-power estimator while retaining a separate trace-local component gate, resolution status, and fail-closed UI/Agent projection.
+- `ADV-018`: invalid evidence produces a visible/typed error and never a substituted result.
