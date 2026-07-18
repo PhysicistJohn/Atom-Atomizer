@@ -80,7 +80,7 @@ describe('desktop navigation and compact measurement layout', () => {
       onStop={onStop}
     />);
     const acquisition = within(view.container).getByRole('region', { name: 'Acquisition controls' });
-    expect(within(acquisition).getByText('Running')).toBeTruthy();
+    expect(within(acquisition).getByText('Running spectrum')).toBeTruthy();
     expect(within(acquisition).queryByRole('button', { name: 'Run' })).toBeNull();
     expect(within(acquisition).queryByRole('button', { name: 'Single' })).toBeNull();
     fireEvent.click(within(acquisition).getByRole('button', { name: 'Stop' }));

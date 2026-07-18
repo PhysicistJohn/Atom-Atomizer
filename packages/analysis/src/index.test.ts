@@ -17,6 +17,7 @@ import {
   computeEnvelopeStft,
   createDetectedPowerCaptureReceipt,
   currentVisiblePhysicalClassificationRows,
+  DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION,
   extractObservableFeatures,
   measureChannel,
   measureOccupiedBandwidth,
@@ -3212,7 +3213,7 @@ describe('signal analysis', () => {
       ...scalarObservation,
       detectedPowerAcquisitionQualification:
         'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
-    })).toThrow(/contradicts its envelope evidence/i);
+    })).toThrow(/qualification and target-selection condition must be paired/i);
     expect(() => knownModelSupportRank({
       ...scalarObservation,
       detectedPowerAcquisitionQualification:
@@ -3225,6 +3226,7 @@ describe('signal analysis', () => {
       zeroSpanCaptureId: 'non-finite-envelope',
       detectedPowerAcquisitionQualification:
         'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
+      detectedPowerSelectionCondition: DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION,
     })).toThrow(/contradicts its envelope evidence/i);
   });
 
