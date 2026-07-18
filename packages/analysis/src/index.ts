@@ -665,6 +665,41 @@ export function classificationCaptureTargetProjections(
   signals: readonly DetectedSignal[],
   preferredDetectionId?: string,
 ): readonly ClassificationCaptureTargetProjection[] {
+  const rankPopulation = classificationCaptureTargetEligibilityProjections(signals)
+    .map((projection) => ({
+      projection,
+      rankEvidence: classificationCaptureTargetRankEvidence(projection.rawTarget),
+    }));
+  // Automatic selection is a ranking of the complete eligible population.
+  // Silently deleting a row with stale/mismatched source evidence would make a
+  // weaker row look like rank 0, which is the same forbidden fallback as
+  // skipping an unready winner after ranking.
+  if (rankPopulation.some(({ rankEvidence }) => rankEvidence === undefined)) return [];
+  const ranked = rankPopulation
+    .sort((left, right) =>
+      compareClassificationCaptureTargetRankEvidence(
+        left.rankEvidence,
+        right.rankEvidence,
+      )
+      || classificationRepresentativeKey(left.projection.rawTarget).localeCompare(
+        classificationRepresentativeKey(right.projection.rawTarget),
+      )
+      || left.projection.rawTarget.id.localeCompare(right.projection.rawTarget.id))
+    .map(({ projection }) => projection);
+  return preferredDetectionId === undefined
+    ? ranked
+    : ranked.filter((projection) => projection.rawTarget.id === preferredDetectionId);
+}
+
+/**
+ * Return every uniquely projection-eligible raw capture owner before numeric
+ * rank evidence is evaluated. Admission auditors use this to distinguish an
+ * empty population from a qualified agile candidate whose current source-look
+ * evidence is malformed or unavailable.
+ */
+export function classificationCaptureTargetEligibilityProjections(
+  signals: readonly DetectedSignal[],
+): readonly ClassificationCaptureTargetProjection[] {
   const occurrenceCountById = new Map<string, number>();
   for (const signal of signals) {
     occurrenceCountById.set(signal.id, (occurrenceCountById.get(signal.id) ?? 0) + 1);
@@ -702,29 +737,7 @@ export function classificationCaptureTargetProjections(
     if (projections.length === 1) projectionByRawTargetId.set(rawTargetId, projections[0]!);
   }
 
-  const rankPopulation = [...projectionByRawTargetId.values()].map((projection) => ({
-    projection,
-    rankEvidence: classificationCaptureTargetRankEvidence(projection.rawTarget),
-  }));
-  // Automatic selection is a ranking of the complete eligible population.
-  // Silently deleting a row with stale/mismatched source evidence would make a
-  // weaker row look like rank 0, which is the same forbidden fallback as
-  // skipping an unready winner after ranking.
-  if (rankPopulation.some(({ rankEvidence }) => rankEvidence === undefined)) return [];
-  const ranked = rankPopulation
-    .sort((left, right) =>
-      compareClassificationCaptureTargetRankEvidence(
-        left.rankEvidence,
-        right.rankEvidence,
-      )
-      || classificationRepresentativeKey(left.projection.rawTarget).localeCompare(
-        classificationRepresentativeKey(right.projection.rawTarget),
-      )
-      || left.projection.rawTarget.id.localeCompare(right.projection.rawTarget.id))
-    .map(({ projection }) => projection);
-  return preferredDetectionId === undefined
-    ? ranked
-    : ranked.filter((projection) => projection.rawTarget.id === preferredDetectionId);
+  return [...projectionByRawTargetId.values()];
 }
 
 /** Compatibility projection for callers that consume classifier rows only. */

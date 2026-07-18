@@ -154,6 +154,12 @@ function heavySweep(sequence: number): Sweep {
   const startHz = 2_422_000_000;
   const stopHz = 2_452_000_000;
   const stepHz = (stopHz - startHz) / (points - 1);
+  const signalPowerByIndex = new Map<number, number>();
+  for (let index = 0; index < 12; index++) {
+    const fractionalIndex = (2_427_000_000 + index * 1_000_000 - startHz) / stepHz;
+    signalPowerByIndex.set(Math.floor(fractionalIndex), -60 + index);
+    signalPowerByIndex.set(Math.ceil(fractionalIndex), -60 + index);
+  }
   return {
     kind: 'spectrum',
     id: `wifi-sweep-${sequence}`,
@@ -162,7 +168,8 @@ function heavySweep(sequence: number): Sweep {
     elapsedMilliseconds: 2,
     frequencyHz: Array.from({ length: points }, (_value, index) => startHz + index * stepHz),
     powerDbm: Array.from({ length: points }, (_value, index) =>
-      -110 + 34 * Math.exp(-(((index - 512) / 260) ** 8))),
+      signalPowerByIndex.get(index)
+        ?? -110 + 34 * Math.exp(-(((index - 512) / 260) ** 8))),
     requested: {
       kind: 'swept-spectrum',
       startHz,
@@ -216,11 +223,7 @@ function heavyDetection(
   ), 0);
   const rankedPeakHz = visible.frequencyHz[nearestIndex]!;
   const observations = retained.map((sourceSweep) => ({
-    sourceSweep: {
-      ...sourceSweep,
-      powerDbm: sourceSweep.powerDbm.map((powerDbm, index) =>
-        index === nearestIndex ? peakDbm : powerDbm),
-    },
+    sourceSweep,
     startHz: rankedPeakHz - 100_000,
     stopHz: rankedPeakHz + 100_000,
     peakHz: rankedPeakHz,
@@ -240,7 +243,11 @@ function heavyDetection(
   const currentRobustFloorDbm = fixtureRobustLowerTailFloorDbm(
     observations.at(-1)!.sourceSweep.powerDbm,
   );
-  return physicalDetection(id, peakDbm, rankedPeakHz, visible, {
+  const observedPeakDbm = visible.powerDbm[nearestIndex]!;
+  if (observedPeakDbm !== peakDbm) {
+    throw new Error(`Heavy fanout fixture did not place ${peakDbm} dBm at ${rankedPeakHz} Hz`);
+  }
+  return physicalDetection(id, observedPeakDbm, rankedPeakHz, visible, {
     startHz: rankedPeakHz - 100_000,
     stopHz: rankedPeakHz + 100_000,
     noiseFloorDbm: currentRobustFloorDbm,

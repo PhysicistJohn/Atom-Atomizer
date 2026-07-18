@@ -73,11 +73,13 @@ import {
 } from '@tinysa/contracts';
 import {
   BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
+  CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
   SignalDetector,
   SignalTracker,
   TraceAccumulator,
   autoScaleSpectrum,
   calculateSweepMetrics,
+  classificationCaptureTargetRankEvidence,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
   createDetectedPowerCaptureReceipt,
@@ -87,6 +89,7 @@ import {
   observableAssociationEvidenceIsCurrentlyQualified,
   readMarkers,
   searchMarker,
+  type ClassificationCaptureTargetProjection,
   type EnvelopeClassification,
   type WaveformEvidence,
 } from '@tinysa/analysis';
@@ -128,7 +131,10 @@ import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './i
 import {
   resolveVisibleClassificationTargetSelection,
   sanitizeClassificationEvidenceDetections,
+  visibleClassificationTargetProjectionAdmission,
   visibleClassificationTargetProjections,
+  type ClassificationTargetSelection,
+  type VisibleClassificationTargetProjectionAdmission,
 } from './classification-target-selection.js';
 import {
   exactClassificationEvidenceSweeps,
@@ -231,12 +237,77 @@ interface OperatorContinuousStopRequest {
   readonly reject: (reason: unknown) => void;
 }
 interface ClassificationWork {
+  readonly revision: string;
   readonly sequence: number;
   readonly ownership?: ContinuousStreamOwnership;
+  readonly visibleSweep: {
+    readonly id: string;
+    readonly sequence: number;
+    readonly capturedAt: string;
+  };
+  readonly target: {
+    readonly projectedRepresentativeId: string;
+    readonly rawTargetId: string;
+    readonly selectionOrigin: ClassificationTargetSelection['origin'];
+  };
   readonly requests: readonly {
     readonly detection: DetectedSignal;
     readonly evidence: WaveformEvidence;
   }[];
+}
+interface ClassificationExecutionRecord {
+  readonly work: ClassificationWork;
+  readonly status: 'inference-pending' | 'ready' | 'failed';
+  readonly results?: readonly WaveformClassification[];
+  readonly error?: string;
+}
+interface DirectClassificationTaskRecord {
+  readonly work: ClassificationWork;
+  readonly promise: Promise<ClassificationExecutionRecord>;
+  readonly abortController: AbortController;
+}
+interface FrozenAutomaticClassificationSnapshot {
+  readonly visibleSweep?: Sweep;
+  readonly detections: readonly DetectedSignal[];
+  readonly history: readonly Sweep[];
+  readonly analysisSequence: number;
+  readonly rankingAdmission: VisibleClassificationTargetProjectionAdmission;
+  readonly projections: readonly ClassificationCaptureTargetProjection[];
+}
+type AutomaticDetectedPowerStaging =
+  | {
+    readonly status: 'staged';
+    readonly centerHz: number;
+    readonly configuration: ZeroSpanConfig;
+  }
+  | {
+    readonly status: 'unavailable';
+    readonly reason: 'detected-power-capability-unavailable' | 'target-not-stageable';
+    readonly error?: string;
+    readonly centerHz: null;
+    readonly configuration: null;
+  }
+  | {
+    readonly status: 'not-requested';
+    readonly reason: 'no-ranked-target';
+    readonly centerHz: null;
+    readonly configuration: null;
+  };
+interface AutomaticClassificationOperationRecord {
+  readonly operationId: number;
+  readonly snapshot: FrozenAutomaticClassificationSnapshot;
+  readonly selection: ClassificationTargetSelection;
+  readonly detectedPowerStaging: AutomaticDetectedPowerStaging;
+  work?: ClassificationWork;
+  execution?: ClassificationExecutionRecord;
+  promise?: Promise<ClassificationExecutionRecord>;
+  preferredSource?: Promise<ClassificationExecutionRecord>;
+}
+interface AutomaticClassificationDrainState {
+  generation: number;
+  abortController: AbortController;
+  activeOperation: AutomaticClassificationOperationRecord;
+  promise?: Promise<ClassificationExecutionRecord>;
 }
 type InvalidatingFeatureRequest =
   | Extract<InstrumentFeatureRequest, { kind: 'signal-lab-profile-selection' }>
@@ -389,12 +460,14 @@ export function App({
   const [remoteGestureActive, setRemoteGestureActive] = useControllerState(false, markRenderMutation);
   const [error, setError, errorRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
   const [notice, setNotice] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [detectedPowerTargetStagingFailure, setDetectedPowerTargetStagingFailure] = useControllerState<string | undefined>(undefined, markRenderMutation);
   const [classifierAvailability, setClassifierAvailability] = useState<'ready' | 'unavailable'>('ready');
 
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
   const traceAccumulator = useRef(new TraceAccumulator(traceConfiguration));
   const stagedClassificationTargetIdRef = useRef<string | undefined>(undefined);
+  const classificationSelectionRevision = useRef(0);
   const zeroCaptureReceiptRef = useRef<DetectedPowerCaptureReceipt | undefined>(undefined);
   const zeroCaptureSpectrumSweepIdsRef = useRef<readonly string[] | undefined>(undefined);
   const analyzerRevision = useRef(0);
@@ -413,8 +486,17 @@ export function App({
   const continuousIqResumeWaiters = useRef(new Set<() => void>());
   const continuousIqConfigurationOwnership = useRef<ContinuousIqConfigurationOwnership | undefined>(undefined);
   const iqConfigurationRevision = useRef(0);
-  const classificationTask = useRef<Promise<void> | undefined>(undefined);
+  const classificationTask = useRef<Promise<ClassificationExecutionRecord> | undefined>(undefined);
+  const classificationTaskWork = useRef<ClassificationWork | undefined>(undefined);
+  const classificationTaskAbortController = useRef<AbortController | undefined>(undefined);
+  const directClassificationTask = useRef<DirectClassificationTaskRecord | undefined>(undefined);
   const pendingClassificationWork = useRef<ClassificationWork | undefined>(undefined);
+  const classificationExecution = useRef<ClassificationExecutionRecord | undefined>(undefined);
+  const lastAutomaticClassificationOperation = useRef<AutomaticClassificationOperationRecord | undefined>(undefined);
+  const automaticClassificationDrain = useRef<AutomaticClassificationDrainState | undefined>(undefined);
+  const automaticClassificationDrainGeneration = useRef(0);
+  const automaticClassificationOperationSequence = useRef(0);
+  const pinnedAutomaticClassificationRevisions = useRef(new Map<string, number>());
   const lastPublishedClassificationSequence = useRef(0);
   const classifierRuntime = useRef<BayesianClassifierRuntime | undefined>(undefined);
   const pendingInvalidatingFeatureReceipt = useRef<InvalidatingFeatureReceipt | undefined>(undefined);
@@ -553,9 +635,12 @@ export function App({
   useEffect(() => {
     if (explicitClassificationId !== undefined
       && classificationTargetSelection.explicitDetectionId === undefined) {
+      classificationSelectionRevision.current++;
       setExplicitClassificationId(undefined);
+      clearClassificationCapture();
+      setClassifications([]);
     }
-    stageClassificationCandidate(
+    safelyStageClassificationCandidate(
       classificationTargetSelection.rawTargetId ?? selectedClassificationId,
     );
   }, [detections, explicitClassificationId, classificationTargetSelection.explicitDetectionId, classificationTargetSelection.rawTargetId, selectedClassificationId]);
@@ -746,33 +831,54 @@ export function App({
       pendingClassificationWork.current = work;
       return;
     }
-    const task = processClassificationWorkAfterPaint(work);
+    const abortController = new AbortController();
+    const task = processClassificationWorkAfterPaint(work, abortController.signal);
     classificationTask.current = task;
+    classificationTaskWork.current = work;
+    classificationTaskAbortController.current = abortController;
     void task.finally(() => finishClassificationTask(task));
   }
 
-  async function processClassificationWorkAfterPaint(work: ClassificationWork): Promise<void> {
+  async function processClassificationWorkAfterPaint(
+    work: ClassificationWork,
+    signal: AbortSignal,
+  ): Promise<ClassificationExecutionRecord> {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    if (!classificationWorkLifecycleIsCurrent(work)) return;
+    if (signal.aborted) {
+      return { work, status: 'failed', error: errorMessage(signal.reason) };
+    }
+    if (!classificationWorkLifecycleIsCurrent(work)) {
+      const failure = new Error('Classification evidence revision was superseded before inference');
+      failClassificationExecution(work, failure);
+      return { work, status: 'failed', error: failure.message };
+    }
     try {
-      const results = await Promise.all(work.requests.map(({ detection, evidence }) =>
-        requireClassifierRuntime().classifier.classify(detection, evidence)));
+      const results = await waitForClassificationSource(
+        Promise.all(work.requests.map(({ detection, evidence }) =>
+          requireClassifierRuntime().classifier.classify(detection, evidence, signal))),
+        signal,
+      );
       publishClassificationResults(work, results);
+      return { work, status: 'ready', results };
     } catch (value) {
       // The spectrum/detection evidence remains valid when the optional model
       // worker is unavailable or rejects an observation. Keep acquisition
       // running, clear the stale projection, and make the capability-local
       // failure visible.
-      if (classificationWorkLifecycleIsCurrent(work)) {
+      if (!signal.aborted && classificationWorkLifecycleIsCurrent(work)) {
+        failClassificationExecution(work, value);
         setClassifications([]);
         setError(`Bayesian classification unavailable: ${errorMessage(value)}`);
       }
+      return { work, status: 'failed', error: errorMessage(value) };
     }
   }
 
-  function finishClassificationTask(task: Promise<void>): void {
+  function finishClassificationTask(task: Promise<ClassificationExecutionRecord>): void {
     if (classificationTask.current !== task) return;
     classificationTask.current = undefined;
+    classificationTaskWork.current = undefined;
+    classificationTaskAbortController.current = undefined;
     const pending = pendingClassificationWork.current;
     pendingClassificationWork.current = undefined;
     if (pending) admitClassificationWork(pending);
@@ -780,6 +886,7 @@ export function App({
 
   function classificationWorkIsCurrent(work: ClassificationWork): boolean {
     return classificationWorkLifecycleIsCurrent(work)
+      && classificationWorkTargetIsCurrent(work)
       && (work.ownership !== undefined || work.sequence === analysisSequence.current);
   }
 
@@ -788,14 +895,59 @@ export function App({
     return work.ownership ? isCurrentContinuousOwnership(work.ownership) : true;
   }
 
+  function classificationWorkTargetIsCurrent(work: ClassificationWork): boolean {
+    const currentSweep = sweepRef.current;
+    if (!currentSweep) return false;
+    const selection = resolveVisibleClassificationTargetSelection(
+      detectionsRef.current,
+      currentSweep,
+      explicitClassificationIdRef.current,
+    );
+    return selection.origin === work.target.selectionOrigin
+      && selection.detectionId === work.target.projectedRepresentativeId
+      && (selection.rawTargetId ?? selection.detectionId) === work.target.rawTargetId;
+  }
+
+  function stageClassificationExecution(work: ClassificationWork): void {
+    classificationExecution.current = { work, status: 'inference-pending' };
+  }
+
+  function completeClassificationExecution(
+    work: ClassificationWork,
+    results: readonly WaveformClassification[],
+  ): void {
+    if (classificationExecution.current?.work.revision !== work.revision) return;
+    classificationExecution.current = { work, status: 'ready', results };
+  }
+
+  function failClassificationExecution(work: ClassificationWork, value: unknown): void {
+    if (classificationExecution.current?.work.revision !== work.revision) return;
+    classificationExecution.current = {
+      work,
+      status: 'failed',
+      error: errorMessage(value),
+    };
+  }
+
   function publishClassificationResults(
     work: ClassificationWork,
     results: readonly WaveformClassification[],
   ): void {
-    if (!classificationWorkLifecycleIsCurrent(work)) return;
+    if (!classificationWorkLifecycleIsCurrent(work)
+      || !classificationWorkTargetIsCurrent(work)) return;
     if (!work.ownership) {
-      if (work.sequence === analysisSequence.current) setClassifications(results);
+      if (work.sequence === analysisSequence.current) {
+        completeClassificationExecution(work, results);
+        setClassifications(classificationResultsBoundToWork(work, results));
+      }
       return;
+    }
+    if (pinnedAutomaticClassificationRevisions.current.has(work.revision)) {
+      const currentSweep = sweepRef.current;
+      if (!currentSweep
+        || currentSweep.id !== work.visibleSweep.id
+        || currentSweep.sequence !== work.visibleSweep.sequence
+        || work.sequence !== analysisSequence.current) return;
     }
     if (work.sequence <= lastPublishedClassificationSequence.current) return;
     const currentId = currentSelectedClassificationRepresentative()?.id;
@@ -804,7 +956,8 @@ export function App({
       requestIds.has(result.detectionId) && result.detectionId === currentId);
     if (admitted.length === 0) return;
     lastPublishedClassificationSequence.current = work.sequence;
-    setClassifications(admitted);
+    completeClassificationExecution(work, admitted);
+    setClassifications(classificationResultsBoundToWork(work, admitted));
   }
 
   function currentSelectedClassificationRepresentative(): DetectedSignal | undefined {
@@ -1591,6 +1744,7 @@ export function App({
 
   function invalidateAcquiredEvidence(clearInstrumentConfigurations = false): void {
     analysisSequence.current++;
+    classificationSelectionRevision.current++;
     historyConfigurationRevisions.current = [];
     if (clearInstrumentConfigurations) {
       releaseStreamingConfiguration();
@@ -1607,8 +1761,11 @@ export function App({
     setFirmwareTraceFrames([]);
     setDetections([]);
     setClassifications([]);
+    classificationExecution.current = undefined;
     setExplicitClassificationId(undefined);
     stagedClassificationTargetIdRef.current = undefined;
+    setDetectedPowerTargetStagingFailure(undefined);
+    retireClassificationOperations('Classification evidence was invalidated');
     clearClassificationCapture();
   }
 
@@ -1619,6 +1776,38 @@ export function App({
     zeroCaptureSpectrumSweepIdsRef.current = undefined;
     setZeroCapture(undefined);
     setEnvelope(undefined);
+  }
+
+  function sameClassificationSelectionIdentity(
+    left: ClassificationTargetSelection,
+    right: ClassificationTargetSelection,
+  ): boolean {
+    return left.origin === right.origin
+      && left.detectionId === right.detectionId
+      && (left.rawTargetId ?? left.detectionId)
+        === (right.rawTargetId ?? right.detectionId);
+  }
+
+  function supersedeClassificationSelectionIfChanged(
+    previous: ClassificationTargetSelection,
+    next: ClassificationTargetSelection,
+  ): void {
+    if (!sameClassificationSelectionIdentity(previous, next)) {
+      classificationSelectionRevision.current++;
+    }
+  }
+
+  function classificationSelectionStillOwns(
+    revision: number,
+    expected: ClassificationTargetSelection,
+  ): boolean {
+    if (classificationSelectionRevision.current !== revision) return false;
+    const current = resolveVisibleClassificationTargetSelection(
+      detectionsRef.current,
+      sweepRef.current,
+      explicitClassificationIdRef.current,
+    );
+    return sameClassificationSelectionIdentity(current, expected);
   }
 
   function stageClassificationCandidate(detectionId: string | undefined): number | undefined {
@@ -1648,16 +1837,480 @@ export function App({
     return frequencyHz;
   }
 
-  function selectClassificationCandidate(detectionId: string | undefined): number | undefined {
+  function safelyStageClassificationCandidate(detectionId: string | undefined): {
+    readonly centerHz?: number;
+    readonly failure?: string;
+  } {
+    try {
+      const centerHz = stageClassificationCandidate(detectionId);
+      setDetectedPowerTargetStagingFailure(undefined);
+      return centerHz === undefined ? {} : { centerHz };
+    } catch (value) {
+      const failure = errorMessage(value);
+      setDetectedPowerTargetStagingFailure(failure);
+      return { failure };
+    }
+  }
+
+  function selectClassificationCandidate(detectionId: string | undefined): {
+    readonly centerHz?: number;
+    readonly failure?: string;
+  } {
     const currentDetections = detectionsRef.current;
+    const previousSelection = resolveVisibleClassificationTargetSelection(
+      currentDetections,
+      sweepRef.current,
+      explicitClassificationIdRef.current,
+    );
     const selection = resolveVisibleClassificationTargetSelection(
       currentDetections,
       sweepRef.current,
       detectionId,
     );
+    const selectionConditionChanged = !sameClassificationSelectionIdentity(
+      previousSelection,
+      selection,
+    );
+    supersedeClassificationSelectionIfChanged(previousSelection, selection);
     setExplicitClassificationId(selection.explicitDetectionId);
-    return stageClassificationCandidate(
+    const staged = safelyStageClassificationCandidate(
       selection.rawTargetId ?? selection.detectionId,
+    );
+    // Automatic rank-zero and operator-preferred capture are different
+    // statistical conditions even when they tune the same physical row.
+    if (selectionConditionChanged) {
+      if (zeroCaptureRef.current || zeroCaptureReceiptRef.current) {
+        clearClassificationCapture();
+      }
+      setClassifications([]);
+    }
+    return staged;
+  }
+
+  function freezeAutomaticClassificationSnapshot(): FrozenAutomaticClassificationSnapshot {
+    const visibleSweep = sweepRef.current;
+    const detections = [...detectionsRef.current];
+    const rankingAdmission = visibleClassificationTargetProjectionAdmission(
+      detections,
+      visibleSweep,
+    );
+    return {
+      ...(visibleSweep ? { visibleSweep } : {}),
+      detections,
+      history: [...historyRef.current],
+      analysisSequence: analysisSequence.current,
+      rankingAdmission,
+      projections: rankingAdmission.projections,
+    };
+  }
+
+  function freezeAutomaticDetectedPowerStaging(
+    winner: ClassificationCaptureTargetProjection | undefined,
+    stagedCenterHz: number | undefined,
+    stagingFailure?: string,
+  ): AutomaticDetectedPowerStaging {
+    if (!winner) {
+      return {
+        status: 'not-requested',
+        reason: 'no-ranked-target',
+        centerHz: null,
+        configuration: null,
+      };
+    }
+    if (stagedCenterHz !== undefined) {
+      return {
+        status: 'staged',
+        centerHz: stagedCenterHz,
+        configuration: structuredClone(zeroConfigRef.current),
+      };
+    }
+    const capability = instrumentRef.current.session?.capabilities.acquisitions
+      .find((candidate) => candidate.kind === 'detected-power-timeseries');
+    return {
+      status: 'unavailable',
+      reason: capability?.kind === 'detected-power-timeseries'
+        ? 'target-not-stageable'
+        : 'detected-power-capability-unavailable',
+      ...(stagingFailure ? { error: stagingFailure } : {}),
+      centerHz: null,
+      configuration: null,
+    };
+  }
+
+  async function executeFrozenAutomaticClassification(
+    work: ClassificationWork,
+    signal?: AbortSignal,
+  ): Promise<ClassificationExecutionRecord> {
+    try {
+      signal?.throwIfAborted();
+      const results = await waitForClassificationSource(
+        Promise.all(work.requests.map(({ detection, evidence }) =>
+          requireClassifierRuntime().classifier.classify(detection, evidence, signal))),
+        signal,
+      );
+      return { work, status: 'ready', results };
+    } catch (value) {
+      return { work, status: 'failed', error: errorMessage(value) };
+    }
+  }
+
+  function waitForClassificationSource<T>(
+    source: Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (!signal) return source;
+    try { signal.throwIfAborted(); }
+    catch (value) { return Promise.reject(value); }
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (settle: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', abort);
+        settle();
+      };
+      const abort = () => finish(() => reject(
+        signal.reason ?? new DOMException('The operation was aborted', 'AbortError'),
+      ));
+      signal.addEventListener('abort', abort, { once: true });
+      void source.then(
+        (value) => finish(() => resolve(value)),
+        (reason) => finish(() => reject(reason)),
+      );
+    });
+  }
+
+  function retireClassificationOperations(reason: string): void {
+    lastAutomaticClassificationOperation.current = undefined;
+    classificationExecution.current = undefined;
+    pendingClassificationWork.current = undefined;
+    const taskAbortController = classificationTaskAbortController.current;
+    if (taskAbortController && !taskAbortController.signal.aborted) {
+      taskAbortController.abort(new Error(reason));
+    }
+    const direct = directClassificationTask.current;
+    if (direct && !direct.abortController.signal.aborted) {
+      direct.abortController.abort(new Error(reason));
+    }
+    automaticClassificationDrainGeneration.current++;
+    const drain = automaticClassificationDrain.current;
+    if (drain && !drain.abortController.signal.aborted) {
+      drain.abortController.abort(new Error(reason));
+    }
+  }
+
+  function settleAutomaticClassificationOperation(
+    operation: AutomaticClassificationOperationRecord,
+    outcome: ClassificationExecutionRecord,
+  ): void {
+    operation.execution = outcome;
+    if (lastAutomaticClassificationOperation.current !== operation) return;
+    const work = operation.work;
+    if (!work) return;
+    if (outcome.status === 'ready' && outcome.results) {
+      if (classificationExecution.current?.work.revision === work.revision) {
+        completeClassificationExecution(work, outcome.results);
+      }
+      // A pinned operation is independently pollable, but it may affect the
+      // visible cards only while its exact sweep and selection still own UI.
+      if (classificationWorkIsCurrent(work)) {
+        setClassifications(classificationResultsBoundToWork(work, outcome.results));
+      }
+    } else if (outcome.status === 'failed'
+      && classificationExecution.current?.work.revision === work.revision) {
+      failClassificationExecution(work, outcome.error ?? 'Bayesian classification failed');
+    }
+  }
+
+  function exactInFlightClassificationPromise(
+    work: ClassificationWork,
+  ): Promise<ClassificationExecutionRecord> | undefined {
+    if (classificationTaskWork.current?.revision === work.revision) {
+      return classificationTask.current;
+    }
+    const direct = directClassificationTask.current;
+    return direct?.work.revision === work.revision ? direct.promise : undefined;
+  }
+
+  async function executePinnedAutomaticClassification(
+    operation: AutomaticClassificationOperationRecord,
+    signal: AbortSignal,
+    preferredSource?: Promise<ClassificationExecutionRecord>,
+  ): Promise<ClassificationExecutionRecord> {
+    const work = operation.work;
+    if (!work) throw new Error('Automatic classification operation omitted frozen work');
+    pinnedAutomaticClassificationRevisions.current.set(
+      work.revision,
+      (pinnedAutomaticClassificationRevisions.current.get(work.revision) ?? 0) + 1,
+    );
+    try {
+      let outcome: ClassificationExecutionRecord;
+      try {
+        const source = preferredSource ?? exactInFlightClassificationPromise(work);
+        outcome = source
+          ? await waitForClassificationSource(source, signal)
+          : await executeFrozenAutomaticClassification(work, signal);
+      } catch (value) {
+        outcome = { work, status: 'failed', error: errorMessage(value) };
+      }
+      // The normal classification lane may reject before inference when its
+      // renderer lifecycle is superseded. Retry from the frozen evidence only
+      // while this exact Auto operation remains the pollable owner. Stop does
+      // not clear that owner; a newer Auto, device change, or span invalidation
+      // does, and therefore must never trigger hidden work afterward.
+      if (outcome.status === 'failed'
+        && outcome.error === 'Classification evidence revision was superseded before inference'
+        && !signal.aborted
+        && lastAutomaticClassificationOperation.current === operation) {
+        return executeFrozenAutomaticClassification(work, signal);
+      }
+      return outcome;
+    } finally {
+      const remaining = (pinnedAutomaticClassificationRevisions.current.get(work.revision) ?? 1) - 1;
+      if (remaining > 0) pinnedAutomaticClassificationRevisions.current.set(work.revision, remaining);
+      else pinnedAutomaticClassificationRevisions.current.delete(work.revision);
+    }
+  }
+
+  function startAutomaticClassificationDrain(
+    operation: AutomaticClassificationOperationRecord,
+    preferredSource?: Promise<ClassificationExecutionRecord>,
+  ): Promise<ClassificationExecutionRecord> {
+    const state: AutomaticClassificationDrainState = {
+      generation: automaticClassificationDrainGeneration.current,
+      abortController: new AbortController(),
+      activeOperation: operation,
+    };
+    const promise = (async (): Promise<ClassificationExecutionRecord> => {
+      let activeOperation = operation;
+      let source = preferredSource;
+      let precedingOutcome: ClassificationExecutionRecord | undefined;
+      while (true) {
+        state.activeOperation = activeOperation;
+        const activeWork = activeOperation.work;
+        if (!activeWork) {
+          throw new Error('Automatic classification drain omitted frozen work');
+        }
+        const outcome = precedingOutcome?.work.revision === activeWork.revision
+          ? { ...precedingOutcome, work: activeWork }
+          : await executePinnedAutomaticClassification(
+            activeOperation,
+            state.abortController.signal,
+            source,
+          );
+        if (state.generation !== automaticClassificationDrainGeneration.current
+          || state.abortController.signal.aborted) {
+          // Invalidation aborts the active source but retains this one drain
+          // slot until the abort settles. A synchronous post-invalidation
+          // Auto can attach one replaceable latest operation to the same
+          // promise; rotate its generation/controller only after the retired
+          // work has released the slot. With no replacement, cleanup clears
+          // the drain before the next browser event can start another one.
+          const replacement = lastAutomaticClassificationOperation.current;
+          if (!replacement?.work
+            || replacement.execution?.status !== 'inference-pending'
+            || replacement.promise !== state.promise) return outcome;
+          activeOperation = replacement;
+          state.generation = automaticClassificationDrainGeneration.current;
+          state.abortController = new AbortController();
+          source = replacement.preferredSource;
+          precedingOutcome = undefined;
+          continue;
+        }
+        settleAutomaticClassificationOperation(activeOperation, outcome);
+
+        const latest = lastAutomaticClassificationOperation.current;
+        if (!latest?.work
+          || latest === activeOperation
+          || latest.execution?.status !== 'inference-pending'
+          || latest.promise !== state.promise) return outcome;
+        activeOperation = latest;
+        source = latest.preferredSource;
+        precedingOutcome = outcome;
+      }
+    })();
+    state.promise = promise;
+    automaticClassificationDrain.current = state;
+    operation.promise = promise;
+    void promise.then(
+      () => {
+        if (automaticClassificationDrain.current === state) {
+          automaticClassificationDrain.current = undefined;
+        }
+      },
+      () => {
+        if (automaticClassificationDrain.current === state) {
+          automaticClassificationDrain.current = undefined;
+        }
+      },
+    );
+    return promise;
+  }
+
+  async function selectAutomaticClassificationCandidate() {
+    // Freeze every authority input before changing selection. No awaited work
+    // is allowed to move the visible target/rank window under this operation.
+    const snapshot = freezeAutomaticClassificationSnapshot();
+    const supersededOperation = lastAutomaticClassificationOperation.current;
+    const winner = snapshot.projections[0];
+    const previousSelection = resolveVisibleClassificationTargetSelection(
+      snapshot.detections,
+      snapshot.visibleSweep,
+      explicitClassificationIdRef.current,
+    );
+    const automaticSelection: ClassificationTargetSelection = {
+      ...(winner ? {
+        detectionId: winner.projectedRepresentative.id,
+        ...(winner.rawTarget.id === winner.projectedRepresentative.id
+          ? {}
+          : { rawTargetId: winner.rawTarget.id }),
+      } : {}),
+      origin: 'automatic',
+    };
+    const priorWasExplicit = explicitClassificationIdRef.current !== undefined;
+    const hadSelectionConditionedCapture = zeroCaptureRef.current !== undefined
+      || zeroCaptureReceiptRef.current !== undefined;
+    if (priorWasExplicit
+      && sameClassificationSelectionIdentity(previousSelection, automaticSelection)) {
+      // The explicit intent ref itself owns an operator-conditioned capture,
+      // even if a newly invalid rank can no longer resolve that ID.
+      classificationSelectionRevision.current++;
+    } else {
+      supersedeClassificationSelectionIfChanged(
+        previousSelection,
+        automaticSelection,
+      );
+    }
+    setExplicitClassificationId(undefined);
+    // Detected-power tuning is an optional capability-local projection. A
+    // range/lattice rejection must not suppress valid spectrum inference.
+    const stagedDetectedPower = safelyStageClassificationCandidate(
+      winner?.rawTarget.id,
+    );
+    // This exact staging object is part of the operation receipt. Never read
+    // zeroConfigRef again after inference yields to another UI action.
+    const detectedPowerStaging = freezeAutomaticDetectedPowerStaging(
+      winner,
+      stagedDetectedPower.centerHz,
+      stagedDetectedPower.failure,
+    );
+    // A preferred-target receipt is a different statistical condition from
+    // automatic rank zero even when both project to the same raw tune owner.
+    if (priorWasExplicit) {
+      if (hadSelectionConditionedCapture) clearClassificationCapture();
+      setClassifications([]);
+    }
+
+    const operation: AutomaticClassificationOperationRecord = {
+      operationId: ++automaticClassificationOperationSequence.current,
+      snapshot,
+      selection: automaticSelection,
+      detectedPowerStaging,
+    };
+    // A newer Auto action is the only operation allowed to supersede this
+    // poll target. Ordinary sweeps, stops, and manual retargets cannot.
+    lastAutomaticClassificationOperation.current = operation;
+    if (snapshot.visibleSweep && winner
+      && snapshot.rankingAdmission.status === 'ready') {
+      const evidenceSweeps = exactClassificationEvidenceSweeps(
+        winner.projectedRepresentative,
+        snapshot.history,
+      );
+      if (evidenceSweeps && evidenceSweeps.length > 0) {
+        const evidence = classificationEvidenceForDetection(
+          winner.projectedRepresentative,
+          evidenceSweeps,
+        );
+        const work: ClassificationWork = {
+          revision: classificationWorkRevision(
+            snapshot.analysisSequence,
+            snapshot.visibleSweep,
+            automaticSelection,
+            evidence,
+          ),
+          sequence: snapshot.analysisSequence,
+          visibleSweep: {
+            id: snapshot.visibleSweep.id,
+            sequence: snapshot.visibleSweep.sequence,
+            capturedAt: snapshot.visibleSweep.capturedAt,
+          },
+          target: {
+            projectedRepresentativeId: winner.projectedRepresentative.id,
+            rawTargetId: winner.rawTarget.id,
+            selectionOrigin: 'automatic',
+          },
+          requests: [{ detection: winner.projectedRepresentative, evidence }],
+        };
+        operation.work = work;
+        const activeAutomaticOperation = automaticClassificationDrain.current?.activeOperation;
+        const reusableAutomaticOperation = [
+          supersededOperation,
+          activeAutomaticOperation,
+        ].find((candidate) => candidate?.work?.revision === work.revision
+          && (candidate.execution?.status === 'inference-pending'
+            || candidate.execution?.status === 'ready'));
+        if (reusableAutomaticOperation) {
+          // Repeated Auto on the exact frozen revision reuses one receipt and
+          // one promise. If it selects the currently active root, any queued
+          // different revision is atomically discarded rather than chained.
+          lastAutomaticClassificationOperation.current = reusableAutomaticOperation;
+          if (reusableAutomaticOperation.execution?.status === 'ready'
+            && reusableAutomaticOperation.execution.results) {
+            setClassifications(classificationResultsBoundToWork(
+              reusableAutomaticOperation.work!,
+              reusableAutomaticOperation.execution.results,
+            ));
+          }
+          return agentAutomaticClassificationSelection(
+            reusableAutomaticOperation.snapshot,
+            reusableAutomaticOperation.detectedPowerStaging,
+            reusableAutomaticOperation.execution,
+          );
+        }
+        const currentExecution = classificationExecution.current;
+        if (currentExecution?.work.revision === work.revision
+          && currentExecution.status === 'ready'
+          && currentExecution.results) {
+          operation.execution = currentExecution;
+          setClassifications(currentExecution.results.filter((result) =>
+            agentClassificationResultBinding(currentExecution.work, result).bound));
+        } else {
+          stageClassificationExecution(work);
+          operation.execution = { work, status: 'inference-pending' };
+          if (classifierRuntime.current?.status !== 'unavailable') {
+            const existingDrain = automaticClassificationDrain.current;
+            const canAwaitWithoutBlockingAnotherLane = !continuousRequested.current
+              && !classificationTask.current
+              && !directClassificationTask.current
+              && !existingDrain;
+            if (pendingClassificationWork.current?.revision === work.revision) {
+              pendingClassificationWork.current = undefined;
+            }
+            const exactSource = exactInFlightClassificationPromise(work);
+            const existingDrainPromise = existingDrain?.promise;
+            if (existingDrainPromise && exactSource) {
+              // The one replaceable latest operation retains its exact
+              // normal/direct receipt even if that task settles before the
+              // unrelated active Auto root releases the drain. Dropping this
+              // source would cause a second inference for the same revision.
+              operation.preferredSource = exactSource;
+            }
+            const promise = existingDrainPromise ?? startAutomaticClassificationDrain(
+              operation,
+              exactSource,
+            );
+            if (existingDrainPromise) operation.promise = existingDrainPromise;
+            if (canAwaitWithoutBlockingAnotherLane) {
+              await promise;
+            }
+          }
+        }
+      }
+    }
+    return agentAutomaticClassificationSelection(
+      snapshot,
+      detectedPowerStaging,
+      operation.execution,
     );
   }
 
@@ -1779,7 +2432,7 @@ export function App({
       });
     }
     setDetections(tracked);
-    const selectedRepresentative = selectVisibleClassificationRepresentative(
+    let selectedRepresentative = selectVisibleClassificationRepresentative(
       tracked,
       next,
       explicitClassificationIdRef.current,
@@ -1789,7 +2442,7 @@ export function App({
     // classifier can complete. The render effect is an eventual UI mirror;
     // it must never arrive later and erase a result for the target this exact
     // evidence revision already admitted.
-    stageClassificationCandidate(
+    safelyStageClassificationCandidate(
       selectedRepresentative?.selection.rawTargetId ?? selectedSignal?.id,
     );
     const cachedCapture = zeroCaptureRef.current;
@@ -1807,11 +2460,12 @@ export function App({
         || currentSweepIds.length !== cachedSweepIds.length
         || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
         clearClassificationCapture();
-        selectedSignal = selectVisibleClassificationRepresentative(
+        selectedRepresentative = selectVisibleClassificationRepresentative(
           tracked,
           next,
           explicitClassificationIdRef.current,
-        )?.detection;
+        );
+        selectedSignal = selectedRepresentative?.detection;
       }
     }
     const currentSignals = selectedSignal ? [selectedSignal] : [];
@@ -1841,28 +2495,109 @@ export function App({
         evidence: classificationEvidenceForDetection(detection, evidenceSweeps),
       }];
     });
-    return {
-      ...(requests.length > 0 ? { classification: { sequence, ...(ownership ? { ownership } : {}), requests } } : {}),
+    if (requests.length === 0 || !selectedRepresentative) return {};
+    const selection = selectedRepresentative.selection;
+    const work: ClassificationWork = {
+      revision: classificationWorkRevision(
+        sequence,
+        next,
+        selection,
+        requests[0]!.evidence,
+      ),
+      sequence,
+      ...(ownership ? { ownership } : {}),
+      visibleSweep: {
+        id: next.id,
+        sequence: next.sequence,
+        capturedAt: next.capturedAt,
+      },
+      target: {
+        projectedRepresentativeId: selectedRepresentative.detection.id,
+        rawTargetId: selection.rawTargetId ?? selectedRepresentative.detection.id,
+        selectionOrigin: selection.origin,
+      },
+      requests,
     };
+    stageClassificationExecution(work);
+    return { classification: work };
   }
 
-  async function classifyRecordedSweep(recorded: RecordedSweep): Promise<void> {
+  function drainPendingClassificationWorkIfIdle(): void {
+    if (classificationTask.current || directClassificationTask.current) return;
+    const pending = pendingClassificationWork.current;
+    pendingClassificationWork.current = undefined;
+    if (pending) admitClassificationWork(pending);
+  }
+
+  function registerDirectClassificationTask(
+    work: ClassificationWork,
+    promise: Promise<ClassificationExecutionRecord>,
+    abortController: AbortController,
+  ): DirectClassificationTaskRecord {
+    const record = { work, promise, abortController } satisfies DirectClassificationTaskRecord;
+    directClassificationTask.current = record;
+    void promise.then(
+      () => finishDirectClassificationTask(record),
+      () => finishDirectClassificationTask(record),
+    );
+    return record;
+  }
+
+  function finishDirectClassificationTask(record: DirectClassificationTaskRecord): void {
+    if (directClassificationTask.current !== record) return;
+    directClassificationTask.current = undefined;
+    drainPendingClassificationWorkIfIdle();
+  }
+
+  function classifyRecordedSweep(
+    recorded: RecordedSweep,
+  ): Promise<ClassificationExecutionRecord | undefined> {
     const work = recorded.classification;
-    if (!work || work.requests.length === 0) return;
+    if (!work || work.requests.length === 0) return Promise.resolve(undefined);
+    const abortController = new AbortController();
+    const promise = executeRecordedSweepClassification(work, abortController.signal);
+    registerDirectClassificationTask(work, promise, abortController);
+    return promise;
+  }
+
+  async function executeRecordedSweepClassification(
+    work: ClassificationWork,
+    signal: AbortSignal,
+  ): Promise<ClassificationExecutionRecord> {
     // Yield once so React can commit the newly ingested trace before even a
     // test/non-worker classifier begins. Production inference runs in the
     // module worker and therefore remains off the renderer thread.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-    if (!classificationWorkIsCurrent(work)) return;
+    if (signal.aborted) {
+      return { work, status: 'failed', error: errorMessage(signal.reason) };
+    }
+    if (!classificationWorkIsCurrent(work)) {
+      const failure = new Error('Classification evidence revision was superseded before inference');
+      failClassificationExecution(work, failure);
+      return { work, status: 'failed', error: failure.message };
+    }
     try {
-      const results = await Promise.all(work.requests.map(({ detection, evidence }) =>
-        requireClassifierRuntime().classifier.classify(detection, evidence)));
-      if (classificationWorkIsCurrent(work)) setClassifications(results);
+      const results = await waitForClassificationSource(
+        Promise.all(work.requests.map(({ detection, evidence }) =>
+          requireClassifierRuntime().classifier.classify(detection, evidence, signal))),
+        signal,
+      );
+      if (!signal.aborted && classificationWorkIsCurrent(work)) {
+        completeClassificationExecution(work, results);
+        setClassifications(classificationResultsBoundToWork(work, results));
+      }
+      // The operation receipt remains bound to its frozen work even if a
+      // later human action owns the UI by publication time. In that case the
+      // result is returned to the initiating action but is not published into
+      // the newer UI selection.
+      return { work, status: 'ready', results };
     } catch (value) {
-      if (classificationWorkIsCurrent(work)) {
+      if (!signal.aborted && classificationWorkIsCurrent(work)) {
+        failClassificationExecution(work, value);
         setClassifications([]);
         setError(errorMessage(value));
       }
+      return { work, status: 'failed', error: errorMessage(value) };
     }
   }
 
@@ -2258,6 +2993,7 @@ export function App({
         ? explicitClassificationIdRef.current
         : undefined,
     );
+    const requestedSelectionRevision = classificationSelectionRevision.current;
     const requestedRawTargetId = requestedSelection.rawTargetId
       ?? requestedSelection.detectionId;
     const admittedTarget = resolveRuntimeAdmittedCaptureTarget(
@@ -2368,6 +3104,19 @@ export function App({
             'Envelope captured without Bayesian qualification: target was not admitted on the exact eight-sweep window and tune',
           );
         }
+        try {
+          await configureAnalyzer(analyzerRef.current);
+        } catch (value) {
+          throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
+        }
+        if (!classificationSelectionStillOwns(
+          requestedSelectionRevision,
+          requestedSelection,
+        )) {
+          throw new Error(
+            'Detected-power capture selection was superseded before evidence publication',
+          );
+        }
         zeroCaptureConfigurationRevision.current = measurement.configurationRevision;
         retainEvidenceConfigurationRevisions();
         zeroCaptureReceiptRef.current = captureReceipt;
@@ -2377,11 +3126,6 @@ export function App({
         // published detected-power evidence. Fail closed while the qualified
         // evidence revision is recomputed, including on classifier failure.
         setClassifications([]);
-        try {
-          await configureAnalyzer(analyzerRef.current);
-        } catch (value) {
-          throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
-        }
         const sequence = ++analysisSequence.current;
         zeroCaptureSpectrumSweepIdsRef.current = captureReceipt
           ? preCaptureSweepIds
@@ -2397,13 +3141,69 @@ export function App({
         if (selected && !evidenceSweeps) {
           throw new Error(`Selected classification target ${selected.id} omitted exact external sweep provenance`);
         }
-        const results = selected && evidenceSweeps
-          ? [await requireClassifierRuntime().classifier.classify(
-            selected,
-            classificationEvidenceForDetection(selected, evidenceSweeps),
-          )]
-          : [];
-        if (sequence === analysisSequence.current) setClassifications(results);
+        let results: readonly WaveformClassification[] = [];
+        let completedWork: ClassificationWork | undefined;
+        if (selected && evidenceSweeps && preCaptureSweep) {
+          const evidence = classificationEvidenceForDetection(selected, evidenceSweeps);
+          const work: ClassificationWork = {
+            revision: classificationWorkRevision(
+              sequence,
+              preCaptureSweep,
+              requestedSelection,
+              evidence,
+            ),
+            sequence,
+            visibleSweep: {
+              id: preCaptureSweep.id,
+              sequence: preCaptureSweep.sequence,
+              capturedAt: preCaptureSweep.capturedAt,
+            },
+            target: {
+              projectedRepresentativeId: selected.id,
+              rawTargetId: admittedTarget.rawTarget.id,
+              selectionOrigin: requestedSelection.origin,
+            },
+            requests: [{ detection: selected, evidence }],
+          };
+          completedWork = work;
+          stageClassificationExecution(work);
+          const directAbortController = new AbortController();
+          const directPromise = (async (): Promise<ClassificationExecutionRecord> => {
+            try {
+              const directResults = [await waitForClassificationSource(
+                requireClassifierRuntime().classifier.classify(
+                  selected,
+                  evidence,
+                  directAbortController.signal,
+                ),
+                directAbortController.signal,
+              )];
+              if (sequence === analysisSequence.current
+                && classificationWorkTargetIsCurrent(work)) {
+                completeClassificationExecution(work, directResults);
+              }
+              return { work, status: 'ready', results: directResults };
+            } catch (value) {
+              if (!directAbortController.signal.aborted) {
+                failClassificationExecution(work, value);
+              }
+              return { work, status: 'failed', error: errorMessage(value) };
+            }
+          })();
+          registerDirectClassificationTask(work, directPromise, directAbortController);
+          const directOutcome = await directPromise;
+          if (directOutcome.status === 'failed') {
+            throw new Error(directOutcome.error ?? 'Bayesian classification failed');
+          }
+          results = directOutcome.results ?? [];
+        }
+        if (sequence === analysisSequence.current
+          && classificationSelectionStillOwns(
+            requestedSelectionRevision,
+            requestedSelection,
+          )) setClassifications(completedWork
+            ? classificationResultsBoundToWork(completedWork, results)
+            : []);
         setAcquisition('complete');
         return capture;
       } finally {
@@ -2664,11 +3464,13 @@ export function App({
     detector.current.configure(next);
     tracker.current.configure(next);
     analysisSequence.current++;
+    classificationSelectionRevision.current++;
     stagedClassificationTargetIdRef.current = undefined;
     setDetectionConfig(next);
     setDetections([]);
     setClassifications([]);
     setExplicitClassificationId(undefined);
+    retireClassificationOperations('Classification detector configuration was invalidated');
     clearClassificationCapture();
     return next;
   }
@@ -2956,6 +3758,459 @@ export function App({
     } as const;
   }
 
+  function agentAutomaticRankPopulation(
+    snapshot: FrozenAutomaticClassificationSnapshot,
+  ) {
+    return snapshot.projections.map((projection, rank) => {
+      const evidence = classificationCaptureTargetRankEvidence(projection.rawTarget);
+      if (!evidence) {
+        throw new Error(
+          `Automatic classification rank ${rank} lost its frozen source-sweep evidence`,
+        );
+      }
+      return {
+        rank,
+        rawTargetId: projection.rawTarget.id,
+        projectedRepresentativeId: projection.projectedRepresentative.id,
+        projectionKind: projection.projectionKind,
+        rankEvidence: evidence,
+      };
+    });
+  }
+
+  function classificationInferenceRemainsPending(work: ClassificationWork): boolean {
+    const pinned = lastAutomaticClassificationOperation.current;
+    if (pinned?.work?.revision === work.revision
+      && pinned.execution?.status === 'inference-pending'
+      && pinned.promise !== undefined) return true;
+    if (!classificationWorkLifecycleIsCurrent(work)
+      || !classificationWorkTargetIsCurrent(work)) return false;
+    return classificationTaskWork.current?.revision === work.revision
+      || directClassificationTask.current?.work.revision === work.revision
+      || pendingClassificationWork.current?.revision === work.revision;
+  }
+
+  function agentClassificationEvidenceWindow(work: ClassificationWork) {
+    const request = work.requests[0];
+    const externalSpectrumSweepIds = request?.evidence.sweeps.map((item) => item.id) ?? [];
+    let spectrumSweepIds = externalSpectrumSweepIds;
+    let modelEvidenceProjection:
+      | { readonly status: 'ready' }
+      | { readonly status: 'failed'; readonly error: string } = { status: 'ready' };
+    if (request) {
+      try {
+        spectrumSweepIds = [...extractObservableFeatures(
+          request.detection,
+          request.evidence,
+        ).sweepIds];
+      } catch (value) {
+        modelEvidenceProjection = {
+          status: 'failed',
+          error: errorMessage(value),
+        };
+      }
+    }
+    const zeroSpanSpectrumSweepIds = request?.evidence.zeroSpanSpectrumSweepIds ?? [];
+    return {
+      spectrumSweepIds,
+      externalSpectrumSweepIds,
+      modelEvidenceProjection,
+      spectrumWindow: {
+        order: 'newest-to-oldest' as const,
+        count: spectrumSweepIds.length,
+        newestSweepId: spectrumSweepIds[0] ?? null,
+        oldestSweepId: spectrumSweepIds.at(-1) ?? null,
+        maximumModelWindowSweeps: 8,
+      },
+      zeroSpanCaptureId: request?.evidence.zeroSpan?.id ?? null,
+      zeroSpanSpectrumSweepIds,
+    };
+  }
+
+  function agentClassificationResultBinding(
+    work: ClassificationWork,
+    result: WaveformClassification,
+  ) {
+    const request = work.requests[0];
+    const evidence = agentClassificationEvidenceWindow(work);
+    const receiptMode = request?.evidence.detectedPowerCaptureReceipt?.selection.mode;
+    const receiptSelectionOriginMatches = receiptMode === undefined
+      || (work.target.selectionOrigin === 'automatic'
+        ? receiptMode === 'integrated-excess-current'
+        : receiptMode === 'preferred-target');
+    const expectedDetectedPowerSelectionCondition = receiptMode === undefined
+      ? null
+      : work.target.selectionOrigin === 'automatic'
+        ? 'automatic-current-source-sweep-integrated-excess-rank-0'
+        : 'operator-preferred-current-target';
+    const targetMatches = result.detectionId === work.target.projectedRepresentativeId;
+    const centerHzMatches = request !== undefined
+      && result.evidence.centerHz === request.detection.peakHz;
+    const bandwidthHzMatches = request !== undefined
+      && result.evidence.bandwidthHz === request.detection.bandwidthHz;
+    const peakDbmMatches = request !== undefined
+      && result.evidence.peakDbm === request.detection.peakDbm;
+    const spectrumSweepIdsMatch = sameStringArray(
+      result.evidence.sweepIds,
+      evidence.spectrumSweepIds,
+    );
+    const zeroSpanCaptureMatches = (result.evidence.zeroSpanCaptureId ?? null)
+      === evidence.zeroSpanCaptureId;
+    const selectionConditionMatches = (result.evidence.detectedPowerSelectionCondition ?? null)
+      === expectedDetectedPowerSelectionCondition;
+    const modelEvidenceProjectionMatches = evidence.modelEvidenceProjection.status === 'ready';
+    return {
+      bound: targetMatches
+        && centerHzMatches
+        && bandwidthHzMatches
+        && peakDbmMatches
+        && modelEvidenceProjectionMatches
+        && spectrumSweepIdsMatch
+        && zeroSpanCaptureMatches
+        && selectionConditionMatches
+        && receiptSelectionOriginMatches,
+      targetMatches,
+      centerHzMatches,
+      bandwidthHzMatches,
+      peakDbmMatches,
+      modelEvidenceProjectionMatches,
+      spectrumSweepIdsMatch,
+      zeroSpanCaptureMatches,
+      selectionConditionMatches,
+      receiptSelectionOriginMatches,
+      expected: {
+        revision: work.revision,
+        projectedRepresentativeId: work.target.projectedRepresentativeId,
+        centerHz: request?.detection.peakHz ?? null,
+        bandwidthHz: request?.detection.bandwidthHz ?? null,
+        peakDbm: request?.detection.peakDbm ?? null,
+        spectrumSweepIds: evidence.spectrumSweepIds,
+        zeroSpanCaptureId: evidence.zeroSpanCaptureId,
+        detectedPowerSelectionCondition: expectedDetectedPowerSelectionCondition,
+      },
+      result: {
+        detectionId: result.detectionId,
+        centerHz: result.evidence.centerHz,
+        bandwidthHz: result.evidence.bandwidthHz,
+        peakDbm: result.evidence.peakDbm,
+        spectrumSweepIds: result.evidence.sweepIds,
+        zeroSpanCaptureId: result.evidence.zeroSpanCaptureId ?? null,
+        detectedPowerSelectionCondition:
+          result.evidence.detectedPowerSelectionCondition ?? null,
+      },
+    };
+  }
+
+  function classificationResultsBoundToWork(
+    work: ClassificationWork,
+    results: readonly WaveformClassification[],
+  ): readonly WaveformClassification[] {
+    return results.filter((result) =>
+      agentClassificationResultBinding(work, result).bound);
+  }
+
+  function agentClassificationReadiness(
+    snapshot: FrozenAutomaticClassificationSnapshot,
+    selection: ClassificationTargetSelection,
+    executionOverride?: ClassificationExecutionRecord,
+  ) {
+    if (snapshot.rankingAdmission.status === 'ranking-admission-failed') {
+      return {
+        status: 'failed' as const,
+        reason: 'ranking-admission-failed' as const,
+        error: 'The complete visible target population lacks exact current-source-sweep rank evidence',
+        revision: null,
+        target: null,
+        evidence: null,
+        resultBinding: null,
+        result: null,
+        rankingAdmission: snapshot.rankingAdmission,
+      };
+    }
+    const projectedRepresentativeId = selection.detectionId;
+    const rawTargetId = selection.rawTargetId ?? projectedRepresentativeId;
+    const target = projectedRepresentativeId === undefined
+      ? undefined
+      : snapshot.projections.find((projection) =>
+        projection.projectedRepresentative.id === projectedRepresentativeId
+        && projection.rawTarget.id === rawTargetId);
+    if (!snapshot.visibleSweep || !target || !projectedRepresentativeId || !rawTargetId) {
+      return {
+        status: 'no-target' as const,
+        revision: null,
+        target: null,
+        evidence: null,
+        resultBinding: null,
+        result: null,
+      };
+    }
+    const execution = executionOverride ?? classificationExecution.current;
+    const matchingExecution = execution
+      && execution.work.visibleSweep.id === snapshot.visibleSweep.id
+      && execution.work.visibleSweep.sequence === snapshot.visibleSweep.sequence
+      && execution.work.sequence === snapshot.analysisSequence
+      && execution.work.target.projectedRepresentativeId === projectedRepresentativeId
+      && execution.work.target.rawTargetId === rawTargetId
+      && execution.work.target.selectionOrigin === selection.origin
+      ? execution
+      : undefined;
+    const targetReadback = {
+      projectedRepresentativeId,
+      rawTargetId,
+      selectionOrigin: selection.origin,
+      frozenVisibleSweepId: snapshot.visibleSweep.id,
+      frozenVisibleSweepSequence: snapshot.visibleSweep.sequence,
+    };
+    if (classifierRuntime.current?.status === 'unavailable') {
+      return {
+        status: 'unavailable' as const,
+        reason: 'classifier-runtime-unavailable' as const,
+        revision: matchingExecution?.work.revision ?? null,
+        target: targetReadback,
+        evidence: matchingExecution
+          ? agentClassificationEvidenceWindow(matchingExecution.work)
+          : null,
+        resultBinding: null,
+        result: null,
+      };
+    }
+    if (matchingExecution?.status === 'failed') {
+      return {
+        status: 'failed' as const,
+        reason: 'inference-failed' as const,
+        error: matchingExecution.error ?? 'Bayesian classification failed',
+        revision: matchingExecution.work.revision,
+        target: targetReadback,
+        evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+        resultBinding: null,
+        result: null,
+      };
+    }
+    if (matchingExecution?.status === 'inference-pending') {
+      if (!classificationInferenceRemainsPending(matchingExecution.work)) {
+        return {
+          status: 'failed' as const,
+          reason: 'orphaned-inference-revision' as const,
+          error: 'The target-bound inference revision is no longer executing or queued',
+          revision: matchingExecution.work.revision,
+          target: targetReadback,
+          evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+          resultBinding: null,
+          result: null,
+        };
+      }
+      return {
+        status: 'inference-pending' as const,
+        revision: matchingExecution.work.revision,
+        target: targetReadback,
+        evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+        resultBinding: null,
+        result: null,
+      };
+    }
+    if (matchingExecution?.status === 'ready') {
+      const result = matchingExecution.results?.find((candidate) =>
+        candidate.detectionId === projectedRepresentativeId);
+      if (!result) {
+        return {
+          status: 'failed' as const,
+          reason: 'target-result-missing' as const,
+          error: 'The completed inference returned no result for the frozen selected target',
+          revision: matchingExecution.work.revision,
+          target: targetReadback,
+          evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+          resultBinding: null,
+          result: null,
+        };
+      }
+      const resultBinding = agentClassificationResultBinding(
+        matchingExecution.work,
+        result,
+      );
+      if (!resultBinding.bound) {
+        return {
+          status: 'failed' as const,
+          reason: 'result-evidence-binding-mismatch' as const,
+          error: 'The classifier result does not bind to the exact frozen target and evidence window',
+          revision: matchingExecution.work.revision,
+          target: targetReadback,
+          evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+          resultBinding,
+          result: null,
+        };
+      }
+      if (result.qualification === 'unavailable') {
+        return {
+          status: 'unavailable' as const,
+          reason: result.unknownReason ?? 'model-unavailable',
+          revision: matchingExecution.work.revision,
+          target: targetReadback,
+          evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+          resultBinding,
+          result,
+        };
+      }
+      return {
+        status: 'ready' as const,
+        revision: matchingExecution.work.revision,
+        target: targetReadback,
+        evidence: agentClassificationEvidenceWindow(matchingExecution.work),
+        resultBinding,
+        result,
+      };
+    }
+    let evidenceSweeps: readonly Sweep[] | undefined;
+    try {
+      evidenceSweeps = exactClassificationEvidenceSweeps(
+        target.projectedRepresentative,
+        snapshot.history,
+      );
+    } catch (value) {
+      return {
+        status: 'failed' as const,
+        reason: 'evidence-window-invalid' as const,
+        error: errorMessage(value),
+        revision: null,
+        target: targetReadback,
+        evidence: null,
+        resultBinding: null,
+        result: null,
+      };
+    }
+    return {
+      status: 'collecting' as const,
+      reason: evidenceSweeps?.length
+        ? 'awaiting-target-bound-inference-revision' as const
+        : 'exact-evidence-window-unavailable' as const,
+      revision: null,
+      target: targetReadback,
+      evidence: evidenceSweeps?.length ? {
+        spectrumSweepIds: evidenceSweeps.map((item) => item.id),
+        spectrumWindow: {
+          order: 'newest-to-oldest' as const,
+          count: evidenceSweeps.length,
+          newestSweepId: evidenceSweeps[0]?.id ?? null,
+          oldestSweepId: evidenceSweeps.at(-1)?.id ?? null,
+          maximumModelWindowSweeps: 8,
+        },
+        zeroSpanCaptureId: null,
+        zeroSpanSpectrumSweepIds: [],
+      } : null,
+      resultBinding: null,
+      result: null,
+    };
+  }
+
+  function agentAutomaticClassificationSelection(
+    snapshot: FrozenAutomaticClassificationSnapshot,
+    detectedPowerStaging: AutomaticDetectedPowerStaging,
+    operationExecution?: ClassificationExecutionRecord,
+  ) {
+    const rankPopulation = agentAutomaticRankPopulation(snapshot);
+    const winner = snapshot.projections[0];
+    const selection: ClassificationTargetSelection = {
+      ...(winner ? {
+        detectionId: winner.projectedRepresentative.id,
+        ...(winner.rawTarget.id === winner.projectedRepresentative.id
+          ? {}
+          : { rawTargetId: winner.rawTarget.id }),
+      } : {}),
+      origin: 'automatic',
+    };
+    return {
+      frozenVisibleSweep: snapshot.visibleSweep ? {
+        id: snapshot.visibleSweep.id,
+        sequence: snapshot.visibleSweep.sequence,
+        capturedAt: snapshot.visibleSweep.capturedAt,
+      } : null,
+      selection: {
+        origin: 'automatic' as const,
+        selected: winner !== undefined,
+        rank: winner ? 0 : null,
+        rankPopulationSize: rankPopulation.length,
+        rawTargetId: winner?.rawTarget.id ?? null,
+        projectedRepresentativeId:
+          winner?.projectedRepresentative.id ?? null,
+        stagedDetectedPowerCenterHz:
+          detectedPowerStaging.centerHz,
+        stagedDetectedPowerConfiguration:
+          detectedPowerStaging.configuration,
+        detectedPowerStaging,
+      },
+      ranking: {
+        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
+        tieBreakPolicy: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL.tieBreakPolicy,
+        admission: snapshot.rankingAdmission,
+        population: rankPopulation,
+      },
+      classificationReadiness: agentClassificationReadiness(
+        snapshot,
+        selection,
+        operationExecution,
+      ),
+    };
+  }
+
+  function agentAutomaticClassificationOperationState() {
+    const pinned = lastAutomaticClassificationOperation.current;
+    if (!pinned) return null;
+    const snapshot = pinned.snapshot;
+    const selection = pinned.selection;
+    return {
+      operationId: pinned.operationId,
+      supersededBy: 'subsequent-auto-only' as const,
+      frozenVisibleSweep: snapshot.visibleSweep ? {
+        id: snapshot.visibleSweep.id,
+        sequence: snapshot.visibleSweep.sequence,
+        capturedAt: snapshot.visibleSweep.capturedAt,
+      } : null,
+      selection: {
+        origin: selection.origin,
+        projectedRepresentativeId: selection.detectionId ?? null,
+        rawTargetId: selection.rawTargetId ?? selection.detectionId ?? null,
+      },
+      ranking: {
+        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
+        admission: snapshot.rankingAdmission,
+        population: agentAutomaticRankPopulation(snapshot),
+      },
+      detectedPowerStaging: pinned.detectedPowerStaging,
+      readiness: agentClassificationReadiness(
+        snapshot,
+        selection,
+        pinned.execution,
+      ),
+    };
+  }
+
+  function agentCurrentClassificationState() {
+    const snapshot = freezeAutomaticClassificationSnapshot();
+    const selection = resolveVisibleClassificationTargetSelection(
+      snapshot.detections,
+      snapshot.visibleSweep,
+      explicitClassificationIdRef.current,
+    );
+    return {
+      frozenVisibleSweep: snapshot.visibleSweep ? {
+        id: snapshot.visibleSweep.id,
+        sequence: snapshot.visibleSweep.sequence,
+        capturedAt: snapshot.visibleSweep.capturedAt,
+      } : null,
+      selection: {
+        origin: selection.origin,
+        projectedRepresentativeId: selection.detectionId ?? null,
+        rawTargetId: selection.rawTargetId ?? selection.detectionId ?? null,
+      },
+      automaticRanking: {
+        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
+        admission: snapshot.rankingAdmission,
+        population: agentAutomaticRankPopulation(snapshot),
+      },
+      automaticOperation: agentAutomaticClassificationOperationState(),
+      readiness: agentClassificationReadiness(snapshot, selection),
+    };
+  }
+
   function applicationContext(): string {
     const currentInstrument = instrumentRef.current;
     const currentWorkspace = workspaceRef.current;
@@ -3090,9 +4345,13 @@ export function App({
       };
       case 'get_instrument_state': return { ...instrumentRef.current, generatorOutput: currentGeneratorOutput(), scalarConfiguration: agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(applicationContext()).latestSweep;
-      case 'get_detection_results': return agentDetectionResults(detectionsRef.current);
+      case 'get_detection_results': return {
+        ...agentDetectionResults(detectionsRef.current),
+        classificationTargeting: agentCurrentClassificationState(),
+      };
       case 'get_classification_results': return {
         contract: 'classification-results-with-association-lineage-v1',
+        ...agentCurrentClassificationState(),
         spectral: agentClassificationResults(detectionsRef.current, classificationsRef.current),
         zeroSpan: zeroCaptureRef.current ? { captureId: zeroCaptureRef.current.id, envelope: envelopeRef.current ?? null } : null,
       };
@@ -3138,6 +4397,15 @@ export function App({
         if (targets.length !== 1) throw new Error(`Semantic control ${control} has ${targets.length} rendered targets; expected exactly one`);
         const target = targets[0]!;
         if (target.closest('[data-agent-exclusion]')) throw new Error(`Semantic control ${control} is a local human-only boundary`);
+        if (control === 'classification.auto-select') {
+          const selection = await selectAutomaticClassificationCandidate();
+          return {
+            activated: control,
+            preferredTool: binding.preferredTool,
+            projection: binding.projection,
+            ...selection,
+          };
+        }
         if (isDisabledControl(target)) throw new Error(`Semantic control ${control} is disabled`);
         if (target instanceof HTMLDetailsElement) target.open = !target.open;
         else target.click();
@@ -3311,7 +4579,7 @@ export function App({
           throw new Error(`Detection ${detectionId} is not an exact current physical or qualified agile-representative classification target`);
         }
         applyWorkspace('classification');
-        const stagedDetectedPowerCenterHz = selectClassificationCandidate(detectionId);
+        const stagedDetectedPower = selectClassificationCandidate(detectionId);
         const stagedDetectionId = stagedClassificationTargetIdRef.current;
         const expectedRawTargetId = requestedSelection.rawTargetId
           ?? requestedSelection.detectionId;
@@ -3322,7 +4590,24 @@ export function App({
           detectionId: requestedSelection.detectionId,
           rawTargetId: expectedRawTargetId,
           selected: true,
-          stagedDetectedPowerCenterHz: stagedDetectedPowerCenterHz ?? null,
+          stagedDetectedPowerCenterHz: stagedDetectedPower.centerHz ?? null,
+          stagedDetectedPowerConfiguration: stagedDetectedPower.centerHz === undefined
+            ? null
+            : structuredClone(zeroConfigRef.current),
+          detectedPowerStaging: stagedDetectedPower.centerHz === undefined ? {
+            status: 'unavailable',
+            reason: instrumentRef.current.session?.capabilities.acquisitions
+              .some((candidate) => candidate.kind === 'detected-power-timeseries')
+              ? 'target-not-stageable'
+              : 'detected-power-capability-unavailable',
+            ...(stagedDetectedPower.failure
+              ? { error: stagedDetectedPower.failure }
+              : {}),
+          } : {
+            status: 'staged',
+            centerHz: stagedDetectedPower.centerHz,
+            configuration: structuredClone(zeroConfigRef.current),
+          },
           evidence: 'ui-staging',
         };
       }
@@ -3427,10 +4712,20 @@ export function App({
         selectedId={zeroCaptureReceiptRef.current?.selection.projectedRepresentativeId
           ?? selectedClassificationId}
         selectionOrigin={classificationTargetSelection.origin}
-        onSelectedId={selectClassificationCandidate}
+        onSelectedId={(detectionId) => {
+          try { selectClassificationCandidate(detectionId); }
+          catch (value) {
+            const failure = errorMessage(value);
+            setDetectedPowerTargetStagingFailure(failure);
+            setNotice(`Detected-power target tune unavailable: ${failure}`);
+          }
+        }}
+        onAutoSelect={() => { void selectAutomaticClassificationCandidate(); }}
         detectionConfig={detectionConfig} detectorBusy={busy} onDetectionConfig={applyDetectionConfiguration}
         zeroConfig={zeroConfig} zeroCapture={zeroCapture} envelope={envelope}
-        capability={detectedPowerCapability} busy={!connected || busy}
+        capability={detectedPowerCapability}
+        captureUnavailableReason={detectedPowerTargetStagingFailure}
+        busy={!connected || busy}
         onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
       {workspace === 'iq' && <IqWorkspace
@@ -3711,6 +5006,34 @@ function captureReceiptRepresentativeMatches(
       expected.associationMemberTrackIds,
       detection.associationMemberTrackIds,
     );
+}
+
+function classificationWorkRevision(
+  sequence: number,
+  visibleSweep: Sweep,
+  selection: ClassificationTargetSelection,
+  evidence: WaveformEvidence,
+): string {
+  return JSON.stringify({
+    contract: 'classification-evidence-revision-v1',
+    sequence,
+    visibleSweepId: visibleSweep.id,
+    visibleSweepSequence: visibleSweep.sequence,
+    selectionOrigin: selection.origin,
+    projectedRepresentativeId: selection.detectionId ?? null,
+    rawTargetId: selection.rawTargetId ?? selection.detectionId ?? null,
+    spectrumSweepIds: evidence.sweeps.map((item) => item.id),
+    zeroSpanCaptureId: evidence.zeroSpan?.id ?? null,
+    zeroSpanSpectrumSweepIds: evidence.zeroSpanSpectrumSweepIds ?? [],
+  });
+}
+
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
 
 function sameOptionalStringArray(

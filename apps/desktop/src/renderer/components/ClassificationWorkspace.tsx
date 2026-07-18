@@ -22,7 +22,7 @@ import { SpectrumPlot } from './SpectrumPlot.js';
 
 type DetectedPowerCapability = Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
 
-export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visibleFirmwareTraceIds, activeTraceId, markers, activeMarkerId, display, onMarkerPlace, detections, classifications, modelAvailability, selectedId, selectionOrigin = 'automatic', onSelectedId, detectionConfig, detectorBusy = false, onDetectionConfig, zeroConfig, zeroCapture, envelope, capability, busy, onAcquireZero }: {
+export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visibleFirmwareTraceIds, activeTraceId, markers, activeMarkerId, display, onMarkerPlace, detections, classifications, modelAvailability, selectedId, selectionOrigin = 'automatic', onSelectedId, onAutoSelect, detectionConfig, detectorBusy = false, onDetectionConfig, zeroConfig, zeroCapture, envelope, capability, captureUnavailableReason, busy, onAcquireZero }: {
   sweep?: Sweep;
   traces?: readonly TraceFrame[];
   firmwareTraces?: readonly FirmwareTraceFrame[];
@@ -38,6 +38,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
   selectedId?: string;
   selectionOrigin?: 'automatic' | 'explicit';
   onSelectedId(detectionId: string | undefined): void;
+  onAutoSelect?(): void;
   detectionConfig?: SignalDetectionConfig;
   detectorBusy?: boolean;
   onDetectionConfig?(config: SignalDetectionConfig): void;
@@ -45,6 +46,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
   zeroCapture?: ZeroSpanCapture;
   envelope?: EnvelopeClassification;
   capability?: DetectedPowerCapability;
+  captureUnavailableReason?: string;
   busy: boolean;
   onAcquireZero(): void;
 }) {
@@ -130,7 +132,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
     </section>
 
     <section className="candidate-panel">
-      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} aria-description={developerAutoRankingDescription} disabled={autoTargetProjection === undefined} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · most prominent</button></div></div>
+      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} aria-description={developerAutoRankingDescription} disabled={autoTargetProjection === undefined} onClick={() => onAutoSelect ? onAutoSelect() : onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · most prominent</button></div></div>
       {currentEvidenceCount ? <div className="candidate-list" role="region" aria-label="Current detector and classification evidence">
         {activePhysicalRows.length > 0 && <div className="candidate-group-label"><span>ACTIVE PHYSICAL ROWS</span><em>CURRENT PHYSICAL</em></div>}
         {activePhysicalRows.map((detection, index) => {
@@ -188,6 +190,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
       capture={zeroCapture}
       envelope={envelope}
       capability={capability}
+      unavailableReason={captureUnavailableReason}
       target={selected}
       busy={busy}
       onAcquire={onAcquireZero}
@@ -195,22 +198,23 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
   </div>;
 }
 
-function CaptureEvidenceStrip({ configuration, capture, envelope, capability, target, busy, onAcquire }: {
+function CaptureEvidenceStrip({ configuration, capture, envelope, capability, unavailableReason, target, busy, onAcquire }: {
   configuration: ZeroSpanConfig;
   capture?: ZeroSpanCapture;
   envelope?: EnvelopeClassification;
   capability?: DetectedPowerCapability;
+  unavailableReason?: string;
   target?: DetectedSignal;
   busy: boolean;
   onAcquire(): void;
 }) {
-  const ready = capability !== undefined && target !== undefined;
+  const ready = capability !== undefined && target !== undefined && unavailableReason === undefined;
   const geometryQualification = hasPinnedClassificationCaptureGeometry(configuration)
     ? 'Bayesian geometry'
     : 'outside Bayesian geometry';
   const agileFixedTune = target?.associationMode === 'frequency-agile-2g4-activity';
   return <section className="classification-capture-strip" aria-label="Detected-power evidence status">
-    <div className="capture-strip-state"><span className="capture-strip-icon"><Activity size={14}/></span><span><small>DETECTED POWER · NOT I/Q</small><strong>{capture ? `${capture.powerDbm.length} samples captured` : ready ? 'Ready to capture' : capability ? 'Select active evidence' : 'Capture unavailable'}</strong><em>{configuration.points} samples · {formatCaptureWindow(configuration.sweepTimeSeconds)} · {geometryQualification}</em></span></div>
+    <div className="capture-strip-state"><span className="capture-strip-icon"><Activity size={14}/></span><span><small>DETECTED POWER · NOT I/Q</small><strong>{capture ? `${capture.powerDbm.length} samples captured` : ready ? 'Ready to capture' : unavailableReason ? 'Target tune unavailable' : capability ? 'Select active evidence' : 'Capture unavailable'}</strong><em>{unavailableReason ?? `${configuration.points} samples · ${formatCaptureWindow(configuration.sweepTimeSeconds)} · ${geometryQualification}`}</em></span></div>
     <div><small>CAPTURE TARGET</small><strong>{target ? formatFrequency(configuration.frequencyHz) : 'No active target'}</strong><em>{agileFixedTune ? `Fixed tune from latest physical member at ${formatFrequency(target.peakHz)}` : target ? `Centers capture on ${formatFrequency(target.peakHz)} selected evidence` : 'Auto selects prominent excess power across the visible spectrum'}</em></div>
     <div><small>ENVELOPE CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : agileFixedTune ? 'Fixed-tune trace only' : 'No envelope evidence'}</strong><em>{agileFixedTune ? 'Display characterization · Bayesian classifier uses regional spectrum/history' : envelope ? `${Math.round(envelope.confidence * 100)}% · ${envelope.features.transitionCount} transitions` : capture ? 'Classification pending' : 'Optional classifier evidence'}</em></div>
     <div className="capture-strip-action"><button className="secondary" disabled={busy || !ready} onClick={onAcquire} data-agent-control="classification.capture-envelope">{capture ? 'Recapture envelope' : 'Capture envelope'}</button></div>

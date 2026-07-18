@@ -305,7 +305,7 @@ describe('analysis visual contracts', () => {
       associationObservations: {},
     } as unknown as DetectedSignal;
     const view = render(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={detectionSourceSweep}
       detections={[malformed, detection]}
       classifications={[]}
       selectedId={detection.id}
@@ -496,7 +496,7 @@ describe('analysis visual contracts', () => {
     } as DetectedSignal;
     const onSelectedId = vi.fn();
     const view = render(<ClassificationWorkspace
-      sweep={sweep}
+      sweep={detectionSourceSweep}
       detections={[released, retainedMiss, agile, qualifying, active]}
       classifications={[]}
       selectedId={active.id}

@@ -226,6 +226,63 @@ function acquiredMeasurement(config: AnalyzerConfig, id = 'runtime-sweep', revis
   return { schemaVersion: 1, kind: 'swept-spectrum', measurementId: id, sessionId: ready.sessionId, configurationRevision: revision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:00.000Z', elapsedMilliseconds: 42, resolutionBandwidthHz: 10_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, frequencyHz, powerDbm: Array.from({ length: config.points }, (_, index) => index === Math.floor(config.points / 2) ? -50 : -90) };
 }
 
+function chronologicalAcquiredMeasurement(
+  config: AnalyzerConfig,
+  id: string,
+  revision = configurationRevision,
+): Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }> {
+  const measurement = acquiredMeasurement(config, id, revision);
+  return {
+    ...measurement,
+    capturedAt: new Date(
+      Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000,
+    ).toISOString(),
+  };
+}
+
+function dualEmissionMeasurement(
+  id: string,
+  revision = configurationRevision,
+): Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }> {
+  const measurement = acquiredMeasurement(configuredAnalyzer, id, revision);
+  return {
+    ...measurement,
+    capturedAt: new Date(
+      Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000,
+    ).toISOString(),
+    powerDbm: measurement.powerDbm.map((_value, index) => {
+      if (index === 100) return -24;
+      if (index >= 300 && index <= 308) return -30;
+      return -100;
+    }),
+  };
+}
+
+function evidenceBoundTestClassification(
+  detection: DetectedSignal,
+  evidence: WaveformEvidence,
+  modelId: string,
+): WaveformClassification {
+  const result = testClassification(detection, modelId);
+  const projectedSweepIds = extractObservableFeatures(detection, evidence).sweepIds;
+  const receiptMode = evidence.detectedPowerCaptureReceipt?.selection.mode;
+  return {
+    ...result,
+    evidence: {
+      ...result.evidence,
+      sweepIds: [...projectedSweepIds],
+      ...(evidence.zeroSpan ? { zeroSpanCaptureId: evidence.zeroSpan.id } : {}),
+      ...(receiptMode ? {
+        detectedPowerAcquisitionQualification:
+          'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
+        detectedPowerSelectionCondition: receiptMode === 'integrated-excess-current'
+          ? 'automatic-current-source-sweep-integrated-excess-rank-0'
+          : 'operator-preferred-current-target',
+      } : {}),
+    },
+  };
+}
+
 function detectedPowerMeasurement(config: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>): Extract<InstrumentMeasurement, { kind: 'detected-power-timeseries' }> {
   return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sweepTimeSeconds / config.sampleCount, timingQualification: 'wall-clock-derived', powerDbm: Array(config.sampleCount).fill(-90) };
 }
@@ -911,11 +968,15 @@ describe('operator vertical slice', () => {
     persistOneLookDetector();
     const pending = deferred<WaveformClassification>();
     let classificationCall = 0;
-    const classify = vi.fn((detection: DetectedSignal) => {
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
       classificationCall++;
       return classificationCall === 9
         ? pending.promise
-        : Promise.resolve(testClassification(detection, 'prior-spectrum-only-model'));
+        : Promise.resolve(evidenceBoundTestClassification(
+          detection,
+          evidence,
+          'prior-spectrum-only-model',
+        ));
     });
     vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
       if (activeConfiguration.kind === 'swept-spectrum') {
@@ -1444,6 +1505,1566 @@ describe('operator vertical slice', () => {
     const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as { ok?: boolean; error?: string };
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/does not advertise complex-I\/Q acquisition/i) });
     expect(screen.queryByRole('region', { name: /Complex I\/Q workspace/i })).toBeNull();
+  });
+
+  it('returns atomic no-target evidence when Atom activates the disabled empty Auto control', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, 'empty-auto-should-not-run'));
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => ({
+      ...acquiredMeasurement(configuredAnalyzer, 'auto-empty-1'),
+      capturedAt: '2026-07-10T00:00:01.000Z',
+      powerDbm: Array(configuredAnalyzer.points).fill(-100),
+    }));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-empty-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-empty-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-empty-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-empty-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-empty-2', transport: 'realtime-websocket', text: 'No visible target.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Single$/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).hasAttribute('disabled')).toBe(true);
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Select the automatic visible target.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean;
+      output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        activated: 'classification.auto-select',
+        projection: 'host-derived',
+        frozenVisibleSweep: { id: 'auto-empty-1', sequence: 1 },
+        selection: {
+          origin: 'automatic', selected: false, rank: null,
+          rankPopulationSize: 0, rawTargetId: null,
+          projectedRepresentativeId: null,
+        },
+        ranking: {
+          model: { id: 'current-source-sweep-integrated-excess-power-v1' },
+          population: [],
+        },
+        classificationReadiness: {
+          status: 'no-target', revision: null, target: null, result: null,
+        },
+      },
+    });
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  it('reports malformed complete-rank evidence as an admission failure rather than no-target', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update')
+      .mockImplementation((sourceSweep, candidates) => {
+        const base = candidates[0];
+        if (!base) return [];
+        return [{
+          ...rankedTrackerRow(base, sourceSweep, 'malformed-rank', -30),
+          noiseFloorDbm: -99,
+        }];
+      });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, 'malformed-rank-should-not-run'));
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      acquiredMeasurement(configuredAnalyzer, 'auto-malformed-rank-1'));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-failed-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-rank-failed-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-failed-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-rank-failed-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-failed-2', transport: 'realtime-websocket', text: 'Rank evidence was rejected.', toolCalls: [] });
+
+    try {
+      render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+      await screen.findByText('tinySA Ultra+ ZS407');
+      fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+      await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+      fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+        .getByRole('button', { name: /^Detect$/i }));
+      expect(screen.getByRole('button', { name: /Auto · most prominent/i }).hasAttribute('disabled')).toBe(true);
+      const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+      fireEvent.change(composer, { target: { value: 'Audit automatic target ranking.' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+      await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+      const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+        ok?: boolean; output?: Record<string, unknown>;
+      };
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          frozenVisibleSweep: { id: 'auto-malformed-rank-1' },
+          selection: { selected: false, rankPopulationSize: 0 },
+          ranking: {
+            admission: {
+              status: 'ranking-admission-failed',
+              eligibleRawTargetIds: ['malformed-rank'],
+              rejectedRawTargetIds: ['malformed-rank'],
+              reason: 'current-source-sweep-rank-evidence-unavailable',
+            },
+            population: [],
+          },
+          classificationReadiness: {
+            status: 'failed',
+            reason: 'ranking-admission-failed',
+            result: null,
+          },
+        },
+      });
+      expect(classify).not.toHaveBeenCalled();
+    } finally {
+      trackerUpdate.mockRestore();
+    }
+  });
+
+  it('freezes the visible rank population and completes stopped Auto inference for the lower-peak wider winner', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    let spectrumLook = 0;
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind !== 'swept-spectrum') {
+        throw new Error(`Expected swept spectrum, received ${activeConfiguration.kind}`);
+      }
+      return dualEmissionMeasurement(`auto-rank-${++spectrumLook}`);
+    });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, `auto-rank-model-${classify.mock.calls.length}`));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-rank-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-rank-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-rank-2', transport: 'realtime-websocket', text: 'Automatic target classified.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const narrow = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    );
+    expect(narrow).not.toBeNull();
+    fireEvent.click(narrow!);
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Single$/i }).hasAttribute('disabled')).toBe(false));
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select the strongest integrated visible target.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    expect(classify).toHaveBeenCalledTimes(3);
+    expect(classify.mock.calls[2]?.[0].id).toBe('signal-0002');
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean;
+      output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: { id: 'auto-rank-2', sequence: 2 },
+        selection: {
+          origin: 'automatic', selected: true, rank: 0,
+          rankPopulationSize: 2,
+          rawTargetId: 'signal-0002',
+          projectedRepresentativeId: 'signal-0002',
+          stagedDetectedPowerCenterHz: 101_363_029,
+        },
+        ranking: {
+          model: {
+            id: 'current-source-sweep-integrated-excess-power-v1',
+            tieBreakPolicy: 'representative-key-then-raw-id-v1',
+          },
+          tieBreakPolicy: 'representative-key-then-raw-id-v1',
+          population: [
+            expect.objectContaining({
+              rank: 0,
+              rawTargetId: 'signal-0002',
+              rankEvidence: expect.objectContaining({ sourceSweepId: 'auto-rank-2', supportCellCount: 9 }),
+            }),
+            expect.objectContaining({
+              rank: 1,
+              rawTargetId: 'signal-0001',
+              rankEvidence: expect.objectContaining({ sourceSweepId: 'auto-rank-2', supportCellCount: 1 }),
+            }),
+          ],
+        },
+        classificationReadiness: {
+          status: 'ready',
+          target: {
+            projectedRepresentativeId: 'signal-0002',
+            rawTargetId: 'signal-0002',
+            selectionOrigin: 'automatic',
+            frozenVisibleSweepId: 'auto-rank-2',
+          },
+          evidence: {
+            spectrumSweepIds: ['auto-rank-2', 'auto-rank-1'],
+            spectrumWindow: { order: 'newest-to-oldest', count: 2 },
+          },
+          resultBinding: { bound: true, spectrumSweepIdsMatch: true },
+          result: { detectionId: 'signal-0002' },
+        },
+      },
+    });
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('returns one frozen Auto receipt when a human retargets during stopped inference', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    let spectrumLook = 0;
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement(`auto-retarget-${++spectrumLook}`));
+    const third = deferred<WaveformClassification>();
+    let thirdDetection: DetectedSignal | undefined;
+    let thirdEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 3) {
+        thirdDetection = detection;
+        thirdEvidence = evidence;
+        return third.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `retarget-prior-${classify.mock.calls.length}`,
+      ));
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-retarget-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-retarget-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-retarget-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-retarget-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-retarget-2', transport: 'realtime-websocket', text: 'Frozen automatic result returned.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    const single = screen.getByRole('button', { name: /^Single$/i });
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const narrow = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    );
+    expect(narrow).not.toBeNull();
+    fireEvent.click(narrow!);
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select and freeze the operation receipt.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(3));
+    expect(classify.mock.calls[2]?.[0].id).toBe('signal-0002');
+    fireEvent.click(document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    )!);
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('false');
+    await act(async () => {
+      third.resolve(evidenceBoundTestClassification(
+        thirdDetection!,
+        thirdEvidence!,
+        'frozen-auto-after-retarget',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: { id: 'auto-retarget-2', sequence: 2 },
+        selection: {
+          rawTargetId: 'signal-0002',
+          projectedRepresentativeId: 'signal-0002',
+          stagedDetectedPowerCenterHz: 101_363_029,
+          stagedDetectedPowerConfiguration: { frequencyHz: 101_363_029 },
+          detectedPowerStaging: {
+            status: 'staged',
+            centerHz: 101_363_029,
+            configuration: { frequencyHz: 101_363_029 },
+          },
+        },
+        classificationReadiness: {
+          status: 'ready',
+          target: {
+            selectionOrigin: 'automatic',
+            frozenVisibleSweepId: 'auto-retarget-2',
+          },
+          resultBinding: { bound: true },
+          result: { modelId: 'frozen-auto-after-retarget' },
+        },
+      },
+    });
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('false');
+    expect(document.body.textContent).not.toContain('frozen-auto-after-retarget');
+  });
+
+  it('classifies from spectrum while reporting detected-power staging unavailable', async () => {
+    const spectrumOnlySession: InstrumentSessionSnapshot = {
+      ...ready,
+      capabilities: {
+        ...ready.capabilities,
+        acquisitions: ready.capabilities.acquisitions.filter((capability) =>
+          capability.kind === 'swept-spectrum'),
+      },
+    };
+    mockConnectedInstrument(spectrumOnlySession);
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement('auto-spectrum-only-1'));
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, 'auto-spectrum-only-model'));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-spectrum-only-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-spectrum-only-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-spectrum-only-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-spectrum-only-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-spectrum-only-2', transport: 'realtime-websocket', text: 'Spectrum classification is ready; envelope capture is unavailable.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select using the available evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        selection: {
+          selected: true,
+          rawTargetId: 'signal-0002',
+          stagedDetectedPowerCenterHz: null,
+          stagedDetectedPowerConfiguration: null,
+          detectedPowerStaging: {
+            status: 'unavailable',
+            reason: 'detected-power-capability-unavailable',
+            centerHz: null,
+            configuration: null,
+          },
+        },
+        classificationReadiness: {
+          status: 'ready',
+          resultBinding: { bound: true },
+          result: { modelId: 'auto-spectrum-only-model' },
+        },
+      },
+    });
+    expect(screen.getByText(/Capture unavailable/i)).toBeTruthy();
+  });
+
+  it('keeps spectrum ingest and explicit/Auto selection live when target tune is out of range', async () => {
+    const narrowDetectedPowerSession: InstrumentSessionSnapshot = {
+      ...ready,
+      capabilities: {
+        ...ready.capabilities,
+        acquisitions: ready.capabilities.acquisitions.map((capability) =>
+          capability.kind === 'detected-power-timeseries' ? {
+            ...capability,
+            centerFrequencyHz: { min: 1, max: 1_000_000, step: 1 },
+          } : capability),
+      },
+    };
+    mockConnectedInstrument(narrowDetectedPowerSession);
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement('auto-out-of-range-1'));
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, 'out-of-range-spectrum-model'));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-auto-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'out-of-range-auto-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-auto-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'out-of-range-auto', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-auto-2', transport: 'realtime-websocket', text: 'Spectrum classification is valid; target tuning is unavailable.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-explicit-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'out-of-range-explicit-load', name: 'load_atom_tools', arguments: '{"toolNames":["select_classification_candidate"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-explicit-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'out-of-range-explicit', name: 'select_classification_candidate', arguments: '{"detectionId":"signal-0001"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'out-of-range-explicit-2', transport: 'realtime-websocket', text: 'Explicit spectrum target selected without a capture tune.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    expect(document.body.textContent).toContain('out-of-range-spectrum-model');
+    expect(screen.getByText(/Target tune unavailable/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Capture envelope$/i }).hasAttribute('disabled')).toBe(true);
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select without requiring detected-power tuning.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const automatic = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(automatic).toMatchObject({
+      ok: true,
+      output: {
+        selection: {
+          selected: true,
+          stagedDetectedPowerCenterHz: null,
+          stagedDetectedPowerConfiguration: null,
+          detectedPowerStaging: {
+            status: 'unavailable',
+            reason: 'target-not-stageable',
+            error: expect.stringMatching(/outside 1-1000000 Hz/i),
+          },
+        },
+        classificationReadiness: {
+          status: 'ready',
+          result: { modelId: 'out-of-range-spectrum-model' },
+        },
+      },
+    });
+    expect(classify).toHaveBeenCalledOnce();
+
+    fireEvent.change(composer, { target: { value: 'Select the narrow spectrum target explicitly.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(6));
+    const explicit = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[5]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(explicit).toMatchObject({
+      ok: true,
+      output: {
+        detectionId: 'signal-0001',
+        selected: true,
+        stagedDetectedPowerCenterHz: null,
+        stagedDetectedPowerConfiguration: null,
+        detectedPowerStaging: {
+          status: 'unavailable',
+          reason: 'target-not-stageable',
+        },
+      },
+    });
+    expect(screen.getByText(/Target tune unavailable/i)).toBeTruthy();
+    expect(classify).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates an explicit-conditioned capture and result when Auto keeps the same raw winner', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    let spectrumLook = 0;
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        return dualEmissionMeasurement(`auto-origin-${++spectrumLook}`);
+      }
+      if (activeConfiguration.kind === 'detected-power-timeseries') {
+        return detectedPowerMeasurement(activeConfiguration);
+      }
+      throw new Error('I/Q not mocked');
+    });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `auto-origin-model-${classify.mock.calls.length}`,
+      ));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-origin-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-origin-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-origin-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-origin-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-origin-2', transport: 'realtime-websocket', text: 'Automatic condition restored.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    const single = screen.getByRole('button', { name: /^Single$/i });
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const winner = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0002.select"]',
+    );
+    expect(winner).not.toBeNull();
+    fireEvent.click(winner!);
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('false');
+    for (let look = 2; look <= 8; look++) {
+      fireEvent.click(single);
+      await waitFor(() => expect(classify).toHaveBeenCalledTimes(look));
+      await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+    }
+    const capture = screen.getByRole('button', { name: /^Capture envelope$/i });
+    fireEvent.click(capture);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(9));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Recapture envelope$/i })).toBeTruthy());
+    expect(classify.mock.calls[8]?.[1].detectedPowerCaptureReceipt?.selection).toMatchObject({
+      mode: 'preferred-target',
+      rawTargetId: 'signal-0002',
+      projectedRepresentativeId: 'signal-0002',
+    });
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Return this same winner to automatic selection.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    expect(classify).toHaveBeenCalledTimes(10);
+    expect(classify.mock.calls[9]?.[0].id).toBe('signal-0002');
+    expect(classify.mock.calls[9]?.[1].detectedPowerCaptureReceipt).toBeUndefined();
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        selection: {
+          origin: 'automatic',
+          rawTargetId: 'signal-0002',
+          projectedRepresentativeId: 'signal-0002',
+        },
+        classificationReadiness: {
+          status: 'ready',
+          target: { selectionOrigin: 'automatic' },
+          evidence: { zeroSpanCaptureId: null, zeroSpanSpectrumSweepIds: [] },
+          resultBinding: {
+            bound: true,
+            expected: {
+              zeroSpanCaptureId: null,
+              detectedPowerSelectionCondition: null,
+            },
+            result: {
+              zeroSpanCaptureId: null,
+              detectedPowerSelectionCondition: null,
+            },
+          },
+          result: { modelId: 'auto-origin-model-10' },
+        },
+      },
+    });
+    expect(screen.getByRole('button', { name: /^Capture envelope$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('discards an in-flight explicit envelope capture when Auto supersedes its selection ownership', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const pendingCapture = deferred<Extract<InstrumentMeasurement, { kind: 'detected-power-timeseries' }>>();
+    let pendingConfiguration: Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }> | undefined;
+    let spectrumLook = 0;
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        return dualEmissionMeasurement(`auto-capture-race-${++spectrumLook}`);
+      }
+      if (activeConfiguration.kind === 'detected-power-timeseries') {
+        pendingConfiguration = structuredClone(activeConfiguration);
+        return pendingCapture.promise;
+      }
+      throw new Error('I/Q not mocked');
+    });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `capture-race-${classify.mock.calls.length}`,
+      ));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'capture-race-read-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'capture-race-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'capture-race-read-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'capture-race-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'capture-race-read-2', transport: 'realtime-websocket', text: 'Only automatic spectrum evidence is published.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    const single = screen.getByRole('button', { name: /^Single$/i });
+    fireEvent.click(single);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const winner = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0002.select"]',
+    );
+    expect(winner).not.toBeNull();
+    fireEvent.click(winner!);
+    for (let look = 2; look <= 8; look++) {
+      fireEvent.click(single);
+      await waitFor(() => expect(classify).toHaveBeenCalledTimes(look));
+      await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /^Capture envelope$/i }));
+    await waitFor(() => expect(pendingConfiguration).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(9));
+    expect(classify.mock.calls[8]?.[1].detectedPowerCaptureReceipt).toBeUndefined();
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('true');
+    await act(async () => {
+      pendingCapture.resolve(detectedPowerMeasurement(pendingConfiguration!));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toMatch(/selection was superseded before evidence publication/i));
+    expect(classify).toHaveBeenCalledTimes(9);
+    expect(screen.getByRole('button', { name: /^Capture envelope$/i })).toBeTruthy();
+    expect(document.body.textContent).toContain('capture-race-9');
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Verify the exact current classification evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        selection: {
+          origin: 'automatic',
+          projectedRepresentativeId: 'signal-0002',
+          rawTargetId: 'signal-0002',
+        },
+        readiness: {
+          status: 'ready',
+          target: { selectionOrigin: 'automatic' },
+          evidence: { zeroSpanCaptureId: null, zeroSpanSpectrumSweepIds: [] },
+          resultBinding: {
+            bound: true,
+            expected: { detectedPowerSelectionCondition: null },
+            result: { detectedPowerSelectionCondition: null },
+          },
+          result: { modelId: 'capture-race-9' },
+        },
+        zeroSpan: null,
+      },
+    });
+  });
+
+  it('reports continuous same-target Auto as pending until the exact frozen evidence result is ready', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const second = deferred<WaveformClassification>();
+    let secondDetection: DetectedSignal | undefined;
+    let secondEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 1) {
+        return Promise.resolve(evidenceBoundTestClassification(detection, evidence, 'stream-auto-look-1'));
+      }
+      secondDetection = detection;
+      secondEvidence = evidence;
+      return second.promise;
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-pending-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-pending-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-pending-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-pending-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-pending-2', transport: 'realtime-websocket', text: 'Current inference is pending.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'auto-ready-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-ready-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-ready-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-ready-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-ready-2', transport: 'realtime-websocket', text: 'Current inference is ready.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('stream-auto-1', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    await waitFor(() => expect(document.body.textContent).toContain('stream-auto-look-1'));
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('stream-auto-2', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select and report readiness.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const pendingResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(pendingResult).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: { id: 'stream-auto-2' },
+        classificationReadiness: {
+          status: 'inference-pending',
+          target: { projectedRepresentativeId: 'signal-0002' },
+          evidence: { spectrumSweepIds: ['stream-auto-2', 'stream-auto-1'] },
+          result: null,
+        },
+      },
+    });
+
+    await act(async () => {
+      second.resolve(evidenceBoundTestClassification(
+        secondDetection!,
+        secondEvidence!,
+        'stream-auto-look-2',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain('stream-auto-look-2'));
+    fireEvent.change(composer, { target: { value: 'Read the exact classification readiness again.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(6));
+    const readyResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[5]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(readyResult).toMatchObject({
+      ok: true,
+      output: {
+        contract: 'classification-results-with-association-lineage-v1',
+        frozenVisibleSweep: { id: 'stream-auto-2' },
+        readiness: {
+          status: 'ready',
+          target: { projectedRepresentativeId: 'signal-0002' },
+          evidence: { spectrumSweepIds: ['stream-auto-2', 'stream-auto-1'] },
+          resultBinding: {
+            bound: true,
+            expected: {
+              projectedRepresentativeId: 'signal-0002',
+              spectrumSweepIds: ['stream-auto-2', 'stream-auto-1'],
+            },
+            result: {
+              detectionId: 'signal-0002',
+              spectrumSweepIds: ['stream-auto-2', 'stream-auto-1'],
+            },
+          },
+          result: { detectionId: 'signal-0002', modelId: 'stream-auto-look-2' },
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  });
+
+  it('pins pending Auto R2 across newer sweeps, manual retarget, Stop, and exact polling', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const r2 = deferred<WaveformClassification>();
+    let r2Detection: DetectedSignal | undefined;
+    let r2Evidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 2) {
+        r2Detection = detection;
+        r2Evidence = evidence;
+        return r2.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `pin-r${classify.mock.calls.length}`,
+      ));
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-auto-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-r2-auto-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-auto-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-r2-auto', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-auto-2', transport: 'realtime-websocket', text: 'R2 is pinned and pending.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-read-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-r2-read-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-read-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-r2-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-r2-read-2', transport: 'realtime-websocket', text: 'Pinned R2 completed while current R4 stayed explicit.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'pin-clear-read-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-clear-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-clear-read-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'pin-clear-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'pin-clear-read-2', transport: 'realtime-websocket', text: 'Disconnect retired the prior automatic operation.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('pin-r1', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('pin-r2', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Pin Auto on this exact R2 evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('pin-r3', revision) });
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('pin-r4', revision) });
+    });
+    const narrow = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    );
+    expect(narrow).not.toBeNull();
+    fireEvent.click(narrow!);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      r2.resolve(evidenceBoundTestClassification(
+        r2Detection!,
+        r2Evidence!,
+        'pinned-r2-model',
+      ));
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).not.toContain('pinned-r2-model');
+
+    fireEvent.change(composer, { target: { value: 'Poll pinned R2 and current R4 separately.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(6));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[5]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        contract: 'classification-results-with-association-lineage-v1',
+        frozenVisibleSweep: { id: 'pin-r4' },
+        selection: {
+          origin: 'explicit',
+          projectedRepresentativeId: 'signal-0001',
+        },
+        automaticOperation: {
+          frozenVisibleSweep: { id: 'pin-r2' },
+          selection: {
+            origin: 'automatic',
+            projectedRepresentativeId: 'signal-0002',
+          },
+          readiness: {
+            status: 'ready',
+            evidence: { spectrumSweepIds: ['pin-r2', 'pin-r1'] },
+            resultBinding: { bound: true },
+            result: { modelId: 'pinned-r2-model' },
+          },
+        },
+      },
+    });
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'disconnected', sessionId: ready.sessionId, driverId: ready.driverId });
+    });
+    fireEvent.change(composer, { target: { value: 'Confirm disconnect retired the pinned operation.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(9));
+    const cleared = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[8]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(cleared).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: null,
+        automaticOperation: null,
+      },
+    });
+  });
+
+  it('pins queued Auto work once and deduplicates repeated same-revision Auto actions', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const r1 = deferred<WaveformClassification>();
+    const pinnedR2 = deferred<WaveformClassification>();
+    let r1Detection: DetectedSignal | undefined;
+    let r1Evidence: WaveformEvidence | undefined;
+    let r2Detection: DetectedSignal | undefined;
+    let r2Evidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 1) {
+        r1Detection = detection;
+        r1Evidence = evidence;
+        return r1.promise;
+      }
+      if (classify.mock.calls.length === 2) {
+        r2Detection = detection;
+        r2Evidence = evidence;
+        return pinnedR2.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `unexpected-queued-call-${classify.mock.calls.length}`,
+      ));
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-auto-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'queued-pin-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-auto-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'queued-pin-auto', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-auto-2', transport: 'realtime-websocket', text: 'Queued R2 is independently pinned.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-read-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'queued-pin-read-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-read-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'queued-pin-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'queued-pin-read-2', transport: 'realtime-websocket', text: 'Repeated Auto reused one exact R2 inference.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('queued-pin-r1', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('queued-pin-r2', revision) });
+    });
+    expect(classify).toHaveBeenCalledOnce();
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Pin queued Auto R2.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+    await act(async () => { await Promise.resolve(); });
+    expect(classify).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('queued-pin-r3', revision) });
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      pinnedR2.resolve(evidenceBoundTestClassification(
+        r2Detection!,
+        r2Evidence!,
+        'queued-pinned-r2-model',
+      ));
+      r1.resolve(evidenceBoundTestClassification(
+        r1Detection!,
+        r1Evidence!,
+        'old-active-r1-model',
+      ));
+      await Promise.resolve();
+    });
+    expect(classify).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).not.toContain('queued-pinned-r2-model');
+
+    fireEvent.change(composer, { target: { value: 'Poll the deduplicated queued R2 operation.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(6));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[5]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: { id: 'queued-pin-r3' },
+        automaticOperation: {
+          frozenVisibleSweep: { id: 'queued-pin-r2' },
+          readiness: {
+            status: 'ready',
+            evidence: { spectrumSweepIds: ['queued-pin-r2', 'queued-pin-r1'] },
+            result: { modelId: 'queued-pinned-r2-model' },
+          },
+        },
+      },
+    });
+  });
+
+  it('retains a queued Auto revision exact source after that normal inference settles behind an unrelated root', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const unrelatedRoot = deferred<WaveformClassification>();
+    const exactLatest = deferred<WaveformClassification>();
+    let rootDetection: DetectedSignal | undefined;
+    let rootEvidence: WaveformEvidence | undefined;
+    let latestDetection: DetectedSignal | undefined;
+    let latestEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      const call = classify.mock.calls.length;
+      if (call === 3) {
+        rootDetection = detection;
+        rootEvidence = evidence;
+        return unrelatedRoot.promise;
+      }
+      if (call === 4) {
+        latestDetection = detection;
+        latestEvidence = evidence;
+        return exactLatest.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        call === 1
+          ? 'preferred-source-r1-auto'
+          : call === 2
+            ? 'preferred-source-r2-explicit'
+            : `unexpected-preferred-source-call-${call}`,
+      ));
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('preferred-source-r1', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    await waitFor(() => expect(document.body.textContent).toContain('preferred-source-r1-auto'));
+    const narrow = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    );
+    expect(narrow).not.toBeNull();
+    fireEvent.click(narrow!);
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('preferred-source-r2', revision),
+      });
+    });
+    await waitFor(() => expect(document.body.textContent).toContain('preferred-source-r2-explicit'));
+    const auto = screen.getByRole('button', { name: /Auto · most prominent/i });
+    fireEvent.click(auto);
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(3));
+
+    // R3's normal lane is the exact source for the queued Auto receipt. It
+    // settles while an unrelated automatic R2 root still owns the drain.
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('preferred-source-r3', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(4));
+    fireEvent.click(auto);
+    await act(async () => {
+      exactLatest.resolve(evidenceBoundTestClassification(
+        latestDetection!,
+        latestEvidence!,
+        'preferred-source-r3-exact',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain('preferred-source-r3-exact'));
+    expect(classify).toHaveBeenCalledTimes(4);
+
+    await act(async () => {
+      unrelatedRoot.resolve(evidenceBoundTestClassification(
+        rootDetection!,
+        rootEvidence!,
+        'unrelated-r2-root',
+      ));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 5));
+    });
+    expect((latestEvidence?.sweeps[0] as Sweep | undefined)?.id).toBe('preferred-source-r3');
+    expect(document.body.textContent).toContain('preferred-source-r3-exact');
+    expect(document.body.textContent).not.toContain('unrelated-r2-root');
+    expect(document.body.textContent).not.toContain('unexpected-preferred-source-call-5');
+    expect(classify).toHaveBeenCalledTimes(4);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  });
+
+  it('reuses the exact stopped Single inference for Auto with one classifier call and one result', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement('direct-single-auto-1'));
+    const direct = deferred<WaveformClassification>();
+    let directDetection: DetectedSignal | undefined;
+    let directEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      directDetection = detection;
+      directEvidence = evidence;
+      return direct.promise;
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'direct-auto-read-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'direct-auto-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'direct-auto-read-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'direct-auto-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'direct-auto-read-2', transport: 'realtime-websocket', text: 'Single and Auto share one exact result.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const auto = screen.getByRole('button', { name: /Auto · most prominent/i });
+    fireEvent.click(auto);
+    fireEvent.click(auto);
+    await act(async () => { await Promise.resolve(); });
+    expect(classify).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      direct.resolve(evidenceBoundTestClassification(
+        directDetection!,
+        directEvidence!,
+        'direct-single-auto-model',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain('direct-single-auto-model'));
+    expect(classify).toHaveBeenCalledOnce();
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Read the shared Single and Auto result.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        readiness: {
+          status: 'ready',
+          resultBinding: { bound: true },
+          result: { modelId: 'direct-single-auto-model' },
+        },
+        automaticOperation: {
+          frozenVisibleSweep: { id: 'direct-single-auto-1' },
+          readiness: {
+            status: 'ready',
+            resultBinding: { bound: true },
+            result: { modelId: 'direct-single-auto-model' },
+          },
+        },
+      },
+    });
+  });
+
+  it('bounds a hung Auto root to one replaceable latest revision under repeated clicks', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const root = deferred<WaveformClassification>();
+    const latest = deferred<WaveformClassification>();
+    let rootDetection: DetectedSignal | undefined;
+    let rootEvidence: WaveformEvidence | undefined;
+    let latestDetection: DetectedSignal | undefined;
+    let latestEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 1) {
+        rootDetection = detection;
+        rootEvidence = evidence;
+        return root.promise;
+      }
+      if (classify.mock.calls.length === 2) {
+        latestDetection = detection;
+        latestEvidence = evidence;
+        return latest.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `unbounded-auto-call-${classify.mock.calls.length}`,
+      ));
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('bounded-auto-r1', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+
+    for (let look = 2; look <= 24; look++) {
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: dualEmissionMeasurement(`bounded-auto-r${look}`, revision),
+        });
+      });
+      const auto = screen.getByRole('button', { name: /Auto · most prominent/i });
+      fireEvent.click(auto);
+      fireEvent.click(auto);
+    }
+    await act(async () => { await Promise.resolve(); });
+    expect(classify).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.resolve(evidenceBoundTestClassification(
+        rootDetection!,
+        rootEvidence!,
+        'bounded-auto-root-model',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    expect((latestEvidence?.sweeps[0] as Sweep | undefined)?.id).toBe('bounded-auto-r24');
+    for (let repeat = 0; repeat < 40; repeat++) {
+      fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+    }
+    await act(async () => { await Promise.resolve(); });
+    expect(classify).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      latest.resolve(evidenceBoundTestClassification(
+        latestDetection!,
+        latestEvidence!,
+        'bounded-auto-latest-model',
+      ));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(document.body.textContent).toContain('bounded-auto-latest-model'));
+    expect(document.body.textContent).not.toContain('bounded-auto-root-model');
+    expect(classify).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  }, 15_000);
+
+  it('does not retry a superseded sentinel after device invalidation retires Auto', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const root = deferred<WaveformClassification>();
+    const classify = vi.fn((_detection: DetectedSignal, _evidence: WaveformEvidence) =>
+      root.promise);
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({ type: 'measurement', measurement: dualEmissionMeasurement('invalidated-auto-r1', revision) });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+    await act(async () => {
+      instrumentEventListener?.({ type: 'disconnected', sessionId: ready.sessionId, driverId: ready.driverId });
+      root.reject(new Error('Classification evidence revision was superseded before inference'));
+      await Promise.resolve();
+    });
+    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
+    expect(classify).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain('unbounded-auto-call');
+  });
+
+  it('retires a hung classifier generation and hands immediate post-invalidation Auto to the latest detector evidence', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const retiredRoot = deferred<WaveformClassification>();
+    let retiredSignal: AbortSignal | undefined;
+    let latestDetection: DetectedSignal | undefined;
+    let latestEvidence: WaveformEvidence | undefined;
+    let latestSignal: AbortSignal | undefined;
+    const classify = vi.fn((
+      detection: DetectedSignal,
+      evidence: WaveformEvidence,
+      signal?: AbortSignal,
+    ) => {
+      if (classify.mock.calls.length === 1) {
+        retiredSignal = signal;
+        return retiredRoot.promise;
+      }
+      latestDetection = detection;
+      latestEvidence = evidence;
+      latestSignal = signal;
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        'post-invalidation-auto-model',
+      ));
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('retired-detector-r1', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const auto = screen.getByRole('button', { name: /Auto · most prominent/i });
+    fireEvent.click(auto);
+
+    const applyProminence = (value: number) => {
+      fireEvent.click(screen.getByLabelText('Edit Minimum prominence'));
+      const editor = screen.getByRole('dialog', { name: /Minimum prominence numeric entry/i });
+      fireEvent.change(within(editor).getByRole('textbox', { name: 'Minimum prominence' }), {
+        target: { value: String(value) },
+      });
+      fireEvent.click(within(editor).getByRole('button', { name: /^Apply dB$/i }));
+    };
+    // Repeated invalidations retire the same active slot; they do not create
+    // another classifier request or retain one scheduler chain per change.
+    applyProminence(7);
+    applyProminence(8);
+    applyProminence(9);
+    expect(classify).toHaveBeenCalledOnce();
+    expect(retiredSignal?.aborted).toBe(true);
+
+    // Deliver and select the replacement in the same event-loop turn. The
+    // retired source deliberately remains unresolved; the latest operation
+    // must rotate into the one shared drain only after abort releases it.
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('retired-detector-r2', revision),
+      });
+      fireEvent.click(auto);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    expect((latestEvidence?.sweeps[0] as Sweep | undefined)?.id).toBe('retired-detector-r2');
+    expect(latestSignal).toBeDefined();
+    expect(latestSignal?.aborted).toBe(false);
+    await waitFor(() => expect(document.body.textContent).toContain('post-invalidation-auto-model'));
+    expect(document.body.textContent).not.toContain('retired-detector-r1');
+    expect(latestDetection).toBeDefined();
+    expect(classify).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  });
+
+  it('reuses an already-entered exact inference after Stop without a hidden retry', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const oldInference = deferred<WaveformClassification>();
+    let oldDetection: DetectedSignal | undefined;
+    let oldEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 1) {
+        oldDetection = detection;
+        oldEvidence = evidence;
+        return oldInference.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        'unexpected-stopped-auto-duplicate',
+      ));
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'stopped-auto-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'stopped-auto-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-2', transport: 'realtime-websocket', text: 'The stopped revision reuses its exact in-flight inference.', toolCalls: [] })
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-ready-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'stopped-auto-ready-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_classification_results"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-ready-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'stopped-auto-ready-read', name: 'get_classification_results', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'stopped-auto-ready-2', transport: 'realtime-websocket', text: 'The exact stopped revision is ready.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('stopped-auto-look-1', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select the frozen stopped spectrum.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const pendingResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(pendingResult).toMatchObject({
+      ok: true,
+      output: {
+        frozenVisibleSweep: { id: 'stopped-auto-look-1' },
+        classificationReadiness: {
+          status: 'inference-pending',
+          revision: expect.any(String),
+          result: null,
+        },
+      },
+    });
+
+    await act(async () => {
+      oldInference.resolve(evidenceBoundTestClassification(
+        oldDetection!,
+        oldEvidence!,
+        'superseded-stream-owner',
+      ));
+      await Promise.resolve();
+    });
+    expect(classify).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(document.body.textContent).toContain('superseded-stream-owner'));
+    expect(document.body.textContent).not.toContain('unexpected-stopped-auto-duplicate');
+    fireEvent.change(composer, { target: { value: 'Read the reused stopped revision.' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send to Atom/i }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(6));
+    const readyResult = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[5]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(readyResult).toMatchObject({
+      ok: true,
+      output: {
+        readiness: {
+          status: 'ready',
+          target: {
+            selectionOrigin: 'automatic',
+            frozenVisibleSweepId: 'stopped-auto-look-1',
+          },
+          resultBinding: { bound: true },
+          result: { modelId: 'superseded-stream-owner' },
+        },
+      },
+    });
+    expect(classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails Auto readiness closed when a same-target result cites foreign sweep evidence', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement('auto-foreign-1'));
+    const classify = vi.fn(async (detection: DetectedSignal) => ({
+      ...testClassification(detection, 'foreign-evidence-model'),
+      evidence: {
+        ...testClassification(detection, 'foreign-evidence-model').evidence,
+        sweepIds: ['foreign-sweep'],
+      },
+    }));
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-foreign-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-foreign-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-2', transport: 'realtime-websocket', text: 'Evidence mismatch rejected.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select without accepting stale evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        classificationReadiness: {
+          status: 'failed',
+          reason: 'result-evidence-binding-mismatch',
+          evidence: { spectrumSweepIds: ['auto-foreign-1'] },
+          resultBinding: {
+            bound: false,
+            targetMatches: true,
+            spectrumSweepIdsMatch: false,
+            expected: { spectrumSweepIds: ['auto-foreign-1'] },
+            result: { spectrumSweepIds: ['foreign-sweep'] },
+          },
+          result: null,
+        },
+      },
+    });
+    expect(document.body.textContent).not.toContain('foreign-evidence-model');
+  });
+
+  it('fails Auto binding when a same-ID result substitutes another target numeric signature', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () =>
+      dualEmissionMeasurement('auto-foreign-signature-1'));
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) => {
+      const result = evidenceBoundTestClassification(
+        detection,
+        evidence,
+        'foreign-signature-model',
+      );
+      return {
+        ...result,
+        evidence: {
+          ...result.evidence,
+          centerHz: detection.peakHz + 1_000_000,
+          bandwidthHz: detection.bandwidthHz + 10_000,
+          peakDbm: detection.peakDbm - 3,
+        },
+      };
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-signature-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-foreign-signature-load', name: 'load_atom_tools', arguments: '{"toolNames":["computer_action"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-signature-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'auto-foreign-signature-select', name: 'computer_action', arguments: '{"controlId":"classification.auto-select","action":"activate"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'auto-foreign-signature-2', transport: 'realtime-websocket', text: 'Numeric evidence mismatch rejected.', toolCalls: [] });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Auto-select without accepting substituted numeric evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean; output?: Record<string, unknown>;
+    };
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        classificationReadiness: {
+          status: 'failed',
+          reason: 'result-evidence-binding-mismatch',
+          resultBinding: {
+            bound: false,
+            targetMatches: true,
+            centerHzMatches: false,
+            bandwidthHzMatches: false,
+            peakDbmMatches: false,
+            spectrumSweepIdsMatch: true,
+            expected: {
+              projectedRepresentativeId: 'signal-0002',
+              spectrumSweepIds: ['auto-foreign-signature-1'],
+            },
+            result: {
+              detectionId: 'signal-0002',
+              spectrumSweepIds: ['auto-foreign-signature-1'],
+            },
+          },
+          result: null,
+        },
+      },
+    });
+    expect(document.body.textContent).not.toContain('foreign-signature-model');
   });
 
   it('lets Atom navigate to I/Q and use contextual Single with exact capture readback', async () => {
@@ -2673,12 +4294,18 @@ describe('operator vertical slice', () => {
     persistOneLookDetector();
     const first = deferred<WaveformClassification>();
     let firstDetection: DetectedSignal | undefined;
-    const classify = vi.fn((detection: DetectedSignal, _evidence: WaveformEvidence) => {
+    let firstEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
       if (!firstDetection) {
         firstDetection = detection;
+        firstEvidence = evidence;
         return first.promise;
       }
-      return Promise.resolve(testClassification(detection, 'latest-stream-evidence-model'));
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        'latest-stream-evidence-model',
+      ));
     });
     render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
     await screen.findByText('tinySA Ultra+ ZS407');
@@ -2689,7 +4316,7 @@ describe('operator vertical slice', () => {
     await act(async () => {
       instrumentEventListener?.({
         type: 'measurement',
-        measurement: acquiredMeasurement(configuredAnalyzer, 'stream-evidence-1', revision),
+        measurement: chronologicalAcquiredMeasurement(configuredAnalyzer, 'stream-evidence-1', revision),
       });
     });
     await waitFor(() => expect(classify).toHaveBeenCalledOnce());
@@ -2698,7 +4325,7 @@ describe('operator vertical slice', () => {
       for (let index = 2; index <= 21; index++) {
         instrumentEventListener?.({
           type: 'measurement',
-          measurement: acquiredMeasurement(configuredAnalyzer, `stream-evidence-${index}`, revision),
+          measurement: chronologicalAcquiredMeasurement(configuredAnalyzer, `stream-evidence-${index}`, revision),
         });
       }
     });
@@ -2707,7 +4334,11 @@ describe('operator vertical slice', () => {
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
 
     await act(async () => {
-      first.resolve(testClassification(firstDetection!, 'stale-stream-evidence-model'));
+      first.resolve(evidenceBoundTestClassification(
+        firstDetection!,
+        firstEvidence!,
+        'stale-stream-evidence-model',
+      ));
       await Promise.resolve();
     });
     await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
@@ -2724,7 +4355,7 @@ describe('operator vertical slice', () => {
     mockConnectedInstrument();
     persistOneLookDetector();
     const pending: Array<ReturnType<typeof deferred<WaveformClassification>>> = [];
-    const classify = vi.fn((_detection: DetectedSignal) => {
+    const classify = vi.fn((_detection: DetectedSignal, _evidence: WaveformEvidence) => {
       const next = deferred<WaveformClassification>();
       pending.push(next);
       return next.promise;
@@ -2738,7 +4369,7 @@ describe('operator vertical slice', () => {
     await act(async () => {
       instrumentEventListener?.({
         type: 'measurement',
-        measurement: acquiredMeasurement(configuredAnalyzer, 'steady-stream-1', revision),
+        measurement: chronologicalAcquiredMeasurement(configuredAnalyzer, 'steady-stream-1', revision),
       });
     });
     await waitFor(() => expect(classify).toHaveBeenCalledOnce());
@@ -2747,10 +4378,15 @@ describe('operator vertical slice', () => {
       await act(async () => {
         instrumentEventListener?.({
           type: 'measurement',
-          measurement: acquiredMeasurement(configuredAnalyzer, `steady-stream-${look + 1}`, revision),
+          measurement: chronologicalAcquiredMeasurement(configuredAnalyzer, `steady-stream-${look + 1}`, revision),
         });
         const detection = classify.mock.calls[look - 1]?.[0];
-        pending[look - 1]?.resolve(testClassification(detection!, `steady-complete-${look}`));
+        const evidence = classify.mock.calls[look - 1]?.[1];
+        pending[look - 1]?.resolve(evidenceBoundTestClassification(
+          detection!,
+          evidence!,
+          `steady-complete-${look}`,
+        ));
         await Promise.resolve();
       });
       fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
@@ -2767,82 +4403,78 @@ describe('operator vertical slice', () => {
     mockConnectedInstrument();
     persistOneLookDetector();
     const first = deferred<WaveformClassification>();
-    const classify = vi.fn((detection: DetectedSignal) => detection.id === 'strong' && classify.mock.calls.length === 1
-      ? first.promise
-      : Promise.resolve(testClassification(detection, `selected-${detection.id}-model`)));
-    let trackerLook = 0;
-    const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
-      trackerLook++;
-      const base = candidates[0];
-      if (!base) return [];
-      const row = (id: string, peakDbm: number): DetectedSignal => ({
-        ...rankedTrackerRow(base, sourceSweep, id, peakDbm),
-        persistenceSweeps: trackerLook,
-      });
-      const strong = row('strong', -30);
-      return trackerLook >= 3 ? [strong] : [row('weak', -60), strong];
+    let firstDetection: DetectedSignal | undefined;
+    let firstEvidence: WaveformEvidence | undefined;
+    const classify = vi.fn((detection: DetectedSignal, evidence: WaveformEvidence) => {
+      if (classify.mock.calls.length === 1) {
+        firstDetection = detection;
+        firstEvidence = evidence;
+        return first.promise;
+      }
+      return Promise.resolve(evidenceBoundTestClassification(
+        detection,
+        evidence,
+        `selected-${detection.id}-model`,
+      ));
     });
 
-    try {
-      render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
-      await screen.findByText('tinySA Ultra+ ZS407');
-      fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-      await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
-      const revision = configurationRevision;
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
 
-      await act(async () => {
-        instrumentEventListener?.({
-          type: 'measurement',
-          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-1', revision),
-        });
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('target-look-1', revision),
       });
-      await waitFor(() => expect(classify).toHaveBeenCalledOnce());
-      expect(classify.mock.calls[0]?.[0].id).toBe('strong');
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+    expect(classify.mock.calls[0]?.[0].id).toBe('signal-0002');
 
-      fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
-        .getByRole('button', { name: /^Detect$/i }));
-      const weakButton = document.querySelector<HTMLButtonElement>(
-        '[data-agent-control="classification.candidate.weak.select"]',
-      );
-      expect(weakButton).not.toBeNull();
-      fireEvent.click(weakButton!);
-      await act(async () => {
-        first.resolve(testClassification(classify.mock.calls[0]![0], 'late-strong-model'));
-        await Promise.resolve();
-      });
-      expect(document.body.textContent).not.toContain('late-strong-model');
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    const narrowButton = document.querySelector<HTMLButtonElement>(
+      '[data-agent-control="classification.candidate.signal-0001.select"]',
+    );
+    expect(narrowButton).not.toBeNull();
+    fireEvent.click(narrowButton!);
+    await act(async () => {
+      first.resolve(evidenceBoundTestClassification(
+        firstDetection!,
+        firstEvidence!,
+        'late-wide-model',
+      ));
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).not.toContain('late-wide-model');
 
-      await act(async () => {
-        instrumentEventListener?.({
-          type: 'measurement',
-          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-2', revision),
-        });
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: dualEmissionMeasurement('target-look-2', revision),
       });
-      await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
-      expect(classify.mock.calls[1]?.[0].id).toBe('weak');
-      await waitFor(() => expect(document.body.textContent).toContain('selected-weak-model'));
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    expect(classify.mock.calls[1]?.[0].id).toBe('signal-0001');
+    await waitFor(() => expect(document.body.textContent).toContain('selected-signal-0001-model'));
 
-      await act(async () => {
-        instrumentEventListener?.({
-          type: 'measurement',
-          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-3', revision),
-        });
-      });
-      await waitFor(() => expect(classify).toHaveBeenCalledTimes(3));
-      expect(classify.mock.calls[2]?.[0].id).toBe('strong');
-      await waitFor(() => expect(document.body.textContent).toContain('selected-strong-model'));
-      expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed'))
-        .toBe('true');
-    } finally {
-      trackerUpdate.mockRestore();
-    }
+    fireEvent.click(screen.getByRole('button', { name: /Auto · most prominent/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(3));
+    expect(classify.mock.calls[2]?.[0].id).toBe('signal-0002');
+    await waitFor(() => expect(document.body.textContent).toContain('selected-signal-0002-model'));
+    expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed'))
+      .toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
   });
 
   it('reclassifies only the receipt-bound selected representative after detected-power capture', async () => {
     mockConnectedInstrument();
     persistOneLookDetector();
-    const classify = vi.fn(async (detection: DetectedSignal, _evidence: WaveformEvidence) =>
-      testClassification(detection, `capture-${detection.id}-model`));
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, `capture-${detection.id}-model`));
     const replayTracker = new SignalTracker({
       threshold: { strategy: 'absolute', levelDbm: -80 },
       minimumBandwidthHz: 0,
@@ -3447,7 +5079,17 @@ describe('operator vertical slice', () => {
     const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
       const base = candidates[0];
       if (!base) throw new Error('Expected the stress fixture sweep to produce one detector candidate');
-      const physical = rankedTrackerRow(base, sourceSweep, 'physical-row', -45);
+      const physical = {
+        ...base,
+        id: 'physical-row',
+        state: 'active' as const,
+        missedSweeps: 0,
+        persistenceSweeps: Math.max(1, base.persistenceSweeps),
+        firstSeenAt: sourceSweep.capturedAt,
+        lastSeenAt: sourceSweep.capturedAt,
+        sweepIds: [sourceSweep.id],
+        associationMode: 'frequency-local' as const,
+      } satisfies DetectedSignal;
       const stale = {
         ...physical,
         id: 'stale-row',

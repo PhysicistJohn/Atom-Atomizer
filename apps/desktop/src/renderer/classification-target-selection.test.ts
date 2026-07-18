@@ -11,6 +11,7 @@ import {
   classificationSpectrumSelection,
   resolveVisibleClassificationTargetSelection,
   sanitizeClassificationEvidenceDetections,
+  visibleClassificationTargetProjectionAdmission,
   visibleClassificationTargetProjections,
 } from './classification-target-selection.js';
 
@@ -139,6 +140,47 @@ describe('visible classification target selection', () => {
     });
   });
 
+  it('rejects same-ID same-time rank evidence whose embedded sweep payload is not visible', () => {
+    const sweep = adversarialProminenceSweep();
+    const config = {
+      threshold: { strategy: 'absolute', levelDbm: -90 },
+      minimumBandwidthHz: 0,
+      minimumProminenceDb: 6,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    } satisfies SignalDetectionConfig;
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const tracks = tracker.update(sweep, detector.analyze(sweep));
+    const target = tracks[0]!;
+    const currentObservation = target.localClassificationObservations!.at(-1)!;
+    const substitutedObservation = {
+      ...currentObservation,
+      sourceSweep: {
+        ...currentObservation.sourceSweep,
+        powerDbm: currentObservation.sourceSweep.powerDbm.map((value, index) =>
+          index === 0 ? value + 1 : value),
+      },
+    };
+    const substitutedTarget: DetectedSignal = {
+      ...target,
+      classificationRegionObservation: substitutedObservation,
+      localClassificationObservations: [substitutedObservation],
+    };
+    const substitutedTracks = tracks.map((track) =>
+      track.id === target.id ? substitutedTarget : track);
+
+    expect(visibleClassificationTargetProjectionAdmission(
+      substitutedTracks,
+      sweep,
+    )).toMatchObject({
+      status: 'ranking-admission-failed',
+      projections: [],
+      rejectedRawTargetIds: [target.id],
+      reason: 'current-source-sweep-rank-evidence-unavailable',
+    });
+  });
+
   it('keeps an explicit current target but falls back when that row is stale', () => {
     const weak = physicalDetection('weak', -60, 120);
     const strong = physicalDetection('strong', -30, 180);
@@ -183,6 +225,41 @@ describe('visible classification target selection', () => {
       visibleSweep,
       valid.id,
     )).toEqual({ origin: 'automatic' });
+    expect(visibleClassificationTargetProjectionAdmission(
+      [valid, invalidEligibleRow],
+      visibleSweep,
+    )).toEqual({
+      status: 'ranking-admission-failed',
+      projections: [],
+      eligibleRawTargetIds: ['valid-rank-row', 'mismatched-rank-row'],
+      rejectedRawTargetIds: ['mismatched-rank-row'],
+      reason: 'current-source-sweep-rank-evidence-unavailable',
+    });
+  });
+
+  it('rejects a partial rank when duplicate eligible IDs are omitted beside a valid row', () => {
+    const valid = physicalDetection('valid-visible-row', -50, 120);
+    const duplicateLeft = physicalDetection('duplicate-row', -35, 160);
+    const duplicateRight = physicalDetection('duplicate-row', -25, 180);
+
+    expect(visibleClassificationTargetProjectionAdmission(
+      [valid, duplicateLeft, duplicateRight],
+      visibleSweep,
+    )).toEqual({
+      status: 'ranking-admission-failed',
+      projections: [],
+      eligibleRawTargetIds: [
+        'valid-visible-row',
+        'duplicate-row',
+        'duplicate-row',
+      ],
+      rejectedRawTargetIds: ['duplicate-row'],
+      reason: 'eligible-target-population-incomplete',
+    });
+    expect(visibleClassificationTargetProjections(
+      [valid, duplicateLeft, duplicateRight],
+      visibleSweep,
+    )).toEqual([]);
   });
 
   it('highlights the raw current member while retaining an agile evidence representative', () => {
@@ -233,6 +310,31 @@ describe('visible classification target selection', () => {
       rawTargetId: rawTarget.id,
       origin: 'automatic',
     });
+  });
+
+  it('reports malformed rank evidence on a qualified agile candidate raw owner', () => {
+    const { tracks, rawTarget, sweep } = qualifiedAgileFixture();
+    const malformedRawTarget: DetectedSignal = {
+      ...rawTarget,
+      noiseFloorDbm: rawTarget.noiseFloorDbm + 1,
+    };
+    const malformedTracks = tracks.map((track) =>
+      track.id === rawTarget.id ? malformedRawTarget : track);
+
+    expect(visibleClassificationTargetProjectionAdmission(
+      malformedTracks,
+      sweep,
+    )).toEqual({
+      status: 'ranking-admission-failed',
+      projections: [],
+      eligibleRawTargetIds: [rawTarget.id],
+      rejectedRawTargetIds: [rawTarget.id],
+      reason: 'current-source-sweep-rank-evidence-unavailable',
+    });
+    expect(resolveVisibleClassificationTargetSelection(
+      malformedTracks,
+      sweep,
+    )).toEqual({ origin: 'automatic' });
   });
 
   it('quarantines malformed rows without suppressing a valid visible target', () => {

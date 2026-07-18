@@ -175,8 +175,15 @@ describe('Atom agent contracts',()=>{
     expect(agentControlBinding('workspace.iq').preferredTool).toBe('navigate_workspace');
     expect(agentControlBinding('connection.retry-cleanup').preferredTool).toBe('disconnect_device');
     expect(agentControlBinding('classification.auto-select').preferredTool).toBe('computer_action');
+    expect(agentControlBinding('classification.auto-select').projection).toBe('host-derived');
     expect(agentControlBinding('classification.auto-select').guarantee)
       .toContain('integrated excess power');
+    expect(agentControlBinding('classification.auto-select').guarantee)
+      .toContain('structured no-target evidence');
+    expect(agentControlBinding('classification.auto-select').guarantee)
+      .toContain('staging is explicitly unavailable with null configuration');
+    expect(agentControlBinding('classification.auto-select').guarantee)
+      .toContain('distinct admission failure');
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
     expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
     expect(agentControlBinding('classification.envelope.trigger-level').preferredTool).toBe('configure_zero_span');

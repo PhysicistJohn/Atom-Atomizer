@@ -1,4 +1,6 @@
 import {
+  classificationCaptureTargetRankEvidence,
+  classificationCaptureTargetEligibilityProjections,
   classificationCaptureTargetProjections,
   currentVisiblePhysicalClassificationRows,
   type ClassificationCaptureTargetProjection,
@@ -102,12 +104,94 @@ export function visibleClassificationTargetProjections(
   detections: readonly DetectedSignal[],
   sweep: Sweep | undefined,
 ): readonly ClassificationCaptureTargetProjection[] {
-  if (!sweep) return [];
+  return visibleClassificationTargetProjectionAdmission(detections, sweep).projections;
+}
+
+export type VisibleClassificationTargetProjectionAdmission =
+  | {
+    readonly status: 'ready';
+    readonly projections: readonly ClassificationCaptureTargetProjection[];
+    readonly eligibleRawTargetIds: readonly string[];
+  }
+  | {
+    readonly status: 'ranking-admission-failed';
+    readonly projections: readonly [];
+    readonly eligibleRawTargetIds: readonly string[];
+    readonly rejectedRawTargetIds: readonly string[];
+    readonly reason:
+      | 'current-source-sweep-rank-evidence-unavailable'
+      | 'eligible-target-population-incomplete';
+  };
+
+/**
+ * Preserve the difference between a genuinely empty visible population and a
+ * population whose complete rank cannot be admitted. The simple projection
+ * API remains fail-closed for UI callers; Atom readback consumes this richer
+ * result so invalid evidence is never described as "no signal".
+ */
+export function visibleClassificationTargetProjectionAdmission(
+  detections: readonly DetectedSignal[],
+  sweep: Sweep | undefined,
+): VisibleClassificationTargetProjectionAdmission {
+  if (!sweep) return { status: 'ready', projections: [], eligibleRawTargetIds: [] };
   const currentVisibleDetections = detections.filter((detection) =>
     detectionIsFromVisibleSweep(detection, sweep));
-  return safeClassificationCaptureTargetProjections(currentVisibleDetections).filter((projection) =>
+  const safeDetections = sanitizeClassificationTargetDetections(currentVisibleDetections);
+  const activePhysicalTargets = currentVisiblePhysicalClassificationRows(safeDetections);
+  const activePhysicalIds = new Set(activePhysicalTargets.map(({ id }) => id));
+  const projectionEligibleTargets = safeClassificationCaptureTargetEligibilityProjections(
+    safeDetections,
+  ).map(({ rawTarget }) => rawTarget);
+  // Preserve duplicate ordinary rows as an auditable multiset while adding
+  // qualified agile latest-member candidates that are not active physical
+  // rows themselves.
+  const eligibleRawTargets = [
+    ...activePhysicalTargets,
+    ...projectionEligibleTargets.filter(({ id }) => !activePhysicalIds.has(id)),
+  ];
+  const rejectedRawTargetIds = eligibleRawTargets
+    .filter((detection) => classificationCaptureTargetRankEvidence(detection) === undefined
+      || !rankingSourceSweepMatchesVisibleSweep(detection, sweep))
+    .map(({ id }) => id);
+  if (rejectedRawTargetIds.length > 0) {
+    return {
+      status: 'ranking-admission-failed',
+      projections: [],
+      eligibleRawTargetIds: eligibleRawTargets.map(({ id }) => id),
+      rejectedRawTargetIds,
+      reason: 'current-source-sweep-rank-evidence-unavailable',
+    };
+  }
+  const projections = safeClassificationCaptureTargetProjections(safeDetections).filter((projection) =>
     detectionIsFromVisibleSweep(projection.rawTarget, sweep)
     && detectionIsFromVisibleSweep(projection.projectedRepresentative, sweep));
+  const eligibleRawTargetCounts = occurrenceCounts(
+    eligibleRawTargets.map(({ id }) => id),
+  );
+  const admittedRawTargetCounts = occurrenceCounts(
+    projections.map(({ rawTarget }) => rawTarget.id),
+  );
+  const omittedOrAmbiguousRawTargetIds = [...eligibleRawTargetCounts]
+    .filter(([id, count]) => count !== 1 || admittedRawTargetCounts.get(id) !== 1)
+    .map(([id]) => id);
+  // The authoritative analysis projection also fails the complete population
+  // closed. Compare the complete eligible ordinary multiset, not just the
+  // empty/non-empty outcome: duplicate IDs and other ambiguity may omit one
+  // row while leaving a weaker projection in the returned rank.
+  if (omittedOrAmbiguousRawTargetIds.length > 0) {
+    return {
+      status: 'ranking-admission-failed',
+      projections: [],
+      eligibleRawTargetIds: eligibleRawTargets.map(({ id }) => id),
+      rejectedRawTargetIds: omittedOrAmbiguousRawTargetIds,
+      reason: 'eligible-target-population-incomplete',
+    };
+  }
+  return {
+    status: 'ready',
+    projections,
+    eligibleRawTargetIds: projections.map(({ rawTarget }) => rawTarget.id),
+  };
 }
 
 /** Resolve explicit/automatic selection only inside the exact visible sweep. */
@@ -229,6 +313,21 @@ function safeClassificationCaptureTargetProjections(
   }
 }
 
+function safeClassificationCaptureTargetEligibilityProjections(
+  detections: readonly DetectedSignal[],
+): readonly ClassificationCaptureTargetProjection[] {
+  try {
+    return classificationCaptureTargetEligibilityProjections(detections);
+  } catch {
+    try {
+      return classificationCaptureTargetEligibilityProjections(detections.filter((detection) =>
+        detection.associationMode !== 'frequency-agile-2g4-activity'));
+    } catch {
+      return [];
+    }
+  }
+}
+
 function visibleGeometryIsFinite(detection: DetectedSignal): boolean {
   return Number.isFinite(detection.startHz)
     && Number.isFinite(detection.stopHz)
@@ -250,6 +349,12 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+function occurrenceCounts(values: readonly string[]): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return counts;
+}
+
 function bayesianEvidenceIsRenderable(detection: DetectedSignal): boolean {
   const evidence = detection.bayesianEvidence;
   return typeof evidence === 'object'
@@ -258,4 +363,42 @@ function bayesianEvidenceIsRenderable(detection: DetectedSignal): boolean {
     && (evidence.posteriorScope === 'selected-local-region'
       || evidence.posteriorScope === 'track-state'
       || evidence.posteriorScope === 'track-predictive-state');
+}
+
+function rankingSourceSweepMatchesVisibleSweep(
+  detection: DetectedSignal,
+  visibleSweep: Sweep,
+): boolean {
+  // Some narrow unit fixtures intentionally carry only visible geometry. Live
+  // renderer sweeps always carry complete arrays and therefore always enter
+  // this exact payload binding.
+  if (!Array.isArray(visibleSweep.frequencyHz)
+    || !Array.isArray(visibleSweep.powerDbm)
+    || visibleSweep.frequencyHz.length < 2
+    || visibleSweep.frequencyHz.length !== visibleSweep.powerDbm.length) return true;
+  const sourceSweep = (detection.localClassificationObservations?.at(-1)
+    ?? detection.classificationRegionObservation)?.sourceSweep;
+  if (!sourceSweep) return false;
+  return sourceSweep.id === visibleSweep.id
+    && sourceSweep.sequence === visibleSweep.sequence
+    && sourceSweep.capturedAt === visibleSweep.capturedAt
+    && sourceSweep.complete === visibleSweep.complete
+    && sourceSweep.actualStartHz === visibleSweep.actualStartHz
+    && sourceSweep.actualStopHz === visibleSweep.actualStopHz
+    && sourceSweep.actualRbwHz === visibleSweep.actualRbwHz
+    && sourceSweep.actualAttenuationDb === visibleSweep.actualAttenuationDb
+    && sourceSweep.source === visibleSweep.source
+    && sourceSweep.elapsedMilliseconds === visibleSweep.elapsedMilliseconds
+    && sameNumberArray(sourceSweep.frequencyHz, visibleSweep.frequencyHz)
+    && sameNumberArray(sourceSweep.powerDbm, visibleSweep.powerDbm)
+    && JSON.stringify(sourceSweep.requested) === JSON.stringify(visibleSweep.requested)
+    && JSON.stringify(sourceSweep.identity) === JSON.stringify(visibleSweep.identity);
+}
+
+function sameNumberArray(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
 }
