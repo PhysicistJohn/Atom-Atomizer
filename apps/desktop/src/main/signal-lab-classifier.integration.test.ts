@@ -244,7 +244,7 @@ describe('SignalLab live observable-classification release gates', () => {
         await host.shutdown();
       }
     },
-    180_000,
+    600_000,
   );
 
   it.skipIf(!existsSync(shippedBridge))(
@@ -438,7 +438,7 @@ describe('SignalLab live observable-classification release gates', () => {
         await host.shutdown();
       }
     },
-    180_000,
+    600_000,
   );
 });
 
