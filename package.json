@@ -16,6 +16,8 @@
     "check:launcher": "node --check tools/dev-launcher/main.cjs && node --check tools/dev-launcher/install.mjs && node --test tools/dev-launcher/bounded-log.test.cjs tools/dev-launcher/install-layout.test.mjs",
     "check:packaged-resources": "node --test tools/stage-signal-lab-packaged-resource.test.mjs",
     "package:mac": "npm run package:mac -w @tinysa/desktop",
+    "package:win": "npm run package:win -w @tinysa/desktop",
+    "package:linux": "npm run package:linux -w @tinysa/desktop",
     "check:package-boundaries": "node tools/verify-package-boundaries.mjs && node --test tools/verify-package-boundaries.test.mjs",
     "check:trio-contract": "node tools/verify-trio-contract.mjs",
     "check:firmware-twin": "node tools/smoke-firmware-twin.mjs",

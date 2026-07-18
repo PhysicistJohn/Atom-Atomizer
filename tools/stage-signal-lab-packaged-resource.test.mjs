@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -83,15 +83,23 @@ test('desktop packaging performs one clean root build before staging and declare
     'utf8',
   ));
   const rootPackage = JSON.parse(await readFile(resolve(repositoryRoot, 'package.json'), 'utf8'));
-  const command = desktopPackage.scripts?.['package:mac'] ?? '';
+  const prepareCommand = desktopPackage.scripts?.['package:prepare'] ?? '';
   const rootBuild = 'npm --prefix ../.. run build';
   assert.equal(rootPackage.scripts?.['package:mac'], 'npm run package:mac -w @tinysa/desktop');
-  assert.equal((rootPackage.scripts?.['package:mac'] ?? '').split('run build').length - 1, 0);
-  assert.equal(command.split(rootBuild).length - 1, 1, 'package:mac must perform exactly one root workspace build');
-  assert.ok(command.indexOf('run build:bridge') < command.indexOf(rootBuild));
-  assert.ok(command.indexOf(rootBuild) < command.indexOf('stage:signal-lab-resource'));
-  assert.ok(command.indexOf('stage:signal-lab-resource') < command.indexOf('electron-builder'));
-  assert.doesNotMatch(command, /(?:^|&&\s*)npm run build(?:\s|&&|$)/u, 'the desktop-only build can ship stale workspace outputs');
+  assert.equal(rootPackage.scripts?.['package:win'], 'npm run package:win -w @tinysa/desktop');
+  assert.equal(rootPackage.scripts?.['package:linux'], 'npm run package:linux -w @tinysa/desktop');
+  for (const name of ['package:mac', 'package:win', 'package:linux']) {
+    assert.equal((rootPackage.scripts?.[name] ?? '').split('run build').length - 1, 0);
+  }
+  assert.equal(prepareCommand.split(rootBuild).length - 1, 1, 'package:prepare must perform exactly one root workspace build');
+  assert.ok(prepareCommand.indexOf('run build:bridge') < prepareCommand.indexOf(rootBuild));
+  assert.ok(prepareCommand.indexOf(rootBuild) < prepareCommand.indexOf('stage:signal-lab-resource'));
+  assert.doesNotMatch(prepareCommand, /(?:^|&&\s*)npm run build(?:\s|&&|$)/u, 'the desktop-only build can ship stale workspace outputs');
+  for (const [target, options] of [['mac', 'dmg zip'], ['win', 'nsis portable'], ['linux', 'AppImage']]) {
+    const command = desktopPackage.scripts?.[`package:${target}`] ?? '';
+    assert.ok(command.indexOf('package:prepare') < command.indexOf('electron-builder'), `package:${target} must prepare before invoking electron-builder`);
+    assert.equal(command, `npm run package:prepare && electron-builder --${target} ${options}`);
+  }
   assert.equal(desktopPackage.devDependencies?.['electron-builder'], '26.15.3');
   assert.equal(desktopPackage.build?.asar, true);
   assert.deepEqual(desktopPackage.build?.asarUnpack, [
@@ -109,6 +117,11 @@ test('desktop packaging performs one clean root build before staging and declare
     filter: ['**/*'],
   }]);
   assert.equal(desktopPackage.build?.afterPack, '../../tools/after-pack-signal-lab-resource.mjs');
+  assert.equal(desktopPackage.build?.mac?.icon, 'build/icon.icns');
+  assert.equal(desktopPackage.build?.win?.icon, 'build/icon.ico');
+  assert.deepEqual(desktopPackage.build?.win?.target, ['nsis', 'portable']);
+  assert.equal(desktopPackage.build?.linux?.icon, 'build/icon.png');
+  assert.deepEqual(desktopPackage.build?.linux?.target, ['AppImage']);
 
   const workspacePackages = await readWorkspacePackages(repositoryRoot);
   const runtimeWorkspaceNames = collectWorkspaceDependencyClosure(desktopPackage, workspacePackages);
@@ -148,11 +161,11 @@ test('desktop packaging performs one clean root build before staging and declare
   }
 });
 
-test('the Electron after-pack hook fails closed outside the declared macOS target', async () => {
-  for (const electronPlatformName of ['win32', 'linux']) {
+test('the Electron after-pack hook rejects an unsafe product filename on every platform', async () => {
+  for (const electronPlatformName of ['win32', 'linux', 'darwin']) {
     await assert.rejects(
-      afterPackSignalLabResource({ electronPlatformName }),
-      /only the declared macOS package target/u,
+      afterPackSignalLabResource({ electronPlatformName, appOutDir: '/tmp', packager: { appInfo: {} } }),
+      /safe packaged product filename/u,
     );
   }
 });
@@ -178,10 +191,45 @@ posixTest('the Electron after-pack hook verifies the copied tree and restores ex
     electronPlatformName: 'darwin',
     appOutDir,
     packager: { appInfo: { productFilename: 'TinySA Atomizer' } },
+    stagedResourceRoot: resolve(fixture.root, 'unused-staged-root'),
   });
 
   expectExecutable(await stat(entry));
 });
+
+for (const electronPlatformName of ['win32', 'linux']) {
+  test(`the Electron after-pack hook restores a dropped node_modules and verifies on ${electronPlatformName}`, async () => {
+    const fixture = await createFixture();
+    const appOutDir = resolve(fixture.root, `${electronPlatformName}-unpacked`);
+    const packagedRoot = resolve(appOutDir, 'resources', 'signal-lab');
+
+    // Stage once to the "real" staged-resource location (what electron-builder's
+    // extraResources source would be), then copy everything EXCEPT
+    // node_modules into packagedRoot -- simulating electron-builder's copier
+    // silently dropping it.
+    const stagedResourceRoot = resolve(fixture.root, 'staged', 'signal-lab');
+    await stageSignalLabPackagedResource({
+      sourceRepositoryRoot: fixture.sourceRoot,
+      destinationRoot: stagedResourceRoot,
+    });
+    await mkdir(packagedRoot, { recursive: true });
+    for (const name of await readdir(stagedResourceRoot)) {
+      if (name === 'node_modules') continue;
+      await cp(resolve(stagedResourceRoot, name), resolve(packagedRoot, name), { recursive: true });
+    }
+    await assert.rejects(readdir(resolve(packagedRoot, 'node_modules')));
+
+    await afterPackSignalLabResource({
+      electronPlatformName,
+      appOutDir,
+      packager: { appInfo: { productFilename: 'Atomizer' } },
+      stagedResourceRoot,
+    });
+
+    const zodIndex = await readFile(resolve(packagedRoot, 'node_modules', 'zod', 'index.js'), 'utf8');
+    assert.match(zodIndex, /packaged: true/);
+  });
+}
 
 async function createFixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'atomizer-packaged-signal-lab-')));

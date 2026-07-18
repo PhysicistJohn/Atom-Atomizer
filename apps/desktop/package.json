@@ -9,7 +9,10 @@
     "build": "npm run build:main && vite build",
     "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron",
     "stage:signal-lab-resource": "node ../../tools/stage-signal-lab-packaged-resource.mjs",
-    "package:mac": "npm --prefix ../../../TinySA_SignalLab run build:bridge && npm --prefix ../.. run build && npm run stage:signal-lab-resource && electron-builder --mac dmg zip",
+    "package:prepare": "npm --prefix ../../../TinySA_SignalLab run build:bridge && npm --prefix ../.. run build && npm run stage:signal-lab-resource",
+    "package:mac": "npm run package:prepare && electron-builder --mac dmg zip",
+    "package:win": "npm run package:prepare && electron-builder --win nsis portable",
+    "package:linux": "npm run package:prepare && electron-builder --linux AppImage",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
@@ -42,7 +45,6 @@
   "build": {
     "appId": "com.physicistjohn.atomizer",
     "productName": "Atomizer",
-    "icon": "build/icon.icns",
     "directories": {
       "output": "../../release"
     },
@@ -65,12 +67,27 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.utilities",
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "identity": "-",
       "target": ["dmg", "zip"]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": ["AppImage"]
     }
   }
 }
