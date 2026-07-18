@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { approvalSummary, createAtomRealtimeVoiceSessionConfig, isAtomToolLoaderCall, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentApprovalRequest, type AgentConnectionState, type AgentMessage, type AgentStatus, type AgentToolName, type AtomRealtimeRateLimit, type AtomRealtimeSessionVerification, type AtomRealtimeUsage } from '@tinysa/agent';
+import { agentToolPolicies, approvalSummary, createAtomRealtimeVoiceSessionConfig, isAgentToolName, isAtomToolLoaderCall, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentApprovalRequest, type AgentConnectionState, type AgentMessage, type AgentStatus, type AgentToolName, type AtomRealtimeRateLimit, type AtomRealtimeSessionVerification, type AtomRealtimeUsage } from '@tinysa/agent';
 import {
   appendBoundedAtomDraft,
   ATOM_REALTIME_EVENT_CHARACTER_LIMIT,
@@ -37,6 +37,25 @@ interface PendingApproval {
   resolve(approved: boolean): void;
 }
 
+type ValidatedAgentToolCall = ReturnType<typeof validateAgentToolCall>;
+type ToolCallExecution =
+  | { readonly ok: true; readonly output: unknown }
+  | { readonly ok: false; readonly error: string; readonly recoverable?: boolean; readonly skipped?: true; readonly skipReason?: 'preflight' | 'failed-prior'; readonly failedCallId?: string };
+
+interface PreflightedToolCall {
+  readonly call: { callId: string; name: string; arguments: string };
+  readonly validated?: ValidatedAgentToolCall;
+  readonly failure?: Extract<ToolCallExecution, { ok: false }>;
+  readonly failureLabel?: 'rejected' | 'failed';
+}
+
+interface ActiveBackendIdentity {
+  readonly sessionId: string;
+  readonly driverId: string;
+  readonly sourceKind: string;
+  readonly execution: string;
+}
+
 export function useAtomAgent(host: AtomAgentHost) {
   const hostRef=useRef(host);hostRef.current=host;
   const [status,setStatus]=useState<AgentStatus>(); const [state,setState]=useState<AgentConnectionState>('idle');
@@ -72,33 +91,104 @@ export function useAtomAgent(host: AtomAgentHost) {
       : voiceSessionGeneration.current===owner.sessionGeneration&&voiceOperationGeneration.current===owner.operationGeneration&&pc.current!==undefined;
   }
 
-  async function executeCall(call:{callId:string;name:string;arguments:string},authorizedToolNames:readonly AgentToolName[],owner:AgentOperationOwner){
-    if(!operationIsActive(owner))return undefined;
-    let validated:ReturnType<typeof validateAgentToolCall>;
+  function preflightCall(call:{callId:string;name:string;arguments:string},authorizedToolNames:readonly AgentToolName[]):PreflightedToolCall{
+    let validated:ValidatedAgentToolCall;
     try{validated=validateAgentToolCall(call);}
     catch(error){
-      if(!operationIsActive(owner))return undefined;
       const message=error instanceof Error?error.message:String(error);
-      const label=call.name.replaceAll('_',' ');
-      append('tool',`${label} rejected: ${message}`,'failed');
-      return {ok:false,error:`Tool call rejected by Atomizer's concrete schema: ${message}`,recoverable:true};
+      return {call,failure:{ok:false,error:`Tool call rejected by Atomizer's concrete schema: ${message}`,recoverable:true},failureLabel:'rejected'};
     }
     if(!authorizedToolNames.includes(validated.name)){
-      if(!operationIsActive(owner))return undefined;
-      const error=`Tool ${validated.name} was not present in the exact response-scoped tool set`;
-      append('tool',`${validated.name.replaceAll('_',' ')} rejected: ${error}`,'failed');
-      return {ok:false,error};
+      return {call,failure:{ok:false,error:`Tool ${validated.name} was not present in the exact response-scoped tool set`},failureLabel:'rejected'};
     }
+    return {call,validated};
+  }
+
+  async function executePreflightedCall(entry:PreflightedToolCall,owner:AgentOperationOwner):Promise<ToolCallExecution|undefined>{
+    const {call,validated}=entry;if(!validated||!operationIsActive(owner))return undefined;
     const needsApproval=validated.policy.approval==='at-action'&&(
       validated.name!=='set_rf_output'||(validated.args as {enabled:boolean}).enabled
     );
-    if(needsApproval&&!activeExecution(hostRef.current.applicationContext())){
-      const error='No connected execution backend is available for high-impact approval';append('tool',`${validated.name.replaceAll('_',' ')} failed: ${error}`,'failed');return {ok:false,error};
+    if(needsApproval){
+      let approvedIdentity:ActiveBackendIdentity;
+      try{approvedIdentity=requireActiveBackendIdentity(hostRef.current.applicationContext());}
+      catch(error){
+        if(!operationIsActive(owner))return undefined;
+        const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};
+      }
+      let approved:boolean;
+      try{approved=await requestApproval(call,validated.name,validated.args,owner);}
+      catch(error){
+        if(!operationIsActive(owner))return undefined;
+        const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};
+      }
+      if(!approved){if(!operationIsActive(owner))return undefined;const error='User denied the high-impact action';append('tool',`${validated.name.replaceAll('_',' ')} denied: ${error}`,'failed');return {ok:false,error};}
+      let currentIdentity:ActiveBackendIdentity;
+      try{currentIdentity=requireActiveBackendIdentity(hostRef.current.applicationContext());}
+      catch(error){
+        if(!operationIsActive(owner))return undefined;
+        const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};
+      }
+      if(!sameBackendIdentity(approvedIdentity,currentIdentity)){
+        const error='Active execution backend changed while high-impact approval was pending';append('tool',`${validated.name.replaceAll('_',' ')} failed: ${error}`,'failed');return {ok:false,error};
+      }
     }
-    if(needsApproval&&!await requestApproval(call,validated.name,validated.args,owner)){if(!operationIsActive(owner))return undefined;return {ok:false,error:'User denied the high-impact action'};}
     if(!operationIsActive(owner))return undefined;
+    if(validated.policy.risk==='high-impact'&&!needsApproval){
+      try{requireActiveBackendIdentity(hostRef.current.applicationContext());}
+      catch(error){
+        const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};
+      }
+    }
     try{const output=await hostRef.current.execute(validated.name,validated.args);if(!operationIsActive(owner))return undefined;append('tool',`${validated.name.replaceAll('_',' ')} completed`);return {ok:true,output};}
     catch(error){if(!operationIsActive(owner))return undefined;const message=error instanceof Error?error.message:String(error);append('tool',`${validated.name.replaceAll('_',' ')} failed: ${message}`,'failed');return {ok:false,error:message};}
+  }
+
+  async function executeCallBatch(calls:readonly {callId:string;name:string;arguments:string}[],authorizedToolNames:readonly AgentToolName[],owner:AgentOperationOwner):Promise<readonly ToolCallExecution[]|undefined>{
+    if(!operationIsActive(owner))return undefined;
+    const preflighted=calls.map(call=>preflightCall(call,authorizedToolNames));
+    const containsAction=preflighted.some(entry=>entry.validated
+      ? entry.validated.policy.risk!=='observe'
+      : isAgentToolName(entry.call.name)&&agentToolPolicies[entry.call.name].risk!=='observe');
+    const firstPreflightFailure=preflighted.find(entry=>entry.failure);
+    if(containsAction&&firstPreflightFailure){
+      const results:ToolCallExecution[]=[];
+      for(const entry of preflighted){
+        if(!operationIsActive(owner))return undefined;
+        if(entry.failure){
+          append('tool',`${entry.call.name.replaceAll('_',' ')} ${entry.failureLabel??'rejected'}: ${entry.failure.error}`,'failed');
+          results.push(entry.failure);
+        }else if(isSafetyCleanup(entry)){
+          const execution=await executePreflightedCall(entry,owner);if(execution===undefined)return undefined;
+          results.push(execution);
+        }else{
+          const error=`Skipped because mutating tool batch preflight failed at ${firstPreflightFailure.call.callId}`;
+          append('tool',`${entry.call.name.replaceAll('_',' ')} skipped: ${error}`,'failed');
+          results.push({ok:false,error,recoverable:true,skipped:true,skipReason:'preflight',failedCallId:firstPreflightFailure.call.callId});
+        }
+      }
+      return results;
+    }
+    const results:ToolCallExecution[]=[];let failedCallId:string|undefined;
+    for(const entry of preflighted){
+      if(!operationIsActive(owner))return undefined;
+      if(failedCallId&&!isSafetyCleanup(entry)){
+        const error=`Skipped because prior tool call ${failedCallId} did not succeed`;
+        append('tool',`${entry.call.name.replaceAll('_',' ')} skipped: ${error}`,'failed');
+        results.push({ok:false,error,recoverable:true,skipped:true,skipReason:'failed-prior',failedCallId});
+        continue;
+      }
+      if(entry.failure){
+        append('tool',`${entry.call.name.replaceAll('_',' ')} ${entry.failureLabel??'rejected'}: ${entry.failure.error}`,'failed');
+        results.push(entry.failure);
+        if(containsAction)failedCallId=entry.call.callId;
+        continue;
+      }
+      const execution=await executePreflightedCall(entry,owner);if(execution===undefined)return undefined;
+      results.push(execution);
+      if(containsAction&&!execution.ok&&!failedCallId)failedCallId=entry.call.callId;
+    }
+    return results;
   }
 
   const sendText=useCallback(async(prompt:string)=>{
@@ -128,8 +218,9 @@ export function useAtomAgent(host: AtomAgentHost) {
           if(!loadedToolNames.length)throw new Error('Realtime returned an application tool before an exact tool set was loaded');
           const nextToolCount=toolCount+turn.toolCalls.length;if(nextToolCount>ATOM_REALTIME_TOOL_CALL_LIMIT)throw new Error(`Agent exceeded the bounded ${ATOM_REALTIME_TOOL_CALL_LIMIT}-tool operation`);
           textCallIds.current.recordCalls(turn.toolCalls);toolCount=nextToolCount;
-          for(const call of turn.toolCalls){
-            const execution=await executeCall(call,loadedToolNames,owner);if(execution===undefined)return;const value=execution as {ok:boolean;output?:unknown;error?:string};
+          const executions=await executeCallBatch(turn.toolCalls,loadedToolNames,owner);if(executions===undefined)return;
+          for(let index=0;index<turn.toolCalls.length;index++){
+            const call=turn.toolCalls[index]!;const execution=executions[index]!;const value=execution as {ok:boolean;output?:unknown;error?:string};
             if(value.ok&&isScreenshot(value.output))outputs.push({callId:call.callId,output:JSON.stringify({ok:true,screenshot:{screenshotId:value.output.screenshotId,width:value.output.width,height:value.output.height,capturedAt:value.output.capturedAt,focusedTarget:value.output.focusedTarget}}),imageDataUrl:value.output.imageDataUrl});
             else outputs.push({callId:call.callId,output:JSON.stringify(execution)});
           }
@@ -254,8 +345,9 @@ export function useAtomAgent(host: AtomAgentHost) {
           if(nextVoiceToolCount>ATOM_REALTIME_TOOL_CALL_LIMIT)throw new Error(`Realtime voice exceeded the bounded ${ATOM_REALTIME_TOOL_CALL_LIMIT}-tool operation chain`);
           voiceCallIds.current.recordCalls(completed.calls);
           voiceToolCount.current=nextVoiceToolCount;
-          for(const call of completed.calls){
-            const result=await executeCall(call,voiceLoadedToolNames.current,owner);if(result===undefined)return;
+          const results=await executeCallBatch(completed.calls,voiceLoadedToolNames.current,owner);if(results===undefined)return;
+          for(let index=0;index<completed.calls.length;index++){
+            const call=completed.calls[index]!;const result=results[index]!;
             const value=result as {ok:boolean;output?:unknown;error?:string};
             const screenshot=value.ok&&isScreenshot(value.output)?value.output:undefined;
             deliveries.push({callId:call.callId,output:screenshot?{ok:true,screenshot:{screenshotId:screenshot.screenshotId,width:screenshot.width,height:screenshot.height,capturedAt:screenshot.capturedAt,focusedTarget:screenshot.focusedTarget}}:result,...(screenshot?{screenshot}: {})});
@@ -280,7 +372,25 @@ export function useAtomAgent(host: AtomAgentHost) {
 }
 function readActiveVoiceLease():ActiveVoiceLease|undefined{const value=voiceRuntime[ACTIVE_VOICE_OWNER_KEY];if(!value||typeof value!=='object')return undefined;const candidate=value as Partial<ActiveVoiceLease>;return typeof candidate.owner==='symbol'&&typeof candidate.moduleGeneration==='symbol'&&typeof candidate.mounted==='function'&&typeof candidate.stop==='function'?candidate as ActiveVoiceLease:undefined;}
 function isScreenshot(value:unknown):value is {kind:'atomizer-screenshot';screenshotId:string;imageDataUrl:string;width:number;height:number;capturedAt:string;focusedTarget:string}{return Boolean(value&&typeof value==='object'&&(value as {kind?:unknown}).kind==='atomizer-screenshot');}
-function activeExecution(context:string):string|undefined{try{const value=JSON.parse(context) as {topology?:{instrument?:{execution?:unknown}|null}};return typeof value.topology?.instrument?.execution==='string'?value.topology.instrument.execution:undefined;}catch(error){throw new Error(`Atom application context is malformed: ${error instanceof Error?error.message:String(error)}`);}}
+function isSafetyCleanup(entry:PreflightedToolCall):boolean{
+  const validated=entry.validated;if(!validated)return false;
+  return validated.name==='stop_continuous_sweeps'
+    ||validated.name==='disconnect_device'
+    ||(validated.name==='set_rf_output'&&!(validated.args as {enabled:boolean}).enabled);
+}
+function requireActiveBackendIdentity(context:string):ActiveBackendIdentity{
+  let value:unknown;try{value=JSON.parse(context);}catch(error){throw new Error(`Atom application context is malformed: ${error instanceof Error?error.message:String(error)}`);}
+  const instrument=value&&typeof value==='object'&&!Array.isArray(value)
+    ?(value as {topology?:{instrument?:unknown}}).topology?.instrument
+    :undefined;
+  if(!instrument||typeof instrument!=='object'||Array.isArray(instrument))throw new Error('No complete active execution backend identity is available for high-impact action');
+  const candidate=instrument as Partial<ActiveBackendIdentity>;
+  for(const key of ['sessionId','driverId','sourceKind','execution'] as const){
+    if(typeof candidate[key]!=='string'||!candidate[key]!.trim())throw new Error('No complete active execution backend identity is available for high-impact action');
+  }
+  return {sessionId:candidate.sessionId!,driverId:candidate.driverId!,sourceKind:candidate.sourceKind!,execution:candidate.execution!};
+}
+function sameBackendIdentity(left:ActiveBackendIdentity,right:ActiveBackendIdentity):boolean{return left.sessionId===right.sessionId&&left.driverId===right.driverId&&left.sourceKind===right.sourceKind&&left.execution===right.execution;}
 
 function emitRealtimeSessionCheck(eventType:string,verification:AtomRealtimeSessionVerification,phase:'initial'|'enforced'):void{
   const outcome=verification.ok?'VERIFIED':phase==='initial'?'DIFFERS — ENFORCING WITH session.update':'MISMATCH';
