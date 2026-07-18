@@ -1131,18 +1131,14 @@ const WINDOWS_BROAD_WRITE_SIDS = Object.freeze(['S-1-1-0', 'S-1-5-11', 'S-1-5-32
 
 const WINDOWS_ACL_CHECK_SCRIPT = `
 $ErrorActionPreference = 'Stop'
-if (-not (Get-Module -Name Microsoft.PowerShell.Security)) {
-  Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
-}
 $path = $env:ATOMIZER_BRIDGE_ACL_CHECK_PATH
-$acl = Get-Acl -LiteralPath $path
+$acl = [System.IO.File]::GetAccessControl($path)
 $broadSids = @(${WINDOWS_BROAD_WRITE_SIDS.map((sid) => `'${sid}'`).join(',')})
 $writeMask = [System.Security.AccessControl.FileSystemRights]'Write, WriteData, AppendData, Modify, FullControl'
-foreach ($rule in $acl.Access) {
-  if ($rule.AccessControlType -ne 'Allow') { continue }
-  $sid = $rule.IdentityReference
-  try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
-  if ($broadSids -contains $sid -and ($rule.FileSystemRights -band $writeMask) -ne 0) {
+$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+foreach ($rule in $rules) {
+  if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+  if ($broadSids -contains $rule.IdentityReference.Value -and ($rule.FileSystemRights -band $writeMask) -ne 0) {
     Write-Output 'UNSAFE'
     exit 0
   }
