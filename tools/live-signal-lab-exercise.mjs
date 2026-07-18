@@ -163,7 +163,6 @@ const SIGNAL_LAB_ATOM_PROMPT_TOOL_SEQUENCES = Object.freeze({
     'navigate_workspace',
     'navigate_workspace',
     'navigate_workspace',
-    'get_application_state',
     'stop_continuous_sweeps',
     'get_application_state',
   ]),
@@ -360,6 +359,14 @@ export function screenshotArtifactExtension(screenshotUrl) {
 }
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const atomRealtimeToolCallLimitSource = resolve(
+  repositoryRoot,
+  'apps',
+  'desktop',
+  'src',
+  'renderer',
+  'atom-agent-retention.ts',
+);
 const defaultCatalogModule = pathToFileURL(resolve(
   repositoryRoot,
   '..',
@@ -368,6 +375,51 @@ const defaultCatalogModule = pathToFileURL(resolve(
   'bridge',
   'catalog.js',
 ));
+
+/**
+ * Bind the live prompt matrix to the renderer's actual per-operation ceiling.
+ * The harness runs directly from a source checkout before the workspace build,
+ * so importing a potentially absent or stale dist artifact would weaken this
+ * check. Reading the single exported source literal keeps the dev-only live
+ * harness fail-closed without duplicating that policy value.
+ */
+export function liveSignalLabRequiredAtomPromptToolCallBudget() {
+  const source = readFileSync(atomRealtimeToolCallLimitSource, 'utf8');
+  const matches = [...source.matchAll(
+    /export const ATOM_REALTIME_TOOL_CALL_LIMIT\s*=\s*(\d+)\s*;/gu,
+  )];
+  if (matches.length !== 1) {
+    throw new Error(
+      'Live SignalLab harness could not bind exactly one ATOM_REALTIME_TOOL_CALL_LIMIT',
+    );
+  }
+  const toolCallLimit = Number(matches[0][1]);
+  if (!Number.isSafeInteger(toolCallLimit) || toolCallLimit < 1) {
+    throw new Error('ATOM_REALTIME_TOOL_CALL_LIMIT must be a positive safe integer');
+  }
+  const scenarios = Object.freeze(Object.entries(SIGNAL_LAB_ATOM_PROMPT_TOOL_SEQUENCES)
+    .map(([scenarioId, sequence]) => Object.freeze({
+      scenarioId,
+      requiredToolCalls: sequence.length,
+    })));
+  const overBudget = scenarios.filter(({ requiredToolCalls }) => (
+    requiredToolCalls > toolCallLimit
+  ));
+  if (overBudget.length > 0) {
+    throw new Error(
+      `Required Atom prompt scenarios exceed the live ${toolCallLimit}-application-call budget: ${overBudget.map(({ scenarioId, requiredToolCalls }) => `${scenarioId}=${requiredToolCalls}`).join(', ')}`,
+    );
+  }
+  return Object.freeze({
+    policySource:
+      'apps/desktop/src/renderer/atom-agent-retention.ts#ATOM_REALTIME_TOOL_CALL_LIMIT',
+    toolCallLimit,
+    maximumRequiredToolCalls: Math.max(...scenarios.map(({ requiredToolCalls }) => (
+      requiredToolCalls
+    ))),
+    scenarios,
+  });
+}
 
 const FAMILY_BUTTON = Object.freeze({
   tone: 'LAB',
@@ -2219,6 +2271,7 @@ export async function runSignalLabAtomOpenDurationSoak(input) {
 
 /** Validates an externally authored report; this harness never drives Atom. */
 export function validateSignalLabAtomPromptReport(report) {
+  const toolCallBudget = liveSignalLabRequiredAtomPromptToolCallBudget();
   if (!report || typeof report !== 'object') {
     throw new TypeError('Atom prompt report is required');
   }
@@ -2267,6 +2320,11 @@ export function validateSignalLabAtomPromptReport(report) {
         && actualToolSequence[1] === 'computer_action'
         && actualToolSequence.slice(2).every((name) => name === 'get_classification_results')
       : sameOrderedValues(actualToolSequence, expectedToolSequence);
+    if (actualToolSequence.length > toolCallBudget.toolCallLimit) {
+      throw new Error(
+        `Atom prompt scenario ${index + 1} exceeds the live Atom ${toolCallBudget.toolCallLimit}-application-call budget`,
+      );
+    }
     if (!hasExactOwnKeys(scenario, [
       'id',
       'prompt',

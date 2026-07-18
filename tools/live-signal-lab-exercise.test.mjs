@@ -38,6 +38,7 @@ import {
   liveSignalLabMarkerExpectation,
   liveSignalLabProducerSessionEvidence,
   liveSignalLabRequiredClassificationOpportunities,
+  liveSignalLabRequiredAtomPromptToolCallBudget,
   liveSignalLabRunKind,
   liveSignalLabSourceSessionSummary,
   liveSignalLabSelectedProfileSummary,
@@ -715,7 +716,6 @@ function atomPromptReportFixture() {
       'navigate_workspace',
       'navigate_workspace',
       'navigate_workspace',
-      'get_application_state',
       'stop_continuous_sweeps',
       'get_application_state',
     ],
@@ -3438,6 +3438,12 @@ test('CW marker crash report defaults to 25 fresh cycles and one renderer identi
 });
 
 test('external Atom and physical reports require live effects and receive-only boundaries', () => {
+  const toolCallBudget = liveSignalLabRequiredAtomPromptToolCallBudget();
+  assert.ok(toolCallBudget.maximumRequiredToolCalls <= toolCallBudget.toolCallLimit);
+  const globalRunBudget = toolCallBudget.scenarios.find(({ scenarioId }) => (
+    scenarioId === 'global-run-navigation-remains-responsive'
+  ));
+  assert.equal(globalRunBudget.requiredToolCalls, toolCallBudget.toolCallLimit);
   const atom = atomPromptReportFixture();
   assert.equal(
     validateSignalLabAtomPromptReport(atom).status,
@@ -3554,6 +3560,27 @@ test('external Atom and physical reports require live effects and receive-only b
   assert.equal(
     validateSignalLabAtomPromptReport(validMultiplePolls).status,
     'atom-live-prompts-and-tool-effects-validated',
+  );
+  const overBudgetPolls = structuredClone(atom);
+  const overBudgetPollScenario = overBudgetPolls.scenarios.find(({ id }) => (
+    id === 'detect-auto-most-prominent'
+  ));
+  const overBudgetReadyPoll = overBudgetPollScenario.toolCalls.at(-1);
+  while (overBudgetPollScenario.toolCalls.length <= toolCallBudget.toolCallLimit) {
+    overBudgetPollScenario.toolCalls.splice(-1, 0, {
+      ...overBudgetReadyPoll,
+      effectId: `${overBudgetReadyPoll.effectId}-pending-${overBudgetPollScenario.toolCalls.length}`,
+      automaticOperationReadiness: 'pending',
+    });
+  }
+  overBudgetPollScenario.evidence.pollCount =
+    overBudgetPollScenario.toolCalls.length - 2;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(overBudgetPolls),
+    new RegExp(
+      `exceeds the live Atom ${toolCallBudget.toolCallLimit}-application-call budget`,
+      'u',
+    ),
   );
   const fabricatedPollCount = structuredClone(atom);
   fabricatedPollCount.scenarios.find(({ id }) => id === 'detect-auto-most-prominent')
