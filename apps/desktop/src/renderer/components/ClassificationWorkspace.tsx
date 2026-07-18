@@ -1,10 +1,10 @@
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint, ScanSearch } from 'lucide-react';
 import {
   BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
-  observableClassDefinitions,
   robustNoiseFloor,
   type EnvelopeClassification,
 } from '@tinysa/analysis';
+import { observableClassDefinitions } from '../../../../../../AtomOS_Classifier/src/observable-classifier-model.js';
 import { zeroSpanConfigSchema, type DetectedSignal, type FirmwareTraceFrame, type FirmwareTraceId, type InstrumentAcquisitionCapability, type MarkerId, type MarkerReading, type SignalDetectionConfig, type SpectrumDisplayConfiguration, type Sweep, type TraceFrame, type TraceId, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import {

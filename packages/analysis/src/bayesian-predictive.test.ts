@@ -3,13 +3,13 @@ import { logGamma, mixtureLogLikelihood, posteriorCandidates, studentTLogDensity
 import {
   inferPosterior,
   selectObservableDecision as selectObservableDecisionRaw,
-} from './bayesian-waveform-classifier.js';
-import { BAYESIAN_OBSERVABLE_MODEL } from './models/bayesian-observable.generated.js';
+} from '../../../../AtomOS_Classifier/src/bayesian-waveform-classifier.js';
+import { BAYESIAN_OBSERVABLE_MODEL } from '../../../../AtomOS_Classifier/src/models/bayesian-observable.generated.js';
 import {
   OBSERVABLE_EVIDENCE_VIEWS,
   observableClassSupportsEvidenceView,
   observableModelComponents,
-} from './observable-classifier-model.js';
+} from '../../../../AtomOS_Classifier/src/observable-classifier-model.js';
 import { DETECTED_POWER_ACQUISITION_QUALIFICATION } from './observable-features.js';
 
 const unitCauchy: StudentTLikelihoodComponent = {

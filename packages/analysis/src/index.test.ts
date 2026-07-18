@@ -29,12 +29,12 @@ import {
 import {
   SIGNAL_LAB_EMSO_MODEL,
   SignalLabBayesianClassifier,
-} from './signal-lab-classifier.js';
+} from '../../../../AtomOS_Classifier/src/signal-lab-classifier.js';
 import {
   inferPosterior,
   knownModelSupportRank,
   selectObservableDecision,
-} from './bayesian-waveform-classifier.js';
+} from '../../../../AtomOS_Classifier/src/bayesian-waveform-classifier.js';
 import {
   assertDetectedPowerCaptureReceiptMatches,
   canonicalDetectedPowerCapturePayload,

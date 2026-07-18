@@ -6,15 +6,15 @@ const PROVIDER_PATH = fileURLToPath(new URL(
   import.meta.url,
 ));
 const CLASSIFIER_PATH = fileURLToPath(new URL(
-  '../../../../packages/analysis/src/signal-lab-classifier.ts',
+  '../../../../../AtomOS_Classifier/src/signal-lab-classifier.ts',
   import.meta.url,
 ));
 const MODEL_PATH = fileURLToPath(new URL(
-  '../../../../packages/analysis/src/models/bayesian-observable.generated.ts',
+  '../../../../../AtomOS_Classifier/src/models/bayesian-observable.generated.ts',
   import.meta.url,
 ));
 const MANIFEST_PATH = fileURLToPath(new URL(
-  '../../../../packages/analysis/src/models/bayesian-observable.manifest.generated.ts',
+  '../../../../../AtomOS_Classifier/src/models/bayesian-observable.manifest.generated.ts',
   import.meta.url,
 ));
 

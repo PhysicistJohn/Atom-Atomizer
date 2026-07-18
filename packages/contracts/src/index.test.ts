@@ -9,6 +9,7 @@ import {
   generatorConfigSchema,
   hertz,
   markerConfigurationSchema,
+  MAX_STAGED_SWEEP_POINTS,
   microseconds,
   modelPackageManifestSchema,
   portCandidateSchema,
@@ -43,7 +44,12 @@ describe('domain units and firmware-derived validation', () => {
   it('requires a complete, ordered analyzer request', () => {
     expect(analyzerConfigSchema.parse(analyzer)).toEqual(analyzer);
     expect(analyzerConfigSchema.safeParse({ ...analyzer, stopHz: 1 }).success).toBe(false);
-    expect(analyzerConfigSchema.safeParse({ ...analyzer, points: 451 }).success).toBe(false);
+    // The shared UI-staging shape must represent SignalLab's wider synthetic
+    // scalar range (up to MAX_STAGED_SWEEP_POINTS), not just the ZS407
+    // firmware's own 450-point ceiling -- real hardware stays independently
+    // protected by its own advertised capability, checked separately.
+    expect(analyzerConfigSchema.safeParse({ ...analyzer, points: MAX_STAGED_SWEEP_POINTS }).success).toBe(true);
+    expect(analyzerConfigSchema.safeParse({ ...analyzer, points: MAX_STAGED_SWEEP_POINTS + 1 }).success).toBe(false);
     expect(analyzerConfigSchema.safeParse({ ...analyzer, rbwKhz: 851 }).success).toBe(false);
   });
   it('makes trigger configuration an exact discriminated object', () => {

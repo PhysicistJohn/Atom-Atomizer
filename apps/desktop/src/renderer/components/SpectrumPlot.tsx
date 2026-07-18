@@ -3,6 +3,7 @@ import { useId } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { DetectedSignal, FirmwareTraceFrame, FirmwareTraceId, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
+import { powerY, traceGeometry, validSpectrumDisplay } from '../plot-geometry.js';
 import { AtomicMark } from './AtomicMark.js';
 
 export interface SpectrumPlotProps {
@@ -50,7 +51,7 @@ export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwa
   const sweepPointCount = sweep && Array.isArray(sweep.frequencyHz)
     ? sweep.frequencyHz.length
     : undefined;
-  const effectiveDisplay = validDisplay(display) ? display : DEFAULT_DISPLAY;
+  const effectiveDisplay = validSpectrumDisplay(display) ? display : DEFAULT_DISPLAY;
   const maximumDbm = effectiveDisplay.referenceLevelDbm;
   const minimumDbm = maximumDbm - effectiveDisplay.decibelsPerDivision * effectiveDisplay.divisions;
   const visibleTraces: readonly TraceFrame[] = (traces === undefined
@@ -401,71 +402,6 @@ function detectionGeometry(detection: DetectedSignal, sweep: Sweep, width: numbe
   return { startX, width: Math.max(0, stopX - startX), centerX: (centerHz - sweep.actualStartHz) / spanHz * width };
 }
 
-function traceGeometry(
-  trace: Pick<TraceFrame | FirmwareTraceFrame, 'frequencyHz' | 'powerDbm'>,
-  sweep: Pick<Sweep, 'actualStartHz' | 'actualStopHz'>,
-  width: number,
-  height: number,
-  minimum: number,
-  maximum: number,
-): { readonly points: string; readonly firstX: number; readonly lastX: number } | undefined {
-  if (trace.frequencyHz.length !== trace.powerDbm.length || trace.frequencyHz.length < 2) return undefined;
-  if (trace.frequencyHz.some((value) => !Number.isFinite(value))
-    || trace.powerDbm.some((value) => !Number.isFinite(value))) return undefined;
-  for (let index = 1; index < trace.frequencyHz.length; index++) {
-    if (trace.frequencyHz[index]! <= trace.frequencyHz[index - 1]!) return undefined;
-  }
-  const spanHz = sweep.actualStopHz - sweep.actualStartHz;
-  if (!Number.isFinite(sweep.actualStartHz)
-    || !Number.isFinite(sweep.actualStopHz)
-    || !Number.isFinite(spanHz)
-    || spanHz <= 0
-    || !Number.isFinite(width)
-    || width <= 0
-    || !Number.isFinite(height)
-    || height <= 0
-    || !Number.isFinite(minimum)
-    || !Number.isFinite(maximum)
-    || maximum <= minimum
-    || trace.frequencyHz.at(-1)! < sweep.actualStartHz
-    || trace.frequencyHz[0]! > sweep.actualStopHz) return undefined;
-  const finiteCoordinates: Array<{ x: number; y: number }> = [];
-  for (let index = 0; index < trace.frequencyHz.length; index++) {
-    const frequencyHz = trace.frequencyHz[index]!;
-    // Trace frames are evidence-bearing physical grids and may legitimately be
-    // a subspan of the active sweep. Clip a wider frame to the visible sweep
-    // before projection so stale/off-screen samples cannot paint outside the
-    // shared data viewport (whose overflow is intentionally visible for marker
-    // headroom).
-    if (frequencyHz < sweep.actualStartHz || frequencyHz > sweep.actualStopHz) continue;
-    const x = (frequencyHz - sweep.actualStartHz) / spanHz * width;
-    const y = powerY(trace.powerDbm[index]!, height, minimum, maximum);
-    if (!Number.isFinite(x) || y === undefined) return undefined;
-    finiteCoordinates.push({ x, y });
-  }
-  if (finiteCoordinates.length < 2) return undefined;
-  return {
-    points: finiteCoordinates.map(({ x, y }) => `${x},${y}`).join(' '),
-    firstX: finiteCoordinates[0]!.x,
-    lastX: finiteCoordinates.at(-1)!.x,
-  };
-}
-function powerY(value: number, height: number, minimum: number, maximum: number): number | undefined {
-  if (!Number.isFinite(value)
-    || !Number.isFinite(height)
-    || height <= 0
-    || !Number.isFinite(minimum)
-    || !Number.isFinite(maximum)
-    || maximum <= minimum) return undefined;
-  return height - (Math.min(maximum, Math.max(minimum, value)) - minimum) / (maximum - minimum) * height;
-}
-function validDisplay(display: SpectrumDisplayConfiguration): boolean {
-  return Number.isFinite(display.referenceLevelDbm)
-    && Number.isFinite(display.decibelsPerDivision)
-    && display.decibelsPerDivision > 0
-    && Number.isFinite(display.divisions)
-    && display.divisions > 0;
-}
 function traceAbbreviation(mode: TraceFrame['mode']): string { return ({ 'clear-write': 'CLRWR', 'max-hold': 'MAXH', 'min-hold': 'MINH', average: 'AVG', view: 'VIEW', blank: 'BLANK' })[mode]; }
 function formatAxisLevel(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(1); }
 function formatMarkerLevel(marker: MarkerReading): string {

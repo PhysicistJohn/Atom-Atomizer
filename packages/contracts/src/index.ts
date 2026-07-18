@@ -58,6 +58,15 @@ export const ZS407_FIRMWARE_LIMITS = Object.freeze({
   rawRssiDivisor: 32,
 } as const);
 
+// The shared UI-staging AnalyzerConfig is not ZS407-only: SignalLab's synthetic
+// scalar source admits up to 4096 points, well past the ZS407 firmware's own
+// 450-point ceiling. Real ZS407 hardware stays independently protected by its
+// own advertised capability (ZS407_FIRMWARE_LIMITS.maximumSweepPoints), which
+// reconcileAnalyzerConfiguration clamps staged.points down to before it is
+// ever sent as a request -- this bound only needs to be wide enough to
+// represent every currently-known driver's admitted range.
+export const MAX_STAGED_SWEEP_POINTS = 4_096;
+
 export type Hertz = number & { readonly __unit: 'Hz' };
 export type DecibelMilliwatt = number & { readonly __unit: 'dBm' };
 export type Microseconds = number & { readonly __unit: 'us' };
@@ -578,7 +587,7 @@ export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 const analyzerConfigShape = {
   startHz: z.number().int().min(ZS407_FIRMWARE_LIMITS.analyzerMinimumHz).max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
   stopHz: z.number().int().positive().max(ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz),
-  points: z.number().int().min(ZS407_FIRMWARE_LIMITS.minimumSweepPoints).max(ZS407_FIRMWARE_LIMITS.maximumSweepPoints),
+  points: z.number().int().min(ZS407_FIRMWARE_LIMITS.minimumSweepPoints).max(MAX_STAGED_SWEEP_POINTS),
   acquisitionFormat: z.enum(['text', 'raw']),
   rbwKhz: z.union([z.literal('auto'), z.number().finite().min(ZS407_FIRMWARE_LIMITS.minimumRbwKhz).max(ZS407_FIRMWARE_LIMITS.maximumRbwKhz)]),
   attenuationDb: z.union([z.literal('auto'), z.number().int().min(0).max(31)]),

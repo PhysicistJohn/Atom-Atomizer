@@ -38,8 +38,6 @@ import {
 } from '@tinysa/contracts';
 import { measurementIdentityKey } from './measurement-provenance.js';
 export { isInstrumentMeasurementIdentity, measurementIdentityKey, sameMeasurementIdentity } from './measurement-provenance.js';
-export { RADIO_OPERATING_BAND_CONTEXT, compatibleRadioDuplexModes } from './radio-operating-band-context.js';
-export type { RadioAirInterface, RadioDuplexMode, RadioLinkDirection, RadioOperatingBand, RadioOperatingBandRange } from './radio-operating-band-context.js';
 import {
   BAYESIAN_DETECTOR_MODEL,
   analyzeBayesianSweep,
@@ -2195,15 +2193,7 @@ export type { WaveformEvidence } from './observable-features.js';
 export {
   DETECTED_POWER_CAPTURE_RUNTIME_ADMISSION_POLICY_ID,
 } from './detected-power-capture-receipt.js';
-export {
-  OBSERVABLE_HYPOTHESIS_DOMAIN_POLICY_ID,
-  observableHypothesisHasRequiredEvidence,
-  observableRepresentativeIsInClassDomain,
-} from './observable-hypothesis-domain.js';
-export type { ObservableHypothesisDomainObservation } from './observable-hypothesis-domain.js';
 export { logGamma, logSumExp, mixtureLogLikelihood, posteriorCandidates, regularizedIncompleteBeta, studentTLogDensity, studentTModelTailProbability } from './bayesian-predictive.js';
-export { observableClassDefinitions } from './observable-classifier-model.js';
-export type { ObservableDecisionClass, ObservableLeafClass } from './observable-classifier-model.js';
 export {
   OBSERVABLE_TRAINING_BASELINE_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULE,
   OBSERVABLE_TRAINING_BASELINE_SPECTRUM_TEMPORAL_SCHEDULE,

@@ -8,15 +8,15 @@ import {
   extractObservableFeatures,
   ObservableEvidenceUnavailableError,
   observableAssociationEvidenceIsCurrentlyQualified,
-  observableRepresentativeIsInClassDomain,
   SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN,
   SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN,
   SignalDetector,
   SignalTracker,
-  type ObservableLeafClass,
   type WaveformEvidence,
 } from '@tinysa/analysis';
-import { SignalLabBayesianClassifier } from '../../../../packages/analysis/src/signal-lab-classifier.js';
+import { observableRepresentativeIsInClassDomain } from '../../../../../AtomOS_Classifier/src/observable-hypothesis-domain.js';
+import type { ObservableLeafClass } from '../../../../../AtomOS_Classifier/src/observable-classifier-model.js';
+import { SignalLabBayesianClassifier } from '../../../../../AtomOS_Classifier/src/signal-lab-classifier.js';
 import { projectDetectedPowerTuneHz } from '@tinysa/contracts';
 import type {
   DetectedSignal,

@@ -63,9 +63,7 @@ jobs:
 
   signal-lab-interop:
     runs-on: ubuntu-latest
-    # Cache-independent model regeneration plus calibration and held-out
-    # validation deliberately exceeds 90 minutes on a clean runner.
-    timeout-minutes: 360
+    timeout-minutes: 35
     env:
       SIGNAL_LAB_INTEGRATION_REQUIRED: '1'
     steps:
@@ -73,17 +71,10 @@ jobs:
         with:
           path: TinySA_Atomizer
           persist-credentials: false
-      # The classifier's checked-in model pins the exact SignalLab commit its
-      # training corpus came from (03bc13eb9d...), which predates the AtomOS
-      # rebrand commit the other steps below need (8d9e61bb26...). Checking
-      # out the pinned corpus commit first keeps the classifier steps
-      # reproducing against the real data they were trained on, instead of
-      # silently drifting to whatever commit later steps need for unrelated
-      # reasons; the live/general ref is checked out afterwards, below.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/TinySA_SignalLab
-          ref: 03bc13eb9d5efcfc5f2f9c1792042f670b71ef9a
+          ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
           path: TinySA_SignalLab
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -100,9 +91,12 @@ jobs:
         run: |
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
-      - name: Install SignalLab (pinned classifier corpus commit)
+      - name: Install SignalLab
         working-directory: TinySA_SignalLab
         run: npm ci
+      - name: Verify SignalLab
+        working-directory: TinySA_SignalLab
+        run: npm run check
       - name: Install Atomizer
         working-directory: TinySA_Atomizer
         run: npm ci
@@ -126,34 +120,6 @@ jobs:
       - name: Validate the Bayesian detector
         working-directory: TinySA_Atomizer
         run: npm run check:bayesian-detector
-      - name: Reproduce the checked-in Bayesian classifier model
-        working-directory: TinySA_Atomizer
-        run: npm run check:signal-classifier-model
-      - name: Validate the Bayesian classifier against pinned SignalLab
-        working-directory: TinySA_Atomizer
-        run: npm run check:signal-classifier
-      - name: Verify classifier publication consistency
-        working-directory: TinySA_Atomizer
-        run: npm run check:signal-classifier-publication
-      # Swap SignalLab over to its current/live commit now that the
-      # classifier's own reproducibility checks above are done with the
-      # historical corpus commit they actually require -- real bridge
-      # interoperability should be tested against SignalLab's current state,
-      # not a stale pre-rebrand snapshot.
-      - name: Check out SignalLab at its live commit for interop testing
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          repository: PhysicistJohn/TinySA_SignalLab
-          ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
-          path: TinySA_SignalLab
-          persist-credentials: false
-          clean: true
-      - name: Install SignalLab (live commit)
-        working-directory: TinySA_SignalLab
-        run: npm ci
-      - name: Verify SignalLab
-        working-directory: TinySA_SignalLab
-        run: npm run check
       - name: Require real SignalLab bridge interoperability
         working-directory: TinySA_Atomizer
         run: npm run check

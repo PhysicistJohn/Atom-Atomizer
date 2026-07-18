@@ -3,6 +3,7 @@ import { BarChart3, Brackets, Radio } from 'lucide-react';
 import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep } from '@tinysa/contracts';
 import { measureChannel } from '@tinysa/analysis';
 import { formatFrequency, formatLevel } from '../format.js';
+import { frequencyToX, traceGeometry, validSpectrumDisplay } from '../plot-geometry.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
 
 export interface ChannelAnalysisViewProps {
@@ -40,25 +41,17 @@ function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep;
   const width = 1000;
   const height = 420;
   const gradientId = `${useId().replaceAll(':', '')}-channel-trace-fill`;
-  const effectiveDisplay = validChannelDisplay(display)
+  const effectiveDisplay = validSpectrumDisplay(display)
     ? display
     : { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
   const maximum = effectiveDisplay.referenceLevelDbm;
   const minimum = maximum - effectiveDisplay.decibelsPerDivision * effectiveDisplay.divisions;
-  const geometry = sweep ? channelTraceGeometry(sweep, width, height, minimum, maximum) : undefined;
+  const geometry = sweep ? traceGeometry(sweep, sweep, width, height, minimum, maximum) : undefined;
   const plotSweep = geometry ? sweep : undefined;
-  const span = plotSweep ? plotSweep.actualStopHz - plotSweep.actualStartHz : 1;
-  const x = (frequency: number): number | undefined => {
-    if (!plotSweep || !Number.isFinite(frequency)) return undefined;
-    const projected = (frequency - plotSweep.actualStartHz) / span * width;
-    return Number.isFinite(projected)
-      ? Math.min(width, Math.max(0, projected))
-      : undefined;
-  };
   const windowGeometry = (start: number, stop: number): { startX: number; width: number; centerX: number } | undefined => {
-    if (!Number.isFinite(start) || !Number.isFinite(stop) || stop <= start) return undefined;
-    const startX = x(start);
-    const stopX = x(stop);
+    if (!plotSweep || !Number.isFinite(start) || !Number.isFinite(stop) || stop <= start) return undefined;
+    const startX = frequencyToX(start, plotSweep, width);
+    const stopX = frequencyToX(stop, plotSweep, width);
     if (startX === undefined || stopX === undefined || stopX <= startX) return undefined;
     return { startX, width: stopX - startX, centerX: startX + (stopX - startX) / 2 };
   };
@@ -109,54 +102,6 @@ function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep;
   </div>;
 }
 
-function channelTraceGeometry(
-  sweep: Pick<Sweep, 'actualStartHz' | 'actualStopHz' | 'frequencyHz' | 'powerDbm'>,
-  width: number,
-  height: number,
-  minimum: number,
-  maximum: number,
-): { readonly points: string; readonly firstX: number; readonly lastX: number } | undefined {
-  const span = sweep.actualStopHz - sweep.actualStartHz;
-  if (!Number.isFinite(sweep.actualStartHz)
-    || !Number.isFinite(sweep.actualStopHz)
-    || !Number.isFinite(span)
-    || span <= 0
-    || !Number.isFinite(width)
-    || width <= 0
-    || !Number.isFinite(height)
-    || height <= 0
-    || !Number.isFinite(minimum)
-    || !Number.isFinite(maximum)
-    || maximum <= minimum
-    || sweep.frequencyHz.length !== sweep.powerDbm.length
-    || sweep.frequencyHz.length < 2) return undefined;
-  const coordinates: Array<{ x: number; y: number }> = [];
-  for (let index = 0; index < sweep.frequencyHz.length; index++) {
-    const frequency = sweep.frequencyHz[index]!;
-    const power = sweep.powerDbm[index]!;
-    if (!Number.isFinite(frequency) || !Number.isFinite(power)
-      || (index > 0 && frequency <= sweep.frequencyHz[index - 1]!)) return undefined;
-    if (frequency < sweep.actualStartHz || frequency > sweep.actualStopHz) continue;
-    const x = (frequency - sweep.actualStartHz) / span * width;
-    const y = height - (Math.min(maximum, Math.max(minimum, power)) - minimum) / (maximum - minimum) * height;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
-    coordinates.push({ x, y });
-  }
-  if (coordinates.length < 2) return undefined;
-  return {
-    points: coordinates.map(({ x, y }) => `${x},${y}`).join(' '),
-    firstX: coordinates[0]!.x,
-    lastX: coordinates.at(-1)!.x,
-  };
-}
-
-function validChannelDisplay(display: SpectrumDisplayConfiguration): boolean {
-  return Number.isFinite(display.referenceLevelDbm)
-    && Number.isFinite(display.decibelsPerDivision)
-    && display.decibelsPerDivision > 0
-    && Number.isFinite(display.divisions)
-    && display.divisions > 0;
-}
 
 function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
   const lower = result.adjacent.filter((item) => item.side === 'lower').sort((left, right) => left.order - right.order);
