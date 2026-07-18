@@ -1131,7 +1131,9 @@ const WINDOWS_BROAD_WRITE_SIDS = Object.freeze(['S-1-1-0', 'S-1-5-11', 'S-1-5-32
 
 const WINDOWS_ACL_CHECK_SCRIPT = `
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security -Force -ErrorAction Stop
+if (-not (Get-Module -Name Microsoft.PowerShell.Security)) {
+  Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+}
 $path = $env:ATOMIZER_BRIDGE_ACL_CHECK_PATH
 $acl = Get-Acl -LiteralPath $path
 $broadSids = @(${WINDOWS_BROAD_WRITE_SIDS.map((sid) => `'${sid}'`).join(',')})
