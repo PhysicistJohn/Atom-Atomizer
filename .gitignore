@@ -8,3 +8,6 @@ release/
 .env
 .env.*
 !.env.example
+.wrangler/
+.openai/
+*.tsbuildinfo
