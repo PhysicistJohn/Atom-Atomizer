@@ -37,6 +37,9 @@ import {
   liveSignalLabDefaultGeometrySmokeOpportunities,
   liveSignalLabMarkerExpectation,
   liveSignalLabProducerSessionEvidence,
+  liveSignalLabPhysicalDeviceIdentityEvidence,
+  liveSignalLabPhysicalDeviceIdentitySha256,
+  liveSignalLabPhysicalRfSafetySourceContract,
   liveSignalLabRequiredClassificationOpportunities,
   liveSignalLabRequiredAtomPromptToolCallBudget,
   liveSignalLabRunKind,
@@ -55,6 +58,7 @@ import {
   SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS,
   SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
   SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
+  SIGNAL_LAB_QUALIFIED_PHYSICAL_FIRMWARE_WARNING,
   SIGNAL_LAB_REQUIRED_ATOM_PROMPTS,
   SIGNAL_LAB_REQUIRED_ATOM_PROMPT_SCENARIO_IDS,
   screenshotArtifactExtension,
@@ -89,6 +93,9 @@ const FULL_REQUIRED_STEPS = Object.freeze([
   'channel',
   'iq',
 ]);
+
+const PHYSICAL_SESSION_ID = '323e4567-e89b-42d3-a456-426614174000';
+const PHYSICAL_DRIVER_ID = 'tinysa-zs407';
 
 const COMPLETE_STOPPED_LAYOUT = Object.freeze({
   routeCounts: Object.freeze({
@@ -680,6 +687,64 @@ function cwMarkerCrashReportFixture(cycles = 25) {
   return report;
 }
 
+function physicalInstrumentStateResultFixture() {
+  return {
+    session: {
+      sessionId: PHYSICAL_SESSION_ID,
+      driverId: PHYSICAL_DRIVER_ID,
+      provenance: {
+        sourceKind: 'serial-port',
+        execution: 'physical',
+        transport: 'usb-cdc-acm',
+        qualification: 'device-observed',
+        verifiedAt: '2026-07-18T09:00:10.000Z',
+        serialPort: {
+          path: '/dev/cu.usbmodem7061',
+          manufacturer: 'STMicroelectronics',
+          product: 'tinySA Ultra+ ZS407',
+          vendorId: '0483',
+          productId: '5740',
+        },
+        device: {
+          model: 'tinySA Ultra+ ZS407',
+          hardwareVersion: 'V0.5.4 max2871',
+          firmwareVersion: 'tinySA4_hw-v0.3-fft1024-g43eb0f1',
+          firmwareReportedRevision: '43eb0f1',
+          firmwareSourceCommit: '43eb0f193c8619cb7ca23726e3062973c65ae958',
+          firmwareQualification: 'custom-source-qualified-receive-only',
+          firmwareWarning: SIGNAL_LAB_QUALIFIED_PHYSICAL_FIRMWARE_WARNING,
+          usbIdentityVerified: true,
+        },
+      },
+    },
+  };
+}
+
+function physicalObservedIdentityFixture() {
+  return liveSignalLabPhysicalDeviceIdentityEvidence(
+    physicalInstrumentStateResultFixture(),
+  );
+}
+
+function physicalInstrumentStateBoundaryFixture(effectId, completedAt) {
+  const { deviceIdentitySha256 } = physicalObservedIdentityFixture();
+  return {
+    effectId,
+    completedAt,
+    sourceSessionId: PHYSICAL_SESSION_ID,
+    deviceIdentitySha256,
+    driverId: PHYSICAL_DRIVER_ID,
+    sourceKind: 'serial-port',
+    execution: 'physical',
+    generatorOutput: 'off',
+    rfOutput: 'not-supported',
+    rfOutputQualification: 'not-applicable',
+    fault: null,
+    evidenceQualification:
+      'application-observed-receiver-safe-state-not-serial-command-receipt',
+  };
+}
+
 function atomPromptReportFixture() {
   const signalLabSessionId = '123e4567-e89b-12d3-a456-426614174000';
   const toolSequences = {
@@ -725,16 +790,20 @@ function atomPromptReportFixture() {
       'get_application_state',
     ],
     'physical-fm-receive-only-readback': [
+      'get_instrument_state',
       'configure_analyzer',
       'acquire_sweep',
+      'get_instrument_state',
       'get_application_state',
       'get_latest_sweep_summary',
       'search_marker',
       'get_measurement_state',
     ],
     'physical-band14-receive-only-readback': [
+      'get_instrument_state',
       'configure_analyzer',
       'acquire_sweep',
+      'get_instrument_state',
       'get_application_state',
       'get_latest_sweep_summary',
       'search_marker',
@@ -880,8 +949,8 @@ function atomPromptReportFixture() {
       startHz: 88_000_000,
       stopHz: 108_000_000,
       points: 450,
-      sourceDriverId: 'tiny-sa',
-      sourceSessionId: 'physical-session-2026-07-18',
+      sourceDriverId: PHYSICAL_DRIVER_ID,
+      sourceSessionId: PHYSICAL_SESSION_ID,
       sweepId: 'fm-3',
       sequence: 3,
       actualRbwHz: 100_000,
@@ -897,8 +966,8 @@ function atomPromptReportFixture() {
       startHz: 758_000_000,
       stopHz: 768_000_000,
       points: 450,
-      sourceDriverId: 'tiny-sa',
-      sourceSessionId: 'physical-session-2026-07-18',
+      sourceDriverId: PHYSICAL_DRIVER_ID,
+      sourceSessionId: PHYSICAL_SESSION_ID,
       sweepId: 'band14-3',
       sequence: 6,
       actualRbwHz: 100_000,
@@ -919,22 +988,28 @@ function atomPromptReportFixture() {
       startupPreferenceDriverId: 'signal-lab',
     },
   };
-  const screenshotEvidence = (id, offsetSeconds) => externalScreenshotEvidenceFixture(
+  const screenshotEvidence = (id, capturedAt) => externalScreenshotEvidenceFixture(
     'atom',
     id,
-    new Date(Date.UTC(2026, 6, 18, 8, 0, offsetSeconds)).toISOString(),
+    capturedAt,
   );
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'atom-ai-live-prompt-exercise',
     executionBoundary: 'live-computer-use-human-observed',
     liveComputerUse: true,
     startedAt: '2026-07-18T08:00:00.000Z',
-    completedAt: '2026-07-18T08:20:00.000Z',
+    completedAt: '2026-07-18T09:10:00.000Z',
     executor: 'live operator',
     reviewer: 'independent visual reviewer',
     scenarios: SIGNAL_LAB_REQUIRED_ATOM_PROMPT_SCENARIO_IDS.map((id, index) => {
-      const baseSeconds = index * 30;
+      const scenarioStartedAt = id === 'physical-fm-receive-only-readback'
+        ? Date.parse('2026-07-18T09:01:17.000Z')
+        : id === 'physical-band14-receive-only-readback'
+          ? Date.parse('2026-07-18T09:05:17.000Z')
+          : id === 'restore-signal-lab-default-device'
+            ? Date.parse('2026-07-18T09:09:31.000Z')
+            : Date.parse('2026-07-18T08:00:00.000Z') + index * 30_000;
       const toolCalls = toolSequences[id].map((name, toolIndex) => {
         const effectClass = observeTools.has(name) ? 'observe' : 'operate';
         return {
@@ -943,14 +1018,7 @@ function atomPromptReportFixture() {
           effectClass,
           outcome: effectClass === 'observe' ? 'read-complete' : 'effect-complete',
           effectId: `effect-${id}-${toolIndex + 1}`,
-          completedAt: new Date(Date.UTC(
-            2026,
-            6,
-            18,
-            8,
-            0,
-            baseSeconds + toolIndex + 1,
-          )).toISOString(),
+          completedAt: new Date(scenarioStartedAt + (toolIndex + 1) * 1_000).toISOString(),
           ...(id === 'detect-auto-most-prominent'
             && name === 'get_classification_results'
             ? {
@@ -960,6 +1028,26 @@ function atomPromptReportFixture() {
             : {}),
         };
       });
+      const physicalScenario = id === 'physical-fm-receive-only-readback'
+        || id === 'physical-band14-receive-only-readback';
+      const evidence = {
+        ...scenarioEvidence[id],
+        ...(physicalScenario ? {
+          deviceIdentitySha256: liveSignalLabPhysicalDeviceIdentitySha256(
+            physicalObservedIdentityFixture().identityEvidence,
+          ),
+          instrumentStateBoundaries: {
+            before: physicalInstrumentStateBoundaryFixture(
+              toolCalls[0].effectId,
+              toolCalls[0].completedAt,
+            ),
+            after: physicalInstrumentStateBoundaryFixture(
+              toolCalls[3].effectId,
+              toolCalls[3].completedAt,
+            ),
+          },
+        } : {}),
+      };
       return {
         id,
         prompt: SIGNAL_LAB_REQUIRED_ATOM_PROMPTS[id],
@@ -968,10 +1056,10 @@ function atomPromptReportFixture() {
           : `${id} completed in the live app`,
         passed: true,
         toolCalls,
-        evidence: scenarioEvidence[id],
+        evidence,
         screenshotEvidence: screenshotEvidence(
           id,
-          baseSeconds + toolCalls.length + 2,
+          new Date(scenarioStartedAt + (toolCalls.length + 2) * 1_000).toISOString(),
         ),
       };
     }),
@@ -990,6 +1078,7 @@ function atomPromptReportFixture() {
 }
 
 function physicalReceiveOnlyReportFixture() {
+  const observedIdentity = physicalObservedIdentityFixture();
   const screenshotEvidence = (id, minute) => externalScreenshotEvidenceFixture(
     'physical',
     id,
@@ -1001,8 +1090,8 @@ function physicalReceiveOnlyReportFixture() {
       completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, index * 10)).toISOString(),
       sweepId: `${prefix}-${index + 1}`,
       sequence: firstSequence + index,
-      sourceDriverId: 'tiny-sa',
-      sourceSessionId: 'physical-session-2026-07-18',
+      sourceDriverId: PHYSICAL_DRIVER_ID,
+      sourceSessionId: PHYSICAL_SESSION_ID,
       startHz,
       stopHz,
       points: 450,
@@ -1012,8 +1101,8 @@ function physicalReceiveOnlyReportFixture() {
     const readback = {
       sweepId,
       sequence,
-      sourceDriverId: 'tiny-sa',
-      sourceSessionId: 'physical-session-2026-07-18',
+      sourceDriverId: PHYSICAL_DRIVER_ID,
+      sourceSessionId: PHYSICAL_SESSION_ID,
       startHz,
       stopHz,
       points: 450,
@@ -1025,16 +1114,16 @@ function physicalReceiveOnlyReportFixture() {
     return {
       get_application_state: {
         ...readback,
-        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 21)).toISOString(),
+        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 22)).toISOString(),
       },
       get_latest_sweep_summary: {
         ...readback,
-        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 22)).toISOString(),
+        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 23)).toISOString(),
       },
     };
   };
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'physical-tinysa-receive-only-fm-and-band14',
     executionBoundary: 'live-computer-use-human-observed',
     liveComputerUse: true,
@@ -1043,7 +1132,7 @@ function physicalReceiveOnlyReportFixture() {
     executor: 'live physical operator',
     reviewer: 'independent physical screenshot reviewer',
     device: {
-      driverId: 'tiny-sa',
+      driverId: PHYSICAL_DRIVER_ID,
       firmwareVersion: 'tinySA4_hw-v0.3-fft1024-g43eb0f1',
       qualification: 'custom-source-qualified-receive-only',
       qualificationScope: 'receiver-behavior-only-not-oem-rf-or-metrology',
@@ -1055,15 +1144,17 @@ function physicalReceiveOnlyReportFixture() {
       firmwareManifestPath: '.artifacts/hardware-trials/v0.3/43eb0f193c8619cb7ca23726e3062973c65ae958/manifest.txt',
       firmwareManifestSha256: 'ef9174b193e49f1bd25e4923ae9bedd07712dfde0e27c4e8d338d22d5707343b',
       qualificationEvidencePath: 'docs/HARDWARE_BRINGUP.md#7-enhanced-v03--fft-1024-qualification-2026-07-11',
-      deviceIdentitySha256: 'b'.repeat(64),
-      connectionId: 'physical-session-2026-07-18',
+      identityEvidence: observedIdentity.identityEvidence,
+      deviceIdentitySha256: observedIdentity.deviceIdentitySha256,
+      connectionId: PHYSICAL_SESSION_ID,
       connectedAt: '2026-07-18T09:00:10.000Z',
-      disconnectedAt: '2026-07-18T09:09:30.000Z',
+      disconnectedAt: '2026-07-18T09:09:32.000Z',
     },
     safety: {
       receiveOnly: true,
-      rfOutputDisabledBeforeConnection: true,
-      rfOutputDisabledAfterDisconnect: true,
+      runtimeOutputOffEvidenceQualification:
+        'application-observed-boundaries-not-direct-serial-command-receipts',
+      sourceSafetyContract: liveSignalLabPhysicalRfSafetySourceContract(),
       generatorActions: 0,
       rfEnableActions: 0,
       transmitActions: 0,
@@ -1079,8 +1170,8 @@ function physicalReceiveOnlyReportFixture() {
         startHz: 88_000_000,
         stopHz: 108_000_000,
         configuredPoints: 450,
-        sourceDriverId: 'tiny-sa',
-        sourceSessionId: 'physical-session-2026-07-18',
+        sourceDriverId: PHYSICAL_DRIVER_ID,
+        sourceSessionId: PHYSICAL_SESSION_ID,
         completedSweeps: 3,
         sweepIds: ['fm-1', 'fm-2', 'fm-3'],
         singleAcquisitions: singleAcquisitions(
@@ -1091,6 +1182,16 @@ function physicalReceiveOnlyReportFixture() {
           1,
         ),
         receiverReadbacks: receiverReadbacks('fm-3', 3, 88_000_000, 108_000_000, 1),
+        instrumentStateBoundaries: {
+          before: physicalInstrumentStateBoundaryFixture(
+            'effect-physical-fm-receive-only-readback-1',
+            '2026-07-18T09:01:18.000Z',
+          ),
+          after: physicalInstrumentStateBoundaryFixture(
+            'effect-physical-fm-receive-only-readback-4',
+            '2026-07-18T09:01:21.000Z',
+          ),
+        },
         peakFrequencyHz: 98_100_000,
         peakPowerDbm: -52.3,
         energyFinding: 'energy-observed',
@@ -1098,7 +1199,7 @@ function physicalReceiveOnlyReportFixture() {
         markerEvidence: {
           markerId: 'M1',
           action: 'peak-search',
-          completedAt: '2026-07-18T09:01:30.000Z',
+          completedAt: '2026-07-18T09:01:25.000Z',
           sourceSweepId: 'fm-3',
           sourceSequence: 3,
           frequencyHz: 98_100_000,
@@ -1140,8 +1241,8 @@ function physicalReceiveOnlyReportFixture() {
         startHz: 758_000_000,
         stopHz: 768_000_000,
         configuredPoints: 450,
-        sourceDriverId: 'tiny-sa',
-        sourceSessionId: 'physical-session-2026-07-18',
+        sourceDriverId: PHYSICAL_DRIVER_ID,
+        sourceSessionId: PHYSICAL_SESSION_ID,
         completedSweeps: 3,
         sweepIds: ['band14-1', 'band14-2', 'band14-3'],
         singleAcquisitions: singleAcquisitions(
@@ -1158,6 +1259,16 @@ function physicalReceiveOnlyReportFixture() {
           768_000_000,
           5,
         ),
+        instrumentStateBoundaries: {
+          before: physicalInstrumentStateBoundaryFixture(
+            'effect-physical-band14-receive-only-readback-1',
+            '2026-07-18T09:05:18.000Z',
+          ),
+          after: physicalInstrumentStateBoundaryFixture(
+            'effect-physical-band14-receive-only-readback-4',
+            '2026-07-18T09:05:21.000Z',
+          ),
+        },
         peakFrequencyHz: 763_000_000,
         peakPowerDbm: -91.2,
         energyFinding: 'no-energy-above-floor-observed',
@@ -1165,7 +1276,7 @@ function physicalReceiveOnlyReportFixture() {
         markerEvidence: {
           markerId: 'M1',
           action: 'peak-search',
-          completedAt: '2026-07-18T09:05:30.000Z',
+          completedAt: '2026-07-18T09:05:25.000Z',
           sourceSweepId: 'band14-3',
           sourceSequence: 6,
           frequencyHz: 763_000_000,
@@ -1232,6 +1343,80 @@ function reviewedFullRunFixture(catalog) {
     reviewScreenshotManifest: screenshotManifest,
   };
   return run;
+}
+
+function defaultGeometrySmokeRunFixture(fullCatalog) {
+  const catalog = fullCatalog.filter(({ id }) => (
+    SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS.includes(id)
+  ));
+  let nextSequence = 1;
+  const profiles = catalog.map((profile) => {
+    const spectrumOpportunities = liveSignalLabDefaultGeometrySmokeOpportunities(profile);
+    const spectrumSequences = Array.from(
+      { length: spectrumOpportunities },
+      () => nextSequence++,
+    );
+    return {
+      id: profile.id,
+      family: profile.family,
+      failures: [],
+      steps: {
+        'default-geometry-smoke': {
+          ok: true,
+          spectrumOpportunities,
+          sweepGeometry: { plotPoints: 1_024 },
+          markerGeometry: { plotPoints: 1_024 },
+          markerOracleStatus: 'not-applicable-unfitted-1024-point-geometry',
+          profileSelection: fixtureProfileSelection(profile.id),
+          profileSweepProvenance: fixtureProfileSweepProvenance(
+            profile.id,
+            spectrumSequences[0],
+          ),
+          sourceClockEvidence: {
+            firstSpectrumSequence: spectrumSequences[0],
+            lastSpectrumSequence: spectrumSequences.at(-1),
+            spectrumSequences,
+            producerSourceSequences: [...spectrumSequences],
+          },
+        },
+      },
+    };
+  });
+  return {
+    schemaVersion: 2,
+    kind: 'default-1024-user-path-smoke',
+    startedAt: '2026-07-18T08:00:00.000Z',
+    completedAt: '2026-07-18T08:01:00.000Z',
+    catalog,
+    profiles,
+    failures: [],
+    stress: { actionLatencies: [], accessibilitySnapshotLatencies: [], sweepProgressions: [] },
+    geometry: {
+      policyId: 'shipped-default-1024-user-path-v1',
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      configured: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      profileIds: SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS,
+      initialSource: { sourceState: 'READY', sessionState: 'READY', sourceSequence: 0 },
+      markerOracleStatus: 'not-applicable-unfitted-1024-point-geometry',
+    },
+  };
 }
 
 function continuousProfileSwitchReportFixture(fullRun) {
@@ -3437,6 +3622,49 @@ test('CW marker crash report defaults to 25 fresh cycles and one renderer identi
   );
 });
 
+test('physical identity digest is canonical, closed, and distinct from source-only RF safety', () => {
+  const observed = physicalObservedIdentityFixture();
+  assert.equal(observed.sourceSessionId, PHYSICAL_SESSION_ID);
+  assert.equal(
+    observed.deviceIdentitySha256,
+    liveSignalLabPhysicalDeviceIdentitySha256(observed.identityEvidence),
+  );
+  const reorderedIdentity = Object.fromEntries(
+    Object.entries(observed.identityEvidence).reverse(),
+  );
+  assert.equal(
+    liveSignalLabPhysicalDeviceIdentitySha256(reorderedIdentity),
+    observed.deviceIdentitySha256,
+  );
+  const uppercaseRuntimeIdentity = physicalInstrumentStateResultFixture();
+  uppercaseRuntimeIdentity.session.provenance.serialPort.vendorId = '0483';
+  uppercaseRuntimeIdentity.session.provenance.serialPort.productId = '5740';
+  uppercaseRuntimeIdentity.session.provenance.device.firmwareReportedRevision = '43EB0F1';
+  uppercaseRuntimeIdentity.session.provenance.device.firmwareSourceCommit =
+    '43EB0F193C8619CB7CA23726E3062973C65AE958';
+  assert.equal(
+    liveSignalLabPhysicalDeviceIdentityEvidence(uppercaseRuntimeIdentity)
+      .deviceIdentitySha256,
+    observed.deviceIdentitySha256,
+  );
+  assert.throws(
+    () => liveSignalLabPhysicalDeviceIdentitySha256({
+      ...observed.identityEvidence,
+      unscopedIdentityClaim: 'same device',
+    }),
+    /not the exact closed get_instrument_state evidence object/u,
+  );
+  const sourceContract = liveSignalLabPhysicalRfSafetySourceContract();
+  assert.equal(
+    sourceContract.qualification,
+    'source-and-unit-tested-not-live-runtime-attestation',
+  );
+  assert.equal(
+    sourceContract.runtimeCommandReceiptExposure,
+    'not-exposed-by-get_instrument_state',
+  );
+});
+
 test('external Atom and physical reports require live effects and receive-only boundaries', () => {
   const toolCallBudget = liveSignalLabRequiredAtomPromptToolCallBudget();
   assert.ok(toolCallBudget.maximumRequiredToolCalls <= toolCallBudget.toolCallLimit);
@@ -3444,10 +3672,57 @@ test('external Atom and physical reports require live effects and receive-only b
     scenarioId === 'global-run-navigation-remains-responsive'
   ));
   assert.equal(globalRunBudget.requiredToolCalls, toolCallBudget.toolCallLimit);
+  for (const scenarioId of [
+    'physical-fm-receive-only-readback',
+    'physical-band14-receive-only-readback',
+  ]) {
+    assert.equal(
+      toolCallBudget.scenarios.find((scenario) => scenario.scenarioId === scenarioId)
+        .requiredToolCalls,
+      toolCallBudget.toolCallLimit,
+    );
+  }
   const atom = atomPromptReportFixture();
   assert.equal(
     validateSignalLabAtomPromptReport(atom).status,
     'atom-live-prompts-and-tool-effects-validated',
+  );
+  const ninthPhysicalCall = structuredClone(atom);
+  const ninthPhysicalScenario = ninthPhysicalCall.scenarios.find(({ id }) => (
+    id === 'physical-fm-receive-only-readback'
+  ));
+  ninthPhysicalScenario.toolCalls.push({
+    ...ninthPhysicalScenario.toolCalls.at(-1),
+    effectId: 'ninth-physical-call',
+  });
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(ninthPhysicalCall),
+    new RegExp(`exceeds the live Atom ${toolCallBudget.toolCallLimit}-application-call budget`, 'u'),
+  );
+  const reorderedPhysicalStateReads = structuredClone(atom);
+  const reorderedPhysicalScenario = reorderedPhysicalStateReads.scenarios.find(({ id }) => (
+    id === 'physical-fm-receive-only-readback'
+  ));
+  [reorderedPhysicalScenario.toolCalls[0], reorderedPhysicalScenario.toolCalls[1]] = [
+    reorderedPhysicalScenario.toolCalls[1],
+    reorderedPhysicalScenario.toolCalls[0],
+  ];
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(reorderedPhysicalStateReads),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const mismatchedPhysicalIdentityDigest = structuredClone(atom);
+  const mismatchedIdentityScenario = mismatchedPhysicalIdentityDigest.scenarios.find(({ id }) => (
+    id === 'physical-band14-receive-only-readback'
+  ));
+  mismatchedIdentityScenario.evidence.deviceIdentitySha256 = 'a'.repeat(64);
+  mismatchedIdentityScenario.evidence.instrumentStateBoundaries.before
+    .deviceIdentitySha256 = 'a'.repeat(64);
+  mismatchedIdentityScenario.evidence.instrumentStateBoundaries.after
+    .deviceIdentitySha256 = 'a'.repeat(64);
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(mismatchedPhysicalIdentityDigest),
+    /not bound to one advancing device session/u,
   );
   const topLevelAtomOverclaim = structuredClone(atom);
   topLevelAtomOverclaim.conclusion = 'Confirmed a physical LTE operator';
@@ -3642,9 +3917,15 @@ test('external Atom and physical reports require live effects and receive-only b
     /lacks passing live tool and screenshot evidence/u,
   );
   const unrelatedPhysicalSession = structuredClone(atom);
-  unrelatedPhysicalSession.scenarios.find(({ id }) => (
+  const unrelatedPhysicalScenario = unrelatedPhysicalSession.scenarios.find(({ id }) => (
     id === 'physical-band14-receive-only-readback'
-  )).evidence.sourceSessionId = 'different-physical-session';
+  ));
+  unrelatedPhysicalScenario.evidence.sourceSessionId =
+    '423e4567-e89b-42d3-a456-426614174000';
+  unrelatedPhysicalScenario.evidence.instrumentStateBoundaries.before.sourceSessionId =
+    unrelatedPhysicalScenario.evidence.sourceSessionId;
+  unrelatedPhysicalScenario.evidence.instrumentStateBoundaries.after.sourceSessionId =
+    unrelatedPhysicalScenario.evidence.sourceSessionId;
   assert.throws(
     () => validateSignalLabAtomPromptReport(unrelatedPhysicalSession),
     /not bound to one advancing device session/u,
@@ -3653,12 +3934,63 @@ test('external Atom and physical reports require live effects and receive-only b
   const physicalCompletion = validateSignalLabPhysicalReceiveOnlyReport(physical);
   assert.equal(
     physicalCompletion.status,
-    'physical-receive-only-fm-and-band14-validated',
+    'physical-receive-only-observations-validated-runtime-output-off-receipt-blocked',
   );
   assert.equal(physicalCompletion.completedSingleSweeps, 6);
   assert.equal(
     physicalCompletion.firmwareCommitSha,
     '43eb0f193c8619cb7ca23726e3062973c65ae958',
+  );
+  const arbitraryIdentityDigest = structuredClone(physical);
+  arbitraryIdentityDigest.device.deviceIdentitySha256 = 'b'.repeat(64);
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(arbitraryIdentityDigest),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const changedIdentityWithStaleDigest = structuredClone(physical);
+  changedIdentityWithStaleDigest.device.identityEvidence.hardwareVersion = 'different';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(changedIdentityWithStaleDigest),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const extraIdentityClaim = structuredClone(physical);
+  extraIdentityClaim.device.identityEvidence.deviceNickname = 'Johns TinySA';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(extraIdentityClaim),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const friendlySessionId = structuredClone(physical);
+  friendlySessionId.device.connectionId = 'physical-session-2026-07-18';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(friendlySessionId),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const oldDriverAlias = structuredClone(physical);
+  oldDriverAlias.device.driverId = 'tiny-sa';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(oldDriverAlias),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const legacyRfSafetyBooleans = structuredClone(physical);
+  legacyRfSafetyBooleans.safety.rfOutputDisabledBeforeConnection = true;
+  legacyRfSafetyBooleans.safety.rfOutputDisabledAfterDisconnect = true;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(legacyRfSafetyBooleans),
+    /not strictly receive-only/u,
+  );
+  const sourceContractClaimedLive = structuredClone(physical);
+  sourceContractClaimedLive.safety.sourceSafetyContract.qualification =
+    'live-runtime-attested';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(sourceContractClaimedLive),
+    /not strictly receive-only/u,
+  );
+  const staleInstrumentStateBoundary = structuredClone(physical);
+  staleInstrumentStateBoundary.observations[0].instrumentStateBoundaries.after.effectId =
+    staleInstrumentStateBoundary.observations[0].instrumentStateBoundaries.before.effectId;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(staleInstrumentStateBoundary),
+    /reused sweep, instrument-state, or screenshot evidence/u,
   );
   const protocolOverclaim = structuredClone(physical);
   protocolOverclaim.observations[1].interpretation = 'confirmed LTE emitter';
@@ -3789,16 +4121,39 @@ test('aggregate acceptance cannot claim complete without every live evidence bou
     createdAt: '2026-07-18T10:00:00.000Z',
     fullProfileReport,
     classifierReleaseGateReport: classifierGateRunFixture(catalog),
+    defaultGeometrySmokeReport: defaultGeometrySmokeRunFixture(catalog),
     continuousProfileSwitchReport: continuousProfileSwitchReportFixture(fullProfileReport),
     atomOpenSoakReport: atomOpenThirtyMinuteReportFixture(),
     cwMarkerCrashReport: cwMarkerCrashReportFixture(),
     atomPromptReport: atomPromptReportFixture(),
     physicalReceiveOnlyReport: physicalReceiveOnlyReportFixture(),
   });
-  assert.equal(manifest.status, 'complete');
+  assert.equal(manifest.status, 'blocked-production-instrumentation-required');
   assert.equal(
     validateSignalLabAcceptanceManifest(manifest).status,
-    'complete-live-acceptance-evidence-validated',
+    'live-acceptance-evidence-validated-release-blocked',
+  );
+  assert.equal(manifest.reportSha256.defaultGeometrySmokeReport.length, 64);
+  const missingDefaultGeometryBuildInput = { ...manifest.reports };
+  delete missingDefaultGeometryBuildInput.defaultGeometrySmokeReport;
+  assert.throws(
+    () => buildSignalLabAcceptanceManifest({
+      createdAt: '2026-07-18T10:00:00.000Z',
+      ...missingDefaultGeometryBuildInput,
+    }),
+    /omitted a mandatory evidence report/u,
+  );
+  const falselyCompleted = structuredClone(manifest);
+  falselyCompleted.status = 'complete';
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(falselyCompleted),
+    /cannot claim complete with invalid metadata/u,
+  );
+  const omittedRuntimeReceiptBlocker = structuredClone(manifest);
+  omittedRuntimeReceiptBlocker.blockers = [];
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(omittedRuntimeReceiptBlocker),
+    /omitted the physical runtime output-off receipt blocker/u,
   );
   const manifestOverclaim = structuredClone(manifest);
   manifestOverclaim.operatorIdentity = 'confirmed operator';
@@ -3815,6 +4170,26 @@ test('aggregate acceptance cannot claim complete without every live evidence bou
     () => validateSignalLabAcceptanceManifest(omittedPhysical),
     /omitted a mandatory evidence report/u,
   );
+  const omittedDefaultGeometry = structuredClone(manifest);
+  delete omittedDefaultGeometry.reports.defaultGeometrySmokeReport;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(omittedDefaultGeometry),
+    /omitted a mandatory evidence report/u,
+  );
+  const invalidDefaultGeometry = structuredClone(manifest);
+  invalidDefaultGeometry.reports.defaultGeometrySmokeReport
+    .geometry.configured.configuredPoints = 450;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(invalidDefaultGeometry),
+    /passing fresh default 1024-point geometry report/u,
+  );
+  const nonzeroDefaultGeometrySession = structuredClone(manifest);
+  nonzeroDefaultGeometrySession.reports.defaultGeometrySmokeReport
+    .geometry.initialSource.sourceSequence = 1;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(nonzeroDefaultGeometrySession),
+    /passing fresh default 1024-point geometry report/u,
+  );
   const tampered = structuredClone(manifest);
   tampered.reports.physicalReceiveOnlyReport.observations[0].peakPowerDbm = -12.3;
   assert.throws(
@@ -3830,18 +4205,47 @@ test('aggregate acceptance cannot claim complete without every live evidence bou
     () => validateSignalLabAcceptanceManifest(shortSoak),
     /passing 30-minute Atom-open soak/u,
   );
+  const forgedAtomDeviceIdentity = structuredClone(manifest);
+  for (const scenario of forgedAtomDeviceIdentity.reports.atomPromptReport.scenarios.filter(
+    ({ id }) => id.startsWith('physical-'),
+  )) {
+    scenario.evidence.deviceIdentitySha256 = 'c'.repeat(64);
+    scenario.evidence.instrumentStateBoundaries.before.deviceIdentitySha256 =
+      scenario.evidence.deviceIdentitySha256;
+    scenario.evidence.instrumentStateBoundaries.after.deviceIdentitySha256 =
+      scenario.evidence.deviceIdentitySha256;
+  }
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(forgedAtomDeviceIdentity),
+    /not bound to the physical receive-only report/u,
+  );
+  const earlierExistingPhysicalSweep = structuredClone(manifest);
+  const earlierFm = earlierExistingPhysicalSweep.reports.atomPromptReport.scenarios.find(
+    ({ id }) => id === 'physical-fm-receive-only-readback',
+  );
+  earlierFm.evidence.sweepId = 'fm-2';
+  earlierFm.evidence.sequence = 2;
+  earlierFm.evidence.markerSourceSweepId = 'fm-2';
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(earlierExistingPhysicalSweep),
+    /not bound to the physical receive-only report/u,
+  );
   const unrelatedAtomPrompt = atomPromptReportFixture();
-  unrelatedAtomPrompt.scenarios.find(({ id }) => (
-    id === 'physical-fm-receive-only-readback'
-  )).evidence.sourceSessionId = 'another-physical-session';
-  unrelatedAtomPrompt.scenarios.find(({ id }) => (
-    id === 'physical-band14-receive-only-readback'
-  )).evidence.sourceSessionId = 'another-physical-session';
+  for (const scenario of unrelatedAtomPrompt.scenarios.filter(({ id }) => (
+    id.startsWith('physical-')
+  ))) {
+    scenario.evidence.sourceSessionId = '423e4567-e89b-42d3-a456-426614174000';
+    scenario.evidence.instrumentStateBoundaries.before.sourceSessionId =
+      scenario.evidence.sourceSessionId;
+    scenario.evidence.instrumentStateBoundaries.after.sourceSessionId =
+      scenario.evidence.sourceSessionId;
+  }
   assert.throws(
     () => buildSignalLabAcceptanceManifest({
       createdAt: '2026-07-18T10:00:00.000Z',
       fullProfileReport,
       classifierReleaseGateReport: classifierGateRunFixture(catalog),
+      defaultGeometrySmokeReport: defaultGeometrySmokeRunFixture(catalog),
       continuousProfileSwitchReport: continuousProfileSwitchReportFixture(fullProfileReport),
       atomOpenSoakReport: atomOpenThirtyMinuteReportFixture(),
       cwMarkerCrashReport: cwMarkerCrashReportFixture(),
