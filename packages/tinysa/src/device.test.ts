@@ -96,6 +96,7 @@ describe('device fail-loud lifecycle', () => {
       evidence: 'device-observed',
       firmwareSourceCommit: ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
       hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
+      firmwareTraces: true,
       qualification: 'device-observed-awaiting-rf-qualification',
     });
     expect(bytes.writes.slice(0, 4)).toEqual(['output off', 'version', 'info', 'help']);
@@ -117,7 +118,9 @@ describe('device fail-loud lifecycle', () => {
     await service.connect(transport.port);
     await service.configureAnalyzer({ ...analyzer, acquisitionFormat: 'raw', startHz, stopHz, points });
 
+    const writesBeforeAcquire = bytes.writes.length;
     const sweep = await service.acquireSweep();
+    const acquisitionWrites = bytes.writes.slice(writesBeforeAcquire);
 
     expect(sweep.frequencyHz).toHaveLength(points);
     expect(sweep.powerDbm).toHaveLength(points);
@@ -125,6 +128,7 @@ describe('device fail-loud lifecycle', () => {
     expect(sweep.actualStopHz).toBe(stopHz);
     expect(sweep.frequencyHz[0]).toBe(startHz);
     expect(sweep.frequencyHz.at(-1)).toBe(stopHz);
+    expect(acquisitionWrites).toContain('trace');
     await service.disconnect();
   });
 
@@ -395,6 +399,7 @@ describe('device fail-loud lifecycle', () => {
       screenCapture: false,
       remoteTouch: false,
       firmwareMarkers: false,
+      firmwareTraces: false,
       modulation: [],
     });
     expect(connected.capabilities).not.toHaveProperty('generatorFrequency');
@@ -434,7 +439,9 @@ describe('device fail-loud lifecycle', () => {
           readback: retuneGeometry,
         },
       });
+      const writesBeforeAcquire = bytes.writes.length;
       const sweep = await service.acquireSweep();
+      const acquisitionWrites = bytes.writes.slice(writesBeforeAcquire);
       expect(sweep).toMatchObject({
         actualStartHz: retune.startHz,
         actualStopHz: retune.stopHz,
@@ -446,6 +453,8 @@ describe('device fail-loud lifecycle', () => {
         },
       });
       expect(sweep.frequencyHz).toHaveLength(retune.points);
+      expect(acquisitionWrites).not.toContain('trace');
+      expect(acquisitionWrites.some((command) => /^trace [1-4] value$/.test(command))).toBe(false);
     }
     expect(bytes.writes).not.toContain('output on');
     expect(bytes.writes).not.toContain('mode output');
@@ -550,7 +559,7 @@ describe('device fail-loud lifecycle', () => {
       attenuationDb: { min: 0, max: 31, step: 1, unit: 'dB' },
       sweepSeconds: { min: 0.003, max: 60, step: 0.000_001, unit: 'seconds' },
       rawSweepOffsetReadback: true,
-      firmwareTraces: true,
+      firmwareTraces: false,
       scalarReceiver: {
         sweptSpectrum: true,
         detectedPower: true,

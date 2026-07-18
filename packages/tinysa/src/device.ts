@@ -987,7 +987,10 @@ async function buildCapabilities(
     rawSweepOffsetReadback: observed.rawSweepOffsetReadback,
     ...(fullFirmwareProfile ? { markerCount: 8 as const, traceCount: 4 as const } : {}),
     firmwareMarkers: fullFirmwareProfile && commands.includes('marker'),
-    firmwareTraces: observed.firmwareTraceReadback,
+    // Probe-derived trace syntax is sufficient to use the receiver's dBm
+    // transfer mode, but it does not grant a custom build authority for the
+    // firmware trace bank. Only the full firmware profile may read D1-D4.
+    firmwareTraces: fullFirmwareProfile && observed.firmwareTraceReadback,
     generatorReadback: false,
     modulation: generatorAdvertised ? ['off', 'am', 'fm'] : [],
     commands: [...commands],
