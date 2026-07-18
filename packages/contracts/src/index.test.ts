@@ -4,6 +4,7 @@ import {
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
   dBm,
+  deviceIdentitySchema,
   envelopeStftConfigurationSchema,
   firmwareTraceVisibilitySchema,
   generatorConfigSchema,
@@ -14,9 +15,13 @@ import {
   modelPackageManifestSchema,
   portCandidateSchema,
   signalDetectionConfigSchema,
+  SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
   traceBankConfigurationSchema,
   triggerConfigSchema,
   waterfallConfigurationSchema,
+  ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS,
+  ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+  ZS407_FIRMWARE_LIMITS,
 } from './index.js';
 
 const analyzer = {
@@ -66,6 +71,47 @@ describe('domain units and firmware-derived validation', () => {
     expect(generatorConfigSchema.safeParse(base).success).toBe(true);
     expect(generatorConfigSchema.safeParse({ ...base, modulationFrequencyHz: 3_501 }).success).toBe(false);
     expect(generatorConfigSchema.safeParse({ ...base, path: 'normal', frequencyHz: 6_300_000_001 }).success).toBe(false);
+  });
+  it('bounds custom-unqualified physical receive tuning to the normal ZS407 input path', () => {
+    expect(ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS).toEqual({
+      minimumHz: 0,
+      maximumHz: 900_000_000,
+    });
+    expect(ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS.maximumHz)
+      .toBe(ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz);
+    expect(ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS.maximumHz)
+      .toBeLessThan(ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz);
+    expect(Object.isFrozen(ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS)).toBe(true);
+  });
+  it('admits only the exact frozen 43eb0f1 source-qualified receive-only identity', () => {
+    const firmwareVersion = 'tinySA4_hw-v0.3-fft1024-g43eb0f1';
+    const sourceRecord = SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES[firmwareVersion];
+    const identity = {
+      model: 'tinySA Ultra+ ZS407',
+      hardwareVersion: 'V0.5.4 max2871',
+      firmwareVersion,
+      firmwareReportedRevision: sourceRecord.reportedRevision,
+      firmwareSourceCommit: ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+      firmwareQualification: 'custom-source-qualified-receive-only' as const,
+      firmwareWarning: sourceRecord.warning,
+      port: {
+        id: 'physical:zs407', path: '/dev/tty.zs407', vendorId: '0483', productId: '5740',
+        usbMatch: 'exact-zs407-cdc' as const, transport: 'usb-cdc-acm' as const, execution: 'physical' as const,
+      },
+      simulated: false,
+      usbIdentityVerified: true,
+      execution: 'physical' as const,
+    };
+
+    expect(deviceIdentitySchema.parse(identity)).toEqual(identity);
+    expect(deviceIdentitySchema.safeParse({ ...identity, firmwareVersion: `${firmwareVersion}-dirty` }).success).toBe(false);
+    expect(deviceIdentitySchema.safeParse({ ...identity, firmwareWarning: `${sourceRecord.warning} altered` }).success).toBe(false);
+    expect(deviceIdentitySchema.safeParse({ ...identity, firmwareSourceCommit: 'c97938697b6c7485e7cab50bca9af76996b7d671' }).success).toBe(false);
+    expect(deviceIdentitySchema.safeParse({
+      ...identity,
+      port: { ...identity.port, vendorId: undefined, productId: undefined, usbMatch: 'unverified-serial' },
+      usbIdentityVerified: false,
+    }).success).toBe(false);
   });
   it('requires exact USB candidate and detector schemas', () => {
     expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'unverified-serial', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(true);

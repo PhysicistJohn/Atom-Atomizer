@@ -3,7 +3,7 @@ import type { DeviceIdentity, Sweep } from '@tinysa/contracts';
 import {
   DEFAULT_REPLAY_CHANNEL,
   synthesizeSpectrum,
-} from '../../../../TinySA_SignalLab/src/waveforms.js';
+} from '../../../../Atom-SignalLab/src/waveforms.js';
 import { measureChannel } from './index.js';
 
 const identity: DeviceIdentity = {

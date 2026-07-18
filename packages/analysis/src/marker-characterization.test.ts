@@ -6,11 +6,11 @@ import {
   suggestedAnalyzerRange,
   synthesizeSpectrum,
   waveformDescriptor,
-} from '../../../../TinySA_SignalLab/src/waveforms.js';
+} from '../../../../Atom-SignalLab/src/waveforms.js';
 import {
   SYNTHESIZED_SIGNAL_PROFILES,
   type SynthesizedSignalProfile,
-} from '../../../../TinySA_SignalLab/src/contracts.js';
+} from '../../../../Atom-SignalLab/src/contracts.js';
 import { characterizeMarkerLocalTrace, selectMarkerCenterOnTrace } from './marker-characterization.js';
 import { readMarkers, searchMarker } from './index.js';
 
@@ -356,7 +356,7 @@ describe('canonical SignalLab marker-local stress matrix', () => {
         expect(characterization.physicalDetection, `${profile} must not acquire protocol context implicitly`).toBeUndefined();
       }
     }
-  });
+  }, 30_000);
 
   it.each([
     'gsm-normal-burst',

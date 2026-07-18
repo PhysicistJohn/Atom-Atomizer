@@ -218,9 +218,9 @@ describe('observable-training acquisition geometry', () => {
 
   it('pins independent spectrum and qualified-envelope sessions in model metadata', () => {
     expect(SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA).toMatchObject({
-      id: 'signal-lab-recommended-span-grid-with-independent-production-branch-source-clocks-v4',
+      id: 'signal-lab-recommended-span-grid-with-independent-production-branch-source-clocks-v5',
       branchPolicy:
-        'independent-no-auto-spectrum-and-qualified-first-admitted-envelope-sessions-v1',
+        'independent-no-auto-spectrum-and-qualified-rank-0-integrated-excess-envelope-sessions-v2',
       sourceClocks: {
         spectrum: {
           id: 'shared-monotonic-source-clock-v1',
@@ -231,9 +231,9 @@ describe('observable-training acquisition geometry', () => {
           id: 'shared-monotonic-source-clock-v1',
           acquisitionIndexPolicy: 'one-look-index-per-physical-acquisition-v1',
           detectedPowerCapturePolicy:
-            'capture-once-after-first-runtime-admitted-strongest-current-target-v2',
+            'capture-once-after-rank-0-integrated-excess-current-target-runtime-admission-v3',
           captureTargetSelectionPolicy:
-            'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3',
+            'preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4',
           postCaptureSpectrumPolicy: 'continue-at-next-shared-look-index-v1',
         },
       },
@@ -244,15 +244,15 @@ describe('observable-training acquisition geometry', () => {
       temporalSchedulePairs: SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULE_PAIRS,
     });
     expect(SIGNAL_LAB_PRODUCTION_ACQUISITION_BRANCH_POLICY_ID)
-      .toBe('independent-no-auto-spectrum-and-qualified-first-admitted-envelope-sessions-v1');
+      .toBe('independent-no-auto-spectrum-and-qualified-rank-0-integrated-excess-envelope-sessions-v2');
     expect(SIGNAL_LAB_PRODUCTION_SOURCE_CLOCK_POLICY_ID)
       .toBe('shared-monotonic-source-clock-v1');
     expect(SIGNAL_LAB_PRODUCTION_SPECTRUM_DETECTED_POWER_CAPTURE_POLICY_ID)
       .toBe('no-automatic-detected-power-capture-v1');
     expect(SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID)
-      .toBe('capture-once-after-first-runtime-admitted-strongest-current-target-v2');
+      .toBe('capture-once-after-rank-0-integrated-excess-current-target-runtime-admission-v3');
     expect(SIGNAL_LAB_PRODUCTION_CAPTURE_TARGET_SELECTION_POLICY_ID)
-      .toBe('preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3');
+      .toBe('preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4');
   });
 
   it('allocates one unique strictly increasing shared look index for every physical acquisition', () => {
@@ -363,7 +363,7 @@ describe('observable-training acquisition geometry', () => {
         kind: 'detected-power',
         contextId: 'wifi-hr-dsss-11m',
         targetSelectionPolicyId:
-          'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3',
+          'preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4',
         rawTargetId: 'signal-wifi-dsss-primary',
         projectedRepresentativeId: 'signal-wifi-dsss-primary',
         representativeKey: 'association:wifi-dsss:primary',

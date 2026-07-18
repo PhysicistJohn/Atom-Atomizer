@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  isSourceQualifiedZs407CustomReceiverFirmwareIdentity,
   isSupportedZs407FirmwareIdentity,
   isZs407FirmwareVersionRevisionPair,
 } from './firmware-provenance.js';
@@ -7,6 +8,7 @@ import {
 export const INSTRUMENT_CONTRACT_VERSION = 1 as const;
 export const MAX_COMPLEX_IQ_BYTES_V1 = 64 * 1024 * 1024;
 export const MAX_COMPLEX_IQ_SAMPLES_V1 = MAX_COMPLEX_IQ_BYTES_V1 / 8;
+export const MAX_COMPLEX_IQ_SAMPLE_FORMATS_V1 = 4;
 /**
  * Absolute resource limits for instrument contract v1. These are protocol
  * ceilings, not device capability claims: every driver (including future SDR
@@ -33,6 +35,7 @@ export const MAX_DIAGNOSTIC_REPORTS_V1 = 3;
 export const MAX_DIAGNOSTIC_LINES_V1 = 256;
 export const MAX_DIAGNOSTIC_LINE_CHARACTERS_V1 = 2_048;
 export const MAX_SIGNAL_LAB_PROFILES_V1 = 1_024;
+export const MAX_SIGNAL_LAB_SOURCE_REFERENCES_V1 = 32;
 export const MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1 = 1_024;
 export const MAX_INSTRUMENT_METADATA_CHARACTERS_V1 = 512;
 export const MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1 = 4_096;
@@ -86,6 +89,7 @@ export function projectDetectedPowerTuneHz(
 
 export const INSTRUMENT_CONTRACT_LIMITS_V1 = Object.freeze({
   complexIqBytes: MAX_COMPLEX_IQ_BYTES_V1,
+  complexIqSampleFormats: MAX_COMPLEX_IQ_SAMPLE_FORMATS_V1,
   scalarMeasurementBytes: MAX_SCALAR_MEASUREMENT_BYTES_V1,
   sweptSpectrumPoints: MAX_SWEPT_SPECTRUM_POINTS_V1,
   detectedPowerSamples: MAX_DETECTED_POWER_SAMPLES_V1,
@@ -107,6 +111,7 @@ export const INSTRUMENT_CONTRACT_LIMITS_V1 = Object.freeze({
   diagnosticLines: MAX_DIAGNOSTIC_LINES_V1,
   diagnosticLineCharacters: MAX_DIAGNOSTIC_LINE_CHARACTERS_V1,
   signalLabProfiles: MAX_SIGNAL_LAB_PROFILES_V1,
+  signalLabSourceReferences: MAX_SIGNAL_LAB_SOURCE_REFERENCES_V1,
   endpointPathCharacters: MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1,
   metadataCharacters: MAX_INSTRUMENT_METADATA_CHARACTERS_V1,
   messageCharacters: MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1,
@@ -133,6 +138,41 @@ const sampleRateHzSchema = z.number().int().positive().max(MAX_INSTRUMENT_SAMPLE
 const boundedPowerSchema = z.number().finite()
   .min(-MAX_INSTRUMENT_POWER_ABS_DB_V1)
   .max(MAX_INSTRUMENT_POWER_ABS_DB_V1);
+
+/**
+ * Interleaved I,Q wire encodings admitted at the instrument boundary. Drivers
+ * may expose their efficient native encoding; consumers therefore never have
+ * to infer component width, signedness, byte order, or I/Q ordering.
+ */
+export const COMPLEX_IQ_SAMPLE_FORMATS_V1 = ['cf32le', 'ci16le', 'ci8', 'cu8'] as const;
+export const complexIqSampleFormatSchema = z.enum(COMPLEX_IQ_SAMPLE_FORMATS_V1);
+export type ComplexIqSampleFormat = z.infer<typeof complexIqSampleFormatSchema>;
+export const COMPLEX_IQ_BYTES_PER_SAMPLE_V1: Readonly<Record<ComplexIqSampleFormat, number>> = Object.freeze({
+  cf32le: 8,
+  ci16le: 4,
+  ci8: 2,
+  cu8: 2,
+});
+
+/** Exact byte geometry for one compact, interleaved I/Q capture. */
+export function complexIqPayloadByteLength(
+  sampleCount: number,
+  sampleFormat: ComplexIqSampleFormat,
+): number {
+  if (!Number.isSafeInteger(sampleCount) || sampleCount < 1) {
+    throw new TypeError('Complex-I/Q sample count must be a positive safe integer');
+  }
+  if (sampleCount > MAX_COMPLEX_IQ_SAMPLES_V1) {
+    throw new RangeError(`Complex-I/Q sample count is limited to ${MAX_COMPLEX_IQ_SAMPLES_V1} in contract v1`);
+  }
+  const bytesPerSample = COMPLEX_IQ_BYTES_PER_SAMPLE_V1[sampleFormat];
+  if (bytesPerSample === undefined) throw new TypeError(`Unsupported complex-I/Q sample format ${String(sampleFormat)}`);
+  const byteLength = sampleCount * bytesPerSample;
+  if (!Number.isSafeInteger(byteLength) || byteLength > MAX_COMPLEX_IQ_BYTES_V1) {
+    throw new RangeError(`Complex-I/Q payloads are limited to ${MAX_COMPLEX_IQ_BYTES_V1} bytes in contract v1`);
+  }
+  return byteLength;
+}
 
 /** Rejects over-limit arrays before Zod walks or copies their elements. */
 function boundedReadonlyArray<Element extends z.ZodType>(
@@ -414,11 +454,20 @@ export const complexIqCapabilitySchema = z.object({
   centerFrequencyHz: frequencyRangeSchema,
   sampleRateHz: sampleRateRangeSchema,
   bandwidthHz: sampleRateRangeSchema,
+  bandwidthMode: z.enum(['independent', 'equal-to-sample-rate']).optional(),
   sampleCount: complexIqSampleCountRangeSchema,
-  sampleFormat: z.literal('cf32le'),
+  sampleFormat: complexIqSampleFormatSchema,
 }).strict().superRefine((capability, context) => {
   if (capability.bandwidthHz.min > maximumReachableRangeValue(capability.sampleRateHz)) {
     context.addIssue({ code: 'custom', path: ['bandwidthHz', 'min'], message: 'Complex-I/Q capability must admit a bandwidth no greater than an advertised sample rate' });
+  }
+  if (capability.bandwidthMode === 'equal-to-sample-rate'
+    && !integerRangesShareValue(capability.sampleRateHz, capability.bandwidthHz)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['bandwidthMode'],
+      message: 'Equal-rate complex-I/Q capability must admit at least one common sample-rate and bandwidth value',
+    });
   }
 });
 export const instrumentAcquisitionCapabilitySchema = z.discriminatedUnion('kind', [
@@ -486,14 +535,96 @@ export const diagnosticsCapabilitySchema = z.object({
     context.addIssue({ code: 'custom', path: ['reports'], message: 'Diagnostic report kinds must be unique' });
   }
 });
+
+const signalLabProfileGeometryShape = {
+  profileId: instrumentOpaqueIdSchema,
+  centerFrequencyHz: frequencyHzSchema,
+  recommendedSpanHz: positiveFrequencyHzSchema,
+} as const;
+
+export const signalLabProfileGeometrySchema = z.object(signalLabProfileGeometryShape).strict();
+export type SignalLabProfileGeometry = z.infer<typeof signalLabProfileGeometrySchema>;
+
+const signalLabWaveformProjectionSchema = z.object({
+  allocation: z.enum([
+    'carrier', 'sidebands', 'full', 'narrowband', 'multi-ru', 'resource-unit',
+    'frequency-hopping', 'advertising-channels',
+  ]),
+  modulation: z.enum([
+    'unmodulated', 'am', 'fm', 'gmsk', 'qpsk', 'aqpsk', '8psk', '16qam',
+    '32qam', '64qam', '256qam', '1024qam', 'ofdm-mixed', 'he-ofdm',
+    'hr-dsss', 'br-edr', 'ble-1m',
+  ]),
+  timing: z.enum(['continuous', 'burst', 'frame', 'tdd-frame', 'classic-slots', 'advertising-events']),
+  duplex: z.enum(['fdd', 'tdd']).optional(),
+  subcarrierSpacingHz: sampleRateHzSchema.optional(),
+  nominalResourceBlocks: z.number().int().positive().max(100_000).optional(),
+}).strict();
+
+const signalLabSourceReferenceSchema = z.object({
+  specification: metadataStringSchema,
+  clause: metadataStringSchema,
+  revision: metadataStringSchema,
+  url: z.string().min(1).max(MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1).url(),
+}).strict();
+
+/**
+ * A complete, admitted SignalLab catalog entry. The lightweight geometry
+ * schema remains valid for older drivers, but enriched entries are atomic:
+ * callers cannot attach only a label or an unsupported compliance claim.
+ */
+export const signalLabWaveformDescriptorSchema = z.object({
+  ...signalLabProfileGeometryShape,
+  label: metadataStringSchema,
+  family: z.enum(['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan', 'bluetooth']),
+  model: metadataStringSchema,
+  qualification: z.enum(['visual', 'standards-derived', 'conformance-validated']),
+  occupiedBandwidthHz: positiveFrequencyHzSchema,
+  projection: signalLabWaveformProjectionSchema,
+  source: z.object({
+    organization: z.enum(['TinySA SignalLab', '3GPP', 'IEEE', 'Bluetooth SIG']),
+    references: boundedReadonlyArray(
+      signalLabSourceReferenceSchema,
+      MAX_SIGNAL_LAB_SOURCE_REFERENCES_V1,
+      1,
+    ),
+  }).strict(),
+  disclosure: z.string().min(1).max(MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1),
+  assetSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).strict().superRefine((descriptor, context) => {
+  if (descriptor.recommendedSpanHz < descriptor.occupiedBandwidthHz) {
+    context.addIssue({ code: 'custom', path: ['recommendedSpanHz'], message: 'Recommended span must contain the occupied bandwidth' });
+  }
+  if (descriptor.qualification === 'conformance-validated' && descriptor.assetSha256 === undefined) {
+    context.addIssue({ code: 'custom', path: ['assetSha256'], message: 'Conformance-validated waveforms require a verified I/Q asset hash' });
+  }
+  if (descriptor.qualification === 'visual' && descriptor.source.organization !== 'TinySA SignalLab') {
+    context.addIssue({ code: 'custom', path: ['source', 'organization'], message: 'Visual analytic waveforms must cite TinySA SignalLab' });
+  }
+  if (descriptor.qualification !== 'visual' && descriptor.source.organization === 'TinySA SignalLab') {
+    context.addIssue({ code: 'custom', path: ['source', 'organization'], message: 'Standards or conformance-qualified waveforms require an external standards organization' });
+  }
+});
+export type SignalLabWaveformDescriptor = z.infer<typeof signalLabWaveformDescriptorSchema>;
+
+export const signalLabChannelStateSchema = z.object({
+  model: z.enum(['awgn', 'rayleigh']),
+  noiseFloorDbm: z.number().finite().min(-150).max(-30),
+  seed: z.number().int().min(1).max(0xffff_ffff),
+  fadingRateHz: z.number().finite().min(0.1).max(100),
+}).strict();
+export type SignalLabChannelState = z.infer<typeof signalLabChannelStateSchema>;
+
 export const signalLabProfileSelectionCapabilitySchema = z.object({
   kind: z.literal('signal-lab-profile-selection'),
-  profiles: boundedReadonlyArray(z.object({
-    profileId: instrumentOpaqueIdSchema,
-    centerFrequencyHz: frequencyHzSchema,
-    recommendedSpanHz: positiveFrequencyHzSchema,
-  }).strict(), MAX_SIGNAL_LAB_PROFILES_V1, 1),
+  profiles: boundedReadonlyArray(
+    z.union([signalLabWaveformDescriptorSchema, signalLabProfileGeometrySchema]),
+    MAX_SIGNAL_LAB_PROFILES_V1,
+    1,
+  ),
   selectedProfileId: instrumentOpaqueIdSchema,
+  channel: signalLabChannelStateSchema.optional(),
+  iqProfileIds: boundedReadonlyArray(instrumentOpaqueIdSchema, MAX_SIGNAL_LAB_PROFILES_V1, 1).optional(),
 }).strict().superRefine((capability, context) => {
   if (capability.profiles.length > MAX_SIGNAL_LAB_PROFILES_V1) return;
   if (new Set(capability.profiles.map((profile) => profile.profileId)).size !== capability.profiles.length) {
@@ -501,6 +632,21 @@ export const signalLabProfileSelectionCapabilitySchema = z.object({
   }
   if (!capability.profiles.some((profile) => profile.profileId === capability.selectedProfileId)) {
     context.addIssue({ code: 'custom', path: ['selectedProfileId'], message: 'Selected SignalLab profile must be advertised' });
+  }
+  const enrichedProfiles = capability.profiles.filter((profile) => 'label' in profile);
+  if (enrichedProfiles.length > 0 && enrichedProfiles.length !== capability.profiles.length) {
+    context.addIssue({ code: 'custom', path: ['profiles'], message: 'SignalLab catalog descriptors must be either complete for every profile or omitted for every profile' });
+  }
+  if (capability.iqProfileIds !== undefined) {
+    if (new Set(capability.iqProfileIds).size !== capability.iqProfileIds.length) {
+      context.addIssue({ code: 'custom', path: ['iqProfileIds'], message: 'SignalLab I/Q profile IDs must be unique' });
+    }
+    const catalogIds = new Set(capability.profiles.map((profile) => profile.profileId));
+    for (const [index, profileId] of capability.iqProfileIds.entries()) {
+      if (!catalogIds.has(profileId)) {
+        context.addIssue({ code: 'custom', path: ['iqProfileIds', index], message: 'SignalLab I/Q profile must belong to the admitted catalog' });
+      }
+    }
   }
 });
 export const instrumentFeatureCapabilitySchema = z.discriminatedUnion('kind', [
@@ -544,12 +690,11 @@ export function instrumentCapabilitySourceBindingIssues(
   if (sourceKind === 'signal-lab') {
     const spectrum = capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
     const detected = capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
-    if (capabilities.acquisitions.length !== 2 || !spectrum || !detected) {
-      issues.push({ path: ['acquisitions'], message: 'SignalLab must advertise exactly swept-spectrum and detected-power acquisitions' });
+    if (scalar.length !== 2 || !spectrum || !detected) {
+      issues.push({ path: ['acquisitions'], message: 'SignalLab must advertise swept-spectrum and detected-power scalar acquisitions' });
     }
-    if (capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')
-      || scalar.some((capability) => capability.controls.model !== 'synthetic-scalar')) {
-      issues.push({ path: ['acquisitions'], message: 'SignalLab acquisitions must use only synthetic scalar controls' });
+    if (scalar.some((capability) => capability.controls.model !== 'synthetic-scalar')) {
+      issues.push({ path: ['acquisitions'], message: 'SignalLab scalar acquisitions must use only synthetic scalar controls' });
     }
     for (const [index, capability] of capabilities.acquisitions.entries()) {
       if (capability.kind === 'complex-iq') continue;
@@ -573,6 +718,13 @@ export function instrumentCapabilitySourceBindingIssues(
         if (!numericRangePermits(profile.centerFrequencyHz, detected.centerFrequencyHz)) {
           issues.push({ path: ['features', 0, 'profiles', profileIndex, 'centerFrequencyHz'], message: 'SignalLab profile center must lie on the detected-power frequency grid' });
         }
+      }
+      const advertisesIq = capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq');
+      if (advertisesIq !== (profileFeature.iqProfileIds !== undefined)) {
+        issues.push({
+          path: ['features', 0, 'iqProfileIds'],
+          message: 'SignalLab I/Q acquisition and its admitted profile registry must be advertised together',
+        });
       }
     }
     return issues;
@@ -600,12 +752,73 @@ function maximumReachableRangeValue(range: { min: number; max: number; step?: nu
   return range.min + Math.floor((range.max - range.min) / range.step) * range.step;
 }
 
+/** Exact arithmetic-progression intersection for safe-integer capability ranges. */
+function integerRangesShareValue(
+  left: Readonly<{ min: number; max: number; step?: number }>,
+  right: Readonly<{ min: number; max: number; step?: number }>,
+): boolean {
+  const lower = BigInt(Math.max(left.min, right.min));
+  const upper = BigInt(Math.min(left.max, right.max));
+  if (upper < lower) return false;
+  const leftStart = BigInt(left.min);
+  const rightStart = BigInt(right.min);
+  const leftStep = BigInt(left.step ?? 1);
+  const rightStep = BigInt(right.step ?? 1);
+  const divisor = greatestCommonDivisor(leftStep, rightStep);
+  const difference = rightStart - leftStart;
+  if (difference % divisor !== 0n) return false;
+  const reducedRightStep = rightStep / divisor;
+  const multiplier = reducedRightStep === 1n
+    ? 0n
+    : positiveRemainder(
+        (difference / divisor) * modularInverse(leftStep / divisor, reducedRightStep),
+        reducedRightStep,
+      );
+  let candidate = leftStart + leftStep * multiplier;
+  const period = leftStep * reducedRightStep;
+  if (candidate < lower) candidate += ((lower - candidate + period - 1n) / period) * period;
+  return candidate <= upper;
+}
+
+function greatestCommonDivisor(left: bigint, right: bigint): bigint {
+  let a = left;
+  let b = right;
+  while (b !== 0n) [a, b] = [b, a % b];
+  return a;
+}
+
+function modularInverse(value: bigint, modulus: bigint): bigint {
+  let oldRemainder = value;
+  let remainder = modulus;
+  let oldCoefficient = 1n;
+  let coefficient = 0n;
+  while (remainder !== 0n) {
+    const quotient = oldRemainder / remainder;
+    [oldRemainder, remainder] = [remainder, oldRemainder - quotient * remainder];
+    [oldCoefficient, coefficient] = [coefficient, oldCoefficient - quotient * coefficient];
+  }
+  return positiveRemainder(oldCoefficient, modulus);
+}
+
+function positiveRemainder(value: bigint, modulus: bigint): bigint {
+  const remainder = value % modulus;
+  return remainder < 0n ? remainder + modulus : remainder;
+}
+
 export const instrumentMeasurementQualificationSchema = z.enum([
   'device-observed',
   'firmware-executed-twin',
   'synthetic-visual-projection',
+  'analytic-complex-baseband',
+  'standards-derived-complex-baseband',
 ]);
 export type InstrumentMeasurementQualification = z.infer<typeof instrumentMeasurementQualificationSchema>;
+
+const scalarMeasurementQualificationSchema = z.enum([
+  'device-observed',
+  'firmware-executed-twin',
+  'synthetic-visual-projection',
+]);
 
 const sessionSerialPortSchema = z.object({
   path: endpointPathSchema,
@@ -669,8 +882,37 @@ const customSerialSessionDeviceSchema = z.object({
   }
 });
 
+const sourceQualifiedCustomReceiverSerialSessionDeviceSchema = z.object({
+  ...serialSessionDeviceBaseShape,
+  firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i),
+  firmwareSourceCommit: z.string().regex(/^[a-f0-9]{40}$/i),
+  firmwareQualification: z.literal('custom-source-qualified-receive-only'),
+  firmwareWarning: metadataStringSchema,
+}).strict().superRefine((device, context) => {
+  if (!isZs407FirmwareVersionRevisionPair(device.firmwareVersion, device.firmwareReportedRevision)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareReportedRevision'],
+      message: 'Source-qualified custom receive-only revision must equal the single revision token in the firmware version',
+    });
+  }
+  if (!isSourceQualifiedZs407CustomReceiverFirmwareIdentity(
+    device.firmwareVersion,
+    device.firmwareReportedRevision,
+    device.firmwareSourceCommit,
+    device.firmwareWarning,
+  )) {
+    context.addIssue({
+      code: 'custom',
+      path: ['firmwareSourceCommit'],
+      message: 'Source-qualified custom receive-only firmware must match its exact frozen source record and warning',
+    });
+  }
+});
+
 const serialSessionDeviceSchema = z.union([
   supportedOemSerialSessionDeviceSchema,
+  sourceQualifiedCustomReceiverSerialSessionDeviceSchema,
   customSerialSessionDeviceSchema,
 ]);
 
@@ -773,6 +1015,11 @@ export const signalLabSelectProfileFeatureRequestSchema = z.object({
   action: z.literal('select-profile'),
   profileId: instrumentOpaqueIdSchema,
 }).strict();
+export const signalLabConfigureChannelFeatureRequestSchema = z.object({
+  kind: z.literal('signal-lab-profile-selection'),
+  action: z.literal('configure-channel'),
+  channel: signalLabChannelStateSchema,
+}).strict();
 export const instrumentFeatureRequestSchema = z.union([
   rfGeneratorConfigureFeatureRequestSchema,
   rfGeneratorOutputFeatureRequestSchema,
@@ -780,6 +1027,7 @@ export const instrumentFeatureRequestSchema = z.union([
   touchTapFeatureRequestSchema,
   diagnosticsReadFeatureRequestSchema,
   signalLabSelectProfileFeatureRequestSchema,
+  signalLabConfigureChannelFeatureRequestSchema,
 ]);
 export type InstrumentFeatureRequest = z.infer<typeof instrumentFeatureRequestSchema>;
 
@@ -790,6 +1038,7 @@ export const screenCaptureFeatureCommandSchema = screenCaptureFeatureRequestSche
 export const touchTapFeatureCommandSchema = touchTapFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const diagnosticsReadFeatureCommandSchema = diagnosticsReadFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const signalLabSelectProfileFeatureCommandSchema = signalLabSelectProfileFeatureRequestSchema.extend(featureCommandSessionShape).strict();
+export const signalLabConfigureChannelFeatureCommandSchema = signalLabConfigureChannelFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const instrumentFeatureCommandSchema = z.union([
   rfGeneratorConfigureFeatureCommandSchema,
   rfGeneratorOutputFeatureCommandSchema,
@@ -797,6 +1046,7 @@ export const instrumentFeatureCommandSchema = z.union([
   touchTapFeatureCommandSchema,
   diagnosticsReadFeatureCommandSchema,
   signalLabSelectProfileFeatureCommandSchema,
+  signalLabConfigureChannelFeatureCommandSchema,
 ]);
 export type InstrumentFeatureCommand = z.infer<typeof instrumentFeatureCommandSchema>;
 
@@ -854,6 +1104,10 @@ export const signalLabSelectProfileFeatureResultSchema = signalLabSelectProfileF
   ...featureResultSessionShape,
   producerConfigurationEpoch: instrumentOpaqueIdSchema,
 }).strict();
+export const signalLabConfigureChannelFeatureResultSchema = signalLabConfigureChannelFeatureRequestSchema.extend({
+  ...featureResultSessionShape,
+  producerConfigurationEpoch: instrumentOpaqueIdSchema,
+}).strict();
 export const instrumentFeatureResultSchema = z.union([
   rfGeneratorConfigureFeatureResultSchema,
   rfGeneratorOutputFeatureResultSchema,
@@ -861,6 +1115,7 @@ export const instrumentFeatureResultSchema = z.union([
   touchTapFeatureResultSchema,
   diagnosticsReadFeatureResultSchema,
   signalLabSelectProfileFeatureResultSchema,
+  signalLabConfigureChannelFeatureResultSchema,
 ]);
 export type InstrumentFeatureResult = z.infer<typeof instrumentFeatureResultSchema>;
 
@@ -950,7 +1205,7 @@ export const complexIqConfigurationSchema = z.object({
   sampleRateHz: sampleRateHzSchema,
   bandwidthHz: sampleRateHzSchema,
   sampleCount: z.number().int().positive().max(MAX_COMPLEX_IQ_SAMPLES_V1),
-  sampleFormat: z.literal('cf32le'),
+  sampleFormat: complexIqSampleFormatSchema,
 }).strict().superRefine((configuration, context) => {
   if (configuration.bandwidthHz > configuration.sampleRateHz) {
     context.addIssue({ code: 'custom', path: ['bandwidthHz'], message: 'Complex-I/Q bandwidth cannot exceed its sample rate' });
@@ -1072,6 +1327,13 @@ export function instrumentConfigurationCapabilityBindingIssues(
     if (configuration.sampleFormat !== capability.sampleFormat) {
       issues.push({ path: ['sampleFormat'], message: `I/Q sample format ${configuration.sampleFormat} is not advertised` });
     }
+    if (capability.bandwidthMode === 'equal-to-sample-rate'
+      && configuration.bandwidthHz !== configuration.sampleRateHz) {
+      issues.push({
+        path: ['bandwidthHz'],
+        message: 'I/Q bandwidth must equal sample rate for this acquisition capability',
+      });
+    }
   }
   return issues;
 }
@@ -1158,13 +1420,13 @@ const measurementBaseShape = {
   elapsedMilliseconds: z.number().finite().nonnegative().max(MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1),
   resolutionBandwidthHz: z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1).nullable(),
   attenuationDb: boundedPowerSchema.nullable(),
-  qualification: instrumentMeasurementQualificationSchema,
   complete: z.literal(true),
 } as const;
 
 export const sweptSpectrumMeasurementSchema = z.object({
   ...measurementBaseShape,
   kind: z.literal('swept-spectrum'),
+  qualification: scalarMeasurementQualificationSchema,
   frequencyHz: boundedReadonlyArray(measuredFrequencyHzSchema, MAX_SWEPT_SPECTRUM_POINTS_V1, 2),
   powerDbm: boundedReadonlyArray(boundedPowerSchema, MAX_SWEPT_SPECTRUM_POINTS_V1, 2),
 }).strict().superRefine((measurement, context) => {
@@ -1183,6 +1445,7 @@ export const sweptSpectrumMeasurementSchema = z.object({
 export const detectedPowerTimeseriesMeasurementSchema = z.object({
   ...measurementBaseShape,
   kind: z.literal('detected-power-timeseries'),
+  qualification: scalarMeasurementQualificationSchema,
   centerHz: frequencyHzSchema,
   sampleIntervalSeconds: z.number().finite().positive().max(MAX_INSTRUMENT_DURATION_SECONDS_V1),
   timingQualification: z.enum(['wall-clock-derived', 'measured-calibrated', 'simulation-exact']),
@@ -1191,18 +1454,27 @@ export const detectedPowerTimeseriesMeasurementSchema = z.object({
 export const complexIqMeasurementSchema = z.object({
   ...measurementBaseShape,
   kind: z.literal('complex-iq'),
+  qualification: instrumentMeasurementQualificationSchema,
   centerHz: frequencyHzSchema,
   sampleRateHz: sampleRateHzSchema,
   bandwidthHz: sampleRateHzSchema,
-  sampleFormat: z.literal('cf32le'),
+  sampleFormat: complexIqSampleFormatSchema,
   sampleCount: z.number().int().positive().max(MAX_COMPLEX_IQ_SAMPLES_V1),
   samples: compactUint8ArraySchema(MAX_COMPLEX_IQ_BYTES_V1),
 }).strict().superRefine((measurement, context) => {
   if (measurement.bandwidthHz > measurement.sampleRateHz) {
     context.addIssue({ code: 'custom', path: ['bandwidthHz'], message: 'Complex-I/Q bandwidth cannot exceed its sample rate' });
   }
-  if (measurement.samples.byteLength !== measurement.sampleCount * 8) {
-    context.addIssue({ code: 'custom', path: ['samples'], message: 'cf32le requires exactly eight bytes per complex sample' });
+  if (!Number.isSafeInteger(measurement.sampleCount)
+    || measurement.sampleCount < 1
+    || measurement.sampleCount > MAX_COMPLEX_IQ_SAMPLES_V1) return;
+  const expectedByteLength = complexIqPayloadByteLength(measurement.sampleCount, measurement.sampleFormat);
+  if (measurement.samples.byteLength !== expectedByteLength) {
+    context.addIssue({
+      code: 'custom',
+      path: ['samples'],
+      message: `${measurement.sampleFormat} requires exactly ${expectedByteLength} bytes for ${measurement.sampleCount} complex samples`,
+    });
   }
 });
 export const instrumentMeasurementSchema = z.discriminatedUnion('kind', [
@@ -1367,7 +1639,7 @@ export const instrumentManagerEventSchema = z.union([
   z.object({
     type: z.literal('configuration-invalidated'),
     sessionId: instrumentOpaqueIdSchema,
-    reason: z.enum(['source-profile-changed', 'instrument-mode-changed']),
+    reason: z.enum(['source-profile-changed', 'source-channel-changed', 'instrument-mode-changed']),
     session: instrumentSessionSnapshotSchema,
   }).strict(),
   z.object({

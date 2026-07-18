@@ -3,14 +3,17 @@ import { logGamma, mixtureLogLikelihood, posteriorCandidates, studentTLogDensity
 import {
   inferPosterior,
   selectObservableDecision as selectObservableDecisionRaw,
-} from '../../../../AtomOS_Classifier/src/bayesian-waveform-classifier.js';
-import { BAYESIAN_OBSERVABLE_MODEL } from '../../../../AtomOS_Classifier/src/models/bayesian-observable.generated.js';
+} from '../../../../Atom-Classifier/src/bayesian-waveform-classifier.js';
+import { BAYESIAN_OBSERVABLE_MODEL } from '../../../../Atom-Classifier/src/models/bayesian-observable.generated.js';
 import {
   OBSERVABLE_EVIDENCE_VIEWS,
   observableClassSupportsEvidenceView,
   observableModelComponents,
-} from '../../../../AtomOS_Classifier/src/observable-classifier-model.js';
-import { DETECTED_POWER_ACQUISITION_QUALIFICATION } from './observable-features.js';
+} from '../../../../Atom-Classifier/src/observable-classifier-model.js';
+import {
+  DETECTED_POWER_ACQUISITION_QUALIFICATION,
+  DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION,
+} from './observable-features.js';
 
 const unitCauchy: StudentTLikelihoodComponent = {
   id: 'unit-cauchy',
@@ -31,6 +34,7 @@ const qualifiedEnvelope = (values: Readonly<Record<string, number>>) => ({
   views: ['scalar-spectrum', 'detected-power-envelope'] as const,
   zeroSpanCaptureId: 'policy-test-capture',
   detectedPowerAcquisitionQualification: DETECTED_POWER_ACQUISITION_QUALIFICATION,
+  detectedPowerSelectionCondition: DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION,
 });
 
 describe('Bayesian classifier Student-t likelihood math', () => {
@@ -115,6 +119,53 @@ describe('Bayesian classifier Student-t likelihood math', () => {
       label: 'cellular-ofdm-ambiguous', probability: 0.95,
     });
     expect(selectObservableDecision(candidates, { centerHz: 1_840_000_000, bandwidthHz: 40_000_000, values: {} }).label).toBe('unknown');
+  });
+
+  it('forms an equivalence-class posterior from selected mass and its complement', () => {
+    // Exact posterior replayed from SignalLab LTE Band 3 sequence 3954 in
+    // scalar-lte-b3-1784363087146: all leaves satisfy their probability
+    // contract, while summing independently normalized LTE and NR events used
+    // to produce 1.0000000000000002.
+    const candidates = [
+      candidate('lte-fdd-like', 0.5364620990503566),
+      candidate('nr-fdd-like', 0.46353790094964487),
+      candidate('unknown-signal', 1.1361602155896544e-27),
+      candidate('cw-like', 5.144353888487742e-32),
+      candidate('am-dsb-full-carrier-like', 0),
+      candidate('fm-angle-modulated-like', 0),
+      candidate('gsm-like', 0),
+      candidate('lte-tdd-like', 0),
+      candidate('nr-tdd-like', 0),
+      candidate('wifi-hr-dsss-like', 0),
+      candidate('wifi-ofdm-like', 0),
+      candidate('bluetooth-like', 0),
+    ];
+
+    const decision = selectObservableDecision(candidates, {
+      centerHz: 1_840_000_000,
+      bandwidthHz: 17_572_383.07349682,
+      values: {},
+    });
+
+    expect(decision).toEqual({ label: 'cellular-ofdm-ambiguous', probability: 1 });
+    expect(decision.probability).toBeGreaterThanOrEqual(0);
+    expect(decision.probability).toBeLessThanOrEqual(1);
+  });
+
+  it('rejects a materially unnormalized posterior instead of clipping its aggregate', () => {
+    const candidates = [
+      candidate('lte-fdd-like', 0.4),
+      candidate('lte-tdd-like', 0.3),
+      candidate('nr-fdd-like', 0.3),
+      candidate('nr-tdd-like', 0.2),
+      candidate('unknown-signal', 0),
+    ];
+
+    expect(() => selectObservableDecision(candidates, {
+      centerHz: 1_840_000_000,
+      bandwidthHz: 18_000_000,
+      values: {},
+    })).toThrow(/failed to normalize before aggregation/i);
   });
 
   it('does not turn aggregate cellular mass into a cellular claim when the leading hypothesis is non-cellular', () => {

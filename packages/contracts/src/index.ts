@@ -21,7 +21,9 @@ import {
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
+  ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
   ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
+  isSourceQualifiedZs407CustomReceiverFirmwareIdentity,
   isSupportedZs407FirmwareIdentity,
   isZs407FirmwareVersionRevisionPair,
   type FirmwareQualification,
@@ -56,6 +58,18 @@ export const ZS407_FIRMWARE_LIMITS = Object.freeze({
   screenWidth: 480,
   screenHeight: 320,
   rawRssiDivisor: 32,
+} as const);
+
+/**
+ * Host-side receive-only envelope for an exact physical ZS407 whose firmware
+ * remains custom-unqualified.  The normal input path is bounded by exact
+ * hardware identity; the custom build's Ultra/harmonic behavior is not.  A
+ * requested tune inside this envelope is still admitted only after exact
+ * post-command sweep geometry readback.
+ */
+export const ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS = Object.freeze({
+  minimumHz: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz,
+  maximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
 } as const);
 
 // The shared UI-staging AnalyzerConfig is not ZS407-only: SignalLab's synthetic
@@ -155,9 +169,16 @@ export const deviceIdentitySchema = z.object({
   firmwareSourceCommit: z.union([
     z.literal(FIRMWARE_SOURCE_COMMIT),
     z.literal(ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT),
+    z.literal(ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT),
     z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
   ]).optional(),
-  firmwareQualification: z.enum(['supported-oem', 'custom-unqualified', 'executable-twin', 'protocol-test']),
+  firmwareQualification: z.enum([
+    'supported-oem',
+    'custom-source-qualified-receive-only',
+    'custom-unqualified',
+    'executable-twin',
+    'protocol-test',
+  ]),
   firmwareWarning: z.string().min(1).max(MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1).optional(),
   port: portCandidateSchema,
   simulated: z.boolean(),
@@ -185,8 +206,9 @@ export const deviceIdentitySchema = z.object({
   }
   if (identity.execution === 'physical') {
     if (identity.firmwareQualification !== 'supported-oem'
+      && identity.firmwareQualification !== 'custom-source-qualified-receive-only'
       && identity.firmwareQualification !== 'custom-unqualified') {
-      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Physical identity requires supported or explicitly unqualified firmware' });
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Physical identity requires supported, source-qualified receive-only, or explicitly unqualified firmware' });
     }
     if (!identity.firmwareReportedRevision
       || !isZs407FirmwareVersionRevisionPair(identity.firmwareVersion, identity.firmwareReportedRevision)) {
@@ -196,6 +218,18 @@ export const deviceIdentitySchema = z.object({
         || !isSupportedZs407FirmwareIdentity(identity.firmwareVersion, identity.firmwareReportedRevision, identity.firmwareSourceCommit)
         || identity.firmwareWarning !== undefined) {
         context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Supported physical firmware must match the closed revision registry without a warning' });
+      }
+    } else if (identity.firmwareQualification === 'custom-source-qualified-receive-only') {
+      if (!identity.firmwareSourceCommit
+        || !identity.firmwareWarning
+        || !identity.usbIdentityVerified
+        || !isSourceQualifiedZs407CustomReceiverFirmwareIdentity(
+          identity.firmwareVersion,
+          identity.firmwareReportedRevision,
+          identity.firmwareSourceCommit,
+          identity.firmwareWarning,
+        )) {
+        context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Source-qualified custom receive-only firmware must match its exact frozen source record and warning' });
       }
     } else if (identity.firmwareQualification === 'custom-unqualified'
       && (identity.firmwareSourceCommit !== undefined
@@ -277,7 +311,12 @@ export interface DeviceCapabilities {
   evidence: CapabilityEvidence;
   firmwareSourceCommit?: FirmwareSourceCommit;
   hostContractSourceCommit: typeof FIRMWARE_SOURCE_COMMIT;
-  qualification: 'device-observed-awaiting-rf-qualification' | 'custom-firmware-unqualified' | 'executable-twin-observed' | 'protocol-test-only';
+  qualification:
+    | 'device-observed-awaiting-rf-qualification'
+    | 'custom-firmware-source-qualified-receive-only'
+    | 'custom-firmware-unqualified'
+    | 'executable-twin-observed'
+    | 'protocol-test-only';
 }
 
 export type Verification = 'commanded' | 'verified' | 'unknown' | 'stale';
@@ -792,9 +831,9 @@ export interface ZeroSpanCapture {
 }
 
 export type DetectedPowerCapturePolicyId =
-  'capture-once-after-first-runtime-admitted-strongest-current-target-v2';
+  'capture-once-after-rank-0-integrated-excess-current-target-runtime-admission-v3';
 export type CaptureTargetSelectionPolicyId =
-  'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3';
+  'preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4';
 
 /**
  * Explicit relationship between the physical row tuned by the controller and
@@ -821,6 +860,15 @@ export interface DetectedPowerCaptureCandidateEvidence {
   inputOrdinal: number;
   rawTargetId: string;
   currentPeakDbm: number;
+  /** Exact current frozen source look integrated for automatic ranking. */
+  currentSourceSweepId: string;
+  currentSupportStartHz: number;
+  currentSupportStopHz: number;
+  currentSupportCellCount: number;
+  currentRobustFloorDbm: number;
+  currentActualRbwHz: number;
+  /** Exact unrounded linear-power integral used for target ordering. */
+  currentIntegratedExcessPowerMw: number;
   currentPeakHz: number;
   currentStartHz: number;
   currentStopHz: number;
@@ -877,13 +925,13 @@ export interface DetectedPowerCaptureRepresentativeEvidence {
  * never reread for classification features.
  */
 export interface DetectedPowerCaptureReceipt {
-  schemaVersion: 3;
+  schemaVersion: 4;
   capturePolicyId: DetectedPowerCapturePolicyId;
   targetSelectionPolicyId: CaptureTargetSelectionPolicyId;
   runtimeAdmissionPolicyId:
     'exact-eight-sweep-pre-capture-observable-feature-admission-v1';
   selection: {
-    mode: 'strongest-current' | 'preferred-target';
+    mode: 'integrated-excess-current' | 'preferred-target';
     preferredRawTargetId?: string;
     rawTargetId: string;
     projectedRepresentativeId: string;
@@ -1168,7 +1216,11 @@ export interface WaveformClassification {
      * runtime admission, target ranking/projection, tune, capture identity,
      * and the exact scalar window.
      */
-    detectedPowerAcquisitionQualification?: 'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4';
+    detectedPowerAcquisitionQualification?: 'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5';
+    /** Kept separate because only the automatic branch belongs to its calibrated mixture. */
+    detectedPowerSelectionCondition?:
+      | 'automatic-current-source-sweep-integrated-excess-rank-0'
+      | 'operator-preferred-current-target';
     views?: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
     features?: Readonly<Record<string, number>>;
     limitations?: readonly string[];
@@ -1267,6 +1319,7 @@ const exportPortCandidateSchema = z.object({
 const exportFirmwareSourceCommitSchema = z.union([
   z.literal(FIRMWARE_SOURCE_COMMIT),
   z.literal(ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT),
+  z.literal(ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT),
   z.literal(DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT),
 ]);
 const exportDeviceIdentitySchema = z.object({
@@ -1275,7 +1328,13 @@ const exportDeviceIdentitySchema = z.object({
   firmwareVersion: exportMetadataStringSchema,
   firmwareReportedRevision: z.string().regex(/^[a-f0-9]{7,40}$/i).optional(),
   firmwareSourceCommit: exportFirmwareSourceCommitSchema.optional(),
-  firmwareQualification: z.enum(['supported-oem', 'custom-unqualified', 'executable-twin', 'protocol-test']),
+  firmwareQualification: z.enum([
+    'supported-oem',
+    'custom-source-qualified-receive-only',
+    'custom-unqualified',
+    'executable-twin',
+    'protocol-test',
+  ]),
   firmwareWarning: z.string().min(1).max(MAX_SWEEP_EXPORT_PROVENANCE_CHARACTERS_V1).optional(),
   port: exportPortCandidateSchema,
   simulated: z.boolean(),
@@ -1328,6 +1387,24 @@ const exportDeviceIdentitySchema = z.object({
     }
     if (identity.firmwareSourceCommit !== undefined) {
       context.addIssue({ code: 'custom', path: ['firmwareSourceCommit'], message: 'Custom export identity cannot invent a source commit' });
+    }
+  }
+  if (identity.firmwareQualification === 'custom-source-qualified-receive-only') {
+    if (identity.execution !== 'physical') {
+      context.addIssue({ code: 'custom', path: ['execution'], message: 'Source-qualified custom receive-only export identity must be physical' });
+    }
+    if (!identity.usbIdentityVerified) {
+      context.addIssue({ code: 'custom', path: ['usbIdentityVerified'], message: 'Source-qualified custom receive-only export identity requires exact verified ZS407 USB identity' });
+    }
+    if (!identity.firmwareReportedRevision || !identity.firmwareSourceCommit || !identity.firmwareWarning) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Source-qualified custom receive-only export identity requires revision, source commit, and warning' });
+    } else if (!isSourceQualifiedZs407CustomReceiverFirmwareIdentity(
+      identity.firmwareVersion,
+      identity.firmwareReportedRevision,
+      identity.firmwareSourceCommit,
+      identity.firmwareWarning,
+    )) {
+      context.addIssue({ code: 'custom', path: ['firmwareQualification'], message: 'Source-qualified custom receive-only export identity must match its exact frozen source record and warning' });
     }
   }
 });

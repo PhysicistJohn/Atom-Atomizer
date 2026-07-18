@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  COMPLEX_IQ_SAMPLE_FORMATS_V1,
   MAX_COMPLEX_IQ_SAMPLES_V1,
   MAX_DETECTED_POWER_SAMPLES_V1,
   MAX_DISCOVERY_CANDIDATES_V1,
@@ -11,9 +12,11 @@ import {
   MAX_SIGNAL_LAB_PROFILES_V1,
   MAX_SWEPT_SPECTRUM_POINTS_V1,
   SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
+  complexIqPayloadByteLength,
   instrumentCandidateDescriptorSchema,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
+  instrumentConfigurationCapabilityBindingIssues,
   instrumentConfigurationSchema,
   instrumentDiscoveryResultSchema,
   instrumentDriverDiscoveryResultSchema,
@@ -24,7 +27,12 @@ import {
   projectDetectedPowerTuneHz,
   instrumentSessionProvenanceSchema,
   instrumentSessionSnapshotSchema,
+  signalLabProfileSelectionCapabilitySchema,
 } from './instrument.js';
+import {
+  SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
+  ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+} from './firmware-provenance.js';
 
 describe('instrument boundary contracts', () => {
   it('projects a fractional detector centroid onto the admitted integer-Hz detected-power tune', () => {
@@ -180,7 +188,7 @@ describe('instrument boundary contracts', () => {
       schemaVersion: 1,
       acquisitions: [{
         kind: 'complex-iq', centerFrequencyHz: { min: 0, max: 1 }, sampleRateHz: { min: 1, max: 1 },
-        bandwidthHz: { min: 1, max: 1 }, sampleCount: { min: 1, max: 1 }, sampleFormat: 'ci16le',
+        bandwidthHz: { min: 1, max: 1 }, sampleCount: { min: 1, max: 1 }, sampleFormat: 'cf64le',
       }],
       features: [],
     }).success).toBe(false);
@@ -234,6 +242,178 @@ describe('instrument boundary contracts', () => {
     expect(instrumentConfigurationSchema.safeParse({
       kind: 'complex-iq', centerHz: 2_450_000_000, sampleRateHz: 1_000_000,
       bandwidthHz: 800_000, sampleCount: MAX_COMPLEX_IQ_SAMPLES_V1 + 1, sampleFormat: 'cf32le',
+    }).success).toBe(false);
+  });
+
+  it('expresses and enforces equal-rate I/Q bandwidth without changing independent capabilities', () => {
+    const equalRateCapability = {
+      kind: 'complex-iq' as const,
+      centerFrequencyHz: { min: 0, max: 6_000_000_000 },
+      sampleRateHz: { min: 1_000_000, max: 4_000_000, step: 1_000_000 },
+      bandwidthHz: { min: 1_000_000, max: 4_000_000, step: 1_000_000 },
+      bandwidthMode: 'equal-to-sample-rate' as const,
+      sampleCount: { min: 1, max: 65_536 },
+      sampleFormat: 'cf32le' as const,
+    };
+    const capabilities = instrumentCapabilitiesSchema.parse({
+      schemaVersion: 1,
+      acquisitions: [equalRateCapability],
+      features: [],
+    });
+    const unequalConfiguration = instrumentConfigurationSchema.parse({
+      kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+      bandwidthHz: 1_000_000, sampleCount: 1_024, sampleFormat: 'cf32le',
+    });
+    expect(instrumentConfigurationCapabilityBindingIssues(unequalConfiguration, capabilities))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ path: ['bandwidthHz'], message: expect.stringMatching(/must equal sample rate/) })]));
+
+    const independent = instrumentCapabilitiesSchema.parse({
+      schemaVersion: 1,
+      acquisitions: [{ ...equalRateCapability, bandwidthMode: 'independent' }],
+      features: [],
+    });
+    expect(instrumentConfigurationCapabilityBindingIssues(unequalConfiguration, independent)).toEqual([]);
+    const legacyIndependent = instrumentCapabilitiesSchema.parse({
+      schemaVersion: 1,
+      acquisitions: [{ ...equalRateCapability, bandwidthMode: undefined }],
+      features: [],
+    });
+    expect(instrumentConfigurationCapabilityBindingIssues(unequalConfiguration, legacyIndependent)).toEqual([]);
+    expect(instrumentCapabilitiesSchema.safeParse({
+      schemaVersion: 1,
+      acquisitions: [{
+        ...equalRateCapability,
+        sampleRateHz: { min: 2, max: 8, step: 2 },
+        bandwidthHz: { min: 1, max: 9, step: 2 },
+      }],
+      features: [],
+    }).success).toBe(false);
+  });
+
+  it('admits common interleaved I/Q encodings with exact bounded byte geometry', () => {
+    const bytesPerSample = { cf32le: 8, ci16le: 4, ci8: 2, cu8: 2 } as const;
+    const commonMeasurement = {
+      schemaVersion: 1 as const,
+      measurementId: 'measurement:iq-formats',
+      sessionId: 'session:iq-formats',
+      configurationRevision: 'configuration:iq-formats',
+      sequence: 1,
+      capturedAt: '2026-07-17T18:00:00.000Z',
+      elapsedMilliseconds: 1,
+      resolutionBandwidthHz: null,
+      attenuationDb: null,
+      qualification: 'device-observed' as const,
+      complete: true as const,
+      kind: 'complex-iq' as const,
+      centerHz: 2_450_000_000,
+      sampleRateHz: 1_000_000,
+      bandwidthHz: 800_000,
+      sampleCount: 3,
+    };
+
+    for (const sampleFormat of COMPLEX_IQ_SAMPLE_FORMATS_V1) {
+      const byteLength = bytesPerSample[sampleFormat] * commonMeasurement.sampleCount;
+      expect(complexIqPayloadByteLength(commonMeasurement.sampleCount, sampleFormat)).toBe(byteLength);
+      expect(instrumentCapabilitiesSchema.safeParse({
+        schemaVersion: 1,
+        acquisitions: [{
+          kind: 'complex-iq',
+          centerFrequencyHz: { min: 0, max: 6_000_000_000 },
+          sampleRateHz: { min: 48_000, max: 20_000_000 },
+          bandwidthHz: { min: 10_000, max: 20_000_000 },
+          sampleCount: { min: 1, max: 1_024 },
+          sampleFormat,
+        }],
+        features: [],
+      }).success, sampleFormat).toBe(true);
+      expect(instrumentConfigurationSchema.safeParse({
+        kind: 'complex-iq', centerHz: commonMeasurement.centerHz,
+        sampleRateHz: commonMeasurement.sampleRateHz, bandwidthHz: commonMeasurement.bandwidthHz,
+        sampleCount: commonMeasurement.sampleCount, sampleFormat,
+      }).success, sampleFormat).toBe(true);
+      expect(instrumentMeasurementSchema.safeParse({
+        ...commonMeasurement,
+        sampleFormat,
+        samples: new Uint8Array(byteLength),
+      }).success, sampleFormat).toBe(true);
+      expect(instrumentMeasurementSchema.safeParse({
+        ...commonMeasurement,
+        sampleFormat,
+        samples: new Uint8Array(byteLength - 1),
+      }).success, sampleFormat).toBe(false);
+    }
+
+    expect(() => complexIqPayloadByteLength(0, 'cf32le')).toThrow(/positive safe integer/);
+    expect(() => complexIqPayloadByteLength(MAX_COMPLEX_IQ_SAMPLES_V1 + 1, 'ci8')).toThrow(/limited/);
+  });
+
+  it('carries complete SignalLab catalog and channel evidence without admitting partial descriptors', () => {
+    const descriptor = {
+      profileId: 'lte-etm1.1',
+      label: 'LTE E-TM 1.1',
+      family: 'e-utra' as const,
+      model: 'E-TM 1.1',
+      qualification: 'standards-derived' as const,
+      centerFrequencyHz: 1_842_500_000,
+      occupiedBandwidthHz: 9_000_000,
+      recommendedSpanHz: 12_000_000,
+      projection: {
+        allocation: 'full' as const,
+        modulation: 'ofdm-mixed' as const,
+        timing: 'frame' as const,
+        duplex: 'fdd' as const,
+        subcarrierSpacingHz: 15_000,
+        nominalResourceBlocks: 50,
+      },
+      source: {
+        organization: '3GPP' as const,
+        references: [{
+          specification: 'TS 36.141',
+          clause: '6.1',
+          revision: 'Release 18',
+          url: 'https://www.3gpp.org/dynareport/36141.htm',
+        }],
+      },
+      disclosure: 'Standards-derived deterministic baseband projection.',
+    };
+    const channel = { model: 'awgn' as const, noiseFloorDbm: -100, seed: 1, fadingRateHz: 1 };
+    const capability = {
+      kind: 'signal-lab-profile-selection' as const,
+      profiles: [descriptor],
+      selectedProfileId: descriptor.profileId,
+      channel,
+      iqProfileIds: [descriptor.profileId],
+    };
+
+    expect(signalLabProfileSelectionCapabilitySchema.parse(capability)).toEqual(capability);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      profiles: [{
+        profileId: descriptor.profileId,
+        centerFrequencyHz: descriptor.centerFrequencyHz,
+        recommendedSpanHz: descriptor.recommendedSpanHz,
+        label: descriptor.label,
+      }],
+    }).success).toBe(false);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      profiles: [descriptor, { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
+    }).success).toBe(false);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      profiles: [{ ...descriptor, qualification: 'conformance-validated' }],
+    }).success).toBe(false);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      channel: { ...channel, seed: 0 },
+    }).success).toBe(false);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      iqProfileIds: ['missing-profile'],
+    }).success).toBe(false);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...capability,
+      iqProfileIds: [descriptor.profileId, descriptor.profileId],
     }).success).toBe(false);
   });
 
@@ -347,6 +527,27 @@ describe('instrument boundary contracts', () => {
       sessionId: 'session:opaque',
       producerConfigurationEpoch: 'producer-epoch:2',
     }).success).toBe(true);
+    const channelRequest = {
+      kind: 'signal-lab-profile-selection' as const,
+      action: 'configure-channel' as const,
+      channel: { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5 },
+    };
+    expect(instrumentFeatureRequestSchema.parse(channelRequest)).toEqual(channelRequest);
+    expect(instrumentFeatureCommandSchema.parse({ ...channelRequest, sessionId: 'session:opaque' }))
+      .toEqual({ ...channelRequest, sessionId: 'session:opaque' });
+    expect(instrumentFeatureResultSchema.parse({
+      ...channelRequest,
+      sessionId: 'session:opaque',
+      producerConfigurationEpoch: 'producer-epoch:3',
+    })).toEqual({
+      ...channelRequest,
+      sessionId: 'session:opaque',
+      producerConfigurationEpoch: 'producer-epoch:3',
+    });
+    expect(instrumentFeatureRequestSchema.safeParse({
+      ...channelRequest,
+      channel: { ...channelRequest.channel, noiseFloorDbm: -151 },
+    }).success).toBe(false);
     expect(instrumentFeatureResultSchema.safeParse({
       ...request,
       sessionId: 'session:opaque',
@@ -407,6 +608,32 @@ describe('instrument boundary contracts', () => {
       const device: Partial<typeof custom.device> = { ...custom.device };
       delete device[omitted];
       expect(instrumentSessionProvenanceSchema.safeParse({ ...custom, device }).success).toBe(false);
+    }
+
+    const customReceiverRecord = SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES[
+      'tinySA4_hw-v0.3-fft1024-g43eb0f1'
+    ];
+    const sourceQualifiedCustomReceiver = {
+      ...base,
+      device: {
+        model: 'tinySA Ultra+ ZS407',
+        hardwareVersion: 'ZS407',
+        firmwareVersion: 'tinySA4_hw-v0.3-fft1024-g43eb0f1',
+        firmwareReportedRevision: customReceiverRecord.reportedRevision,
+        firmwareSourceCommit: ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+        firmwareQualification: 'custom-source-qualified-receive-only' as const,
+        firmwareWarning: customReceiverRecord.warning,
+        usbIdentityVerified: true as const,
+      },
+    };
+    expect(instrumentSessionProvenanceSchema.parse(sourceQualifiedCustomReceiver))
+      .toEqual(sourceQualifiedCustomReceiver);
+    for (const device of [
+      { ...sourceQualifiedCustomReceiver.device, firmwareVersion: `${sourceQualifiedCustomReceiver.device.firmwareVersion}-dirty` },
+      { ...sourceQualifiedCustomReceiver.device, firmwareSourceCommit: `43eb0f1${'0'.repeat(33)}` },
+      { ...sourceQualifiedCustomReceiver.device, firmwareWarning: `${customReceiverRecord.warning} altered` },
+    ]) {
+      expect(instrumentSessionProvenanceSchema.safeParse({ ...base, device }).success).toBe(false);
     }
 
     const supported = {
@@ -619,6 +846,22 @@ describe('instrument boundary contracts', () => {
     expect(instrumentSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
     expect(instrumentSessionSnapshotSchema.safeParse({
       ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        acquisitions: [...snapshot.capabilities.acquisitions, {
+          kind: 'complex-iq',
+          centerFrequencyHz: { min: 0, max: 6_000_000_000 },
+          sampleRateHz: { min: 48_000, max: 20_000_000 },
+          bandwidthHz: { min: 10_000, max: 20_000_000 },
+          bandwidthMode: 'equal-to-sample-rate',
+          sampleCount: { min: 1, max: 1_024 },
+          sampleFormat: 'cf32le',
+        }],
+        features: snapshot.capabilities.features.map((feature) => ({ ...feature, iqProfileIds: ['fm'] })),
+      },
+    }).success).toBe(true);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
       capabilities: { ...snapshot.capabilities, features: [] },
     }).success).toBe(false);
     expect(instrumentSessionSnapshotSchema.safeParse({
@@ -766,6 +1009,51 @@ describe('instrument boundary contracts', () => {
       sampleCount: 2,
       samples: new Uint8Array(16),
     }).success).toBe(true);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      qualification: 'analytic-complex-baseband',
+      kind: 'complex-iq',
+      centerHz: 2_450_000_000,
+      sampleRateHz: 1_000_000,
+      bandwidthHz: 800_000,
+      sampleFormat: 'cf32le',
+      sampleCount: 2,
+      samples: new Uint8Array(16),
+    }).success).toBe(true);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      qualification: 'standards-derived-complex-baseband',
+      kind: 'complex-iq',
+      centerHz: 2_450_000_000,
+      sampleRateHz: 1_000_000,
+      bandwidthHz: 800_000,
+      sampleFormat: 'cf32le',
+      sampleCount: 2,
+      samples: new Uint8Array(16),
+    }).success).toBe(true);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      qualification: 'analytic-complex-baseband',
+      kind: 'swept-spectrum',
+      frequencyHz: [100, 200],
+      powerDbm: [-90, -80],
+    }).success).toBe(false);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      qualification: 'analytic-complex-baseband',
+      kind: 'detected-power-timeseries',
+      centerHz: 433_920_000,
+      sampleIntervalSeconds: 0.001,
+      timingQualification: 'simulation-exact',
+      powerDbm: [-91, -82],
+    }).success).toBe(false);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      qualification: 'standards-derived-complex-baseband',
+      kind: 'swept-spectrum',
+      frequencyHz: [100, 200],
+      powerDbm: [-90, -80],
+    }).success).toBe(false);
     expect(instrumentMeasurementSchema.safeParse({
       ...common,
       kind: 'complex-iq',

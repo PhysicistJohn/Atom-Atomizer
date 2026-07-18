@@ -10,6 +10,10 @@ import {
 } from '@tinysa/contracts';
 import { measurementIdentityKey } from './measurement-provenance.js';
 import {
+  compareClassificationCaptureTargetRankEvidence,
+  type ClassificationCaptureTargetRankEvidence,
+} from './classification-target-ranking.js';
+import {
   SIGNAL_LAB_PRODUCTION_CAPTURE_TARGET_SELECTION_POLICY_ID,
   SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID,
 } from './observable-training-acquisition-geometry.js';
@@ -142,7 +146,7 @@ export function assertDetectedPowerCaptureReceiptMatches({
 }
 
 function assertReceiptSelfConsistent(receipt: DetectedPowerCaptureReceipt): void {
-  if (receipt.schemaVersion !== 3) {
+  if (receipt.schemaVersion !== 4) {
     throw new Error(`Unsupported detected-power capture receipt schema ${String(receipt.schemaVersion)}`);
   }
   if (receipt.capturePolicyId !== SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID) {
@@ -213,16 +217,14 @@ function assertReceiptSelfConsistent(receipt: DetectedPowerCaptureReceipt): void
   )) {
     throw new Error('Detected-power capture receipt selected admission window contradicts its capture window');
   }
-  if (receipt.selection.mode === 'strongest-current') {
+  if (receipt.selection.mode === 'integrated-excess-current') {
     if (receipt.selection.preferredRawTargetId !== undefined) {
-      throw new Error('Strongest-current capture receipt cannot claim a preferred raw target');
+      throw new Error('Automatic integrated-excess capture receipt cannot claim a preferred raw target');
     }
-    const strongestEligible = receipt.candidates.find(
-      (candidate) => candidate.projectedRepresentativeId !== undefined
-        && candidate.runtimeAdmission.status === 'admitted',
-    );
-    if (strongestEligible?.rawTargetId !== receipt.selection.rawTargetId) {
-      throw new Error('Detected-power capture receipt did not select its strongest eligible current target');
+    const automaticWinner = receipt.candidates[0];
+    if (automaticWinner?.rawTargetId !== receipt.selection.rawTargetId
+      || automaticWinner.runtimeAdmission.status !== 'admitted') {
+      throw new Error('Detected-power capture receipt did not select and runtime-admit its rank-0 integrated-excess current target');
     }
   } else {
     if (receipt.selection.preferredRawTargetId !== receipt.selection.rawTargetId) {
@@ -292,6 +294,11 @@ function assertCandidateEvidenceWellFormed(
   }
   for (const [label, value] of [
     ['current peak dBm', candidate.currentPeakDbm],
+    ['current support start Hz', candidate.currentSupportStartHz],
+    ['current support stop Hz', candidate.currentSupportStopHz],
+    ['current robust floor dBm', candidate.currentRobustFloorDbm],
+    ['current actual RBW Hz', candidate.currentActualRbwHz],
+    ['current integrated excess-power mW', candidate.currentIntegratedExcessPowerMw],
     ['current peak Hz', candidate.currentPeakHz],
     ['current start Hz', candidate.currentStartHz],
     ['current stop Hz', candidate.currentStopHz],
@@ -306,6 +313,18 @@ function assertCandidateEvidenceWellFormed(
     || candidate.currentPeakHz > candidate.currentStopHz) {
     throw new Error('Detected-power capture receipt candidate peak lies outside its observed interval');
   }
+  if (!candidate.currentSourceSweepId
+    || !Number.isSafeInteger(candidate.currentSupportCellCount)
+    || candidate.currentSupportCellCount < 1
+    || candidate.currentSupportStartHz < candidate.currentStartHz
+    || candidate.currentSupportStopHz > candidate.currentStopHz
+    || candidate.currentSupportStopHz < candidate.currentSupportStartHz
+    || candidate.currentPeakHz < candidate.currentSupportStartHz
+    || candidate.currentPeakHz > candidate.currentSupportStopHz
+    || candidate.currentActualRbwHz <= 0
+    || candidate.currentIntegratedExcessPowerMw <= 0) {
+    throw new Error('Detected-power capture receipt candidate exact integrated-power evidence is outside its domain');
+  }
   assertFiniteNonnegativeInteger(candidate.missedSweeps, 'candidate missed-sweep count');
   instrumentTimestampSchema.parse(candidate.lastSeenAt);
   assertAssociationEvidenceWellFormed(candidate);
@@ -313,9 +332,11 @@ function assertCandidateEvidenceWellFormed(
     if (candidate.runtimeAdmission.spectrumSweepIds.length !== 8
       || new Set(candidate.runtimeAdmission.spectrumSweepIds).size
         !== candidate.runtimeAdmission.spectrumSweepIds.length
-      || candidate.runtimeAdmission.spectrumSweepIds.some((sweepId) => !sweepId)) {
+      || candidate.runtimeAdmission.spectrumSweepIds.some((sweepId) => !sweepId)
+      || candidate.runtimeAdmission.spectrumSweepIds[0]
+        !== candidate.currentSourceSweepId) {
       throw new Error(
-        'Detected-power capture receipt candidate runtime admission requires one projectable exact eight-sweep window',
+        'Detected-power capture receipt candidate runtime admission requires one projectable exact eight-sweep window beginning with its current source sweep',
       );
     }
   }
@@ -378,16 +399,33 @@ function assertAssociationEvidenceWellFormed(value: {
 
 /**
  * Comparator sign follows Array.sort: a negative result means `left` must
- * precede `right`. It exactly pins the deployed v3 policy: current peak power,
- * then stable classification representative key, then raw tracker ID.
+ * precede `right`. It exactly pins the deployed v4 policy: current-source-sweep
+ * integrated excess power, stable representative key, then raw tracker ID.
  */
 function compareCaptureCandidateEvidence(
   left: DetectedPowerCaptureCandidateEvidence,
   right: DetectedPowerCaptureCandidateEvidence,
 ): number {
-  return right.currentPeakDbm - left.currentPeakDbm
+  return compareClassificationCaptureTargetRankEvidence(
+    receiptCandidateRankEvidence(left),
+    receiptCandidateRankEvidence(right),
+  )
     || receiptRepresentativeKey(left).localeCompare(receiptRepresentativeKey(right))
     || left.rawTargetId.localeCompare(right.rawTargetId);
+}
+
+function receiptCandidateRankEvidence(
+  candidate: DetectedPowerCaptureCandidateEvidence,
+): ClassificationCaptureTargetRankEvidence {
+  return {
+    sourceSweepId: candidate.currentSourceSweepId,
+    supportStartHz: candidate.currentSupportStartHz,
+    supportStopHz: candidate.currentSupportStopHz,
+    supportCellCount: candidate.currentSupportCellCount,
+    robustFloorDbm: candidate.currentRobustFloorDbm,
+    actualRbwHz: candidate.currentActualRbwHz,
+    integratedExcessPowerMw: candidate.currentIntegratedExcessPowerMw,
+  };
 }
 
 function receiptRepresentativeKey(candidate: DetectedPowerCaptureCandidateEvidence): string {

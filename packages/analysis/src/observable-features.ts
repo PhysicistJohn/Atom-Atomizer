@@ -46,7 +46,11 @@ import { SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID } from './observ
 import { assertDetectedPowerCaptureReceiptMatches } from './detected-power-capture-receipt.js';
 
 export const DETECTED_POWER_ACQUISITION_QUALIFICATION =
-  'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4' as const;
+  'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5' as const;
+export const DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION =
+  'automatic-current-source-sweep-integrated-excess-rank-0' as const;
+export const DETECTED_POWER_OPERATOR_SELECTION_CONDITION =
+  'operator-preferred-current-target' as const;
 
 export interface WaveformEvidence extends WaveformClassificationEvidence {
   /** Exact newest-first eight-sweep scalar window observed when zero span was acquired. */
@@ -83,7 +87,8 @@ export type ObservableEvidenceLimitation =
   | 'frequency-agile-fixed-tune-envelope-censored'
   | 'regular-spectral-component-activity-association'
   | 'multicomponent-swept-region-activity-association'
-  | 'zero-span-local-member-of-nonidentity-regional-association';
+  | 'zero-span-local-member-of-nonidentity-regional-association'
+  | 'zero-span-operator-preferred-target-selection';
 
 export interface ObservableFeatureObservation {
   values: Readonly<Record<string, number>>;
@@ -97,6 +102,9 @@ export interface ObservableFeatureObservation {
   zeroSpanCaptureId?: string;
   /** Runtime proof that detected-power features use the model's calibrated acquisition policy. */
   detectedPowerAcquisitionQualification?: typeof DETECTED_POWER_ACQUISITION_QUALIFICATION;
+  detectedPowerSelectionCondition?:
+    | typeof DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION
+    | typeof DETECTED_POWER_OPERATOR_SELECTION_CONDITION;
   views: readonly ('scalar-spectrum' | 'detected-power-envelope')[];
   /** Set only after the extractor recomputes the current agile promotion and binds every cited opportunity sweep. */
   associationEvidenceQualification?: 'provenance-bound-current-promotion';
@@ -234,6 +242,15 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
   }
   const zeroSpanAcquisitionPolicyQualified =
     evidence.detectedPowerCaptureReceipt !== undefined;
+  const detectedPowerSelectionCondition = evidence.detectedPowerCaptureReceipt?.selection.mode
+    === 'integrated-excess-current'
+    ? DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION
+    : evidence.detectedPowerCaptureReceipt?.selection.mode === 'preferred-target'
+      ? DETECTED_POWER_OPERATOR_SELECTION_CONDITION
+      : undefined;
+  if (detectedPowerSelectionCondition === DETECTED_POWER_OPERATOR_SELECTION_CONDITION) {
+    limitations.add('zero-span-operator-preferred-target-selection');
+  }
   const zeroSpanProvenanceMatched = zeroSpanAcquisitionPolicyQualified
     && receiptVerifiedZeroSpan !== undefined
     && zeroSpanProvenanceMatches(
@@ -296,6 +313,7 @@ export function extractObservableFeatures(detection: DetectedSignal, evidence: W
     ...(classifierZeroSpan ? { zeroSpanCaptureId: classifierZeroSpan.id } : {}),
     ...(classifierZeroSpan ? {
       detectedPowerAcquisitionQualification: DETECTED_POWER_ACQUISITION_QUALIFICATION,
+      detectedPowerSelectionCondition: detectedPowerSelectionCondition!,
     } : {}),
     views: classifierZeroSpan
       ? ['scalar-spectrum', 'detected-power-envelope']

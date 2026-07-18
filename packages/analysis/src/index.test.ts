@@ -29,12 +29,12 @@ import {
 import {
   SIGNAL_LAB_EMSO_MODEL,
   SignalLabBayesianClassifier,
-} from '../../../../AtomOS_Classifier/src/signal-lab-classifier.js';
+} from '../../../../Atom-Classifier/src/signal-lab-classifier.js';
 import {
   inferPosterior,
   knownModelSupportRank,
   selectObservableDecision,
-} from '../../../../AtomOS_Classifier/src/bayesian-waveform-classifier.js';
+} from '../../../../Atom-Classifier/src/bayesian-waveform-classifier.js';
 import {
   assertDetectedPowerCaptureReceiptMatches,
   canonicalDetectedPowerCapturePayload,
@@ -65,7 +65,7 @@ import {
   regularSpectralComponentAssociations,
 } from './regular-spectral-component.js';
 import { frequencyAgileSequentialOpportunity } from './frequency-agile-geometry.js';
-import { synthesizeCanonicalObservation } from '../../../../TinySA_SignalLab/src/classification-corpus.js';
+import { synthesizeCanonicalObservation } from '../../../../Atom-SignalLab/src/classification-corpus.js';
 
 const identity: DeviceIdentity = {
   model: 'tinySA Ultra+ ZS407',
@@ -849,21 +849,55 @@ describe('signal analysis', () => {
     ]);
   });
 
-  it('selects a capture target from raw tracker strength instead of lexical or association-center order', () => {
+  it('selects a capture target from current source-sweep integrated excess power instead of lexical or association-center order', () => {
     const base = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 })
       .analyze(makeSweep())[0]!;
     const associationMembers = ['signal-0002', 'signal-0010', 'signal-0018'] as const;
+    const exactCurrentLook = (
+      id: string,
+      peakHz: number,
+      peakDbm: number,
+    ): DetectedSignal => {
+      const sourceSweep = makeSweep({
+        id: `rank-source-${id}`,
+        capturedAt: base.lastSeenAt,
+        frequencyHz: [peakHz - 100, peakHz, peakHz + 100],
+        powerDbm: [-90, peakDbm, -90],
+        actualStartHz: peakHz - 150,
+        actualStopHz: peakHz + 150,
+        actualRbwHz: 100,
+      });
+      const observation = {
+        sourceSweep,
+        startHz: peakHz,
+        stopHz: peakHz,
+        peakHz,
+        detectorId: base.detectorId,
+        localBayesianEvidence: base.classificationRegionObservation!.localBayesianEvidence,
+      };
+      return {
+        ...base,
+        id,
+        startHz: peakHz,
+        stopHz: peakHz,
+        peakHz,
+        peakDbm,
+        bandwidthHz: 0,
+        noiseFloorDbm: -90,
+        sweepIds: [sourceSweep.id],
+        classificationRegionStartHz: peakHz,
+        classificationRegionStopHz: peakHz,
+        classificationRegionSweepIds: [sourceSweep.id],
+        classificationRegionObservation: observation,
+        localClassificationObservations: [observation],
+      };
+    };
     const associated = (
       id: typeof associationMembers[number],
       startHz: number,
       peakDbm: number,
     ): DetectedSignal => ({
-      ...base,
-      id,
-      startHz,
-      stopHz: startHz,
-      peakHz: startHz,
-      peakDbm,
+      ...exactCurrentLook(id, startHz, peakDbm),
       missedSweeps: 0,
       associationMode: 'regular-spectral-component-activity',
       associationId: regularSpectralComponentLineageId(7),
@@ -876,15 +910,13 @@ describe('signal analysis', () => {
     const center = associated('signal-0010', 200, -61);
     const strongestRight = associated('signal-0018', 300, -40);
     const local: DetectedSignal = {
-      ...base,
-      id: 'signal-0001',
-      peakDbm: -50,
+      ...exactCurrentLook('signal-0001', base.peakHz, -50),
       associationMode: 'frequency-local',
     };
     const signals = [left, center, strongestRight, local];
 
     expect(CLASSIFICATION_CAPTURE_TARGET_SELECTION_POLICY_ID)
-      .toBe('preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3');
+      .toBe('preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4');
     expect(classificationRepresentatives(signals).map((signal) => signal.id))
       .toEqual(['signal-0001', 'signal-0010']);
     expect(classificationCaptureTargetRepresentatives(signals)[0]?.id)
@@ -893,11 +925,11 @@ describe('signal analysis', () => {
       (signal) => signal.id,
     )).toEqual([left.id]);
 
-    const tiedLocal: DetectedSignal = {
-      ...local,
-      id: 'signal-tied-local',
-      peakDbm: -35,
-    };
+    const tiedLocal: DetectedSignal = exactCurrentLook(
+      'signal-tied-local',
+      local.peakHz,
+      -35,
+    );
     const strongerAgile: DetectedSignal = {
       ...tiedLocal,
       id: 'frequency-agile-2g4-activity-0001',
@@ -1006,7 +1038,7 @@ describe('signal analysis', () => {
     });
 
     expect(receipt).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       selection: {
         rawTargetId: rawTarget.id,
         projectedRepresentativeId: activity.id,
@@ -1144,7 +1176,11 @@ describe('signal analysis', () => {
     expect(envelopeObservation.limitations)
       .toContain('zero-span-local-member-of-nonidentity-regional-association');
     expect(envelopeObservation.detectedPowerAcquisitionQualification)
-      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+      .toBe('receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5');
+    expect(envelopeObservation.detectedPowerSelectionCondition)
+      .toBe('operator-preferred-current-target');
+    expect(envelopeObservation.limitations)
+      .toContain('zero-span-operator-preferred-target-selection');
     const malformed = { ...representatives[0]!, associationModelId: 'unreviewed-periodic-model' };
     const staleV1 = {
       ...representatives[0]!,
@@ -2696,7 +2732,9 @@ describe('signal analysis', () => {
     });
     expect(admitted.zeroSpanCaptureId).toBe(zeroSpan.id);
     expect(admitted.detectedPowerAcquisitionQualification)
-      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+      .toBe('receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5');
+    expect(admitted.detectedPowerSelectionCondition)
+      .toBe('automatic-current-source-sweep-integrated-excess-rank-0');
 
     const spectrumOnly = extractObservableFeatures(detection, { sweeps });
     const unqualified = extractObservableFeatures(detection, {
@@ -2708,6 +2746,7 @@ describe('signal analysis', () => {
     expect(unqualified.views).toEqual(spectrumOnly.views);
     expect(unqualified.zeroSpanCaptureId).toBeUndefined();
     expect(unqualified.detectedPowerAcquisitionQualification).toBeUndefined();
+    expect(unqualified.detectedPowerSelectionCondition).toBeUndefined();
     expect(unqualified.limitations).toContain('zero-span-capture-receipt-missing');
     expect(unqualified.limitations).toContain('zero-span-acquisition-policy-unqualified');
     const spectrumCandidates = inferPosterior(spectrumOnly);
@@ -2755,7 +2794,7 @@ describe('signal analysis', () => {
     }
   });
 
-  it('admits only an opaque strongest-target snapshot receipt and rejects payload, cadence, or object-graph substitution', () => {
+  it('admits only an opaque rank-0 source-integrated snapshot receipt and never substitutes a weaker ready target', () => {
     const sweeps = Array.from({ length: 8 }, (_, index) =>
       emsoSweep(98_000_000, 2_000_000, index + 1, (frequency) =>
         Math.max(-110, -45 - Math.abs(frequency - 98_000_000) / 2_000)));
@@ -2794,6 +2833,11 @@ describe('signal analysis', () => {
       excludedRetainedMiss,
       excludedAgileSummary,
     ];
+    const receiptEligibleSignals = [
+      detection,
+      excludedRetainedMiss,
+      excludedAgileSummary,
+    ];
     const spectrumObservation = extractObservableFeatures(detection, { sweeps });
     const zeroSpan: ZeroSpanCapture = {
       kind: 'zero-span',
@@ -2816,37 +2860,45 @@ describe('signal analysis', () => {
       identity,
       timingQualification: 'simulation-exact',
     };
-    const receipt = createDetectedPowerCaptureReceipt({
+    expect(() => createDetectedPowerCaptureReceipt({
       activeSignals: receiptInputSignals,
+      evidenceSweeps: [...sweeps, ...unreadySweeps],
+      capture: zeroSpan,
+      admittedTargetTuneHz: zeroSpan.frequencyHz,
+      spectrumSweepIds: spectrumObservation.sweepIds,
+    })).toThrow(/rank-0 automatic target; lower-ranked targets are never substituted/i);
+    const receipt = createDetectedPowerCaptureReceipt({
+      activeSignals: receiptEligibleSignals,
       evidenceSweeps: [...sweeps, ...unreadySweeps],
       capture: zeroSpan,
       admittedTargetTuneHz: zeroSpan.frequencyHz,
       spectrumSweepIds: spectrumObservation.sweepIds,
     });
 
-    expect(receipt.schemaVersion).toBe(3);
+    expect(receipt.schemaVersion).toBe(4);
     expect(receipt.selection).toEqual({
-      mode: 'strongest-current',
+      mode: 'integrated-excess-current',
       rawTargetId: detection.id,
       projectedRepresentativeId: detection.id,
     });
     expect(receipt.candidates.map((candidate) => candidate.rawTargetId))
-      .toEqual([unreadyStrongest.id, detection.id]);
+      .toEqual([detection.id]);
     expect(receipt.candidates.map((candidate) => candidate.inputOrdinal))
-      .toEqual([1, 0]);
+      .toEqual([0]);
     expect(receipt.candidates.map((candidate) => candidate.projectionKind))
-      .toEqual([
-        'current-active-physical-representative',
-        'current-active-physical-representative',
-      ]);
+      .toEqual(['current-active-physical-representative']);
     expect(receipt.candidates[0]!.runtimeAdmission).toEqual({
-      status: 'unavailable',
-      reason: 'insufficient-spectrum-history',
-    });
-    expect(receipt.candidates[1]!.runtimeAdmission).toEqual({
       status: 'admitted',
       spectrumSweepIds: spectrumObservation.sweepIds,
     });
+    expect(receipt.candidates[0]).toMatchObject({
+      currentSourceSweepId: detection.sweepIds.at(-1),
+      currentSupportStartHz: detection.startHz,
+      currentSupportStopHz: detection.stopHz,
+    });
+    expect(receipt.candidates[0]!.currentSupportCellCount).toBeGreaterThanOrEqual(1);
+    expect(receipt.candidates[0]!.currentActualRbwHz).toBeGreaterThan(0);
+    expect(receipt.candidates[0]!.currentIntegratedExcessPowerMw).toBeGreaterThan(0);
     expect(receipt.capture).toMatchObject({
       id: zeroSpan.id,
       targetDetectionId: detection.id,
@@ -2888,10 +2940,12 @@ describe('signal analysis', () => {
     });
     expect(admitted.zeroSpanCaptureId).toBe(zeroSpan.id);
     expect(admitted.detectedPowerAcquisitionQualification)
-      .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+      .toBe('receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5');
+    expect(admitted.detectedPowerSelectionCondition)
+      .toBe('automatic-current-source-sweep-integrated-excess-rank-0');
 
     expect(() => createDetectedPowerCaptureReceipt({
-      activeSignals: receiptInputSignals,
+      activeSignals: receiptEligibleSignals,
       evidenceSweeps: [...sweeps, ...unreadySweeps],
       capture: zeroSpan,
       admittedTargetTuneHz: zeroSpan.frequencyHz + 1,
@@ -3157,12 +3211,12 @@ describe('signal analysis', () => {
     expect(() => knownModelSupportRank({
       ...scalarObservation,
       detectedPowerAcquisitionQualification:
-        'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+        'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
     })).toThrow(/contradicts its envelope evidence/i);
     expect(() => knownModelSupportRank({
       ...scalarObservation,
       detectedPowerAcquisitionQualification:
-        'unreviewed-envelope-qualification' as 'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+        'unreviewed-envelope-qualification' as 'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
     })).toThrow(/unknown acquisition qualification/i);
     expect(() => knownModelSupportRank({
       ...scalarObservation,
@@ -3170,7 +3224,7 @@ describe('signal analysis', () => {
       views: ['scalar-spectrum', 'detected-power-envelope'],
       zeroSpanCaptureId: 'non-finite-envelope',
       detectedPowerAcquisitionQualification:
-        'receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4',
+        'receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5',
     })).toThrow(/contradicts its envelope evidence/i);
   });
 

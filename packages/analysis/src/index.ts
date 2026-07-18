@@ -92,8 +92,18 @@ import {
 } from './observable-features.js';
 import { measureThreeDecibelBandwidth } from './channel-bandwidth.js';
 import { characterizeMarkerLocalTrace, selectMarkerCenterOnTrace } from './marker-characterization.js';
+import {
+  classificationCaptureTargetRankEvidence,
+  compareClassificationCaptureTargetRankEvidence,
+} from './classification-target-ranking.js';
 export { measureThreeDecibelBandwidth, measureTraceThreeDecibelBandwidth } from './channel-bandwidth.js';
 export { characterizeMarkerLocalTrace, selectMarkerCenterOnTrace } from './marker-characterization.js';
+export {
+  CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
+  classificationCaptureTargetRankEvidence,
+  compareClassificationCaptureTargetRankEvidence,
+  type ClassificationCaptureTargetRankEvidence,
+} from './classification-target-ranking.js';
 
 export const analysisModes: readonly AnalysisModeDefinition[] = [
   { id: 'signal-detection', name: 'Signal Detection', description: 'Detect and persist emissions above an absolute threshold or a lower-tail adaptive candidate baseline.', status: 'available', requiredCapabilities: ['scan'] },
@@ -692,12 +702,26 @@ export function classificationCaptureTargetProjections(
     if (projections.length === 1) projectionByRawTargetId.set(rawTargetId, projections[0]!);
   }
 
-  const ranked = [...projectionByRawTargetId.values()].sort((left, right) =>
-    right.rawTarget.peakDbm - left.rawTarget.peakDbm
-    || classificationRepresentativeKey(left.rawTarget).localeCompare(
-      classificationRepresentativeKey(right.rawTarget),
-    )
-    || left.rawTarget.id.localeCompare(right.rawTarget.id));
+  const rankPopulation = [...projectionByRawTargetId.values()].map((projection) => ({
+    projection,
+    rankEvidence: classificationCaptureTargetRankEvidence(projection.rawTarget),
+  }));
+  // Automatic selection is a ranking of the complete eligible population.
+  // Silently deleting a row with stale/mismatched source evidence would make a
+  // weaker row look like rank 0, which is the same forbidden fallback as
+  // skipping an unready winner after ranking.
+  if (rankPopulation.some(({ rankEvidence }) => rankEvidence === undefined)) return [];
+  const ranked = rankPopulation
+    .sort((left, right) =>
+      compareClassificationCaptureTargetRankEvidence(
+        left.rankEvidence,
+        right.rankEvidence,
+      )
+      || classificationRepresentativeKey(left.projection.rawTarget).localeCompare(
+        classificationRepresentativeKey(right.projection.rawTarget),
+      )
+      || left.projection.rawTarget.id.localeCompare(right.projection.rawTarget.id))
+    .map(({ projection }) => projection);
   return preferredDetectionId === undefined
     ? ranked
     : ranked.filter((projection) => projection.rawTarget.id === preferredDetectionId);
@@ -891,6 +915,12 @@ export function createDetectedPowerCaptureReceipt({
   );
   const candidates = rankedProjections.map((projection, rank) => {
     const { rawTarget, projectedRepresentative, projectionKind } = projection;
+    const targetRankEvidence = classificationCaptureTargetRankEvidence(rawTarget);
+    if (targetRankEvidence === undefined) {
+      throw new Error(
+        `Detected-power capture target ${rawTarget.id} lacks exact current source-sweep integrated ranking evidence`,
+      );
+    }
     let runtimeAdmission:
       | {
         status: 'admitted';
@@ -938,6 +968,14 @@ export function createDetectedPowerCaptureReceipt({
       inputOrdinal: inputOrdinalById.get(rawTarget.id)!,
       rawTargetId: rawTarget.id,
       currentPeakDbm: rawTarget.peakDbm,
+      currentSourceSweepId: targetRankEvidence.sourceSweepId,
+      currentSupportStartHz: targetRankEvidence.supportStartHz,
+      currentSupportStopHz: targetRankEvidence.supportStopHz,
+      currentSupportCellCount: targetRankEvidence.supportCellCount,
+      currentRobustFloorDbm: targetRankEvidence.robustFloorDbm,
+      currentActualRbwHz: targetRankEvidence.actualRbwHz,
+      currentIntegratedExcessPowerMw:
+        targetRankEvidence.integratedExcessPowerMw,
       currentPeakHz: rawTarget.peakHz,
       currentStartHz: rawTarget.startHz,
       currentStopHz: rawTarget.stopHz,
@@ -962,14 +1000,11 @@ export function createDetectedPowerCaptureReceipt({
     };
   });
   const selectedCandidate = preferredDetectionId === undefined
-    ? candidates.find((candidate) => candidate.projectedRepresentativeId !== undefined
-      && candidate.runtimeAdmission.status === 'admitted')
-    : candidates.find((candidate) => candidate.rawTargetId === preferredDetectionId
-      && candidate.projectedRepresentativeId !== undefined
-      && candidate.runtimeAdmission.status === 'admitted');
-  if (!selectedCandidate) {
+    ? candidates[0]
+    : candidates.find((candidate) => candidate.rawTargetId === preferredDetectionId);
+  if (!selectedCandidate || selectedCandidate.runtimeAdmission.status !== 'admitted') {
     throw new Error(preferredDetectionId === undefined
-      ? 'Detected-power capture receipt found no currently projectable tracker target'
+      ? 'Detected-power capture receipt cannot runtime-admit the rank-0 automatic target; lower-ranked targets are never substituted'
       : `Detected-power capture receipt cannot runtime-admit preferred tracker target ${preferredDetectionId}`);
   }
   const projectedRepresentative = projectionByRawTargetId.get(
@@ -999,7 +1034,7 @@ export function createDetectedPowerCaptureReceipt({
     );
   }
   return issueDetectedPowerCaptureReceipt({
-    schemaVersion: 3,
+    schemaVersion: 4,
     capturePolicyId: SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID,
     targetSelectionPolicyId:
       SIGNAL_LAB_PRODUCTION_CAPTURE_TARGET_SELECTION_POLICY_ID,
@@ -1007,7 +1042,7 @@ export function createDetectedPowerCaptureReceipt({
       DETECTED_POWER_CAPTURE_RUNTIME_ADMISSION_POLICY_ID,
     selection: {
       mode: preferredDetectionId === undefined
-        ? 'strongest-current'
+        ? 'integrated-excess-current'
         : 'preferred-target',
       ...(preferredDetectionId === undefined
         ? {}
@@ -1070,6 +1105,19 @@ export function classificationRepresentativeKey(signal: DetectedSignal): string 
   return `${associationMode}:${associationMode === 'frequency-local'
     ? signal.id
     : signal.associationId ?? signal.id}`;
+}
+
+/** Exact numeric authority followed only by the receipt's stable tie keys. */
+export function compareClassificationCaptureTargetSignals(
+  left: DetectedSignal,
+  right: DetectedSignal,
+): number {
+  return compareClassificationCaptureTargetRankEvidence(
+    classificationCaptureTargetRankEvidence(left),
+    classificationCaptureTargetRankEvidence(right),
+  ) || classificationRepresentativeKey(left).localeCompare(
+    classificationRepresentativeKey(right),
+  ) || left.id.localeCompare(right.id);
 }
 
 function betterAssociationRepresentative(candidate: DetectedSignal, current: DetectedSignal, preferredDetectionId?: string): boolean {
@@ -2185,6 +2233,8 @@ function median(values: readonly number[]): number {
 export {
   BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
   DETECTED_POWER_ACQUISITION_QUALIFICATION,
+  DETECTED_POWER_AUTOMATIC_SELECTION_CONDITION,
+  DETECTED_POWER_OPERATOR_SELECTION_CONDITION,
   extractObservableFeatures,
   ObservableEvidenceUnavailableError,
   observableAssociationEvidenceIsCurrentlyQualified,

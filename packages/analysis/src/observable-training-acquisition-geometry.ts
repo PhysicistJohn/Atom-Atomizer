@@ -23,13 +23,13 @@ export const SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY = Object.freeze({
 export const SIGNAL_LAB_PRODUCTION_SOURCE_CLOCK_POLICY_ID =
   'shared-monotonic-source-clock-v1' as const;
 export const SIGNAL_LAB_PRODUCTION_ACQUISITION_BRANCH_POLICY_ID =
-  'independent-no-auto-spectrum-and-qualified-first-admitted-envelope-sessions-v1' as const;
+  'independent-no-auto-spectrum-and-qualified-rank-0-integrated-excess-envelope-sessions-v2' as const;
 export const SIGNAL_LAB_PRODUCTION_SPECTRUM_DETECTED_POWER_CAPTURE_POLICY_ID =
   'no-automatic-detected-power-capture-v1' as const;
 export const SIGNAL_LAB_PRODUCTION_DETECTED_POWER_CAPTURE_POLICY_ID =
-  'capture-once-after-first-runtime-admitted-strongest-current-target-v2' as const;
+  'capture-once-after-rank-0-integrated-excess-current-target-runtime-admission-v3' as const;
 export const SIGNAL_LAB_PRODUCTION_CAPTURE_TARGET_SELECTION_POLICY_ID =
-  'preferred-then-strongest-current-physical-or-qualified-agile-member-target-v3' as const;
+  'preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4' as const;
 
 interface SignalLabProductionReleaseGateProfileSourcePlanBase {
   readonly profileId: string;
@@ -109,7 +109,8 @@ export const SIGNAL_LAB_PRODUCTION_SPECTRUM_RELEASE_GATE_SOURCE_PLAN =
 /**
  * Exact source-clock plan exercised by the deployed qualified-envelope branch.
  * A profile start includes every preceding swept spectrum plus the one physical
- * detected-power capture triggered by its first runtime-admitted representative.
+ * detected-power capture triggered once its exact integrated-excess rank-0
+ * target is runtime-admitted. A ready lower-ranked target is never substituted.
  */
 export const SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_RELEASE_GATE_SOURCE_PLAN =
   signalLabProductionQualifiedEnvelopeReleaseGateSourcePlan();
@@ -185,7 +186,7 @@ export const SIGNAL_LAB_PRODUCTION_TEMPORAL_SCHEDULES =
   SIGNAL_LAB_PRODUCTION_QUALIFIED_ENVELOPE_TEMPORAL_SCHEDULES;
 
 export const SIGNAL_LAB_PRODUCTION_ACQUISITION_REGIME_METADATA = Object.freeze({
-  id: 'signal-lab-recommended-span-grid-with-independent-production-branch-source-clocks-v4',
+  id: 'signal-lab-recommended-span-grid-with-independent-production-branch-source-clocks-v5',
   geometry: SIGNAL_LAB_PRODUCTION_ACQUISITION_GEOMETRY,
   branchPolicy: SIGNAL_LAB_PRODUCTION_ACQUISITION_BRANCH_POLICY_ID,
   sourceClocks: Object.freeze({
