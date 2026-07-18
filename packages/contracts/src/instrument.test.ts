@@ -24,9 +24,11 @@ import {
   instrumentFeatureRequestSchema,
   instrumentFeatureResultSchema,
   instrumentMeasurementSchema,
+  instrumentReceiveOnlySafetyStateSchema,
   projectDetectedPowerTuneHz,
   instrumentSessionProvenanceSchema,
   instrumentSessionSnapshotSchema,
+  receiveOnlySafetyReceiptSchema,
   signalLabProfileSelectionCapabilitySchema,
 } from './instrument.js';
 import {
@@ -35,6 +37,37 @@ import {
 } from './firmware-provenance.js';
 
 describe('instrument boundary contracts', () => {
+  it('admits only versioned same-session output-off command receipts without RF measurement claims', () => {
+    const connection = safetyReceipt(1, 'connection-first-command');
+    const current = safetyReceipt(2, 'pre-acquisition');
+    const state = { connectionReceipt: connection, currentReceipt: current };
+
+    expect(receiveOnlySafetyReceiptSchema.safeParse(connection).success).toBe(true);
+    expect(instrumentReceiveOnlySafetyStateSchema.safeParse(state).success).toBe(true);
+    for (const invalid of [
+      { ...connection, schemaVersion: 2 },
+      { ...connection, receiptId: 'receipt:not-a-uuid' },
+      { ...connection, sessionId: 'session:not-a-uuid' },
+      { ...connection, command: 'output on' },
+      { ...connection, acknowledgement: 'assumed' },
+      { ...connection, qualification: 'rf-measured' },
+      { ...connection, sequence: 0 },
+      { ...connection, invented: true },
+    ]) expect(receiveOnlySafetyReceiptSchema.safeParse(invalid).success).toBe(false);
+    expect(instrumentReceiveOnlySafetyStateSchema.safeParse({
+      connectionReceipt: connection,
+      currentReceipt: { ...current, sessionId: '50000000-0000-4000-8000-000000000002' },
+    }).success).toBe(false);
+    expect(instrumentReceiveOnlySafetyStateSchema.safeParse({
+      connectionReceipt: connection,
+      currentReceipt: { ...current, sequence: 1, receiptId: current.receiptId },
+    }).success).toBe(false);
+    expect(instrumentReceiveOnlySafetyStateSchema.safeParse({
+      connectionReceipt: connection,
+      currentReceipt: { ...current, receiptId: connection.receiptId },
+    }).success).toBe(false);
+  });
+
   it('projects a fractional detector centroid onto the admitted integer-Hz detected-power tune', () => {
     const projected = projectDetectedPowerTuneHz(100_000_000.49, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1);
     expect(projected).toBe(100_000_000);
@@ -723,6 +756,29 @@ describe('instrument boundary contracts', () => {
       rfOutputQualification: 'not-applicable' as const,
     };
     expect(instrumentSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    const safetySessionId = '50000000-0000-4000-8000-000000000001';
+    const receiveOnlySafety = {
+      connectionReceipt: safetyReceipt(1, 'connection-first-command', safetySessionId),
+      currentReceipt: safetyReceipt(2, 'analyzer-configuration', safetySessionId),
+    };
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      sessionId: safetySessionId,
+      receiveOnlySafety,
+    }).success).toBe(true);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...snapshot,
+      sessionId: safetySessionId,
+      receiveOnlySafety: {
+        ...receiveOnlySafety,
+        currentReceipt: { ...receiveOnlySafety.currentReceipt, sessionId: '50000000-0000-4000-8000-000000000002' },
+      },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...signalLabSnapshot(),
+      sessionId: safetySessionId,
+      receiveOnlySafety,
+    }).success).toBe(false);
     expect(instrumentSessionSnapshotSchema.safeParse({ ...snapshot, driverId: 'other-driver' }).success).toBe(false);
     expect(instrumentSessionSnapshotSchema.safeParse({
       ...snapshot,
@@ -985,6 +1041,24 @@ describe('instrument boundary contracts', () => {
       frequencyHz: [100, 200, 300],
       powerDbm: [-90, -80, -95],
     }).success).toBe(true);
+    const safetySessionId = '50000000-0000-4000-8000-000000000001';
+    const receipt = safetyReceipt(3, 'pre-acquisition', safetySessionId);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      sessionId: safetySessionId,
+      kind: 'swept-spectrum',
+      frequencyHz: [100, 200, 300],
+      powerDbm: [-90, -80, -95],
+      receiveOnlySafetyReceipt: receipt,
+    }).success).toBe(true);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      sessionId: safetySessionId,
+      kind: 'swept-spectrum',
+      frequencyHz: [100, 200, 300],
+      powerDbm: [-90, -80, -95],
+      receiveOnlySafetyReceipt: { ...receipt, sessionId: '50000000-0000-4000-8000-000000000002' },
+    }).success).toBe(false);
     expect(instrumentMeasurementSchema.safeParse({
       ...common,
       kind: 'swept-spectrum',
@@ -1407,5 +1481,24 @@ function signalLabSnapshot() {
     },
     rfOutput: 'not-supported' as const,
     rfOutputQualification: 'not-applicable' as const,
+  };
+}
+
+function safetyReceipt(
+  sequence: number,
+  reason: 'connection-first-command' | 'analyzer-configuration' | 'pre-acquisition' | 'post-interaction-recovery' | 'disconnect',
+  sessionId = '50000000-0000-4000-8000-000000000001',
+) {
+  return {
+    schemaVersion: 1 as const,
+    receiptId: `60000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`,
+    sessionId,
+    command: 'output off' as const,
+    reason,
+    outputState: 'off' as const,
+    acknowledgement: 'empty-reply-acknowledged' as const,
+    qualification: 'device-command-acknowledged-not-rf-measured' as const,
+    sequence,
+    acknowledgedAt: `2026-07-14T18:00:${sequence.toString().padStart(2, '0')}.000Z`,
   };
 }

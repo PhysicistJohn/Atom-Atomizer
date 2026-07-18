@@ -99,6 +99,20 @@ describe('device fail-loud lifecycle', () => {
       firmwareTraces: true,
       qualification: 'device-observed-awaiting-rf-qualification',
     });
+    expect(connected.receiveOnlySafety).toMatchObject({
+      connectionReceipt: {
+        schemaVersion: 1,
+        sessionId: connected.sessionId,
+        command: 'output off',
+        reason: 'connection-first-command',
+        outputState: 'off',
+        acknowledgement: 'empty-reply-acknowledged',
+        qualification: 'device-command-acknowledged-not-rf-measured',
+        sequence: 1,
+      },
+      currentReceipt: { sessionId: connected.sessionId },
+    });
+    expect(connected.receiveOnlySafety!.connectionReceipt.acknowledgedAt <= connected.connectedAt!).toBe(true);
     expect(bytes.writes.slice(0, 4)).toEqual(['output off', 'version', 'info', 'help']);
     await service.disconnect();
   });
@@ -253,6 +267,16 @@ describe('device fail-loud lifecycle', () => {
       expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
     },
   );
+
+  it('does not issue a safety receipt for a whitespace-only output-off reply', async () => {
+    const bytes = new FakeTinySaTransport({ commandResponseSequences: { 'output off': [' \r\n', ''] } });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+
+    await expect(service.connect(transport.port)).rejects.toThrow(/exact empty firmware reply/i);
+    expect(service.snapshot().receiveOnlySafety).toBeUndefined();
+    await expect(service.cleanupPendingInstrumentConnection()).resolves.toBeUndefined();
+  });
 
   it.each([
     [
@@ -532,9 +556,9 @@ describe('device fail-loud lifecycle', () => {
     const offBeforeDisconnect = bytes.writes.filter((command) => command === 'output off').length;
     await service.disconnect();
     // The retune began with a current acknowledged output-off command, so
-    // teardown may consume that still-current safety acknowledgement rather
-    // than manufacture a redundant write after a non-emitting input failure.
-    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(offBeforeDisconnect);
+    // Teardown now records its own command acknowledgement rather than
+    // relabeling the most recent analyzer-configuration receipt.
+    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(offBeforeDisconnect + 1);
     expect(service.snapshot()).toMatchObject({ connection: 'disconnected', generatorOutput: 'unknown' });
   });
 
@@ -651,6 +675,8 @@ describe('device fail-loud lifecycle', () => {
     const manager = new InstrumentManager(new InstrumentDriverRegistry([
       new TinySaZs407InstrumentDriver(service),
     ]));
+    const managerEvents: unknown[] = [];
+    manager.subscribe((event) => managerEvents.push(event));
     const connected = await manager.connect((await manager.discover()).candidates[0]!);
 
     expect(connected).toMatchObject({
@@ -683,6 +709,9 @@ describe('device fail-loud lifecycle', () => {
           reports: ['identity', 'health', 'configuration'],
         }],
       },
+      receiveOnlySafety: {
+        connectionReceipt: { reason: 'connection-first-command' },
+      },
     });
     const spectrum = connected.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
     expect(spectrum?.controls).not.toHaveProperty('triggerLevelDbm');
@@ -711,8 +740,24 @@ describe('device fail-loud lifecycle', () => {
     const outputOffBeforeAcquire = bytes.writes.filter((command) => command === 'output off').length;
     const measurement = await manager.acquire();
 
-    expect(measurement).toMatchObject({ kind: 'swept-spectrum', qualification: 'device-observed' });
-    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(outputOffBeforeAcquire + 1);
+    expect(measurement).toMatchObject({
+      kind: 'swept-spectrum',
+      qualification: 'device-observed',
+      receiveOnlySafetyReceipt: { reason: 'pre-acquisition' },
+    });
+    expect(manager.snapshot()?.receiveOnlySafety?.currentReceipt).toEqual(measurement.receiveOnlySafetyReceipt);
+    expect(managerEvents).toContainEqual(expect.objectContaining({
+      type: 'session-state',
+      reason: 'receive-only-safety-advanced',
+      session: expect.objectContaining({
+        receiveOnlySafety: expect.objectContaining({
+          currentReceipt: measurement.receiveOnlySafetyReceipt,
+        }),
+      }),
+    }));
+    // The session boundary and the device's immediately adjacent acquisition
+    // guard both reassert output-off. Only the latter receipt may bind data.
+    expect(bytes.writes.filter((command) => command === 'output off')).toHaveLength(outputOffBeforeAcquire + 2);
     const scan = bytes.writes.lastIndexOf('scan 758000000 768000000 450 3');
     expect(scan).toBeGreaterThan(-1);
     expect(bytes.writes.slice(scan + 1)).not.toContain('trace');

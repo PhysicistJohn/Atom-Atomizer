@@ -29,6 +29,7 @@ import {
   type InstrumentMeasurement,
   type InstrumentRfOutputQualification,
   type InstrumentRfOutputState,
+  type InstrumentReceiveOnlySafetyState,
   type InstrumentSessionEvent,
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
@@ -80,6 +81,7 @@ interface ActiveSession {
   producerConfigurationEpoch?: string;
   rfOutput: InstrumentRfOutputState;
   rfOutputQualification: InstrumentRfOutputQualification;
+  receiveOnlySafety?: InstrumentReceiveOnlySafetyState;
   fault?: InstrumentError;
   faultRevision: number;
   lastMeasurementSequence: number;
@@ -284,6 +286,7 @@ export class InstrumentManager {
       returnedSession = await driver.connect(admittedCandidate);
       driverConnectReturned = true;
       session = validateInstrumentSession(driver, admittedCandidate, returnedSession);
+      const initialReceiveOnlySafety = session.receiveOnlySafety;
       active = {
         driver,
         session,
@@ -294,6 +297,9 @@ export class InstrumentManager {
           : {}),
         rfOutput: session.rfOutput,
         rfOutputQualification: rfOutputQualification(session.provenance.sourceKind, session.rfOutput),
+        ...(initialReceiveOnlySafety
+          ? { receiveOnlySafety: deepFreeze(structuredClone(initialReceiveOnlySafety)) }
+          : {}),
         faultRevision: 0,
         lastMeasurementSequence: 0,
         measurementHistory: new Map(),
@@ -492,6 +498,7 @@ export class InstrumentManager {
       this.#emit({ type: 'session-state', reason: 'rf-output-changed', session: this.#snapshot(active) });
     }
     const faultRevision = active.faultRevision;
+    const receiveOnlySafetyBefore = active.receiveOnlySafety;
     try {
       const dispatch = instrumentConfigurationCommandSchema.parse(structuredClone(command));
       await active.session.configure(dispatch);
@@ -501,6 +508,20 @@ export class InstrumentManager {
           active,
           `Driver ${active.driver.driverId} did not acknowledge RF output-off after configuration`,
         );
+      }
+      if (receiveOnlySafetyBefore) {
+        active.receiveOnlySafety = advanceReceiveOnlySafety(
+          active,
+          receiveOnlySafetyBefore,
+          'analyzer-configuration',
+        );
+        this.#emit({
+          type: 'session-state',
+          reason: 'receive-only-safety-advanced',
+          session: this.#snapshot(active),
+        });
+      } else if (active.session.receiveOnlySafety !== undefined) {
+        throw new InstrumentDriverContractError('Driver introduced receive-only safety state after session admission');
       }
     }
     catch (value) {
@@ -532,6 +553,7 @@ export class InstrumentManager {
     const acquisition: NonNullable<ActiveSession['acquisition']> = {};
     active.acquisition = acquisition;
     const faultRevision = active.faultRevision;
+    const receiveOnlySafetyBefore = active.receiveOnlySafety;
     let value: unknown;
     try {
       try { value = await active.session.acquire(); }
@@ -543,6 +565,27 @@ export class InstrumentManager {
       try { measurement = instrumentMeasurementSchema.parse(value); }
       catch (error) { throw asManagerError(error, 'driver-contract', `Driver ${active.driver.driverId} returned an invalid measurement`); }
       assertMeasurementBinding(measurement, active, configuration);
+      if (receiveOnlySafetyBefore) {
+        const receiveOnlySafetyAfter = advanceReceiveOnlySafety(
+          active,
+          receiveOnlySafetyBefore,
+          'pre-acquisition',
+        );
+        if (!isDeepStrictEqual(measurement.receiveOnlySafetyReceipt, receiveOnlySafetyAfter.currentReceipt)) {
+          throw new InstrumentManagerError(
+            'driver-contract',
+            'Measurement receive-only safety receipt does not match the current post-acquisition driver receipt',
+          );
+        }
+        active.receiveOnlySafety = receiveOnlySafetyAfter;
+        this.#emit({
+          type: 'session-state',
+          reason: 'receive-only-safety-advanced',
+          session: this.#snapshot(active),
+        });
+      } else if (active.session.receiveOnlySafety !== undefined) {
+        throw new InstrumentManagerError('driver-contract', 'Driver introduced receive-only safety state after session admission');
+      }
       this.#assertPostAwaitState(active, faultRevision);
       const fingerprint = fingerprintInstrumentMeasurement(measurement);
       if (acquisition.eventFingerprint && acquisition.eventFingerprint !== fingerprint) {
@@ -565,6 +608,7 @@ export class InstrumentManager {
 
   async #executeFeature(requestValue: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
     const active = this.#requireActive();
+    const receiveOnlySafetyBefore = active.receiveOnlySafety;
     const request = instrumentFeatureRequestSchema.parse(requestValue);
     const safeFaultedTeardown = request.kind === 'rf-generator'
       && request.action === 'set-output'
@@ -629,6 +673,29 @@ export class InstrumentManager {
         } else {
           this.#setRfOutput(active, request.enabled ? 'on' : 'off');
         }
+      }
+      if (receiveOnlySafetyBefore) {
+        const observed = active.session.receiveOnlySafety;
+        if (!observed) {
+          throw new InstrumentManagerError('driver-contract', 'Driver withdrew receive-only safety state during a feature operation');
+        }
+        if (!isDeepStrictEqual(observed, receiveOnlySafetyBefore)) {
+          if (request.kind !== 'touch') {
+            throw new InstrumentManagerError('driver-contract', 'Driver advanced receive-only safety state for an unrelated feature');
+          }
+          active.receiveOnlySafety = advanceReceiveOnlySafety(
+            active,
+            receiveOnlySafetyBefore,
+            'post-interaction-recovery',
+          );
+          this.#emit({
+            type: 'session-state',
+            reason: 'receive-only-safety-advanced',
+            session: this.#snapshot(active),
+          });
+        }
+      } else if (active.session.receiveOnlySafety !== undefined) {
+        throw new InstrumentManagerError('driver-contract', 'Driver introduced receive-only safety state during a feature operation');
       }
     } catch (error) {
       const failure = asManagerError(error, 'driver-contract', `Driver ${active.driver.driverId} returned an invalid feature result`);
@@ -757,6 +824,7 @@ export class InstrumentManager {
       capabilities: active.capabilities,
       rfOutput: active.rfOutput,
       rfOutputQualification: active.rfOutputQualification,
+      ...(active.receiveOnlySafety ? { receiveOnlySafety: active.receiveOnlySafety } : {}),
       ...(active.fault ? { fault: active.fault } : {}),
       ...(active.configuration ? { configuration: active.configuration } : {}),
     });
@@ -1128,6 +1196,44 @@ function deepFreeze<Value>(value: Value): Value {
   return Object.freeze(value);
 }
 
+function advanceReceiveOnlySafety(
+  active: ActiveSession,
+  previous: InstrumentReceiveOnlySafetyState,
+  expectedReason: InstrumentReceiveOnlySafetyState['currentReceipt']['reason'],
+): InstrumentReceiveOnlySafetyState {
+  let current: InstrumentReceiveOnlySafetyState | undefined;
+  try { current = active.session.receiveOnlySafety; }
+  catch (error) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      `Driver ${active.driver.driverId} exposed invalid receive-only safety state`,
+      { cause: error },
+    );
+  }
+  if (!current) {
+    throw new InstrumentManagerError('driver-contract', 'Driver withdrew receive-only safety state during an active physical session');
+  }
+  if (!isDeepStrictEqual(current.connectionReceipt, previous.connectionReceipt)) {
+    throw new InstrumentManagerError('driver-contract', 'Driver rewrote its receive-only connection receipt');
+  }
+  if (current.currentReceipt.sessionId !== active.session.sessionId) {
+    throw new InstrumentManagerError('driver-contract', 'Current receive-only safety receipt belongs to another session');
+  }
+  if (current.currentReceipt.sequence <= previous.currentReceipt.sequence) {
+    throw new InstrumentManagerError('driver-contract', 'Driver did not advance its receive-only safety receipt');
+  }
+  if (current.currentReceipt.receiptId === previous.currentReceipt.receiptId) {
+    throw new InstrumentManagerError('driver-contract', 'Driver reused a receive-only safety receipt ID for a new sequence');
+  }
+  if (current.currentReceipt.reason !== expectedReason) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      `Driver receive-only safety receipt reason must be ${expectedReason}`,
+    );
+  }
+  return deepFreeze(structuredClone(current));
+}
+
 function assertMeasurementBinding(
   measurement: InstrumentMeasurement,
   active: ActiveSession,
@@ -1138,6 +1244,23 @@ function assertMeasurementBinding(
   const expectedQualification = expectedMeasurementQualification(active, measurement);
   if (measurement.qualification !== expectedQualification) {
     throw new InstrumentManagerError('driver-contract', 'Measurement qualification does not match the admitted source and measurement kind');
+  }
+  if (active.receiveOnlySafety) {
+    const receipt = measurement.receiveOnlySafetyReceipt;
+    if (!receipt) {
+      throw new InstrumentManagerError('driver-contract', 'Receive-only physical measurement omitted its pre-acquisition safety receipt');
+    }
+    if (receipt.sessionId !== active.session.sessionId) {
+      throw new InstrumentManagerError('driver-contract', 'Measurement receive-only safety receipt belongs to another session');
+    }
+    if (receipt.reason !== 'pre-acquisition') {
+      throw new InstrumentManagerError('driver-contract', 'Measurement receive-only safety receipt is not a pre-acquisition acknowledgement');
+    }
+    if (receipt.sequence <= active.receiveOnlySafety.currentReceipt.sequence) {
+      throw new InstrumentManagerError('driver-contract', 'Measurement receive-only safety receipt is stale');
+    }
+  } else if (measurement.receiveOnlySafetyReceipt !== undefined) {
+    throw new InstrumentManagerError('driver-contract', 'Measurement fabricated receive-only safety evidence for a session without that state');
   }
   if (active.session.provenance.sourceKind === 'signal-lab') {
     if (active.producerConfigurationEpoch === undefined

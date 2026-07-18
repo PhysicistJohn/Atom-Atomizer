@@ -129,6 +129,89 @@ export const instrumentOpaqueIdSchema = z.string().min(1).max(MAX_INSTRUMENT_OPA
 export type InstrumentOpaqueId = z.infer<typeof instrumentOpaqueIdSchema>;
 export const instrumentTimestampSchema = z.string().max(MAX_INSTRUMENT_TIMESTAMP_CHARACTERS_V1).datetime();
 
+/**
+ * One firmware-shell acknowledgement that the receive-only safety command was
+ * accepted. This is command-path evidence only: it is deliberately not an RF
+ * power measurement or an independent observation of the output connector.
+ */
+export const receiveOnlySafetyReceiptSchema = z.object({
+  schemaVersion: z.literal(INSTRUMENT_CONTRACT_VERSION),
+  receiptId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  command: z.literal('output off'),
+  reason: z.enum([
+    'connection-first-command',
+    'analyzer-configuration',
+    'pre-acquisition',
+    'post-interaction-recovery',
+    'disconnect',
+  ]),
+  outputState: z.literal('off'),
+  acknowledgement: z.literal('empty-reply-acknowledged'),
+  qualification: z.literal('device-command-acknowledged-not-rf-measured'),
+  sequence: z.number().int().positive().max(MAX_INSTRUMENT_SEQUENCE_V1),
+  acknowledgedAt: instrumentTimestampSchema,
+}).strict();
+export type ReceiveOnlySafetyReceipt = z.infer<typeof receiveOnlySafetyReceiptSchema>;
+
+/**
+ * Driver-neutral, separately qualified receive-only state. The connection
+ * receipt proves the first command after transport open; currentReceipt is
+ * the newest acknowledged reassertion in that same physical session.
+ */
+export const instrumentReceiveOnlySafetyStateSchema = z.object({
+  connectionReceipt: receiveOnlySafetyReceiptSchema,
+  currentReceipt: receiveOnlySafetyReceiptSchema,
+}).strict().superRefine((state, context) => {
+  if (state.connectionReceipt.reason !== 'connection-first-command') {
+    context.addIssue({
+      code: 'custom',
+      path: ['connectionReceipt', 'reason'],
+      message: 'Connection safety receipt must identify the first command after transport open',
+    });
+  }
+  if (state.currentReceipt.sessionId !== state.connectionReceipt.sessionId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['currentReceipt', 'sessionId'],
+      message: 'Current safety receipt must belong to the connection receipt session',
+    });
+  }
+  if (state.currentReceipt.sequence < state.connectionReceipt.sequence) {
+    context.addIssue({
+      code: 'custom',
+      path: ['currentReceipt', 'sequence'],
+      message: 'Current safety receipt sequence cannot precede the connection receipt',
+    });
+  }
+  if (Date.parse(state.currentReceipt.acknowledgedAt) < Date.parse(state.connectionReceipt.acknowledgedAt)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['currentReceipt', 'acknowledgedAt'],
+      message: 'Current safety receipt timestamp cannot precede the connection receipt',
+    });
+  }
+  if (state.currentReceipt.sequence === state.connectionReceipt.sequence
+    && (state.currentReceipt.receiptId !== state.connectionReceipt.receiptId
+      || state.currentReceipt.reason !== state.connectionReceipt.reason
+      || state.currentReceipt.acknowledgedAt !== state.connectionReceipt.acknowledgedAt)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['currentReceipt'],
+      message: 'Equal safety receipt sequences must identify the exact same receipt',
+    });
+  }
+  if (state.currentReceipt.sequence !== state.connectionReceipt.sequence
+    && state.currentReceipt.receiptId === state.connectionReceipt.receiptId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['currentReceipt', 'receiptId'],
+      message: 'Distinct safety receipt sequences must use distinct receipt IDs',
+    });
+  }
+});
+export type InstrumentReceiveOnlySafetyState = z.infer<typeof instrumentReceiveOnlySafetyStateSchema>;
+
 const endpointPathSchema = z.string().min(1).max(MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1);
 const metadataStringSchema = z.string().min(1).max(MAX_INSTRUMENT_METADATA_CHARACTERS_V1);
 const frequencyHzSchema = z.number().int().nonnegative().max(MAX_INSTRUMENT_FREQUENCY_HZ_V1);
@@ -1420,6 +1503,7 @@ const measurementBaseShape = {
   elapsedMilliseconds: z.number().finite().nonnegative().max(MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1),
   resolutionBandwidthHz: z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1).nullable(),
   attenuationDb: boundedPowerSchema.nullable(),
+  receiveOnlySafetyReceipt: receiveOnlySafetyReceiptSchema.optional(),
   complete: z.literal(true),
 } as const;
 
@@ -1481,7 +1565,24 @@ export const instrumentMeasurementSchema = z.discriminatedUnion('kind', [
   sweptSpectrumMeasurementSchema,
   detectedPowerTimeseriesMeasurementSchema,
   complexIqMeasurementSchema,
-]);
+]).superRefine((measurement, context) => {
+  const receipt = measurement.receiveOnlySafetyReceipt;
+  if (!receipt) return;
+  if (receipt.sessionId !== measurement.sessionId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['receiveOnlySafetyReceipt', 'sessionId'],
+      message: 'Measurement safety receipt must belong to the measurement session',
+    });
+  }
+  if (measurement.kind === 'complex-iq' || measurement.qualification !== 'device-observed') {
+    context.addIssue({
+      code: 'custom',
+      path: ['receiveOnlySafetyReceipt'],
+      message: 'Receive-only safety receipts qualify only physical scalar device observations',
+    });
+  }
+});
 export type InstrumentMeasurement = z.infer<typeof instrumentMeasurementSchema>;
 
 export const instrumentDiscoveryFailureSchema = z.object({
@@ -1538,6 +1639,7 @@ export const instrumentSessionSnapshotSchema = z.object({
   capabilities: instrumentCapabilitiesSchema,
   rfOutput: instrumentRfOutputStateSchema,
   rfOutputQualification: instrumentRfOutputQualificationSchema,
+  receiveOnlySafety: instrumentReceiveOnlySafetyStateSchema.optional(),
   fault: instrumentErrorSchema.optional(),
   configuration: instrumentConfigurationStateSchema.optional(),
 }).strict().superRefine((session, context) => {
@@ -1611,6 +1713,30 @@ export const instrumentSessionSnapshotSchema = z.object({
   if (session.rfOutputQualification !== expectedQualification) {
     context.addIssue({ code: 'custom', path: ['rfOutputQualification'], message: `RF output qualification must be ${expectedQualification}` });
   }
+  if (session.receiveOnlySafety) {
+    if (session.provenance.sourceKind !== 'serial-port' || session.provenance.execution !== 'physical') {
+      context.addIssue({
+        code: 'custom',
+        path: ['receiveOnlySafety'],
+        message: 'Receive-only safety receipts require a physical serial-port session',
+      });
+    }
+    if (session.rfOutput !== 'not-supported') {
+      context.addIssue({
+        code: 'custom',
+        path: ['receiveOnlySafety'],
+        message: 'Receive-only safety state is separate from sessions that advertise RF-generator output control',
+      });
+    }
+    if (session.receiveOnlySafety.connectionReceipt.sessionId !== session.sessionId
+      || session.receiveOnlySafety.currentReceipt.sessionId !== session.sessionId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['receiveOnlySafety'],
+        message: 'Receive-only safety receipts must belong to the enclosing session',
+      });
+    }
+  }
 });
 export type InstrumentSessionSnapshot = z.infer<typeof instrumentSessionSnapshotSchema>;
 
@@ -1644,7 +1770,7 @@ export const instrumentManagerEventSchema = z.union([
   }).strict(),
   z.object({
     type: z.literal('session-state'),
-    reason: z.enum(['rf-output-changed', 'session-faulted']),
+    reason: z.enum(['rf-output-changed', 'receive-only-safety-advanced', 'session-faulted']),
     session: instrumentSessionSnapshotSchema,
   }).strict(),
   z.object({

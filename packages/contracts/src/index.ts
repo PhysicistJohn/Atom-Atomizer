@@ -17,6 +17,8 @@ import {
   type SweptSpectrumConfiguration,
   type DetectedPowerTimeseriesConfiguration,
   type InstrumentSessionProvenance,
+  type InstrumentReceiveOnlySafetyState,
+  type ReceiveOnlySafetyReceipt,
 } from './instrument.js';
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
@@ -760,6 +762,8 @@ export interface DeviceSnapshot {
   generator?: GeneratorState;
   telemetry?: DeviceTelemetry;
   fault?: DeviceFault;
+  /** Command-acknowledged receive-only state; never an independent RF observation. */
+  receiveOnlySafety?: InstrumentReceiveOnlySafetyState;
 }
 
 /**
@@ -803,6 +807,8 @@ export interface Sweep {
   firmwareTraces?: readonly FirmwareTraceFrame[];
   complete: true;
   identity: MeasurementIdentity;
+  /** Exact output-off receipt immediately preceding this physical acquisition. */
+  receiveOnlySafetyReceipt?: ReceiveOnlySafetyReceipt;
 }
 export interface ZeroSpanCapture {
   kind: 'zero-span';
@@ -828,6 +834,8 @@ export interface ZeroSpanCapture {
   source: 'scan-text' | 'renode-executable-state' | 'instrument-driver-detected-power' | 'signal-lab-synthetic';
   complete: true;
   identity: MeasurementIdentity;
+  /** Exact output-off receipt immediately preceding this physical acquisition. */
+  receiveOnlySafetyReceipt?: ReceiveOnlySafetyReceipt;
 }
 
 export type DetectedPowerCapturePolicyId =

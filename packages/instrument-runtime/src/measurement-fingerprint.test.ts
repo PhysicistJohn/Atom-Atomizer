@@ -53,6 +53,41 @@ describe('instrument measurement fingerprint', () => {
       .toBe(fingerprintInstrumentMeasurement(measurement));
     expect(fingerprintInstrumentMeasurement(changed)).not.toBe(fingerprintInstrumentMeasurement(measurement));
   });
+
+  it('binds the exact receive-only command receipt into scalar measurement identity', () => {
+    const sessionId = 'a0000000-0000-4000-8000-000000000001';
+    const measurement: InstrumentMeasurement = {
+      ...BASE,
+      sessionId,
+      measurementId: 'measurement:spectrum:safety',
+      kind: 'swept-spectrum',
+      resolutionBandwidthHz: 10_000,
+      attenuationDb: 0,
+      frequencyHz: [100, 200],
+      powerDbm: [-90, -70],
+      receiveOnlySafetyReceipt: {
+        schemaVersion: 1,
+        receiptId: 'b0000000-0000-4000-8000-000000000001',
+        sessionId,
+        command: 'output off',
+        reason: 'pre-acquisition',
+        outputState: 'off',
+        acknowledgement: 'empty-reply-acknowledged',
+        qualification: 'device-command-acknowledged-not-rf-measured',
+        sequence: 3,
+        acknowledgedAt: '2026-07-14T20:00:00.000Z',
+      },
+    };
+    const changed = {
+      ...measurement,
+      receiveOnlySafetyReceipt: {
+        ...measurement.receiveOnlySafetyReceipt!,
+        receiptId: 'b0000000-0000-4000-8000-000000000002',
+      },
+    };
+
+    expect(fingerprintInstrumentMeasurement(changed)).not.toBe(fingerprintInstrumentMeasurement(measurement));
+  });
 });
 
 function iq(samples: Uint8Array<ArrayBuffer>): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> {

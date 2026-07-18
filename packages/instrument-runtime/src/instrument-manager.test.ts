@@ -11,6 +11,8 @@ import type {
   InstrumentFeatureCapability,
   InstrumentManagerEvent,
   InstrumentMeasurement,
+  InstrumentReceiveOnlySafetyState,
+  ReceiveOnlySafetyReceipt,
   InstrumentSessionProvenance,
   InstrumentSessionEvent,
   InstrumentSourceKind,
@@ -759,6 +761,112 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     measurements.push(sweptMeasurement(session!, admitted.configurationRevision, 1));
     await expect(manager.acquire()).resolves.toMatchObject({ sequence: 1 });
     measurements.push(sweptMeasurement(session!, admitted.configurationRevision, 1));
+    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+  });
+
+  it('publishes and binds fresh receive-only safety state across configuration and acquisition', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, analyzerCapabilities(), true);
+        session.onConfigure = async () => { session.advanceSafety('analyzer-configuration'); };
+        session.onAcquire = async () => {
+          const configuration = session.configureCalls.at(-1)!;
+          const receipt = session.advanceSafety('pre-acquisition');
+          return {
+            ...sweptMeasurement(session, configuration.configurationRevision, 1),
+            receiveOnlySafetyReceipt: receipt,
+          };
+        };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const events: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => events.push(event));
+    const connected = await manager.connect((await manager.discover()).candidates[0]!);
+
+    expect(connected).toMatchObject({
+      rfOutput: 'not-supported',
+      receiveOnlySafety: {
+        connectionReceipt: { reason: 'connection-first-command', sequence: 1 },
+        currentReceipt: { reason: 'analyzer-configuration', sequence: 2 },
+      },
+    });
+    await manager.configure(sweepConfiguration());
+    expect(manager.snapshot()?.receiveOnlySafety?.currentReceipt).toMatchObject({
+      reason: 'analyzer-configuration', sequence: 3,
+    });
+    const measurement = await manager.acquire();
+    expect(measurement.receiveOnlySafetyReceipt).toMatchObject({ reason: 'pre-acquisition', sequence: 4 });
+    expect(manager.snapshot()?.receiveOnlySafety?.currentReceipt).toEqual(measurement.receiveOnlySafetyReceipt);
+    const safetyEvents = events.filter((event) => event.type === 'session-state'
+      && event.reason === 'receive-only-safety-advanced');
+    expect(safetyEvents).toHaveLength(2);
+    expect(safetyEvents.at(-1)).toMatchObject({
+      session: { receiveOnlySafety: { currentReceipt: measurement.receiveOnlySafetyReceipt } },
+    });
+  });
+
+  it.each(['stale', 'wrong-current', 'rewritten-connection'] as const)(
+    'faults receive-only acquisition with %s receipt evidence',
+    async (failure) => {
+      let session: StubSession;
+      const driver = new StubDriver(
+        'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+        async (candidate) => {
+          session = new StubSession(candidate, analyzerCapabilities(), true);
+          session.onConfigure = async () => { session.advanceSafety('analyzer-configuration'); };
+          session.onAcquire = async () => {
+            const configuration = session.configureCalls.at(-1)!;
+            const previous = session.receiveOnlySafety!.currentReceipt;
+            const current = failure === 'stale' ? previous : session.advanceSafety('pre-acquisition');
+            if (failure === 'rewritten-connection') session.rewriteConnectionSafetyReceipt();
+            const receipt = failure === 'wrong-current'
+              ? { ...current, receiptId: '90000000-0000-4000-8000-000000000999' }
+              : current;
+            return {
+              ...sweptMeasurement(session, configuration.configurationRevision, 1),
+              receiveOnlySafetyReceipt: receipt,
+            };
+          };
+          return session;
+        },
+      );
+      const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+      await manager.connect((await manager.discover()).candidates[0]!);
+      await manager.configure(sweepConfiguration());
+
+      await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+      expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract', recoverable: false } });
+    },
+  );
+
+  it('rejects a fabricated safety receipt from a session with no admitted receive-only state', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, analyzerCapabilities(), 'uuid-only');
+        session.onAcquire = async () => {
+          const configuration = session.configureCalls.at(-1)!;
+          return {
+            ...sweptMeasurement(session, configuration.configurationRevision, 1),
+            receiveOnlySafetyReceipt: safetyReceipt(
+              '70000000-0000-4000-8000-000000000001',
+              3,
+              'pre-acquisition',
+            ),
+          };
+        };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+    await manager.configure(sweepConfiguration());
+
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
   });
 
@@ -1973,6 +2081,8 @@ class StubSession implements InstrumentSession {
   unsubscribeCalls = 0;
   private listener: ((event: InstrumentSessionEvent) => void) | undefined;
   private configuration: InstrumentConfigurationCommand | undefined;
+  private safetyState: InstrumentReceiveOnlySafetyState | undefined;
+  private safetySequence = 0;
 
   onConfigure: (command: InstrumentConfigurationCommand) => Promise<void> = async () => undefined;
   onAcquire: () => Promise<InstrumentMeasurement> = async () => {
@@ -1985,11 +2095,41 @@ class StubSession implements InstrumentSession {
   onUnsubscribe: () => void = () => undefined;
   subscribeError: Error | undefined;
 
-  constructor(readonly candidate: InstrumentCandidate, readonly capabilities: InstrumentCapabilities) {
+  constructor(
+    readonly candidate: InstrumentCandidate,
+    readonly capabilities: InstrumentCapabilities,
+    receiveOnlySafety: boolean | 'uuid-only' = false,
+  ) {
     this.driverId = candidate.driverId;
-    this.sessionId = `session:${candidate.driverId}`;
+    this.sessionId = receiveOnlySafety
+      ? '70000000-0000-4000-8000-000000000001'
+      : `session:${candidate.driverId}`;
     this.provenance = provenanceFor(candidate);
     this.rfOutput = capabilities.features.some((feature) => feature.kind === 'rf-generator') ? 'off' : 'not-supported';
+    if (receiveOnlySafety === true) {
+      const connectionReceipt = this.issueSafetyReceipt('connection-first-command');
+      const currentReceipt = this.issueSafetyReceipt('analyzer-configuration');
+      this.safetyState = { connectionReceipt, currentReceipt };
+    }
+  }
+
+  get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
+    return this.safetyState ? structuredClone(this.safetyState) : undefined;
+  }
+
+  advanceSafety(reason: ReceiveOnlySafetyReceipt['reason']): ReceiveOnlySafetyReceipt {
+    if (!this.safetyState) throw new Error('Stub receive-only safety is not enabled');
+    const currentReceipt = this.issueSafetyReceipt(reason);
+    this.safetyState = { connectionReceipt: this.safetyState.connectionReceipt, currentReceipt };
+    return structuredClone(currentReceipt);
+  }
+
+  rewriteConnectionSafetyReceipt(): void {
+    if (!this.safetyState) throw new Error('Stub receive-only safety is not enabled');
+    this.safetyState = {
+      connectionReceipt: this.issueSafetyReceipt('connection-first-command'),
+      currentReceipt: this.safetyState.currentReceipt,
+    };
   }
 
   async configure(command: InstrumentConfigurationCommand): Promise<void> {
@@ -2023,6 +2163,11 @@ class StubSession implements InstrumentSession {
 
   emit(event: InstrumentSessionEvent): void { this.listener?.(event); }
   emitUnsafe(event: unknown): void { this.listener?.(event as InstrumentSessionEvent); }
+
+  private issueSafetyReceipt(reason: ReceiveOnlySafetyReceipt['reason']): ReceiveOnlySafetyReceipt {
+    const sequence = ++this.safetySequence;
+    return safetyReceipt(this.sessionId, sequence, reason);
+  }
 }
 
 function serialDescriptor(): InstrumentCandidateDescriptor {
@@ -2361,6 +2506,25 @@ function provenanceFor(candidate: InstrumentCandidate): InstrumentSessionProvena
     contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1,
     contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorSha256: 'c'.repeat(64),
     claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+  };
+}
+
+function safetyReceipt(
+  sessionId: string,
+  sequence: number,
+  reason: ReceiveOnlySafetyReceipt['reason'],
+): ReceiveOnlySafetyReceipt {
+  return {
+    schemaVersion: 1,
+    receiptId: `80000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`,
+    sessionId,
+    command: 'output off',
+    reason,
+    outputState: 'off',
+    acknowledgement: 'empty-reply-acknowledged',
+    qualification: 'device-command-acknowledged-not-rf-measured',
+    sequence,
+    acknowledgedAt: `2026-07-14T18:00:${sequence.toString().padStart(2, '0')}.000Z`,
   };
 }
 

@@ -27,6 +27,8 @@ import {
   type GeneratorConfig,
   type NumericRange,
   type PortCandidate,
+  type InstrumentReceiveOnlySafetyState,
+  type ReceiveOnlySafetyReceipt,
   type ScreenFrame,
   type ScreenPoint,
   type Sweep,
@@ -96,6 +98,9 @@ export class TinySaDeviceService {
   #closing = false;
   #rfOffAcknowledged = false;
   #teardownRfOffAcknowledged = false;
+  #receiveOnlySafety: InstrumentReceiveOnlySafetyState | undefined;
+  #receiveOnlySafetySequence = 0;
+  #pendingSessionId: string | undefined;
   #pendingPort?: PortCandidate;
   #unsubscribeTransport: () => void;
 
@@ -112,6 +117,9 @@ export class TinySaDeviceService {
     const port = portCandidateSchema.parse(input);
     if (this.#snapshot.connection !== 'disconnected') throw new TinySaDeviceError('invalid-state', 'Device is already active', false);
     this.#pendingPort = structuredClone(port);
+    this.#pendingSessionId = crypto.randomUUID();
+    this.#receiveOnlySafety = undefined;
+    this.#receiveOnlySafetySequence = 0;
     this.#rfOffAcknowledged = false;
     this.#teardownRfOffAcknowledged = false;
     this.#set({ ...disconnectedSnapshot(), connection: 'connecting', generatorOutput: 'unknown', pendingPort: structuredClone(this.#pendingPort) });
@@ -122,7 +130,7 @@ export class TinySaDeviceService {
       this.#scheduler = new CommandScheduler(this.transport, { onFault: (error) => this.#handleSchedulerFault(error) });
       this.#set({ ...this.#snapshot, connection: 'identifying' });
 
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'connection-first-command');
       this.#versionResponse = await this.#scheduler.execute('version', 10_000);
       this.#infoResponse = await this.#scheduler.execute('info', 10_000);
       const help = await this.#scheduler.execute('help', 10_000);
@@ -130,7 +138,7 @@ export class TinySaDeviceService {
       this.#commands = parseHelpCommands(help);
       requireCommands(this.#commands);
 
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'analyzer-configuration');
       await this.#command('mode input');
       let readback = await this.#readAnalyzerReadback();
       let capabilities: DeviceCapabilities;
@@ -155,7 +163,7 @@ export class TinySaDeviceService {
         // silently rewrite the acquisition geometry that was admitted. The
         // restoration attempt is mandatory even when parsing a probe failed.
         try {
-          await this.#command('output off');
+          await this.#command('output off', 10_000, 'analyzer-configuration');
           await this.#command('mode input');
           const afterProbes = await this.#readAnalyzerReadback();
           assertSameProbeGeometry(readback, afterProbes);
@@ -190,10 +198,11 @@ export class TinySaDeviceService {
         verification: 'commanded',
         identity,
         capabilities,
-        sessionId: crypto.randomUUID(),
+        sessionId: this.#pendingSessionId,
         connectedAt: now,
         lastOperationAt: now,
         telemetry,
+        ...(this.#receiveOnlySafety ? { receiveOnlySafety: structuredClone(this.#receiveOnlySafety) } : {}),
       });
       return this.snapshot();
     } catch (error) {
@@ -216,6 +225,9 @@ export class TinySaDeviceService {
         this.#pendingPort = undefined;
         this.#rfOffAcknowledged = false;
         this.#teardownRfOffAcknowledged = false;
+        this.#pendingSessionId = undefined;
+        this.#receiveOnlySafety = undefined;
+        this.#receiveOnlySafetySequence = 0;
       }
       this.#analyzer = undefined;
       this.#zeroSpan = undefined;
@@ -239,26 +251,24 @@ export class TinySaDeviceService {
     this.#streaming = false;
     if (this.#streamTask) await this.#streamTask;
     if (!this.#teardownRfOffAcknowledged) {
-      if (!this.#rfOffAcknowledged) {
-        try {
-          await this.#ensureTeardownCommandChannel();
-          await this.#command('output off');
-        }
-        catch (value) {
-          const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged during disconnect', true);
-          this.#rfOffAcknowledged = false;
-          this.#teardownRfOffAcknowledged = false;
-          this.#analyzer = undefined;
-          this.#zeroSpan = undefined;
-          this.#set({
-            ...this.#snapshot,
-            connection: 'faulted',
-            generatorOutput: 'unknown',
-            verification: 'unknown',
-            fault: faultFrom(error),
-          });
-          throw error;
-        }
+      try {
+        await this.#ensureTeardownCommandChannel();
+        await this.#command('output off', 10_000, 'disconnect');
+      }
+      catch (value) {
+        const error = asDeviceError(value, 'protocol', 'RF output-off could not be acknowledged during disconnect', true);
+        this.#rfOffAcknowledged = false;
+        this.#teardownRfOffAcknowledged = false;
+        this.#analyzer = undefined;
+        this.#zeroSpan = undefined;
+        this.#set({
+          ...this.#snapshot,
+          connection: 'faulted',
+          generatorOutput: 'unknown',
+          verification: 'unknown',
+          fault: faultFrom(error),
+        });
+        throw error;
       }
       this.#teardownRfOffAcknowledged = true;
     }
@@ -285,6 +295,9 @@ export class TinySaDeviceService {
     this.#zeroSpan = undefined;
     this.#rfOffAcknowledged = false;
     this.#teardownRfOffAcknowledged = false;
+    this.#pendingSessionId = undefined;
+    this.#receiveOnlySafety = undefined;
+    this.#receiveOnlySafetySequence = 0;
     this.#set(disconnectedSnapshot());
   }
 
@@ -305,7 +318,7 @@ export class TinySaDeviceService {
     this.#ready();
     this.#beginConfigurationTransition();
     try {
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'analyzer-configuration');
       await this.#command('mode input');
       await this.#command('trace dBm');
       await this.#command(`sweep ${config.startHz} ${config.stopHz} ${config.points}`);
@@ -354,6 +367,8 @@ export class TinySaDeviceService {
     const timeoutMs = sweepTimeout(config.sweepTimeSeconds);
     const started = performance.now();
     try {
+      await this.#command('output off', 10_000, 'pre-acquisition');
+      const receiveOnlySafetyReceipt = this.#physicalAcquisitionSafetyReceipt(identity);
       let frequencyHz: number[];
       let powerDbm: readonly number[];
       let source: Sweep['source'];
@@ -399,6 +414,7 @@ export class TinySaDeviceService {
         firmwareTraces,
         complete: true,
         identity,
+        ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
       };
       this.#set({ ...this.#snapshot, lastOperationAt: sweep.capturedAt, verification: 'commanded' });
       this.#emit({ type: 'sweep', sweep });
@@ -432,7 +448,7 @@ export class TinySaDeviceService {
     this.#ready();
     this.#beginConfigurationTransition();
     try {
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'analyzer-configuration');
       await this.#command('mode input');
       await this.#command('trace dBm');
       await this.#command(`sweep ${config.frequencyHz} ${config.frequencyHz} ${config.points}`);
@@ -474,6 +490,8 @@ export class TinySaDeviceService {
     if (!identity) throw new TinySaDeviceError('invalid-state', 'Connected device identity is unavailable', false);
     try {
       const started = performance.now();
+      await this.#command('output off', 10_000, 'pre-acquisition');
+      const receiveOnlySafetyReceipt = this.#physicalAcquisitionSafetyReceipt(identity);
       const output = await scheduler.execute(`scan ${config.frequencyHz} ${config.frequencyHz} ${config.points} 3`, sweepTimeout(config.sweepTimeSeconds));
       assertFirmwareSuccess(output, 'zero-span scan');
       const rows = parseTextSweep(output, config.points);
@@ -500,6 +518,7 @@ export class TinySaDeviceService {
         source: transportEvidence?.source ?? 'scan-text',
         complete: true,
         identity,
+        ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
       };
       this.#analyzer = undefined;
       this.#set({ ...this.#snapshot, mode: 'analyzer', generatorOutput: 'off', verification: 'commanded', analyzer: undefined, generator: undefined, lastOperationAt: capturedAt });
@@ -517,9 +536,9 @@ export class TinySaDeviceService {
     this.#ready();
     this.#beginConfigurationTransition();
     try {
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'analyzer-configuration');
       await this.#command('mode output');
-      await this.#command('output off');
+      await this.#command('output off', 10_000, 'analyzer-configuration');
       await this.#command(`output ${config.path}`);
       await this.#command(`freq ${config.frequencyHz}`);
       await this.#command(`level ${formatDecimal(config.levelDbm)}`);
@@ -548,7 +567,10 @@ export class TinySaDeviceService {
     }
   }
 
-  async setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot> {
+  async setGeneratorOutput(
+    enabled: boolean,
+    outputOffReason: ReceiveOnlySafetyReceipt['reason'] = 'analyzer-configuration',
+  ): Promise<DeviceSnapshot> {
     if (!enabled && this.#snapshot.connection === 'faulted' && this.#teardownRfOffAcknowledged) {
       return this.snapshot();
     }
@@ -560,7 +582,11 @@ export class TinySaDeviceService {
       throw new TinySaDeviceError('invalid-state', 'Generator mode must be configured before changing RF output', false);
     }
     try {
-      await this.#command(`output ${enabled ? 'on' : 'off'}`);
+      await this.#command(
+        `output ${enabled ? 'on' : 'off'}`,
+        10_000,
+        enabled ? undefined : outputOffReason,
+      );
       this.#set({
         ...this.#snapshot,
         generatorOutput: enabled ? 'on' : 'off',
@@ -742,7 +768,14 @@ export class TinySaDeviceService {
     return { batteryMillivolts, deviceId, sweepStatus, capturedAt: new Date().toISOString() };
   }
 
-  async #command(command: string, timeoutMs = 10_000): Promise<string> {
+  async #command(
+    command: string,
+    timeoutMs = 10_000,
+    outputOffReason?: ReceiveOnlySafetyReceipt['reason'],
+  ): Promise<string> {
+    if ((command === 'output off') !== (outputOffReason !== undefined)) {
+      throw new TypeError('Every output-off command, and only output-off commands, requires a safety reason');
+    }
     // An older acknowledgement cannot survive a fresh output-off attempt. If
     // the write executes but its reply is rejected or lost, teardown must send
     // output-off again instead of treating the earlier state as current.
@@ -764,12 +797,64 @@ export class TinySaDeviceService {
       }
       throw value;
     }
-    if (command === 'output off') this.#rfOffAcknowledged = true;
+    if (command === 'output off') {
+      if (this.#pendingPort?.execution === 'physical') {
+        if (response !== '') {
+          throw new TinySaDeviceError(
+            'protocol',
+            'Physical output-off safety receipts require an exact empty firmware reply',
+            false,
+          );
+        }
+        this.#recordReceiveOnlySafetyReceipt(outputOffReason!);
+      }
+      this.#rfOffAcknowledged = true;
+    }
     else if (command === 'output on') {
       this.#rfOffAcknowledged = false;
       this.#teardownRfOffAcknowledged = false;
     }
     return response;
+  }
+
+  #recordReceiveOnlySafetyReceipt(reason: ReceiveOnlySafetyReceipt['reason']): void {
+    const sessionId = this.#pendingSessionId;
+    if (!sessionId) throw new TinySaDeviceError('invalid-state', 'Output-off acknowledgement has no pending physical session ID', false);
+    const receipt: ReceiveOnlySafetyReceipt = {
+      schemaVersion: 1,
+      receiptId: crypto.randomUUID(),
+      sessionId,
+      command: 'output off',
+      reason,
+      outputState: 'off',
+      acknowledgement: 'empty-reply-acknowledged',
+      qualification: 'device-command-acknowledged-not-rf-measured',
+      sequence: ++this.#receiveOnlySafetySequence,
+      acknowledgedAt: new Date().toISOString(),
+    };
+    if (reason === 'connection-first-command') {
+      if (this.#receiveOnlySafety) {
+        throw new TinySaDeviceError('invalid-state', 'Physical session already has a connection-first safety receipt', false);
+      }
+      this.#receiveOnlySafety = { connectionReceipt: receipt, currentReceipt: receipt };
+    } else {
+      const connectionReceipt = this.#receiveOnlySafety?.connectionReceipt;
+      if (!connectionReceipt) {
+        // Failed connections have no admitted receive-only state to publish.
+        return;
+      }
+      this.#receiveOnlySafety = { connectionReceipt, currentReceipt: receipt };
+    }
+    this.#snapshot = { ...this.#snapshot, receiveOnlySafety: structuredClone(this.#receiveOnlySafety) };
+  }
+
+  #physicalAcquisitionSafetyReceipt(identity: DeviceIdentity): ReceiveOnlySafetyReceipt | undefined {
+    if (identity.execution !== 'physical') return undefined;
+    const receipt = this.#receiveOnlySafety?.currentReceipt;
+    if (!receipt || receipt.reason !== 'pre-acquisition' || receipt.sessionId !== this.#snapshot.sessionId) {
+      throw new TinySaDeviceError('protocol', 'Physical acquisition lacks its exact pre-acquisition output-off receipt', false);
+    }
+    return structuredClone(receipt);
   }
 
   #ready(): CommandScheduler {

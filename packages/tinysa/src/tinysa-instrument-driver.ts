@@ -9,6 +9,7 @@ import {
   instrumentConfigurationCommandSchema,
   instrumentFeatureCommandSchema,
   instrumentMeasurementSchema,
+  instrumentReceiveOnlySafetyStateSchema,
   instrumentSessionEventSchema,
   portCandidateSchema,
   type AnalyzerConfig,
@@ -27,6 +28,8 @@ import {
   type InstrumentFeatureCommand,
   type InstrumentFeatureResult,
   type InstrumentMeasurement,
+  type InstrumentReceiveOnlySafetyState,
+  type ReceiveOnlySafetyReceipt,
   type InstrumentSessionProvenance,
   type InstrumentSessionEvent,
   type PortCandidate,
@@ -54,7 +57,7 @@ export interface TinySaInstrumentDevicePort {
   acquireSweep(): Promise<Sweep>;
   acquireZeroSpan(): Promise<ZeroSpanCapture>;
   configureGenerator(configuration: GeneratorConfig): Promise<DeviceSnapshot>;
-  setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot>;
+  setGeneratorOutput(enabled: boolean, outputOffReason?: ReceiveOnlySafetyReceipt['reason']): Promise<DeviceSnapshot>;
   readDiagnostics(): Promise<DeviceDiagnostics>;
   captureScreen(): Promise<ScreenFrame>;
   touch(point: ScreenPoint): Promise<void>;
@@ -116,6 +119,9 @@ export class TinySaZs407InstrumentDriver implements InstrumentDriver {
     const rfOutput = capabilities.features.some((feature) => feature.kind === 'rf-generator')
       ? snapshot.generatorOutput
       : 'not-supported';
+    const receiveOnlySafety = rfOutput === 'not-supported' && provenance.sourceKind === 'serial-port'
+      ? requireReceiveOnlySafetyState(snapshot.receiveOnlySafety, snapshot.sessionId)
+      : undefined;
     return new TinySaInstrumentSession(
       this.device,
       candidate,
@@ -124,6 +130,7 @@ export class TinySaZs407InstrumentDriver implements InstrumentDriver {
       snapshot.identity,
       capabilities,
       rfOutput,
+      receiveOnlySafety !== undefined,
     );
   }
 }
@@ -145,9 +152,15 @@ class TinySaInstrumentSession implements InstrumentSession {
     private readonly admittedDeviceIdentity: DeviceIdentity,
     capabilities: InstrumentCapabilities,
     readonly rfOutput: 'off' | 'on' | 'unknown' | 'not-supported',
+    private readonly receiveOnlySafetyEnabled: boolean,
   ) {
     this.capabilities = capabilities;
     this.#unsubscribe = device.subscribe((event) => this.#forwardDeviceEvent(event));
+  }
+
+  get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
+    if (!this.receiveOnlySafetyEnabled) return undefined;
+    return requireReceiveOnlySafetyState(this.device.snapshot().receiveOnlySafety, this.sessionId);
   }
 
   subscribe(listener: (event: InstrumentSessionEvent) => void): () => void {
@@ -181,11 +194,12 @@ class TinySaInstrumentSession implements InstrumentSession {
     this.#requireOpen();
     const command = this.#configuration;
     if (!command) throw new Error('TinySA instrument session is not configured');
+    const receiveOnlySafetyBefore = this.receiveOnlySafety;
     if (this.rfOutput === 'not-supported') {
       // A reduced custom firmware can safely omit generator configuration
       // from its public capabilities while the mandatory output-off command
       // still protects every acquisition at the device boundary.
-      await this.device.setGeneratorOutput(false);
+      await this.device.setGeneratorOutput(false, 'pre-acquisition');
     }
     let measurement: InstrumentMeasurement;
     if (command.configuration.kind === 'swept-spectrum') {
@@ -197,6 +211,10 @@ class TinySaInstrumentSession implements InstrumentSession {
         throw new Error('TinySA swept-spectrum acquisition identity does not match the admitted device session');
       }
       assertSweptAcquisitionEvidence(command.configuration, sweep);
+      const receiveOnlySafetyReceipt = this.#bindAcquisitionSafetyReceipt(
+        sweep.receiveOnlySafetyReceipt,
+        receiveOnlySafetyBefore,
+      );
       measurement = {
         schemaVersion: 1,
         kind: 'swept-spectrum',
@@ -212,6 +230,7 @@ class TinySaInstrumentSession implements InstrumentSession {
         complete: true,
         frequencyHz: sweep.frequencyHz,
         powerDbm: sweep.powerDbm,
+        ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
       };
     } else if (command.configuration.kind === 'detected-power-timeseries') {
       const capture = await this.device.acquireZeroSpan();
@@ -222,6 +241,10 @@ class TinySaInstrumentSession implements InstrumentSession {
         throw new Error('TinySA detected-power acquisition identity does not match the admitted device session');
       }
       assertDetectedPowerAcquisitionEvidence(command.configuration, capture);
+      const receiveOnlySafetyReceipt = this.#bindAcquisitionSafetyReceipt(
+        capture.receiveOnlySafetyReceipt,
+        receiveOnlySafetyBefore,
+      );
       measurement = {
         schemaVersion: 1,
         kind: 'detected-power-timeseries',
@@ -239,6 +262,7 @@ class TinySaInstrumentSession implements InstrumentSession {
         sampleIntervalSeconds: capture.samplePeriodSeconds,
         timingQualification: capture.timingQualification ?? 'wall-clock-derived',
         powerDbm: capture.powerDbm,
+        ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
       };
     } else {
       throw new Error('TinySA ZS407 does not support complex-I/Q acquisition');
@@ -294,7 +318,7 @@ class TinySaInstrumentSession implements InstrumentSession {
         // firmware has no safely advertisable generator configuration range.
         // Keep the public feature narrow while still returning only after the
         // mandatory non-emitting state has been acknowledged.
-        try { await this.device.setGeneratorOutput(false); }
+        try { await this.device.setGeneratorOutput(false, 'post-interaction-recovery'); }
         catch (cause) { rfOffFailure = cause; }
       }
       if (touchFailure !== undefined && rfOffFailure !== undefined) {
@@ -318,6 +342,31 @@ class TinySaInstrumentSession implements InstrumentSession {
     this.#closed = true;
     this.#unsubscribe();
     this.#listeners.clear();
+  }
+
+  #bindAcquisitionSafetyReceipt(
+    value: ReceiveOnlySafetyReceipt | undefined,
+    before: InstrumentReceiveOnlySafetyState | undefined,
+  ): ReceiveOnlySafetyReceipt | undefined {
+    if (!this.receiveOnlySafetyEnabled) {
+      if (value !== undefined && this.provenance.sourceKind !== 'serial-port') {
+        throw new Error('Non-physical TinySA acquisition fabricated a receive-only safety receipt');
+      }
+      return undefined;
+    }
+    if (!before) throw new Error('TinySA receive-only session lost its pre-acquisition safety state');
+    const current = this.receiveOnlySafety;
+    if (!current || !value) throw new Error('TinySA physical acquisition omitted its receive-only safety receipt');
+    if (value.reason !== 'pre-acquisition' || value.sessionId !== this.sessionId) {
+      throw new Error('TinySA physical acquisition returned a wrong-session or wrong-reason safety receipt');
+    }
+    if (value.sequence <= before.currentReceipt.sequence) {
+      throw new Error('TinySA physical acquisition returned a stale safety receipt');
+    }
+    if (!isDeepStrictEqual(value, current.currentReceipt)) {
+      throw new Error('TinySA physical acquisition receipt does not match the current device acknowledgement');
+    }
+    return structuredClone(value);
   }
 
   #requireOpen(): void { if (this.#closed) throw new Error('TinySA instrument session is closed'); }
@@ -358,6 +407,17 @@ class TinySaInstrumentSession implements InstrumentSession {
       try { listener(structuredClone(event)); } catch { /* Consumer isolation. */ }
     }
   }
+}
+
+function requireReceiveOnlySafetyState(
+  value: unknown,
+  sessionId: string,
+): InstrumentReceiveOnlySafetyState {
+  const state = instrumentReceiveOnlySafetyStateSchema.parse(value);
+  if (state.connectionReceipt.sessionId !== sessionId || state.currentReceipt.sessionId !== sessionId) {
+    throw new Error('TinySA receive-only safety state does not belong to the admitted device session');
+  }
+  return state;
 }
 
 function tinySaSessionProvenance(

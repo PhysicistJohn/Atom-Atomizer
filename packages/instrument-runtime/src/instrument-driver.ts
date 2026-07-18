@@ -14,6 +14,7 @@ import {
   instrumentMeasurementSchema,
   instrumentOpaqueIdSchema,
   instrumentRfOutputStateSchema,
+  instrumentReceiveOnlySafetyStateSchema,
   instrumentSessionProvenanceSchema,
   instrumentSessionEventSchema,
   instrumentSourceKindSchema,
@@ -27,6 +28,7 @@ import {
   type InstrumentFeatureResult,
   type InstrumentMeasurement,
   type InstrumentRfOutputState,
+  type InstrumentReceiveOnlySafetyState,
   type InstrumentSessionProvenance,
   type InstrumentSessionEvent,
   type InstrumentSourceKind,
@@ -39,6 +41,8 @@ export interface InstrumentSession {
   readonly provenance: InstrumentSessionProvenance;
   readonly capabilities: InstrumentCapabilities;
   readonly rfOutput: InstrumentRfOutputState;
+  /** Dynamic command-acknowledged receive-only state; never an RF measurement. */
+  readonly receiveOnlySafety?: InstrumentReceiveOnlySafetyState;
   /** Sends every complete admitted field or rejects it; drivers never normalize/drop fields, and report readback qualification separately. */
   configure(command: InstrumentConfigurationCommand): Promise<void>;
   acquire(): Promise<InstrumentMeasurement>;
@@ -171,6 +175,7 @@ export function validateInstrumentSession(
   if (supportsRf === (rfOutput === 'not-supported')) {
     throw new InstrumentDriverContractError(`Driver ${driver.driverId} RF output state does not match its advertised capability`);
   }
+  validateReceiveOnlySafetyState(driver.driverId, session.sessionId, provenance, rfOutput, session.receiveOnlySafety);
   if (typeof session.configure !== 'function'
     || typeof session.acquire !== 'function'
     || typeof session.executeFeature !== 'function'
@@ -185,12 +190,49 @@ export function validateInstrumentSession(
     provenance,
     capabilities,
     rfOutput,
+    get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
+      return validateReceiveOnlySafetyState(
+        driver.driverId,
+        session.sessionId,
+        provenance,
+        rfOutput,
+        session.receiveOnlySafety,
+      );
+    },
     configure: (command: InstrumentConfigurationCommand) => session.configure(command),
     acquire: () => session.acquire(),
     executeFeature: (command: InstrumentFeatureCommand) => session.executeFeature(command),
     disconnect: () => session.disconnect(),
     subscribe: (listener: (event: InstrumentSessionEvent) => void) => session.subscribe(listener),
   });
+}
+
+function validateReceiveOnlySafetyState(
+  driverId: InstrumentDriverId,
+  sessionId: string,
+  provenance: InstrumentSessionProvenance,
+  rfOutput: InstrumentRfOutputState,
+  value: unknown,
+): InstrumentReceiveOnlySafetyState | undefined {
+  if (value === undefined) return undefined;
+  let state: InstrumentReceiveOnlySafetyState;
+  try { state = instrumentReceiveOnlySafetyStateSchema.parse(value); }
+  catch (error) {
+    throw new InstrumentDriverContractError(
+      `Driver ${driverId} exposed invalid receive-only safety state: ${message(error)}`,
+      { cause: error },
+    );
+  }
+  if (provenance.sourceKind !== 'serial-port' || provenance.execution !== 'physical') {
+    throw new InstrumentDriverContractError(`Driver ${driverId} exposed receive-only safety state for a non-physical session`);
+  }
+  if (rfOutput !== 'not-supported') {
+    throw new InstrumentDriverContractError(`Driver ${driverId} mixed receive-only safety state with advertised RF output control`);
+  }
+  if (state.connectionReceipt.sessionId !== sessionId || state.currentReceipt.sessionId !== sessionId) {
+    throw new InstrumentDriverContractError(`Driver ${driverId} receive-only safety state belongs to another session`);
+  }
+  return state;
 }
 
 function assertCapabilitySourceBinding(

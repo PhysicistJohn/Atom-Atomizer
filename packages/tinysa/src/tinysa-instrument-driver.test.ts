@@ -14,7 +14,9 @@ import {
   type DeviceSnapshot,
   type GeneratorConfig,
   type InstrumentSessionEvent,
+  type InstrumentReceiveOnlySafetyState,
   type PortCandidate,
+  type ReceiveOnlySafetyReceipt,
   type ScreenFrame,
   type ScreenPoint,
   type Sweep,
@@ -359,12 +361,51 @@ describe('TinySaZs407InstrumentDriver', () => {
       },
     });
     expect(device.analyzer).toMatchObject({ startHz: 758_000_000, stopHz: 768_000_000, points: 20 });
-    await expect(session.acquire()).resolves.toMatchObject({
+    const receiptsBeforeAcquire = device.safetyReceipts.length;
+    const measurement = await session.acquire();
+    expect(measurement).toMatchObject({
       kind: 'swept-spectrum',
       frequencyHz: expect.arrayContaining([758_000_000, 768_000_000]),
       qualification: 'device-observed',
     });
+    const acquisitionReceipts = device.safetyReceipts.slice(receiptsBeforeAcquire);
+    expect(acquisitionReceipts).toHaveLength(2);
+    expect(acquisitionReceipts.map((receipt) => receipt.reason)).toEqual(['pre-acquisition', 'pre-acquisition']);
+    expect(measurement.receiveOnlySafetyReceipt).toEqual(acquisitionReceipts[1]);
+    expect(measurement.receiveOnlySafetyReceipt).not.toEqual(acquisitionReceipts[0]);
     expect(device.generatorOutput).toHaveBeenLastCalledWith(false);
+  });
+
+  it('does not fabricate device-command safety receipts for a receive-only firmware twin', async () => {
+    const device = new FakeTinySaDevice(
+      { candidates: [twin], failures: [] },
+      customReceiveOnlyDeviceCapabilities(),
+    );
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({
+      ...descriptor,
+      discoveryRevision: 'discovery:receive-only-twin',
+    }));
+
+    expect(session.rfOutput).toBe('not-supported');
+    expect(session.receiveOnlySafety).toBeUndefined();
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:twin-receive-only',
+      configuration: {
+        kind: 'swept-spectrum', startHz: 100_000_000, stopHz: 101_000_000, points: 20,
+        sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'sample', spurRejection: 'off', lowNoiseAmplifier: 'off',
+          avoidSpurs: 'off', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    const measurement = await session.acquire();
+    expect(measurement).not.toHaveProperty('receiveOnlySafetyReceipt');
+    expect(device.safetyReceipts).toEqual([]);
   });
 
   it('projects frozen-source-qualified 43eb0f1 as receive-only and rejects prohibited features before device calls', async () => {
@@ -711,10 +752,13 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
   readonly generatorOutput = vi.fn(async (_enabled: boolean) => this.snapshot());
   readonly touchCalls: ScreenPoint[] = [];
   readonly releaseCalls: (ScreenPoint | undefined)[] = [];
+  readonly safetyReceipts: ReceiveOnlySafetyReceipt[] = [];
   readonly disconnect = vi.fn(async () => undefined);
   readonly cleanupPendingInstrumentConnection = vi.fn(async () => undefined);
   eventOnSubscribe: DeviceEvent | undefined;
   #snapshot: DeviceSnapshot = disconnectedSnapshot();
+  #receiveOnlySafety: InstrumentReceiveOnlySafetyState | undefined;
+  #receiveOnlySafetySequence = 0;
   #listeners = new Set<(event: DeviceEvent) => void>();
 
   constructor(
@@ -726,6 +770,7 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
   async listDevices(): Promise<TransportDiscoveryResult> { return this.discovery; }
   snapshot(): DeviceSnapshot { return structuredClone(this.#snapshot); }
   async connect(candidate: PortCandidate): Promise<DeviceSnapshot> {
+    this.safetyReceipts.length = 0;
     const identity: NonNullable<DeviceSnapshot['identity']> = candidate.execution === 'firmware-digital-twin'
       ? {
         model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'fixture-twin',
@@ -741,19 +786,39 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
         firmwareWarning: 'Custom firmware revision fffffff is admitted without source qualification.',
         simulated: false, usbIdentityVerified: true, execution: 'physical',
         };
+    const sessionId = candidate.execution === 'physical'
+      ? '10000000-0000-4000-8000-000000000407'
+      : 'session:tiny';
+    this.#receiveOnlySafety = undefined;
+    this.#receiveOnlySafetySequence = 0;
+    if (candidate.execution === 'physical') {
+      const connectionReceipt = this.#safetyReceipt(sessionId, 'connection-first-command');
+      const currentReceipt = this.#safetyReceipt(sessionId, 'analyzer-configuration');
+      this.#receiveOnlySafety = { connectionReceipt, currentReceipt };
+    }
     this.#snapshot = {
       connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded',
-      sessionId: 'session:tiny', capabilities: structuredClone(this.capabilities),
+      sessionId, capabilities: structuredClone(this.capabilities),
       identity,
       connectedAt: '2026-07-14T12:00:00.000Z',
       pendingPort: candidate,
+      ...(this.#receiveOnlySafety ? { receiveOnlySafety: structuredClone(this.#receiveOnlySafety) } : {}),
     };
     return this.snapshot();
   }
-  async configureAnalyzer(configuration: AnalyzerConfig): Promise<DeviceSnapshot> { this.analyzer = configuration; return this.snapshot(); }
-  async configureZeroSpan(configuration: ZeroSpanConfig): Promise<DeviceSnapshot> { this.zero = configuration; return this.snapshot(); }
+  async configureAnalyzer(configuration: AnalyzerConfig): Promise<DeviceSnapshot> {
+    this.analyzer = configuration;
+    this.#advanceSafety('analyzer-configuration');
+    return this.snapshot();
+  }
+  async configureZeroSpan(configuration: ZeroSpanConfig): Promise<DeviceSnapshot> {
+    this.zero = configuration;
+    this.#advanceSafety('analyzer-configuration');
+    return this.snapshot();
+  }
   async acquireSweep(): Promise<Sweep> {
     const configuration = this.analyzer!;
+    const receiveOnlySafetyReceipt = this.#advanceSafety('pre-acquisition');
     return {
       kind: 'spectrum', id: 'sweep:1', sequence: 1, capturedAt: '2026-07-14T12:00:00.000Z', elapsedMilliseconds: 1,
       frequencyHz: Array.from({ length: configuration.points }, (_, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1)),
@@ -762,10 +827,12 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
       actualRbwHz: typeof configuration.rbwKhz === 'number' ? configuration.rbwKhz * 1_000 : 10_000,
       actualAttenuationDb: typeof configuration.attenuationDb === 'number' ? configuration.attenuationDb : 0,
       source: 'scanraw-binary', complete: true, identity: structuredClone(this.#snapshot.identity!),
+      ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
     };
   }
   async acquireZeroSpan(): Promise<ZeroSpanCapture> {
     const configuration = this.zero!;
+    const receiveOnlySafetyReceipt = this.#advanceSafety('pre-acquisition');
     return {
       kind: 'zero-span', id: 'zero:1', sequence: 2, capturedAt: '2026-07-14T12:00:01.000Z', elapsedMilliseconds: 1,
       frequencyHz: configuration.frequencyHz, samplePeriodSeconds: configuration.sweepTimeSeconds / configuration.points,
@@ -774,6 +841,7 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
       actualAttenuationDb: typeof configuration.attenuationDb === 'number' ? configuration.attenuationDb : 0,
       source: 'scan-text', complete: true,
       identity: structuredClone(this.#snapshot.identity!),
+      ...(receiveOnlySafetyReceipt ? { receiveOnlySafetyReceipt } : {}),
     };
   }
   async configureGenerator(configuration: GeneratorConfig): Promise<DeviceSnapshot> {
@@ -781,8 +849,12 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
     this.#snapshot = { ...this.#snapshot, mode: 'generator', generatorOutput: 'off' };
     return this.snapshot();
   }
-  setGeneratorOutput(enabled: boolean): Promise<DeviceSnapshot> {
+  setGeneratorOutput(
+    enabled: boolean,
+    outputOffReason: ReceiveOnlySafetyReceipt['reason'] = 'analyzer-configuration',
+  ): Promise<DeviceSnapshot> {
     this.#snapshot = { ...this.#snapshot, generatorOutput: enabled ? 'on' : 'off' };
+    if (!enabled) this.#advanceSafety(outputOffReason);
     return this.generatorOutput(enabled);
   }
   async readDiagnostics(): Promise<DeviceDiagnostics> {
@@ -805,6 +877,33 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
     this.eventOnSubscribe = undefined;
     if (event) listener(event);
     return () => this.#listeners.delete(listener);
+  }
+
+  #advanceSafety(reason: ReceiveOnlySafetyReceipt['reason']): ReceiveOnlySafetyReceipt | undefined {
+    const state = this.#receiveOnlySafety;
+    if (!state || !this.#snapshot.sessionId) return undefined;
+    const currentReceipt = this.#safetyReceipt(this.#snapshot.sessionId, reason);
+    this.#receiveOnlySafety = { connectionReceipt: state.connectionReceipt, currentReceipt };
+    this.#snapshot = { ...this.#snapshot, receiveOnlySafety: structuredClone(this.#receiveOnlySafety) };
+    return structuredClone(currentReceipt);
+  }
+
+  #safetyReceipt(sessionId: string, reason: ReceiveOnlySafetyReceipt['reason']): ReceiveOnlySafetyReceipt {
+    const sequence = ++this.#receiveOnlySafetySequence;
+    const receipt: ReceiveOnlySafetyReceipt = {
+      schemaVersion: 1,
+      receiptId: `20000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`,
+      sessionId,
+      command: 'output off',
+      reason,
+      outputState: 'off',
+      acknowledgement: 'empty-reply-acknowledged',
+      qualification: 'device-command-acknowledged-not-rf-measured',
+      sequence,
+      acknowledgedAt: `2026-07-14T12:00:${sequence.toString().padStart(2, '0')}.000Z`,
+    };
+    this.safetyReceipts.push(structuredClone(receipt));
+    return receipt;
   }
 }
 
