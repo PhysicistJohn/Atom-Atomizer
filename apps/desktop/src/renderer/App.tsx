@@ -3330,6 +3330,7 @@ export function App({
       acquisitionBusy={busy}
       acquisitionDisabled={acquisitionDisabledReason !== undefined}
       acquisitionDisabledReason={acquisitionDisabledReason}
+      latestSweep={sweep ? { id: sweep.id, sequence: sweep.sequence } : undefined}
       onSelect={changeWorkspace}
       onMeasurementView={changeMeasurementView}
       onRun={() => void startContinuousFromUi()}
@@ -3385,7 +3386,18 @@ export function App({
         onSignalLabProfile={(profileId) => void selectSignalLabProfile(profileId)}
         onSignalLabChannel={(channel) => void configureSignalLabChannel(channel)}
       />}
-      {workspace === 'device' && <DeviceWorkspace session={session} diagnostics={diagnostics} frame={screenFrame} busy={busy} touchBusy={touchBusy} selectedProfile={selectedProfile} onProfile={(profileId) => void selectSignalLabProfile(profileId)} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTap={tapScreen}/>}
+      {workspace === 'device' && <DeviceWorkspace
+        session={session}
+        diagnostics={diagnostics}
+        frame={screenFrame}
+        busy={busy}
+        touchBusy={touchBusy}
+        selectedProfile={selectedProfile}
+        onProfile={(profileId) => void selectSignalLabProfile(profileId)}
+        onRefresh={() => void refreshDiagnosticsFromUi()}
+        onCapture={() => void captureScreenFromUi()}
+        onTap={tapScreen}
+      />}
     </section>
     <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={session?.provenance.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => setAgentOpen(false)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     {connectionOpen && <ConnectionDialog

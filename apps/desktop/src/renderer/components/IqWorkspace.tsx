@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Activity, CircleDot, Cpu, Maximize2, Waves, ZoomIn, ZoomOut } from 'lucide-react';
 import { formatExactFrequency, formatFrequency } from '../format.js';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
   previewComplexIq,
   type ComplexIqCapability,
@@ -28,7 +29,15 @@ export function IqWorkspace({ configuration, capability, capture, busy, captureU
   const durationSeconds = capture ? capture.sampleCount / capture.sampleRateHz : undefined;
   const equalRateBandwidth = capability?.bandwidthMode === 'equal-to-sample-rate';
 
-  return <div className="iq-workspace" data-agent-exclusion="human-iq-capture-boundary">
+  return <div
+    className="iq-workspace"
+    role="region"
+    aria-label="Complex I/Q workspace"
+    aria-description={DEVELOPMENT_RENDERER && capture
+      ? `captureId=${capture.measurementId}; sequence=${capture.sequence}; centerHz=${capture.centerHz}`
+      : undefined}
+    data-agent-exclusion="human-iq-capture-boundary"
+  >
     <section className="iq-visual-stage">
       <header className="iq-stage-header">
         <div><Waves size={15}/><span><strong>Complex baseband</strong><small>Driver-neutral interleaved I/Q</small></span></div>

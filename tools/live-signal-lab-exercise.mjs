@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { copyFile, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { inflateSync } from 'node:zlib';
 import {
   createAtomizerLogRendererMemorySampler,
   createAtomizerLogSignalLabSessionInspector,
@@ -61,12 +65,16 @@ export {
 
 export const LIVE_SIGNAL_LAB_EXERCISE_SCHEMA_VERSION = 2;
 export const EXPECTED_SIGNAL_LAB_PROFILE_COUNT = 34;
+export const SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH = 1_280;
+export const SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT = 720;
 export const SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS = Object.freeze([
   'cw',
   'lte-etm3.1',
   'wifi-ofdm-20m',
   'bluetooth-classic-connected',
 ]);
+
+const execFileAsync = promisify(execFile);
 
 const FULL_EXERCISE_REQUIRED_STEPS = Object.freeze([
   'select',
@@ -234,17 +242,102 @@ const DEFAULT_OPTIONS = Object.freeze({
   maximumMillisecondsPerSweepOpportunity: 500,
   maximumResponsivenessTourMs: 30_000,
   minimumContinuousSweepProgressions: 2,
-  minimumScreenshotWidth: 1_532,
-  minimumScreenshotHeight: 821,
+  minimumScreenshotWidth: SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
+  minimumScreenshotHeight: SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
   rendererMemoryPlateauWindow: 4,
   rendererMemoryMaximumPlateauGrowthBytes: 64 * 1_024 * 1_024,
   rendererMemoryHardLimitBytes: 2 * 1_024 * 1_024 * 1_024,
   screenshotPolicy: 'all',
   narrowMarkerProfileIds: Object.freeze(['cw']),
   wideMarkerProfileIds: Object.freeze(['lte-etm3.1']),
-  iqZoomProfileIds: Object.freeze(['cw', 'lte-etm3.1', 'bluetooth-classic-connected']),
+  iqZoomProfileIds: CANONICAL_SIGNAL_LAB_PROFILE_IDS,
   iqContinuousProfileIds: Object.freeze(['cw', 'lte-etm3.1', 'bluetooth-classic-connected']),
 });
+
+const RELEASE_MAXIMUM_OPTION_KEYS = Object.freeze([
+  'profileTimeoutMs',
+  'acquisitionTimeoutMs',
+  'classificationTimeoutMs',
+  'maximumControlResponseMs',
+  'maximumAccessibilitySnapshotMs',
+  'maximumFirstSweepLatencyMs',
+  'maximumStopLatencyMs',
+  'maximumMillisecondsPerSweepOpportunity',
+  'maximumResponsivenessTourMs',
+  'rendererMemoryMaximumPlateauGrowthBytes',
+  'rendererMemoryHardLimitBytes',
+]);
+
+function liveSignalLabReleasePolicySummary(options, kind) {
+  const fullAcceptance = isFullAcceptanceRunKind(kind);
+  if (!fullAcceptance) {
+    return {
+      status: 'not-applicable-debug-or-specialized-run',
+      bound: true,
+      violations: [],
+    };
+  }
+
+  const violations = [];
+  for (const key of RELEASE_MAXIMUM_OPTION_KEYS) {
+    const value = options?.[key];
+    if (!Number.isSafeInteger(value) || value > DEFAULT_OPTIONS[key]) {
+      violations.push(`${key} must be no greater than ${DEFAULT_OPTIONS[key]}`);
+    }
+  }
+  if (!Number.isSafeInteger(options?.minimumContinuousSweepProgressions)
+    || options.minimumContinuousSweepProgressions
+      < DEFAULT_OPTIONS.minimumContinuousSweepProgressions) {
+    violations.push(
+      `minimumContinuousSweepProgressions must be at least ${DEFAULT_OPTIONS.minimumContinuousSweepProgressions}`,
+    );
+  }
+  // A larger plateau window can smooth away a late leak; a smaller one does
+  // not prove the canonical sustained plateau. Release evidence therefore
+  // binds this sampling window exactly rather than treating either direction
+  // as stronger.
+  if (options?.rendererMemoryPlateauWindow !== DEFAULT_OPTIONS.rendererMemoryPlateauWindow) {
+    violations.push(
+      `rendererMemoryPlateauWindow must equal ${DEFAULT_OPTIONS.rendererMemoryPlateauWindow}`,
+    );
+  }
+
+  if (kind === 'full-profile-exercise') {
+    for (const [key, expected] of [
+      ['narrowMarkerProfileIds', DEFAULT_OPTIONS.narrowMarkerProfileIds],
+      ['wideMarkerProfileIds', DEFAULT_OPTIONS.wideMarkerProfileIds],
+      ['iqZoomProfileIds', DEFAULT_OPTIONS.iqZoomProfileIds],
+      ['iqContinuousProfileIds', DEFAULT_OPTIONS.iqContinuousProfileIds],
+    ]) {
+      if (!Array.isArray(options?.[key]) || !sameOrderedValues(options[key], expected)) {
+        violations.push(`${key} must match the canonical ordered release profile set`);
+      }
+    }
+    for (const [key, minimum] of [
+      ['minimumScreenshotWidth', SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH],
+      ['minimumScreenshotHeight', SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT],
+    ]) {
+      if (!Number.isSafeInteger(options?.[key]) || options[key] < minimum) {
+        violations.push(`${key} must be at least ${minimum}`);
+      }
+    }
+  }
+
+  return {
+    status: violations.length === 0
+      ? 'canonical-release-policy-bound'
+      : 'weakened-release-policy-rejected',
+    bound: violations.length === 0,
+    violations,
+  };
+}
+
+const CENTERED_WIDEBAND_MARKER_ORACLE_EXCLUDED_PROFILE_IDS = new Set([
+  'wifi6-he-mu',
+  'wifi6-he-tb',
+  'bluetooth-classic-connected',
+  'bluetooth-le-advertising',
+]);
 
 export async function loadSignalLabLiveCatalog(catalogModuleUrl = defaultCatalogModule) {
   const url = catalogModuleUrl instanceof URL
@@ -322,7 +415,7 @@ export async function signalLabLiveCoverageMatrix(input = {}) {
     boundedControlLatencyAndSweepProgression: options.exerciseSingle
       && (options.exerciseContinuous || options.exerciseDetect),
     screenshotPolicy: options.screenshotPolicy,
-    screenshotClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+    screenshotClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
     screenshotContentReview: 'manual-review-required',
   })));
 }
@@ -654,6 +747,9 @@ function validateDefaultGeometryMarkerEvidence(marker, characterization, geometr
   if (!Number.isFinite(marker.frequencyHz)) {
     throw new Error(`${profile.id} default marker omitted a finite M1 frequency`);
   }
+  if (!Number.isFinite(marker.powerDbm)) {
+    throw new Error(`${profile.id} default marker omitted a finite M1 power`);
+  }
   const halfSpan = profile.recommendedSpanHz / 2;
   if (marker.frequencyHz < profile.centerHz - halfSpan
     || marker.frequencyHz > profile.centerHz + halfSpan) {
@@ -802,6 +898,7 @@ export async function runSignalLabLiveExercise(input) {
     assertSignalLabSession(state);
     state = await closeAtomPanelIfRequested(context, state);
     state = await ensureStopped(context, state);
+    validateLiveLayoutContract(state.text, { running: false });
     const markerGeometry = await configurePinnedSweepGeometry(context, state);
     state = markerGeometry.state;
     run.geometry = {
@@ -836,6 +933,7 @@ export async function runSignalLabLiveExercise(input) {
           return {
             state: selected,
             screenshot,
+            layout: validateLiveLayoutContract(selected.text, { running: false }),
             evidence: selected.text.match(new RegExp(`SignalLab profile selected: ${escapeRegExp(profile.id)}`))?.[0]
               ?? `heading:${profile.label}`,
           };
@@ -867,7 +965,7 @@ export async function runSignalLabLiveExercise(input) {
 
         if (context.options.exerciseWaterfall) {
           state = await runStep(context, run, record, 'waterfall', async () => {
-            const result = await exerciseWaterfall(context, state);
+            const result = await exerciseWaterfall(context, state, profile);
             const screenshot = await maybeCapture(context, result.state, profile.id, 'waterfall');
             return { ...result, screenshot };
           });
@@ -1082,6 +1180,304 @@ export async function runSignalLabContinuousProfileSwitchSoak(input) {
   });
 }
 
+export function liveSignalLabAtomOpenSoakConfiguration(input = {}) {
+  const durationMs = input.durationMs ?? 30 * 60 * 1_000;
+  const checkpointIntervalMs = input.checkpointIntervalMs ?? 30_000;
+  requireSafeInteger(durationMs, 'Atom-open soak durationMs');
+  requireSafeInteger(checkpointIntervalMs, 'Atom-open soak checkpointIntervalMs');
+  if (durationMs < 1_000) throw new RangeError('Atom-open soak durationMs must be at least 1000');
+  if (checkpointIntervalMs < 250 || checkpointIntervalMs > 60_000) {
+    throw new RangeError('Atom-open soak checkpointIntervalMs must be between 250 and 60000');
+  }
+  if (checkpointIntervalMs >= durationMs) {
+    throw new RangeError('Atom-open soak checkpointIntervalMs must be shorter than durationMs');
+  }
+  return Object.freeze({ durationMs, checkpointIntervalMs });
+}
+
+const ATOM_OPEN_SOAK_ROUTES = Object.freeze([
+  'Waterfall',
+  'Channel',
+  'I/Q',
+  'Detect',
+  'Spectrum',
+]);
+
+export function validateSignalLabAtomOpenSoakCompletion(report, options = {}) {
+  if (!report || typeof report !== 'object') throw new TypeError('Atom-open soak report is required');
+  const configuration = liveSignalLabAtomOpenSoakConfiguration(report.configuration);
+  const checkpoints = report.checkpoints;
+  if (!Array.isArray(checkpoints) || checkpoints.length < ATOM_OPEN_SOAK_ROUTES.length) {
+    throw new Error('Atom-open soak completed without a full advancing route checkpoint chain');
+  }
+  const monotonic = report.monotonicTiming;
+  if (!Number.isFinite(monotonic?.startedMilliseconds)
+    || !Number.isFinite(monotonic?.completedMilliseconds)
+    || !Number.isFinite(monotonic?.elapsedMilliseconds)
+    || monotonic.completedMilliseconds < monotonic.startedMilliseconds
+    || Math.abs(
+      monotonic.completedMilliseconds
+        - monotonic.startedMilliseconds
+        - monotonic.elapsedMilliseconds,
+    ) > 1
+    || monotonic.elapsedMilliseconds < configuration.durationMs) {
+    throw new Error(
+      `Atom-open soak did not meet configured monotonic duration ${configuration.durationMs} ms`,
+    );
+  }
+  if (!Number.isSafeInteger(report.initialSequence)
+    || !Number.isSafeInteger(report.finalSequence)) {
+    throw new Error('Atom-open soak omitted its initial or final sweep sequence');
+  }
+  for (const [index, checkpoint] of checkpoints.entries()) {
+    const previous = checkpoints[index - 1];
+    if (checkpoint?.checkpoint !== index + 1
+      || !Number.isSafeInteger(checkpoint?.fromSequence)
+      || !Number.isSafeInteger(checkpoint?.sequence)
+      || checkpoint.sequence <= checkpoint.fromSequence
+      || !Number.isFinite(checkpoint?.elapsedMilliseconds)
+      || checkpoint.elapsedMilliseconds < 0
+      || checkpoint.elapsedMilliseconds > monotonic.elapsedMilliseconds + 1
+      || (index === 0
+        ? checkpoint.fromSequence !== report.initialSequence
+        : checkpoint.fromSequence !== previous.sequence)
+      || (index > 0 && checkpoint.elapsedMilliseconds <= previous.elapsedMilliseconds)) {
+      throw new Error(`Atom-open soak checkpoint ${index + 1} is not a strictly chained advancing sweep`);
+    }
+    const expectedRoute = ATOM_OPEN_SOAK_ROUTES[index % ATOM_OPEN_SOAK_ROUTES.length];
+    if (checkpoint.route !== expectedRoute
+      || checkpoint.atomPanelOpen !== true
+      || !storedRunningLayoutEvidenceComplete(checkpoint.layout)
+      || checkpoint.layout.globalSweepIdentity.sequence !== checkpoint.sequence) {
+      throw new Error(
+        `Atom-open soak checkpoint ${index + 1} omitted its expected ${expectedRoute} running-layout or Atom-open evidence`,
+      );
+    }
+    const terminal = index === checkpoints.length - 1;
+    if ((checkpoint.terminal === true) !== terminal) {
+      throw new Error('Atom-open soak requires exactly one final terminal checkpoint');
+    }
+  }
+  const terminalCheckpoint = checkpoints.at(-1);
+  if (terminalCheckpoint.sequence !== report.finalSequence
+    || !Number.isFinite(terminalCheckpoint.elapsedMilliseconds)
+    || terminalCheckpoint.elapsedMilliseconds < configuration.durationMs
+    || terminalCheckpoint.elapsedMilliseconds > monotonic.elapsedMilliseconds + 1) {
+    throw new Error('Atom-open soak terminal checkpoint does not prove the configured duration and final sequence');
+  }
+  const rendererMemory = validateRendererMemorySamples(
+    report.stress?.rendererMemorySamples ?? [],
+    {
+      ...options,
+      requireMeasuredRendererMemory: true,
+      rendererMemoryRunStartedAt: report.startedAt,
+      rendererMemoryRunCompletedAt: report.completedAt,
+    },
+  );
+  if (report.finalStopSucceeded !== true) {
+    throw new Error('Atom-open soak final global Stop did not complete');
+  }
+  return {
+    status: 'atom-open-duration-memory-and-final-stop-validated',
+    rendererMemory,
+    checkpoints: checkpoints.length,
+    durationMs: monotonic.elapsedMilliseconds,
+  };
+}
+
+/**
+ * Configurable 30-minute-by-default live soak with Atom visibly open. This
+ * intentionally never types into Atom or crosses its human-agent exclusion;
+ * it proves the open panel does not stall global acquisition or route changes.
+ */
+export async function runSignalLabAtomOpenDurationSoak(input) {
+  const soak = liveSignalLabAtomOpenSoakConfiguration(input?.soak);
+  const context = await createContext({
+    ...input,
+    options: {
+      ...(input?.options ?? {}),
+      closeAtomPanel: false,
+      screenshotPolicy: input?.options?.screenshotPolicy ?? 'failures',
+    },
+  });
+  const report = {
+    schemaVersion: LIVE_SIGNAL_LAB_EXERCISE_SCHEMA_VERSION,
+    kind: 'atom-open-duration-soak',
+    app: context.app,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    configuration: soak,
+    checkpoints: [],
+    failures: [],
+    stress: context.stress,
+    finalStopSucceeded: false,
+    initialSequence: null,
+    finalSequence: null,
+    monotonicTiming: {
+      startedMilliseconds: null,
+      completedMilliseconds: null,
+      elapsedMilliseconds: null,
+    },
+  };
+  let state;
+  let primaryError = null;
+  let completionError = null;
+  const persist = async () => {
+    const temporary = `${context.reportPath}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    await rename(temporary, context.reportPath);
+  };
+  await persist();
+  try {
+    state = await freshState(context);
+    assertSignalLabSession(state);
+    if (findElementIndex(state.text, enabledButton('Close Atom')) === undefined
+      || !state.text.includes('Atom AI copilot')) {
+      throw new Error('Atom-open duration soak requires the visible Atom AI copilot panel');
+    }
+    state = await ensureStopped(context, state);
+    state = await navigate(context, state, 'Spectrum');
+    await sampleRendererMemory(context, 'soak-start', null);
+    const sequenceBefore = liveGlobalSweepIdentitySummary(state.text).sequence;
+    state = await clickElement(context, state, enabledButton('Run'), 'Atom-open soak global Run');
+    state = await waitForState(
+      context,
+      (candidate) => {
+        const sequence = liveGlobalSweepIdentitySummary(candidate.text).sequence;
+        return hasButton(candidate.text, 'Stop')
+          && Number.isSafeInteger(sequence)
+          && sequence !== sequenceBefore
+          && findElementIndex(candidate.text, enabledButton('Close Atom')) !== undefined;
+      },
+      'Atom-open soak first advancing sweep',
+      context.options.acquisitionTimeoutMs,
+    );
+    validateGlobalSweepMatchesSpectrum(state.text, 'Atom-open soak first sweep');
+    let previousSequence = liveGlobalSweepIdentitySummary(state.text).sequence;
+    report.initialSequence = previousSequence;
+    const soakStartedMilliseconds = performance.now();
+    report.monotonicTiming.startedMilliseconds = soakStartedMilliseconds;
+    const deadline = soakStartedMilliseconds + soak.durationMs;
+    const routes = ATOM_OPEN_SOAK_ROUTES;
+    let currentRoute = 'Spectrum';
+    let checkpoint = 0;
+    while (performance.now() < deadline) {
+      await delay(Math.min(
+        soak.checkpointIntervalMs,
+        Math.max(1, deadline - performance.now()),
+      ));
+      if (performance.now() >= deadline) break;
+      const route = routes[checkpoint % routes.length];
+      currentRoute = route;
+      state = await navigate(context, await freshState(context), route);
+      state = await waitForState(
+        context,
+        (candidate) => {
+          const sequence = liveGlobalSweepIdentitySummary(candidate.text).sequence;
+          return hasButton(candidate.text, 'Stop')
+            && liveWorkspaceIsVisible(candidate.text, route)
+            && Number.isSafeInteger(sequence)
+            && sequence > previousSequence
+            && findElementIndex(candidate.text, enabledButton('Close Atom')) !== undefined;
+        },
+        `Atom-open soak checkpoint ${checkpoint + 1}`,
+        context.options.acquisitionTimeoutMs,
+      );
+      const sequence = liveGlobalSweepIdentitySummary(state.text).sequence;
+      report.checkpoints.push({
+        checkpoint: checkpoint + 1,
+        capturedAt: new Date().toISOString(),
+        route,
+        fromSequence: previousSequence,
+        sequence,
+        layout: validateLiveLayoutContract(state.text, { running: true }),
+        atomPanelOpen: true,
+        elapsedMilliseconds: performance.now() - soakStartedMilliseconds,
+      });
+      previousSequence = sequence;
+      checkpoint++;
+      await sampleRendererMemory(context, 'soak-profile-complete', null);
+      await persist();
+    }
+    const terminalRoute = routes[checkpoint % routes.length];
+    currentRoute = terminalRoute;
+    state = await navigate(context, await freshState(context), terminalRoute);
+    state = await waitForState(
+      context,
+      (candidate) => {
+        const sequence = liveGlobalSweepIdentitySummary(candidate.text).sequence;
+        return hasButton(candidate.text, 'Stop')
+          && liveWorkspaceIsVisible(candidate.text, currentRoute)
+          && Number.isSafeInteger(sequence)
+          && sequence > previousSequence
+          && findElementIndex(candidate.text, enabledButton('Close Atom')) !== undefined;
+      },
+      'Atom-open soak terminal full-duration checkpoint',
+      context.options.acquisitionTimeoutMs,
+    );
+    const terminalSequence = liveGlobalSweepIdentitySummary(state.text).sequence;
+    report.checkpoints.push({
+      checkpoint: checkpoint + 1,
+      capturedAt: new Date().toISOString(),
+      route: currentRoute,
+      fromSequence: previousSequence,
+      sequence: terminalSequence,
+      layout: validateLiveLayoutContract(state.text, { running: true }),
+      atomPanelOpen: true,
+      terminal: true,
+      elapsedMilliseconds: performance.now() - soakStartedMilliseconds,
+    });
+    report.finalSequence = terminalSequence;
+    report.monotonicTiming.completedMilliseconds = performance.now();
+    report.monotonicTiming.elapsedMilliseconds = report.monotonicTiming.completedMilliseconds
+      - soakStartedMilliseconds;
+    await persist();
+  } catch (error) {
+    primaryError = error;
+    report.failures.push({ profileId: null, step: 'atom-open-duration-soak', ...serializeError(error) });
+    try {
+      await captureFailure(context, state, 'atom-open-soak', 'failure');
+    } catch (captureError) {
+      report.failures.push({
+        profileId: null,
+        step: 'atom-open-soak-failure-screenshot',
+        ...serializeError(captureError),
+      });
+    }
+  } finally {
+    try {
+      state = await ensureStopped(context, state ?? await freshState(context));
+      report.finalStopSucceeded = true;
+    } catch (error) {
+      completionError = error;
+      report.finalStopSucceeded = false;
+      report.failures.push({ profileId: null, step: 'final-stop', ...serializeError(error) });
+    }
+    try {
+      await sampleRendererMemory(context, 'soak-complete', null);
+      report.completedAt = new Date().toISOString();
+      const completion = validateSignalLabAtomOpenSoakCompletion(report, context.options);
+      report.stress.rendererMemory = completion.rendererMemory;
+      report.completionEvidence = completion;
+    } catch (error) {
+      report.completedAt ??= new Date().toISOString();
+      completionError ??= error;
+      report.failures.push({ profileId: null, step: 'soak-completion-evidence', ...serializeError(error) });
+    }
+    report.ok = report.failures.length === 0
+      && report.completionEvidence?.status
+        === 'atom-open-duration-memory-and-final-stop-validated';
+    await persist();
+  }
+  if (primaryError !== null) throw primaryError;
+  if (completionError !== null) throw completionError;
+  return Object.freeze({
+    artifactDirectory: context.artifactDirectory,
+    reportPath: context.reportPath,
+    report,
+  });
+}
+
 async function createContext(input, optionOverrides = {}) {
   if (!input || typeof input !== 'object') throw new TypeError('Live exercise input is required');
   const sky = input.sky;
@@ -1182,6 +1578,8 @@ async function createContext(input, optionOverrides = {}) {
       sweepProgressions: [],
       rendererMemorySamples: [...suppliedRendererMemorySamples],
     },
+    screenshotEvidence: new Map(),
+    screenshotHashes: new Map(),
     artifactDirectory,
     reportPath: join(artifactDirectory, 'report.json'),
   };
@@ -1274,7 +1672,7 @@ function createRunRecord(context, kind) {
     failures: [],
     stress: context.stress,
     visualContentReview: {
-      automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+      automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
       status: 'manual-review-required',
     },
     summary: null,
@@ -1417,12 +1815,19 @@ function assertRecommendedVisibleRange(profile, visibleRangeHz, operation) {
 async function exerciseContinuousDetection(context, state, profile) {
   state = await ensureStopped(context, state);
   state = await navigate(context, state, 'Spectrum');
-  const previousSequence = spectrumSummary(state.text).sequence;
+  const initialGlobalIdentity = liveGlobalSweepIdentitySummary(state.text);
+  if (!initialGlobalIdentity.valid || initialGlobalIdentity.evidenceCount !== 1) {
+    throw new Error('Continuous acquisition omitted its unique global sweep identity diagnostic');
+  }
+  const previousSequence = initialGlobalIdentity.sequence;
   const runStarted = Date.now();
   const seenSequences = new Set();
   const observedSequenceTimes = new Map();
   const recordObservedSequence = (candidate) => {
-    const sequence = spectrumSummary(candidate.text).sequence;
+    const identity = liveGlobalSweepIdentitySummary(candidate.text);
+    const sequence = identity.valid && identity.evidenceCount === 1
+      ? identity.sequence
+      : null;
     if (Number.isSafeInteger(sequence)) {
       seenSequences.add(sequence);
       if (!observedSequenceTimes.has(sequence)) observedSequenceTimes.set(sequence, Date.now());
@@ -1435,18 +1840,20 @@ async function exerciseContinuousDetection(context, state, profile) {
     (candidate) => {
       const sequence = recordObservedSequence(candidate);
       return hasButton(candidate.text, 'Stop')
+        && hasSpectrum(candidate.text)
         && sequence !== null
         && sequence !== previousSequence;
     },
     'continuous acquisition Stop control and first fresh sweep',
     context.options.acquisitionTimeoutMs,
   );
+  validateGlobalSweepMatchesSpectrum(state.text, 'continuous first sweep');
   const firstSweepLatencyMs = Date.now() - runStarted;
   while (seenSequences.size < context.options.minimumContinuousSweepProgressions) {
     state = await waitForState(
       context,
       (candidate) => {
-        const sequence = spectrumSummary(candidate.text).sequence;
+        const sequence = liveGlobalSweepIdentitySummary(candidate.text).sequence;
         const isNewSequence = Number.isSafeInteger(sequence) && !seenSequences.has(sequence);
         recordObservedSequence(candidate);
         return hasButton(candidate.text, 'Stop')
@@ -1632,22 +2039,95 @@ async function exerciseContinuousDetection(context, state, profile) {
 async function exerciseRunningResponsivenessTour(context, state, recordObservedSequence) {
   const started = Date.now();
   const routes = [];
+  let previousSequence = recordObservedSequence(state);
+  if (!Number.isSafeInteger(previousSequence)) {
+    throw new Error('Active Run responsiveness tour requires an initial finite sweep sequence');
+  }
   const visit = async (label) => {
+    const fromSequence = previousSequence;
     state = await navigate(context, state, label);
     state = await waitForState(
       context,
       (candidate) => {
-        recordObservedSequence(candidate);
+        const sequence = recordObservedSequence(candidate);
         return hasButton(candidate.text, 'Stop')
-          && liveWorkspaceIsVisible(candidate.text, label);
+          && liveWorkspaceIsVisible(candidate.text, label)
+          && activeRunRouteControlsPresent(candidate.text, label)
+          && Number.isSafeInteger(sequence)
+          && sequence > previousSequence;
       },
-      `${label} workspace while global Run remains active`,
-      context.options.profileTimeoutMs,
+      `${label} workspace with an advancing sweep while global Run remains active`,
+      context.options.acquisitionTimeoutMs,
     );
-    const sequence = recordObservedSequence(state);
-    routes.push({ label, stopPresent: true, sequence });
+    let sequence = recordObservedSequence(state);
+    let controlInteraction = null;
+    if (label === 'Device') {
+      const profileControlBefore = signalLabProfileControlSummary(state.text);
+      const sweepSequenceBeforeInteraction = sequence;
+      if (profileControlBefore === null) {
+        throw new Error('Device active-Run tour omitted its enabled SignalLab profile control');
+      }
+      state = await clickElement(
+        context,
+        state,
+        (body) => body === profileControlBefore.body,
+        'open SignalLab profile selector during active Run responsiveness tour',
+      );
+      const popupEvidence = signalLabProfilePopupEvidence(state.text);
+      if (!popupEvidence.open) {
+        throw new Error('Device SignalLab profile selector click did not expose an open native popup');
+      }
+      if (typeof context.sky.press_key !== 'function') {
+        throw new Error('Device active-Run selector cancellation requires Computer Use press_key');
+      }
+      await context.sky.press_key({ app: context.app, key: 'Escape' });
+      state = await freshState(context);
+      state = await waitForState(
+        context,
+        (candidate) => {
+          const nextSequence = recordObservedSequence(candidate);
+          return hasButton(candidate.text, 'Stop')
+            && liveWorkspaceIsVisible(candidate.text, 'Device')
+            && activeRunRouteControlsPresent(candidate.text, 'Device')
+            && signalLabProfileControlSummary(candidate.text)?.selectedValue
+              === profileControlBefore.selectedValue
+            && Number.isSafeInteger(nextSequence)
+            && nextSequence > sweepSequenceBeforeInteraction;
+        },
+        'cancelled unchanged Device profile selector and resumed spectrum progression during active Run',
+        context.options.acquisitionTimeoutMs,
+      );
+      sequence = recordObservedSequence(state);
+      const profileControlAfter = signalLabProfileControlSummary(state.text);
+      controlInteraction = {
+        status: 'profile-selector-opened-and-cancelled-under-run',
+        profileControlEvidenceBefore: profileControlBefore.body,
+        profileControlEvidenceAfter: profileControlAfter?.body ?? null,
+        profileValueBefore: profileControlBefore.selectedValue,
+        profileValueAfter: profileControlAfter?.selectedValue ?? null,
+        popupEvidence,
+        sweepSequenceBeforeInteraction,
+        sweepSequenceAfterInteraction: sequence,
+      };
+    }
+    const layout = validateLiveLayoutContract(state.text, { running: true });
+    routes.push({
+      label,
+      stopPresent: true,
+      fromSequence,
+      sequence,
+      enabledControls: activeRunRouteControlLabels(label),
+      controlInteraction,
+      acquisitionCounts: layout.acquisitionCounts,
+      acquisitionLandmarkCount: layout.acquisitionLandmarkCount,
+      acquisitionLandmarkPrecedesControls: layout.acquisitionLandmarkPrecedesControls,
+      acquisitionLandmarkControlBinding: layout.acquisitionLandmarkControlBinding,
+      globalSweepIdentity: layout.globalSweepIdentity,
+      routeCounts: layout.routeCounts,
+    });
+    previousSequence = sequence;
   };
-  for (const label of ['Waterfall', 'Channel', 'I/Q', 'Spectrum']) await visit(label);
+  for (const label of ['Waterfall', 'Channel', 'I/Q', 'Device', 'Spectrum']) await visit(label);
 
   const controls = [];
   if (!hasEditableDisclosure(state.text, 'Center frequency')) {
@@ -1716,6 +2196,23 @@ async function exerciseRunningResponsivenessTour(context, state, recordObservedS
 async function exercisePeakMarker(context, state, profile) {
   state = await ensureStopped(context, state);
   state = await navigate(context, state, 'Spectrum');
+  const previousSweep = liveSweepIdentitySummary(state.text);
+  state = await clickElement(context, state, enabledButton('Single'), 'fresh global Single for marker Peak');
+  state = await waitForState(
+    context,
+    (candidate) => {
+      const sweep = liveSweepIdentitySummary(candidate.text);
+      return typeof sweep.sweepId === 'string'
+        && sweep.sweepId.length > 0
+        && Number.isSafeInteger(sweep.sequence)
+        && (previousSweep.sweepId === null || sweep.sweepId !== previousSweep.sweepId)
+        && (previousSweep.sequence === null || sweep.sequence > previousSweep.sequence)
+        && findElementIndex(candidate.text, enabledButton('Single')) !== undefined;
+    },
+    `fresh marker sweep for ${profile.id}`,
+    context.options.acquisitionTimeoutMs,
+  );
+  const currentSweep = liveSweepIdentitySummary(state.text);
   if (findElementIndex(state.text, enabledButton('Peak')) === undefined) {
     state = await clickElement(
       context,
@@ -1725,29 +2222,142 @@ async function exercisePeakMarker(context, state, profile) {
     );
   }
   state = await normalizeM1Normal(context, state);
+  if (!markerOneSelectedVisibility(state.text, 'visible')) {
+    state = await clickElement(
+      context,
+      state,
+      (body) => /^button Marker 1,\s*hidden,\s*selected\b/i.test(body),
+      'show Marker 1 before freshness reset',
+    );
+    state = await waitForState(
+      context,
+      (candidate) => markerOneSelectedVisibility(candidate.text, 'visible')
+        && liveMarkerM1ReadoutIsNormal(candidate.text),
+      'visible Marker 1 before freshness reset',
+      context.options.profileTimeoutMs,
+    );
+  }
+  state = await clickElement(
+    context,
+    state,
+    (body) => /^button Marker 1,\s*visible,\s*selected\b/i.test(body),
+    'hide Marker 1 before fresh Peak search',
+  );
+  state = await waitForState(
+    context,
+    (candidate) => markerOneSelectedVisibility(candidate.text, 'hidden')
+      && liveMarkerSummary(candidate.text).sourceSweepId === null,
+    'hidden M1 with stale marker reading cleared',
+    context.options.profileTimeoutMs,
+  );
   state = await clickElement(context, state, enabledButton('Peak'), 'marker Peak search');
   state = await waitForState(
     context,
-    (candidate) => liveMarkerSummary(candidate.text).frequencyHz !== null
-      && candidate.text.includes('Marker M1 local characterization'),
-    'visible M1 reading and local characterization',
+    (candidate) => {
+      const marker = liveMarkerSummary(candidate.text);
+      return markerOneSelectedVisibility(candidate.text, 'visible')
+        && marker.frequencyHz !== null
+        && marker.sourceSweepId === currentSweep.sweepId
+        && candidate.text.includes('Marker M1 local characterization');
+    },
+    'visible M1 reading bound to the current sweep and local characterization',
     context.options.acquisitionTimeoutMs,
   );
   assertNoFatalUi(state, `peak marker ${profile.id}`);
   const marker = liveMarkerSummary(state.text);
+  const markerFreshness = validateFreshMarkerEvidence(
+    previousSweep,
+    currentSweep,
+    marker,
+    { markerWasHidden: true, markerVisible: markerOneSelectedVisibility(state.text, 'visible') },
+  );
   const characterization = liveMarkerCharacterizationSummary(state.text);
   const markerGeometry = liveSweepGeometrySummary(state.text);
   if (markerGeometry.plotPoints !== 450) {
     throw new Error(`${profile.id} marker oracle requires 450-point swept geometry`);
   }
   const markerExpectation = liveSignalLabMarkerExpectation(profile);
-  validateLiveMarkerEvidence(marker, characterization, profile, markerExpectation);
+  const markerCenterOracle = validateLiveMarkerEvidence(
+    marker,
+    characterization,
+    profile,
+    markerExpectation,
+  );
   return {
     state,
     marker: { ...marker, ...characterization },
     markerExpectation,
+    markerCenterOracle,
     markerGeometry,
+    markerFreshness,
   };
+}
+
+function activeRunRouteControlLabels(label) {
+  return ({
+    Waterfall: ['Edit Color floor'],
+    Channel: ['Edit Center frequency'],
+    'I/Q': ['Edit Center frequency'],
+    Device: ['SignalLab profile'],
+    Spectrum: [],
+  })[label] ?? [];
+}
+
+function activeRunRouteControlsPresent(text, label) {
+  if (label === 'Waterfall') return hasEditableDisclosure(text, 'Color floor');
+  if (label === 'Channel' || label === 'I/Q') {
+    return hasEditableDisclosure(text, 'Center frequency');
+  }
+  if (label === 'Device') {
+    return signalLabProfileControlBody(text) !== null;
+  }
+  return label === 'Spectrum';
+}
+
+function signalLabProfileControlBody(text) {
+  return signalLabProfileControlSummary(text)?.body ?? null;
+}
+
+function signalLabProfileControlSummary(text) {
+  const body = accessibilityBodies(text).find((candidate) => (
+    /^(?:pop up button|combo box)\b.*(?:Description:\s*)?SignalLab profile(?:$|,|\s)/i
+      .test(candidate)
+  )) ?? null;
+  if (body === null || body.includes('(disabled)')) return null;
+  const selectedValue = /\bValue:\s*([^,]+?)(?=\s+·|,|$)/i.exec(body)?.[1].trim() ?? null;
+  return selectedValue === null || selectedValue.length === 0
+    ? null
+    : { body, selectedValue };
+}
+
+function signalLabProfilePopupEvidence(text) {
+  const bodies = accessibilityBodies(text);
+  const expandedControl = bodies.find((body) => (
+    /^(?:pop up button|combo box)\b.*(?:Description:\s*)?SignalLab profile(?:$|,|\s)/i
+      .test(body)
+    && /(?:\(expanded\)|Expanded:\s*true|expanded\s*[:=]\s*1)/i.test(body)
+  )) ?? null;
+  const nativeProfileOptions = bodies.flatMap((body) => {
+    const label = menuItemLabel(body);
+    return label !== null && /\s·\s[\d,.]+\s*(?:Hz|kHz|MHz|GHz)\b/i.test(label)
+      ? [label]
+      : [];
+  });
+  return {
+    open: expandedControl !== null || nativeProfileOptions.length > 0,
+    source: nativeProfileOptions.length > 0
+      ? 'native-signal-lab-profile-menu-items'
+      : expandedControl !== null
+        ? 'expanded-signal-lab-profile-control'
+        : null,
+    expandedControl,
+    nativeProfileOptions,
+  };
+}
+
+function markerOneSelectedVisibility(text, visibility) {
+  const pattern = new RegExp(`^button Marker 1,\\s*${escapeRegExp(visibility)},\\s*selected\\b`, 'i');
+  return accessibilityBodies(text).some((body) => pattern.test(body));
 }
 
 export function liveMarkerM1ReadoutIsNormal(text) {
@@ -1809,18 +2419,28 @@ async function normalizeM1Normal(context, state) {
   );
 }
 
-async function exerciseWaterfall(context, state) {
+async function exerciseWaterfall(context, state, profile) {
   state = await navigate(context, state, 'Waterfall');
   state = await waitForState(
     context,
-    (candidate) => candidate.text.includes('image Measured power by frequency and sweep time')
-      && !candidate.text.includes('text No history'),
-    'coherent waterfall history',
+    (candidate) => {
+      const summary = liveWaterfallSummary(candidate.text);
+      return summary.imagePresent
+        && !summary.noHistory
+        && Number.isSafeInteger(summary.coherentRows)
+        && summary.coherentRows >= 2
+        && Number.isSafeInteger(summary.renderedColors)
+        && summary.renderedColors >= 2;
+    },
+    'nondegenerate coherent waterfall history',
     context.options.acquisitionTimeoutMs,
   );
+  const waterfall = liveWaterfallSummary(state.text);
+  const waterfallOracle = validateLiveWaterfallEvidence(waterfall, profile);
   return {
     state,
-    history: matchText(state.text, /COHERENT HISTORY\s+(\d+)\s+\/\s+(\d+)/i),
+    waterfall,
+    waterfallOracle,
   };
 }
 
@@ -1828,41 +2448,49 @@ async function exerciseChannel(context, state, profile) {
   state = await navigate(context, state, 'Channel');
   state = await waitForState(
     context,
-    (candidate) => /3\s+dB\s+BANDWIDTH/i.test(candidate.text)
-      && !candidate.text.includes('Measurement unavailable'),
-    'channel measurement result',
+    (candidate) => /3\s+dB\s+BANDWIDTH/i.test(candidate.text),
+    'channel measurement result or explicit unavailable outcome',
     context.options.acquisitionTimeoutMs,
   );
   const summary = liveChannelSummary(state.text);
-  if (profile.id === 'cw') {
-    if (summary.status === 'unavailable') {
-      throw new Error(`CW 3 dB bandwidth is unavailable: ${summary.detail ?? 'no detail'}`);
-    }
-    if (summary.bandwidthHz !== null && summary.bandwidthHz >= profile.recommendedSpanHz * 0.9) {
-      throw new Error(
-        `CW 3 dB bandwidth ${summary.bandwidthHz} Hz spans nearly the entire ${profile.recommendedSpanHz} Hz view`,
-      );
-    }
-  }
-  return { state, channel: summary };
+  const channelOracle = validateLiveChannelEvidence(summary, profile, {
+    strictNarrow: context.options.narrowMarkerProfileIds.includes(profile.id),
+    strictWideband: context.options.wideMarkerProfileIds.includes(profile.id),
+  });
+  return { state, channel: summary, channelOracle };
 }
 
 async function exerciseIq(context, state, profile) {
   state = await ensureStopped(context, state);
   state = await navigate(context, state, 'I/Q');
-  if (context.options.requireNoLocalIqCaptureButton && liveButtonExists(state.text, 'Capture I/Q')) {
-    throw new Error('I/Q workspace still exposes the redundant local Capture I/Q button');
-  }
+  validateLiveLayoutContract(state.text, { running: false });
+  const previousIq = liveIqSummary(state.text);
   state = await clickElement(context, state, enabledButton('Single'), 'global Single for I/Q');
   state = await waitForState(
     context,
-    (candidate) => !candidate.text.includes('NO COMPLEX-SAMPLE CAPTURE YET')
-      && /Capture\s+[0-9a-f-]{16,}\s+·/i.test(candidate.text)
-      && findElementIndex(candidate.text, enabledButton('Single')) !== undefined,
+    (candidate) => {
+      const summary = liveIqSummary(candidate.text);
+      return summary.captureId !== null
+        && summary.captureId !== previousIq.captureId
+        && Number.isSafeInteger(summary.captureSequence)
+        && (previousIq.captureSequence === null
+          || summary.captureSequence > previousIq.captureSequence)
+        && summary.captureCenterHz === profile.centerHz
+        && summary.samples !== null
+        && summary.samples >= 2
+        && summary.previewPoints !== null
+        && summary.previewPoints >= 2
+        && findElementIndex(candidate.text, enabledButton('Single')) !== undefined;
+    },
     `complete complex-I/Q capture for ${profile.id}`,
     context.options.acquisitionTimeoutMs,
   );
   assertNoFatalUi(state, `complex I/Q ${profile.id}`);
+  let iq = liveIqSummary(state.text);
+  const freshCapture = validateFreshIqCapture(previousIq, iq, profile);
+  let iqOracle = validateLiveIqEvidence(iq, profile, {
+    requireNoLocalCapture: context.options.requireNoLocalIqCaptureButton,
+  });
   const configuredCenterHz = disclosureFrequency(state.text, 'Center frequency');
   if (configuredCenterHz === null || configuredCenterHz !== profile.centerHz) {
     throw new Error(
@@ -1870,28 +2498,52 @@ async function exerciseIq(context, state, profile) {
     );
   }
 
-  let zoom = matchText(state.text, /I\/Q plot zoom[\s\S]{0,120}?text\s+([\d.]+×)/i);
+  let zoom = iq.zoom;
   if (context.options.iqZoomProfileIds.includes(profile.id)) {
+    state = await clickElement(
+      context,
+      state,
+      (body) => body.startsWith('button Zoom I/Q plots out'),
+      'I/Q zoom out',
+    );
+    if (liveIqSummary(state.text).zoom !== '0.5×') {
+      throw new Error('I/Q zoom-out control did not reach 0.5×');
+    }
+    state = await clickElement(
+      context,
+      state,
+      (body) => body.startsWith('button Fit I/Q plots to capture'),
+      'I/Q fit after zoom out',
+    );
+    if (liveIqSummary(state.text).zoom !== '1×') {
+      throw new Error('I/Q fit control did not restore 1× after zoom out');
+    }
     state = await clickElement(
       context,
       state,
       (body) => body.startsWith('button Zoom I/Q plots in'),
       'I/Q zoom in',
     );
-    if (!state.text.includes('text 2×')) throw new Error('I/Q zoom-in control did not reach 2×');
+    if (liveIqSummary(state.text).zoom !== '2×') {
+      throw new Error('I/Q zoom-in control did not reach 2×');
+    }
     state = await clickElement(
       context,
       state,
       (body) => body.startsWith('button Fit I/Q plots to capture'),
       'I/Q fit',
     );
-    if (!state.text.includes('text 1×')) throw new Error('I/Q fit control did not restore 1×');
+    if (liveIqSummary(state.text).zoom !== '1×') {
+      throw new Error('I/Q fit control did not restore 1×');
+    }
     zoom = '1×';
   }
 
   let continuousBuffers = null;
+  let continuousFreshness = null;
   if (context.options.iqContinuousProfileIds.includes(profile.id)) {
-    const firstCapture = iqCaptureId(state.text);
+    const firstIq = liveIqSummary(state.text);
+    const firstCapture = firstIq.captureId;
     state = await clickElement(context, state, enabledButton('Run'), 'global Run for I/Q');
     state = await waitForState(
       context,
@@ -1905,17 +2557,32 @@ async function exerciseIq(context, state, profile) {
       `second bounded I/Q buffer for ${profile.id}`,
       context.options.acquisitionTimeoutMs,
     );
-    const secondCapture = iqCaptureId(state.text);
+    const secondIq = liveIqSummary(state.text);
+    const secondCapture = secondIq.captureId;
+    continuousFreshness = validateFreshIqCapture(firstIq, secondIq, profile);
     state = await ensureStopped(context, state);
-    const stoppedCapture = iqCaptureId(state.text);
+    const stoppedCapture = liveIqSummary(state.text).captureId;
     await delay(context.options.pollIntervalMs * 2);
     state = await freshState(context);
-    if (iqCaptureId(state.text) !== stoppedCapture) {
+    if (liveIqSummary(state.text).captureId !== stoppedCapture) {
       throw new Error('A new I/Q capture was published after the global Stop operation completed');
     }
     continuousBuffers = [firstCapture, secondCapture];
   }
-  return { state, captureId: iqCaptureId(state.text), zoom, continuousBuffers };
+  iq = liveIqSummary(state.text);
+  iqOracle = validateLiveIqEvidence(iq, profile, {
+    requireNoLocalCapture: context.options.requireNoLocalIqCaptureButton,
+  });
+  return {
+    state,
+    captureId: iq.captureId,
+    zoom,
+    continuousBuffers,
+    continuousFreshness,
+    iq,
+    iqOracle,
+    freshCapture,
+  };
 }
 
 async function navigate(context, state, label) {
@@ -2058,6 +2725,7 @@ export function liveWorkspaceIsVisible(text, label) {
   if (label === 'Channel') return text.includes('Channel power, 3 dB bandwidth, ACP, and occupied bandwidth');
   if (label === 'I/Q') return text.includes('text Complex baseband');
   if (label === 'Detect') return text.includes('text Evidence') && text.includes('text Detection');
+  if (label === 'Device') return text.includes('text Instrument source');
   return false;
 }
 
@@ -2072,13 +2740,15 @@ async function ensureStopped(context, state) {
   if (stop !== undefined) {
     state = await clickIndex(context, stop, 'global Stop');
   }
-  return await waitForState(
+  const stopped = await waitForState(
     context,
     (candidate) => findElementIndex(candidate.text, enabledButton('Run')) !== undefined
       && findElementIndex(candidate.text, enabledButton('Single')) !== undefined,
     'stopped global acquisition controls',
     context.options.acquisitionTimeoutMs,
   );
+  validateLiveLayoutContract(stopped.text, { running: false });
+  return stopped;
 }
 
 async function clickElement(context, state, predicate, label) {
@@ -2211,6 +2881,154 @@ export function liveButtonExists(text, label) {
   ));
 }
 
+const SIGNAL_LAB_SIDEBAR_ROUTES = Object.freeze([
+  'Spectrum',
+  'Waterfall',
+  'Channel',
+  'I/Q',
+  'Detect',
+  'Generate',
+  'Device',
+]);
+
+function interactiveLabelMatches(body, label) {
+  const escaped = escapeRegExp(label);
+  return new RegExp(`^(?:button|toggle button|tab)\\s+${escaped}(?:$|,| \\()`, 'i').test(body);
+}
+
+export function liveGlobalSweepIdentitySummary(text) {
+  const diagnostics = accessibilityBodies(text).flatMap((body) => {
+    if (!/^(?:container|region|group|section)\s+Acquisition controls(?:$|,)/i.test(body)) {
+      return [];
+    }
+    const match = /\bDEV ACQUISITION LANDMARK; controls=(Run,Single|Stop); sweepId=([^;,\s]+); sequence=(none|\d+)\b/i
+      .exec(body);
+    if (!match) return [];
+    const sweepId = match[2] === 'none' ? null : match[2];
+    const sequence = match[3] === 'none' ? null : Number(match[3]);
+    return [{ body, controls: match[1], sweepId, sequence }];
+  });
+  const diagnostic = diagnostics.length === 1 ? diagnostics[0] : null;
+  const identityPairValid = diagnostic !== null
+    && ((diagnostic.sweepId === null && diagnostic.sequence === null)
+      || (typeof diagnostic.sweepId === 'string'
+        && diagnostic.sweepId.length > 0
+        && Number.isSafeInteger(diagnostic.sequence)));
+  return {
+    evidenceCount: diagnostics.length,
+    valid: identityPairValid,
+    controls: diagnostic?.controls ?? null,
+    sweepId: identityPairValid ? diagnostic.sweepId : null,
+    sequence: identityPairValid ? diagnostic.sequence : null,
+    evidence: diagnostic?.body ?? null,
+  };
+}
+
+export function liveLayoutContractSummary(text) {
+  const bodies = accessibilityBodies(text);
+  const globalSweepIdentity = liveGlobalSweepIdentitySummary(text);
+  const routeCounts = Object.fromEntries(SIGNAL_LAB_SIDEBAR_ROUTES.map((label) => [
+    label,
+    bodies.filter((body) => interactiveLabelMatches(body, label)).length,
+  ]));
+  const acquisitionCounts = Object.fromEntries(['Run', 'Single', 'Stop'].map((label) => [
+    label.toLowerCase(),
+    bodies.filter((body) => interactiveLabelMatches(body, label)).length,
+  ]));
+  const forbiddenNavigation = bodies.filter((body) => (
+    /^(?:button|toggle button|tab)\s+(?:Classify|Time\s*\/\s*STFT|Time\/STFT|Envelope\s*\/\s*STFT)(?:$|,| \()/i
+      .test(body)
+  ));
+  const localIqCaptureControls = bodies.filter((body) => (
+    /^(?:button|toggle button)\s+Capture\s+I\s*\/?\s*Q(?:$|,| \()/i.test(body)
+  ));
+  const acquisitionLandmarkIndexes = bodies.flatMap((body, index) => (
+    /^(?:container|region|group|section)\s+Acquisition controls(?:$|,)/i.test(body)
+      ? [index]
+      : []
+  ));
+  const acquisitionControlIndexes = bodies.flatMap((body, index) => (
+    ['Run', 'Single', 'Stop'].some((label) => interactiveLabelMatches(body, label))
+      ? [index]
+      : []
+  ));
+  const expectedAcquisitionDiagnostic = acquisitionCounts.stop === 1
+    && acquisitionCounts.run === 0
+    && acquisitionCounts.single === 0
+    ? 'controls=Stop'
+    : acquisitionCounts.run === 1
+      && acquisitionCounts.single === 1
+      && acquisitionCounts.stop === 0
+      ? 'controls=Run,Single'
+      : null;
+  const acquisitionLandmarkControlBinding = acquisitionLandmarkIndexes.length === 1
+    && expectedAcquisitionDiagnostic !== null
+    && globalSweepIdentity.valid
+    && globalSweepIdentity.controls === expectedAcquisitionDiagnostic.replace('controls=', '');
+  const routeOrder = bodies.flatMap((body) => {
+    const label = SIGNAL_LAB_SIDEBAR_ROUTES.find((candidate) => (
+      interactiveLabelMatches(body, candidate)
+    ));
+    return label === undefined ? [] : [label];
+  });
+  return {
+    routeCounts,
+    routeOrder,
+    acquisitionCounts,
+    acquisitionLandmarkCount: acquisitionLandmarkIndexes.length,
+    acquisitionLandmarkPrecedesControls: acquisitionLandmarkIndexes.length === 1
+      && acquisitionControlIndexes.length > 0
+      && acquisitionControlIndexes.every((index) => index > acquisitionLandmarkIndexes[0]),
+    acquisitionLandmarkControlBinding,
+    globalSweepIdentity,
+    forbiddenNavigation,
+    localIqCaptureControls,
+  };
+}
+
+export function validateLiveLayoutContract(text, { running = false } = {}) {
+  if (typeof running !== 'boolean') throw new TypeError('running layout state must be a boolean');
+  const summary = liveLayoutContractSummary(text);
+  const invalidRoutes = Object.entries(summary.routeCounts)
+    .filter(([, count]) => count !== 1);
+  if (invalidRoutes.length > 0) {
+    throw new Error(
+      `SignalLab sidebar routes must each occur exactly once: ${invalidRoutes.map(([label, count]) => `${label}=${count}`).join(', ')}`,
+    );
+  }
+  if (!sameOrderedValues(summary.routeOrder, SIGNAL_LAB_SIDEBAR_ROUTES)) {
+    throw new Error(
+      `SignalLab sidebar route order changed: ${summary.routeOrder.join(' -> ')}`,
+    );
+  }
+  if (summary.forbiddenNavigation.length > 0) {
+    throw new Error(`Removed navigation resurfaced: ${summary.forbiddenNavigation.join(' | ')}`);
+  }
+  if (summary.localIqCaptureControls.length > 0) {
+    throw new Error(`I/Q exposed a redundant local capture control: ${summary.localIqCaptureControls.join(' | ')}`);
+  }
+  if (summary.acquisitionLandmarkCount !== 1) {
+    throw new Error(
+      `Acquisition controls landmark must occur exactly once; observed ${summary.acquisitionLandmarkCount}`,
+    );
+  }
+  const expected = running
+    ? { run: 0, single: 0, stop: 1 }
+    : { run: 1, single: 1, stop: 0 };
+  if (Object.entries(expected).some(([label, count]) => summary.acquisitionCounts[label] !== count)) {
+    throw new Error(
+      `Global acquisition controls are not unique for ${running ? 'running' : 'stopped'} state: ${JSON.stringify(summary.acquisitionCounts)}`,
+    );
+  }
+  if (!summary.acquisitionLandmarkPrecedesControls) {
+    throw new Error('Global acquisition controls are not nested after the Acquisition controls landmark');
+  }
+  if (!summary.acquisitionLandmarkControlBinding) {
+    throw new Error('Acquisition controls landmark omitted its development child-control binding');
+  }
+  return summary;
+}
+
 function autoMostProminentButton(body) {
   return (body === 'button Auto · most prominent'
       || body.startsWith('button Auto · most prominent,')
@@ -2220,8 +3038,80 @@ function autoMostProminentButton(body) {
     && !body.includes('(disabled)');
 }
 
+export function liveDetectCandidateRankingSummary(text) {
+  const bodies = accessibilityBodies(text);
+  const developerEvidence = bodies.find((body) => /\bDEV RANK POPULATION\b/i.test(body)) ?? null;
+  const developerWinner = developerEvidence
+    ? /\bwinner=([^;,|\s]+)/i.exec(developerEvidence)?.[1] ?? null
+    : null;
+  const developerDeclaredCandidateCount = developerEvidence
+    ? [...developerEvidence.matchAll(/\bcandidate=/gi)].length
+    : 0;
+  const developerCandidates = developerEvidence
+    ? [...developerEvidence.matchAll(
+        /\bcandidate=([^;,|\s]+),raw=([^;,|\s]+),power=([-−]?\d+(?:\.\d+)?)\s*dBm,cells=(\d+)/gi,
+      )].map((match, index) => ({
+        rank: index + 1,
+        representativeId: match[1],
+        rawTargetId: match[2],
+        integratedExcessDbm: Number(match[3].replace('−', '-')),
+        supportCellCount: Number(match[4]),
+        autoTarget: match[1] === developerWinner,
+        evidence: match[0],
+      }))
+    : [];
+  const visibleCandidates = [];
+  for (const [index, body] of bodies.entries()) {
+    const match = /integrated excess\s+([-−]?\d+(?:\.\d+)?)\s*dBm\s+·\s+(\d+)\s+cells?\b/i.exec(body);
+    if (!match) continue;
+    const rankIndex = nearestCandidateRankIndex(bodies, index);
+    visibleCandidates.push({
+      rank: rankIndex < 0 ? candidateRank(body) : candidateRank(bodies[rankIndex]),
+      integratedExcessDbm: Number(match[1].replace('−', '-')),
+      supportCellCount: Number(match[2]),
+      autoTarget: /\bAUTO TARGET\b/i.test(body),
+      evidence: body,
+    });
+  }
+  const candidates = developerCandidates.length > 0 ? developerCandidates : visibleCandidates;
+  const autoTargets = candidates.filter(({ autoTarget }) => autoTarget);
+  const autoTarget = autoTargets[0] ?? null;
+  const strongestIntegratedExcessDbm = candidates.length > 0
+    ? Math.max(...candidates.map(({ integratedExcessDbm }) => integratedExcessDbm))
+    : null;
+  // The UI rounds this independent evidence to 0.1 dB. A displayed tie is
+  // therefore accepted, but a visibly weaker automatic target is not.
+  const autoTargetIsMaximumIntegratedExcess = autoTargets.length === 1
+    && autoTarget !== null
+    && Number.isFinite(strongestIntegratedExcessDbm)
+    && autoTarget.integratedExcessDbm >= strongestIntegratedExcessDbm - 0.051;
+  return {
+    candidates,
+    autoTargetCount: autoTargets.length,
+    autoTarget,
+    strongestIntegratedExcessDbm,
+    autoTargetIsMaximumIntegratedExcess,
+    rankingEvidenceComplete: candidates.length > 0
+      && candidates.every(({ rank, integratedExcessDbm, supportCellCount }) => (
+        Number.isSafeInteger(rank)
+        && rank > 0
+        && Number.isFinite(integratedExcessDbm)
+        && Number.isSafeInteger(supportCellCount)
+        && supportCellCount > 0
+      ))
+      && (developerEvidence === null
+        || (developerWinner !== null
+          && developerCandidates.length > 0
+          && developerCandidates.length === developerDeclaredCandidateCount)),
+    evidenceSource: developerCandidates.length > 0
+      ? 'development-complete-rank-population'
+      : 'visible-candidate-rows',
+  };
+}
+
 export function liveDetectAcceptanceSummary(text) {
   const bodies = accessibilityBodies(text);
+  const ranking = liveDetectCandidateRankingSummary(text);
   const autoControl = bodies.find((body) => autoMostProminentButton(body)) ?? null;
   const autoTargetIndexes = bodies
     .map((body, index) => (/\bAUTO TARGET\b/i.test(body) ? index : -1))
@@ -2298,7 +3188,11 @@ export function liveDetectAcceptanceSummary(text) {
       && autoTargetRank === 1
       && Number.isFinite(autoTargetIntegratedExcessDbm)
       && Number.isSafeInteger(autoTargetSupportCellCount)
-      && autoTargetSupportCellCount > 0,
+      && autoTargetSupportCellCount > 0
+      && ranking.rankingEvidenceComplete
+      && ranking.autoTargetIsMaximumIntegratedExcess,
+    candidateRanking: ranking,
+    autoTargetIsMaximumIntegratedExcess: ranking.autoTargetIsMaximumIntegratedExcess,
     autoClassification: classification,
     autoClassificationResultLabel: classificationResult.label,
     autoClassificationResultQualification: classificationResult.qualification,
@@ -2367,22 +3261,98 @@ export function liveMarkerSummary(text) {
   const bodies = accessibilityBodies(text);
   const anchor = bodies.findIndex((body) => /\bM\s*1\s+·\s+NORMAL\b/i.test(body));
   const segment = anchor < 0 ? [] : bodies.slice(anchor, anchor + 4);
+  const power = segment
+    .map((body) => /([-−]?\d+(?:[\d,.]*\d)?)\s*dBm(?!\s*\/\s*Hz)\b/i.exec(body))
+    .find(Boolean);
   const frequency = segment
     .map((body) => /([-−]?\d+(?:[\d,.]*\d)?)\s*(Hz|kHz|MHz|GHz)\b/i.exec(body))
     .find(Boolean);
   const centroid = bodies
     .map((body) => /noise-subtracted linear-power center\s*\(\s*([-\u2212]?\d+(?:[\d,.]*\d)?)\s*(Hz|kHz|MHz|GHz)\s+centroid\s*\)/i.exec(body))
     .find(Boolean);
+  const sourceSweepId = bodies
+    .map((body) => /\bsourceSweepId=([^;,\s]+)/i.exec(body)?.[1] ?? null)
+    .find((value) => value !== null) ?? null;
   return {
     line: segment.length ? segment.join(' | ') : null,
+    powerDbm: power ? Number(power[1].replaceAll(',', '').replace('−', '-')) : null,
     frequencyHz: frequency ? frequencyToHz(frequency[1], frequency[2]) : null,
     powerCentroidHz: centroid ? frequencyToHz(centroid[1], centroid[2]) : null,
+    sourceSweepId,
     characterization: bodies.filter((body) => (
       /3 dB response width/i.test(body)
       || /99% component occupied bandwidth/i.test(body)
       || /Resolved local response/i.test(body)
       || /resolution limited/i.test(body)
     )),
+  };
+}
+
+export function liveSweepIdentitySummary(text) {
+  const identity = accessibilityBodies(text)
+    .filter((body) => /^(?:container|region|group)\s+Spectrum plot(?:$|,)/i.test(body))
+    .map((body) => /\bsweepId=([^;,\s]+);\s*sequence=(\d+)/i.exec(body))
+    .find(Boolean);
+  return {
+    sweepId: identity?.[1] ?? null,
+    sequence: identity ? Number(identity[2]) : null,
+  };
+}
+
+export function validateGlobalSweepMatchesSpectrum(text, operation) {
+  const global = liveGlobalSweepIdentitySummary(text);
+  const local = liveSweepIdentitySummary(text);
+  if (!global.valid
+    || global.evidenceCount !== 1
+    || !Number.isSafeInteger(global.sequence)
+    || typeof global.sweepId !== 'string'
+    || local.sequence !== global.sequence
+    || local.sweepId !== global.sweepId) {
+    throw new Error(
+      `${operation} global sweep identity did not match the mounted Spectrum plot identity`,
+    );
+  }
+  return global;
+}
+
+export function validateFreshMarkerEvidence(
+  previousSweep,
+  currentSweep,
+  marker,
+  { markerWasHidden = false, markerVisible = false } = {},
+) {
+  if (typeof currentSweep?.sweepId !== 'string' || currentSweep.sweepId.length === 0
+    || !Number.isSafeInteger(currentSweep.sequence)) {
+    throw new Error('Peak marker freshness omitted the current sweep identity');
+  }
+  if (typeof previousSweep?.sweepId === 'string'
+    && previousSweep.sweepId === currentSweep.sweepId) {
+    throw new Error(`Peak marker reused stale sweep ${currentSweep.sweepId}`);
+  }
+  if (Number.isSafeInteger(previousSweep?.sequence)
+    && currentSweep.sequence <= previousSweep.sequence) {
+    throw new Error('Peak marker sweep sequence did not advance');
+  }
+  if (!markerWasHidden) throw new Error('Peak marker M1 was not cleared before search');
+  if (!markerVisible) throw new Error('Peak marker M1 was not visibly re-enabled by search');
+  if (!Number.isFinite(marker?.frequencyHz)) {
+    throw new Error('Peak marker search omitted its fresh finite M1 reading');
+  }
+  if (!Number.isFinite(marker?.powerDbm)) {
+    throw new Error('Peak marker search omitted its fresh finite M1 power');
+  }
+  if (marker.sourceSweepId !== currentSweep.sweepId) {
+    throw new Error(
+      `Peak marker reading source ${String(marker?.sourceSweepId)} did not match current sweep ${currentSweep.sweepId}`,
+    );
+  }
+  return {
+    status: 'fresh-current-sweep-marker-validated',
+    previousSweepId: previousSweep?.sweepId ?? null,
+    sweepId: currentSweep.sweepId,
+    previousSequence: previousSweep?.sequence ?? null,
+    sequence: currentSweep.sequence,
+    sourceSweepId: marker.sourceSweepId,
   };
 }
 
@@ -2394,6 +3364,9 @@ export function validateLiveMarkerEvidence(
 ) {
   if (!Number.isFinite(marker?.frequencyHz)) {
     throw new Error(`${profile.id} M1 omitted a finite parsed marker frequency`);
+  }
+  if (!Number.isFinite(marker?.powerDbm)) {
+    throw new Error(`${profile.id} M1 omitted a finite parsed marker power`);
   }
   const halfSpan = profile.recommendedSpanHz / 2;
   if (marker.frequencyHz < profile.centerHz - halfSpan
@@ -2471,8 +3444,26 @@ export function validateLiveMarkerEvidence(
     && characterization.threeDecibelStatus !== 'resolved') {
     throw new Error(`${profile.id} M1 wide 3 dB result was not explicitly resolved`);
   }
+  const binWidthHz = profile.recommendedSpanHz / 449;
+  if (characterization.widthClassification === 'resolution-limited-narrow'
+    && (threeDecibelBandwidthHz > binWidthHz * 3
+      || threeDecibelBandwidthHz >= profile.recommendedSpanHz * 0.1)) {
+    throw new Error(
+      `${profile.id} M1 3 dB width ${threeDecibelBandwidthHz} Hz is not a narrow grid-limited response inside the visible span`,
+    );
+  }
+  if (characterization.widthClassification === 'resolved-wideband'
+    && (threeDecibelBandwidthHz <= binWidthHz * 2
+      || threeDecibelBandwidthHz >= profile.recommendedSpanHz * 0.9)) {
+    throw new Error(
+      `${profile.id} M1 3 dB width ${threeDecibelBandwidthHz} Hz is not a resolved response bounded inside the visible span`,
+    );
+  }
   if (characterization.componentOccupiedBandwidthStatus !== 'measured') {
     throw new Error(`${profile.id} M1 component occupied bandwidth was not a measured result`);
+  }
+  if (Number.isFinite(threeDecibelBandwidthHz)) {
+    validateMarkerMeasurementRelationship(profile, characterization, binWidthHz);
   }
   const centroidRequired = normalizedExpectation.centroidRequiredClassifications
     .includes(characterization.widthClassification)
@@ -2498,6 +3489,59 @@ export function validateLiveMarkerEvidence(
   if (centroidMustBeAbsent && Number.isFinite(marker.powerCentroidHz)) {
     throw new Error(`${profile.id} M1 outcome unexpectedly exposed a power centroid`);
   }
+  return liveMarkerKnownCenterOracle(marker, characterization, profile);
+}
+
+export function liveMarkerKnownCenterOracle(marker, characterization, profile) {
+  const binWidthHz = profile.recommendedSpanHz / 449;
+  if (profile.id === 'cw') {
+    const toleranceHz = Math.max(binWidthHz * 2, displayedFrequencyToleranceHz(profile.centerHz));
+    if (Math.abs(marker.frequencyHz - profile.centerHz) > toleranceHz) {
+      throw new Error(
+        `cw M1 ${marker.frequencyHz} Hz missed its independent catalog center ${profile.centerHz} Hz by more than ${toleranceHz} Hz`,
+      );
+    }
+    return {
+      status: 'validated-known-center',
+      source: 'independent-catalog-center',
+      observedHz: marker.frequencyHz,
+      expectedHz: profile.centerHz,
+      toleranceHz,
+    };
+  }
+  const centeredWideband = !CENTERED_WIDEBAND_MARKER_ORACLE_EXCLUDED_PROFILE_IDS.has(profile.id)
+    && (characterization.widthClassification === RESOLVED_MARKER
+      || (characterization.widthClassification === UNAVAILABLE_MARKER
+        && Number.isFinite(marker.powerCentroidHz)));
+  if (!centeredWideband) {
+    return {
+      status: 'not-applicable',
+      reason: Number.isFinite(marker.powerCentroidHz)
+        ? 'profile-allows-frequency-agile-or-multicomponent-centroid'
+        : 'no-centroid-for-current-outcome',
+    };
+  }
+  const occupiedBandwidthHz = Number.isFinite(profile.occupiedBandwidthHz)
+    ? profile.occupiedBandwidthHz
+    : profile.recommendedSpanHz * 0.5;
+  const toleranceHz = Math.max(
+    binWidthHz * 2,
+    occupiedBandwidthHz * 0.05,
+    displayedFrequencyToleranceHz(profile.centerHz),
+  );
+  if (!Number.isFinite(marker.powerCentroidHz)
+    || Math.abs(marker.powerCentroidHz - profile.centerHz) > toleranceHz) {
+    throw new Error(
+      `${profile.id} displayed power centroid ${String(marker.powerCentroidHz)} Hz missed its independent catalog center ${profile.centerHz} Hz by more than ${toleranceHz} Hz`,
+    );
+  }
+  return {
+    status: 'validated-known-center',
+    source: 'independent-catalog-center',
+    observedHz: marker.powerCentroidHz,
+    expectedHz: profile.centerHz,
+    toleranceHz,
+  };
 }
 
 function validateMarkerMeasurementRange(
@@ -2518,9 +3562,8 @@ function validateMarkerMeasurementRange(
     displayedFrequencyToleranceHz(startHz),
     displayedFrequencyToleranceHz(stopHz),
   );
-  if (startHz < visibleStartHz - endpointToleranceHz
-    || stopHz > visibleStopHz + endpointToleranceHz) {
-    throw new Error(`${profile.id} M1 ${label} displayed range exceeds the visible profile span`);
+  if (startHz <= visibleStartHz || stopHz >= visibleStopHz) {
+    throw new Error(`${profile.id} M1 ${label} displayed range is not strictly inside the visible profile span`);
   }
   if (markerFrequencyHz < startHz - endpointToleranceHz
     || markerFrequencyHz > stopHz + endpointToleranceHz) {
@@ -2531,6 +3574,29 @@ function validateMarkerMeasurementRange(
   if (Math.abs(displayedSpanHz - bandwidthHz) > consistencyToleranceHz) {
     throw new Error(
       `${profile.id} M1 ${label} ${bandwidthHz} Hz conflicts with its displayed ${displayedSpanHz} Hz range`,
+    );
+  }
+}
+
+function validateMarkerMeasurementRelationship(profile, characterization, binWidthHz) {
+  const toleranceHz = Math.max(
+    binWidthHz * 2,
+    characterization.threeDecibelBandwidthHz * 0.02,
+    characterization.componentOccupiedBandwidthHz * 0.02,
+    displayedFrequencyToleranceHz(characterization.threeDecibelStartHz) * 2,
+    displayedFrequencyToleranceHz(characterization.threeDecibelStopHz) * 2,
+    displayedFrequencyToleranceHz(characterization.componentOccupiedBandwidthStartHz) * 2,
+    displayedFrequencyToleranceHz(characterization.componentOccupiedBandwidthStopHz) * 2,
+    1,
+  );
+  if (characterization.componentOccupiedBandwidthHz
+      < characterization.threeDecibelBandwidthHz - toleranceHz
+    || characterization.componentOccupiedBandwidthStartHz
+      > characterization.threeDecibelStartHz + toleranceHz
+    || characterization.componentOccupiedBandwidthStopHz
+      < characterization.threeDecibelStopHz - toleranceHz) {
+    throw new Error(
+      `${profile.id} M1 99% component occupied bandwidth is not coherent with and enclosing its 3 dB response`,
     );
   }
 }
@@ -2547,8 +3613,10 @@ function validateMarkerBandwidth(profile, label, bandwidthHz) {
   if (!Number.isFinite(bandwidthHz) || bandwidthHz <= 0) {
     throw new Error(`${profile.id} M1 ${label} did not expose a positive finite value`);
   }
-  if (bandwidthHz > profile.recommendedSpanHz) {
-    throw new Error(`${profile.id} M1 ${label} ${bandwidthHz} Hz exceeds visible span ${profile.recommendedSpanHz} Hz`);
+  if (bandwidthHz >= profile.recommendedSpanHz * 0.9) {
+    throw new Error(
+      `${profile.id} M1 ${label} ${bandwidthHz} Hz is not bounded below 90% of visible span ${profile.recommendedSpanHz} Hz`,
+    );
   }
 }
 
@@ -2580,13 +3648,17 @@ function detectAutoAcceptanceSatisfied(
     profile,
     summary.autoClassificationResultLabel,
   );
+  const requiresCompatibleFittedLabel = requireFittedReleaseOracle
+    || SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_PROFILE_IDS.includes(profile.id);
   return liveSignalLabClassificationEvidenceSatisfied(
     profile,
     summary,
     observedSequenceOpportunities,
   )
-    && expectation.known
-    && (!requireFittedReleaseOracle || expectation.compatible === true);
+    && (!requiresCompatibleFittedLabel || (
+      expectation.known
+      && expectation.compatible === true
+    ));
 }
 
 function observedSequenceOpportunityCount(sequences) {
@@ -2776,24 +3848,390 @@ function detectionSummary(text) {
   return { line: line ?? null, active, qualifying, classification };
 }
 
-export function liveChannelSummary(text) {
-  const lines = text.split('\n').map((line) => line.trim());
-  // Prefer the result label itself. The enclosing workspace also mentions
-  // "3 dB bandwidth" in its accessible name, several nodes before the value.
-  const resultAnchor = lines.findIndex((line) => /\btext\s+3\s+dB\s+BANDWIDTH\b/i.test(line));
-  const anchor = resultAnchor >= 0
-    ? resultAnchor
-    : lines.findIndex((line) => /3\s+dB\s+BANDWIDTH/i.test(line));
-  const nearby = anchor < 0 ? [] : lines.slice(anchor, anchor + 8);
-  const unavailable = nearby.some((line) => line.includes('Unavailable'));
-  const limited = nearby.some((line) => line.includes('Resolution-limited'));
-  const frequency = nearby.map((line) => /([\d,.]+)\s*(Hz|kHz|MHz|GHz)\b/i.exec(line)).find(Boolean);
+export function liveWaterfallSummary(text) {
+  const bodies = accessibilityBodies(text);
+  const image = bodies.find((body) => (
+    /^image Measured power by frequency and sweep time(?:$|,)/i.test(body)
+  )) ?? null;
+  const coherent = bodies
+    .map((body) => /([\d,]+)\s*\/\s*([\d,]+)\s+COHERENT\b/i.exec(body))
+    .find(Boolean)
+    ?? (() => {
+      const anchor = bodies.findIndex((body) => /\bCOHERENT HISTORY\b/i.test(body));
+      return anchor < 0
+        ? null
+        : bodies.slice(anchor, anchor + 3)
+          .map((body) => /([\d,]+)\s*\/\s*([\d,]+)/i.exec(body))
+          .find(Boolean) ?? null;
+    })();
+  const rendered = bodies
+    .map((body) => /rows=(\d+);\s*bins=(\d+);\s*colors=(\d+);\s*minDbm=([-−]?\d+(?:\.\d+)?);\s*maxDbm=([-−]?\d+(?:\.\d+)?)/i.exec(body))
+    .find(Boolean);
   return {
-    status: unavailable ? 'unavailable' : limited ? 'resolution-limited' : 'resolved',
-    // An unavailable result has no measured width. Do not accidentally parse
-    // the editable channel-center row that follows the result in AX order.
-    bandwidthHz: unavailable ? null : frequency ? frequencyToHz(frequency[1], frequency[2]) : null,
-    detail: nearby.join(' | '),
+    image,
+    imagePresent: image !== null,
+    noHistory: bodies.some((body) => /^(?:text\s+)?No history\b/i.test(body)),
+    coherentRows: coherent ? Number(coherent[1].replaceAll(',', '')) : null,
+    historyDepth: coherent ? Number(coherent[2].replaceAll(',', '')) : null,
+    renderedRows: rendered ? Number(rendered[1]) : null,
+    renderedBins: rendered ? Number(rendered[2]) : null,
+    renderedColors: rendered ? Number(rendered[3]) : null,
+    minimumDbm: rendered ? Number(rendered[4].replace('−', '-')) : null,
+    maximumDbm: rendered ? Number(rendered[5].replace('−', '-')) : null,
+  };
+}
+
+export function validateLiveWaterfallEvidence(summary, profile = null) {
+  const label = profile?.id ?? 'SignalLab';
+  if (!summary?.imagePresent || summary.noHistory) {
+    throw new Error(`${label} waterfall omitted its measured history canvas`);
+  }
+  if (!Number.isSafeInteger(summary.coherentRows)
+    || !Number.isSafeInteger(summary.historyDepth)
+    || summary.coherentRows < 2
+    || summary.historyDepth < summary.coherentRows) {
+    throw new Error(`${label} waterfall requires at least two coherent rows within its history depth`);
+  }
+  if (summary.renderedRows !== summary.coherentRows
+    || !Number.isSafeInteger(summary.renderedBins)
+    || summary.renderedBins < 2
+    || !Number.isSafeInteger(summary.renderedColors)
+    || summary.renderedColors < 2
+    || !Number.isFinite(summary.minimumDbm)
+    || !Number.isFinite(summary.maximumDbm)
+    || summary.maximumDbm <= summary.minimumDbm) {
+    throw new Error(`${label} waterfall rendered diagnostic is blank or degenerate`);
+  }
+  return {
+    status: 'coherent-nondegenerate-render-input-validated',
+    coherentRows: summary.coherentRows,
+    renderedBins: summary.renderedBins,
+    renderedColors: summary.renderedColors,
+    powerRangeDb: summary.maximumDbm - summary.minimumDbm,
+  };
+}
+
+export function liveChannelSummary(text) {
+  const bodies = accessibilityBodies(text);
+  // The result card exposes one exact aria-label containing the complete 3 dB
+  // metric. Prefer it so unrelated channel-power/OBW values are never in the
+  // parse population.
+  const exactMetric = bodies.find((body) => (
+    /\b3\s+dB bandwidth\s+(?:unavailable|resolution-limited|[\d,.]+\s*(?:Hz|kHz|MHz|GHz))/i
+      .test(body)
+  )) ?? null;
+  let metricBodies = exactMetric === null ? [] : [exactMetric];
+  if (metricBodies.length === 0) {
+    const anchor = bodies.findIndex((body) => /^(?:text\s+)?3\s+dB\s+BANDWIDTH\b/i.test(body));
+    if (anchor >= 0) {
+      let stop = Math.min(bodies.length, anchor + 7);
+      for (let index = anchor + 1; index < stop; index++) {
+        if (/^(?:text\s+)?(?:OCCUPIED BANDWIDTH|CHANNEL POWER|LOWER ACP|UPPER ACP)\b/i
+          .test(bodies[index])) {
+          stop = index;
+          break;
+        }
+      }
+      metricBodies = bodies.slice(anchor, stop);
+    }
+  }
+  const detail = metricBodies.join(' | ');
+  const unavailable = /\bunavailable\b/i.test(detail);
+  const limited = /\bresolution-limited\b/i.test(detail);
+  const frequencies = [...detail.matchAll(/([\d,.]+)\s*(Hz|kHz|MHz|GHz)\b/gi)]
+    .map((match) => frequencyToHz(match[1], match[2]));
+  const bandwidthHz = unavailable ? null : frequencies[0] ?? null;
+  const resolved = !unavailable && !limited && Number.isFinite(bandwidthHz);
+  return {
+    status: unavailable
+      ? 'unavailable'
+      : limited && Number.isFinite(bandwidthHz)
+        ? 'resolution-limited'
+        : resolved
+          ? 'resolved'
+          : 'unparseable',
+    bandwidthHz,
+    startHz: resolved ? frequencies[1] ?? null : null,
+    stopHz: resolved ? frequencies[2] ?? null : null,
+    resolutionScaleHz: limited ? frequencies[1] ?? null : null,
+    metricNode: exactMetric,
+    detail,
+  };
+}
+
+function validateResolvedChannelRange(summary, profile, binWidthHz) {
+  if (!Number.isFinite(summary.startHz)
+    || !Number.isFinite(summary.stopHz)
+    || summary.stopHz <= summary.startHz) {
+    throw new Error(`${profile.id} resolved 3 dB result omitted its exact ordered range`);
+  }
+  const measuredSpanHz = summary.stopHz - summary.startHz;
+  const consistencyToleranceHz = Math.max(
+    binWidthHz * 2,
+    summary.bandwidthHz * 0.02,
+    displayedFrequencyToleranceHz(summary.startHz) * 2,
+    displayedFrequencyToleranceHz(summary.stopHz) * 2,
+  );
+  if (Math.abs(measuredSpanHz - summary.bandwidthHz) > consistencyToleranceHz) {
+    throw new Error(
+      `${profile.id} resolved 3 dB width ${summary.bandwidthHz} Hz conflicts with range span ${measuredSpanHz} Hz`,
+    );
+  }
+  const visibleStartHz = profile.centerHz - profile.recommendedSpanHz / 2;
+  const visibleStopHz = profile.centerHz + profile.recommendedSpanHz / 2;
+  if (summary.startHz < visibleStartHz - consistencyToleranceHz
+    || summary.stopHz > visibleStopHz + consistencyToleranceHz) {
+    throw new Error(`${profile.id} resolved 3 dB range falls outside the visible spectrum`);
+  }
+}
+
+export function validateLiveChannelEvidence(
+  summary,
+  profile,
+  { strictNarrow = profile?.id === 'cw', strictWideband = false } = {},
+) {
+  if (!profile || typeof profile !== 'object') throw new TypeError('channel profile is required');
+  const binWidthHz = profile.recommendedSpanHz / 449;
+  if (strictNarrow) {
+    if (summary?.status !== 'resolution-limited') {
+      throw new Error(
+        `${profile.id} 3 dB bandwidth must be explicitly resolution-limited; observed ${summary?.status ?? 'missing'}`,
+      );
+    }
+    if (!Number.isFinite(summary.bandwidthHz)
+      || summary.bandwidthHz <= 0
+      || !Number.isFinite(summary.resolutionScaleHz)
+      || summary.resolutionScaleHz <= 0
+      || summary.bandwidthHz > binWidthHz * 3
+      || summary.bandwidthHz >= profile.recommendedSpanHz * 0.1) {
+      throw new Error(
+        `${profile.id} 3 dB bandwidth ${String(summary?.bandwidthHz)} Hz is not a narrow, grid-limited response within a ${profile.recommendedSpanHz} Hz view`,
+      );
+    }
+    return {
+      status: 'validated-resolution-limited-narrow',
+      binWidthHz,
+      maximumBandwidthHz: Math.min(binWidthHz * 3, profile.recommendedSpanHz * 0.1),
+    };
+  }
+  if (strictWideband) {
+    const minimumBandwidthHz = Math.max(
+      binWidthHz * 2,
+      (Number.isFinite(profile.occupiedBandwidthHz) ? profile.occupiedBandwidthHz : 0) * 0.1,
+    );
+    if (summary?.status !== 'resolved'
+      || !Number.isFinite(summary.bandwidthHz)
+      || summary.bandwidthHz <= minimumBandwidthHz
+      || summary.bandwidthHz >= profile.recommendedSpanHz * 0.9) {
+      throw new Error(
+        `${profile.id} 3 dB bandwidth ${String(summary?.bandwidthHz)} Hz is not a resolved wideband response inside the visible ${profile.recommendedSpanHz} Hz span`,
+      );
+    }
+    validateResolvedChannelRange(summary, profile, binWidthHz);
+    return {
+      status: 'validated-resolved-wideband',
+      binWidthHz,
+      minimumBandwidthHz,
+      maximumBandwidthHz: profile.recommendedSpanHz * 0.9,
+    };
+  }
+  if (summary?.status === 'unavailable') {
+    if (!/(?:No sampled peak inside the main channel|Lower half-power crossing was not observed|Upper half-power crossing was not observed|Half-power response extends outside the main channel|Resolved half-power islands are not one bounded response)/i
+      .test(summary.detail ?? '')) {
+      throw new Error(`${profile.id} channel unavailable result omitted its recognized physical reason`);
+    }
+    return { status: 'explicitly-unavailable-observation', detail: summary.detail ?? null };
+  }
+  if (summary?.status === 'unparseable') {
+    throw new Error(`${profile.id} channel 3 dB metric was present but unparseable`);
+  }
+  if (!Number.isFinite(summary?.bandwidthHz) || summary.bandwidthHz <= 0) {
+    throw new Error(`${profile.id} channel result was neither explicitly unavailable nor a positive width`);
+  }
+  if (summary.bandwidthHz >= profile.recommendedSpanHz) {
+    throw new Error(`${profile.id} channel width ${summary.bandwidthHz} Hz spans the complete visible spectrum`);
+  }
+  if (summary.status === 'resolved') validateResolvedChannelRange(summary, profile, binWidthHz);
+  return { status: 'measured-sanity-validated', binWidthHz };
+}
+
+const IQ_REQUIRED_METRIC_LABELS = Object.freeze([
+  'Samples',
+  'Duration',
+  'Preview RMS',
+  'Preview peak',
+]);
+
+function iqMetricAnchorMatch(body, label) {
+  return new RegExp(
+    `^(?:(?:text|static text|group|container)\\s+)?${escapeRegExp(label)}(?:\\s*[:·—–]\\s*|\\s+|$)`,
+    'i',
+  ).exec(body);
+}
+
+function iqMetricValue(bodies, label) {
+  const anchors = bodies.flatMap((body, index) => (
+    iqMetricAnchorMatch(body, label) ? [{ body, index }] : []
+  ));
+  if (anchors.length !== 1) return null;
+  const [{ body, index }] = anchors;
+  const match = iqMetricAnchorMatch(body, label);
+  const inlineValue = match ? body.slice(match[0].length).trim() : '';
+  if (inlineValue) return inlineValue;
+  const adjacent = bodies[index + 1];
+  if (adjacent === undefined
+    || IQ_REQUIRED_METRIC_LABELS.some((candidate) => (
+      iqMetricAnchorMatch(adjacent, candidate) !== null
+    ))) return null;
+  return adjacent.replace(/^(?:text|static text)\s+/i, '').trim() || null;
+}
+
+function iqMetricOrderValid(bodies) {
+  const indexes = IQ_REQUIRED_METRIC_LABELS.map((label) => bodies.flatMap((body, index) => (
+    iqMetricAnchorMatch(body, label) ? [index] : []
+  )));
+  return indexes.every((matches) => matches.length === 1)
+    && indexes.every((matches, index) => index === 0 || matches[0] > indexes[index - 1][0]);
+}
+
+function iqDbfsMetric(bodies, label) {
+  const value = iqMetricValue(bodies, label);
+  if (value === null || /^[−-]∞\s*dBFS$/i.test(value)) return null;
+  const match = /^([-−]?\d+(?:\.\d+)?)\s*dBFS$/i.exec(value);
+  return match ? Number(match[1].replace('−', '-')) : null;
+}
+
+export function liveIqSummary(text) {
+  const bodies = accessibilityBodies(text);
+  const captureIdentity = bodies
+    .map((body) => /\bcaptureId=([^;,\s]+);\s*sequence=(\d+);\s*centerHz=(\d+)/i.exec(body))
+    .find(Boolean);
+  const samplesMatch = /^([\d,]+)$/.exec(iqMetricValue(bodies, 'Samples') ?? '');
+  const durationMatch = /^([\d.]+)\s*(µs|us|ms|s)$/i.exec(
+    iqMetricValue(bodies, 'Duration') ?? '',
+  );
+  const durationSeconds = durationMatch
+    ? Number(durationMatch[1]) * ({ 'µs': 1e-6, us: 1e-6, ms: 1e-3, s: 1 })[
+      durationMatch[2].toLowerCase()
+    ]
+    : null;
+  const zoomAnchor = bodies.findIndex((body) => /I\/Q plot zoom/i.test(body));
+  const zoomSegment = zoomAnchor < 0
+    ? ''
+    : bodies.slice(Math.max(0, zoomAnchor - 1), zoomAnchor + 3).join(' | ');
+  const zoom = /\b(0\.5|1|2|4|8)×(?=$|[,\s]|\|)/.exec(zoomSegment)?.[0] ?? null;
+  const captureId = iqCaptureId(text) ?? captureIdentity?.[1] ?? null;
+  const previewPointsMatch = /([\d,]+)\s+evenly sampled preview points/i.exec(text);
+  const previewPoints = previewPointsMatch
+    ? Number(previewPointsMatch[1].replaceAll(',', ''))
+    : null;
+  return {
+    captureId,
+    metricOrderValid: iqMetricOrderValid(bodies),
+    captureSequence: captureIdentity ? Number(captureIdentity[2]) : null,
+    captureCenterHz: captureIdentity ? Number(captureIdentity[3]) : null,
+    timePlotPresent: bodies.some((body) => (
+      /^image I and Q sample amplitude over capture time(?:$|,)/i.test(body)
+    )),
+    constellationPresent: bodies.some((body) => (
+      /^image Complex I Q constellation preview(?:$|,)/i.test(body)
+    )),
+    scaleGroupPresent: bodies.some((body) => (
+      /^(?:group|container|region) I\/Q plot scale(?:$|,)/i.test(body)
+    )),
+    zoomControlsPresent: [
+      'Zoom I/Q plots out',
+      'Fit I/Q plots to capture',
+      'Zoom I/Q plots in',
+    ].every((label) => bodies.some((body) => interactiveLabelMatches(body, label))),
+    zoom,
+    samples: samplesMatch ? Number(samplesMatch[1].replaceAll(',', '')) : null,
+    durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
+    previewRmsDbfs: iqDbfsMetric(bodies, 'Preview RMS'),
+    previewPeakDbfs: iqDbfsMetric(bodies, 'Preview peak'),
+    previewPoints: Number.isSafeInteger(previewPoints) ? previewPoints : null,
+    visualizationError: bodies.find((body) => /I\/Q payload could not be visualized:/i.test(body)) ?? null,
+    placeholderVisible: bodies.some((body) => (
+      /NO COMPLEX-SAMPLE CAPTURE YET|USE SIDEBAR SINGLE OR RUN|NO SAMPLES/i.test(body)
+    )),
+    localCapturePresent: bodies.some((body) => (
+      /^(?:button|toggle button)\s+Capture\s+I\s*\/?\s*Q(?:$|,| \()/i.test(body)
+    )),
+  };
+}
+
+export function validateFreshIqCapture(previous, current, profile) {
+  if (!profile || typeof profile !== 'object') throw new TypeError('I/Q profile is required');
+  if (typeof current?.captureId !== 'string' || current.captureId.length === 0) {
+    throw new Error(`${profile.id} I/Q Single omitted its capture ID`);
+  }
+  if (previous?.captureId !== null && previous?.captureId !== undefined
+    && current.captureId === previous.captureId) {
+    throw new Error(`${profile.id} I/Q Single reused stale capture ID ${current.captureId}`);
+  }
+  if (!Number.isSafeInteger(current.captureSequence)
+    || current.captureSequence < 1
+    || (Number.isSafeInteger(previous?.captureSequence)
+      && current.captureSequence <= previous.captureSequence)) {
+    throw new Error(`${profile.id} I/Q Single did not advance its capture sequence`);
+  }
+  if (current.captureCenterHz !== profile.centerHz) {
+    throw new Error(
+      `${profile.id} I/Q capture center ${String(current.captureCenterHz)} did not match ${profile.centerHz} Hz`,
+    );
+  }
+  return {
+    status: 'fresh-current-profile-capture-validated',
+    previousCaptureId: previous?.captureId ?? null,
+    captureId: current.captureId,
+    previousSequence: previous?.captureSequence ?? null,
+    sequence: current.captureSequence,
+    centerHz: current.captureCenterHz,
+  };
+}
+
+export function validateLiveIqEvidence(
+  summary,
+  profile = null,
+  { requireNoLocalCapture = true } = {},
+) {
+  const label = profile?.id ?? 'SignalLab';
+  if (!summary?.timePlotPresent || !summary.constellationPresent) {
+    throw new Error(`${label} I/Q omitted a live time or constellation plot`);
+  }
+  if (!summary.scaleGroupPresent || !summary.zoomControlsPresent || summary.zoom === null) {
+    throw new Error(`${label} I/Q omitted its anchored plot-scaling controls`);
+  }
+  if (summary.metricOrderValid !== true) {
+    throw new Error(`${label} I/Q required metrics are missing, duplicated, or misordered`);
+  }
+  if (summary.captureId === null
+    || !Number.isSafeInteger(summary.samples)
+    || summary.samples < 2
+    || !Number.isSafeInteger(summary.previewPoints)
+    || summary.previewPoints < 2
+    || summary.previewPoints > summary.samples
+    || !Number.isFinite(summary.durationSeconds)
+    || summary.durationSeconds <= 0) {
+    throw new Error(`${label} I/Q capture geometry is missing or degenerate`);
+  }
+  if (!Number.isFinite(summary.previewRmsDbfs)
+    || !Number.isFinite(summary.previewPeakDbfs)
+    || summary.previewPeakDbfs < summary.previewRmsDbfs) {
+    throw new Error(`${label} I/Q preview is zero, non-finite, or has peak below RMS`);
+  }
+  if (summary.visualizationError !== null || summary.placeholderVisible) {
+    throw new Error(`${label} I/Q exposed an empty or failed visualization`);
+  }
+  if (requireNoLocalCapture && summary.localCapturePresent) {
+    throw new Error(`${label} I/Q exposed the redundant local Capture I/Q control`);
+  }
+  return {
+    status: 'nondegenerate-capture-and-scaling-validated',
+    samples: summary.samples,
+    previewPoints: summary.previewPoints,
+    previewRmsDbfs: summary.previewRmsDbfs,
+    previewPeakDbfs: summary.previewPeakDbfs,
   };
 }
 
@@ -2825,12 +4263,12 @@ function frequencyToHz(value, unit) {
 
 async function maybeCapture(context, state, profileId, stage) {
   if (context.options.screenshotPolicy !== 'all') return null;
-  return await captureState(context, state, profileId, stage);
+  return await captureState(context, state, profileId, stage, { enforceUnique: true });
 }
 
 async function captureFailure(context, state, profileId, stage) {
   if (!state || context.options.screenshotPolicy === 'none') return null;
-  return await captureState(context, state, profileId, stage);
+  return await captureState(context, state, profileId, stage, { enforceUnique: false });
 }
 
 export function liveScreenshotDimensions(bytes, extension) {
@@ -2842,10 +4280,14 @@ export function liveScreenshotDimensions(bytes, extension) {
       || buffer.subarray(12, 16).toString('ascii') !== 'IHDR') {
       throw new Error('Computer Use PNG screenshot is truncated or lacks IHDR');
     }
-    return {
+    const dimensions = {
       width: buffer.readUInt32BE(16),
       height: buffer.readUInt32BE(20),
     };
+    if (dimensions.width === 0 || dimensions.height === 0) {
+      throw new Error('Computer Use PNG screenshot has zero dimensions');
+    }
+    return dimensions;
   }
   if (normalized === '.jpg' || normalized === '.jpeg') {
     if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
@@ -2866,10 +4308,15 @@ export function liveScreenshotDimensions(bytes, extension) {
       if (length < 2 || offset + length > buffer.length) break;
       if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]
         .includes(marker)) {
-        return {
+        if (length < 7) throw new Error('Computer Use JPEG screenshot has a truncated SOF marker');
+        const dimensions = {
           width: buffer.readUInt16BE(offset + 5),
           height: buffer.readUInt16BE(offset + 3),
         };
+        if (dimensions.width === 0 || dimensions.height === 0) {
+          throw new Error('Computer Use JPEG screenshot has zero dimensions');
+        }
+        return dimensions;
       }
       offset += length;
     }
@@ -2878,30 +4325,230 @@ export function liveScreenshotDimensions(bytes, extension) {
   throw new Error(`Unsupported Computer Use screenshot extension: ${normalized || '(none)'}`);
 }
 
+export function liveScreenshotMeetsMinimum(
+  dimensions,
+  minimumWidth = SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
+  minimumHeight = SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
+) {
+  return Number.isSafeInteger(dimensions?.width)
+    && Number.isSafeInteger(dimensions?.height)
+    && Number.isSafeInteger(minimumWidth)
+    && Number.isSafeInteger(minimumHeight)
+    && dimensions.width >= minimumWidth
+    && dimensions.height >= minimumHeight;
+}
+
+function paethPredictor(left, above, upperLeft) {
+  const estimate = left + above - upperLeft;
+  const leftDistance = Math.abs(estimate - left);
+  const aboveDistance = Math.abs(estimate - above);
+  const upperLeftDistance = Math.abs(estimate - upperLeft);
+  if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance) return left;
+  return aboveDistance <= upperLeftDistance ? above : upperLeft;
+}
+
+export function livePngPixelEvidence(bytes) {
+  const buffer = Buffer.from(bytes);
+  const dimensions = liveScreenshotDimensions(buffer, '.png');
+  let offset = 8;
+  let bitDepth = null;
+  let colorType = null;
+  let interlace = null;
+  const idat = [];
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+    const dataStart = offset + 8;
+    const dataStop = dataStart + length;
+    if (dataStop + 4 > buffer.length) throw new Error('PNG screenshot contains a truncated chunk');
+    if (type === 'IHDR') {
+      if (length !== 13) throw new Error('PNG screenshot has an invalid IHDR length');
+      bitDepth = buffer[dataStart + 8];
+      colorType = buffer[dataStart + 9];
+      interlace = buffer[dataStart + 12];
+    } else if (type === 'IDAT') {
+      idat.push(buffer.subarray(dataStart, dataStop));
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset = dataStop + 4;
+  }
+  const channels = ({ 0: 1, 2: 3, 4: 2, 6: 4 })[colorType];
+  if (bitDepth !== 8 || channels === undefined || interlace !== 0 || idat.length === 0) {
+    throw new Error(
+      `PNG screenshot pixel validation requires non-interlaced 8-bit grayscale/RGB/RGBA data; observed depth=${String(bitDepth)} color=${String(colorType)} interlace=${String(interlace)}`,
+    );
+  }
+  if (dimensions.width > 8_192
+    || dimensions.height > 8_192
+    || dimensions.width * dimensions.height > 25_000_000) {
+    throw new Error('PNG screenshot dimensions exceed the bounded live-evidence decoder');
+  }
+  const stride = dimensions.width * channels;
+  const expectedInflatedLength = (stride + 1) * dimensions.height;
+  const inflated = inflateSync(Buffer.concat(idat), {
+    maxOutputLength: expectedInflatedLength,
+  });
+  if (inflated.length !== expectedInflatedLength) {
+    throw new Error('PNG screenshot decompressed geometry does not match IHDR');
+  }
+  const previous = Buffer.alloc(stride);
+  const current = Buffer.alloc(stride);
+  const sampleStep = Math.max(1, Math.floor(
+    dimensions.width * dimensions.height / 20_000,
+  ));
+  const rowRgba = Buffer.alloc(dimensions.width * 4);
+  const pixelHash = createHash('sha256')
+    .update(`${dimensions.width}x${dimensions.height}:`);
+  const colors = new Set();
+  let minimumLuminance = Number.POSITIVE_INFINITY;
+  let maximumLuminance = Number.NEGATIVE_INFINITY;
+  let sampledPixels = 0;
+  for (let row = 0; row < dimensions.height; row++) {
+    const sourceOffset = row * (stride + 1);
+    const filter = inflated[sourceOffset];
+    for (let column = 0; column < stride; column++) {
+      const raw = inflated[sourceOffset + 1 + column];
+      const left = column >= channels ? current[column - channels] : 0;
+      const above = previous[column];
+      const upperLeft = column >= channels ? previous[column - channels] : 0;
+      const value = filter === 0
+        ? raw
+        : filter === 1
+          ? raw + left
+          : filter === 2
+            ? raw + above
+            : filter === 3
+              ? raw + Math.floor((left + above) / 2)
+              : filter === 4
+                ? raw + paethPredictor(left, above, upperLeft)
+                : Number.NaN;
+      if (!Number.isFinite(value)) throw new Error(`PNG screenshot uses unsupported filter ${filter}`);
+      current[column] = value & 0xff;
+    }
+    for (let column = 0; column < dimensions.width; column++) {
+      const pixelIndex = row * dimensions.width + column;
+      const base = column * channels;
+      const red = current[base];
+      const green = colorType === 0 || colorType === 4 ? current[base] : current[base + 1];
+      const blue = colorType === 0 || colorType === 4 ? current[base] : current[base + 2];
+      const alpha = colorType === 4
+        ? current[base + 1]
+        : colorType === 6
+          ? current[base + 3]
+          : 255;
+      const rgbaOffset = column * 4;
+      rowRgba[rgbaOffset] = red;
+      rowRgba[rgbaOffset + 1] = green;
+      rowRgba[rgbaOffset + 2] = blue;
+      rowRgba[rgbaOffset + 3] = alpha;
+      if (pixelIndex % sampleStep !== 0) continue;
+      // Screenshot evidence is evaluated as composited over black so fully
+      // transparent hidden RGB cannot make an empty image appear nonblank.
+      const compositeRed = Math.round(red * alpha / 255);
+      const compositeGreen = Math.round(green * alpha / 255);
+      const compositeBlue = Math.round(blue * alpha / 255);
+      colors.add((compositeRed << 16) | (compositeGreen << 8) | compositeBlue);
+      const luminance = 0.2126 * compositeRed
+        + 0.7152 * compositeGreen
+        + 0.0722 * compositeBlue;
+      minimumLuminance = Math.min(minimumLuminance, luminance);
+      maximumLuminance = Math.max(maximumLuminance, luminance);
+      sampledPixels++;
+    }
+    // Normalize every decoded format to RGBA and include alpha in content
+    // identity even though ordinary OS screenshots are composited opaque.
+    pixelHash.update(rowRgba);
+    current.copy(previous);
+  }
+  return {
+    ...dimensions,
+    sampledPixels,
+    distinctColors: colors.size,
+    minimumLuminance,
+    maximumLuminance,
+    luminanceRange: maximumLuminance - minimumLuminance,
+    pixelSha256: pixelHash.digest('hex'),
+  };
+}
+
+async function liveScreenshotArtifactEvidence(
+  path,
+  extension,
+  options,
+  operation,
+  scratchDirectory = dirname(path),
+) {
+  const bytes = await readFile(path);
+  if (bytes.length === 0) throw new Error(`${operation} screenshot is empty: ${path}`);
+  const dimensions = liveScreenshotDimensions(bytes, extension);
+  if (!liveScreenshotMeetsMinimum(
+    dimensions,
+    options.minimumScreenshotWidth,
+    options.minimumScreenshotHeight,
+  )) {
+    throw new Error(
+      `${operation} screenshot ${dimensions.width}×${dimensions.height} is below the required visible app size ${options.minimumScreenshotWidth}×${options.minimumScreenshotHeight}`,
+    );
+  }
+  let pngBytes = bytes;
+  let temporaryPng = null;
+  if (extension !== '.png') {
+    const scratchName = createHash('sha256').update(path).digest('hex').slice(0, 16);
+    temporaryPng = join(scratchDirectory, `.pixel-check-${process.pid}-${scratchName}.png`);
+    try {
+      await execFileAsync('sips', ['-s', 'format', 'png', path, '--out', temporaryPng]);
+      pngBytes = await readFile(temporaryPng);
+    } catch (error) {
+      throw new Error(
+        `${operation} JPEG screenshot could not be decoded through macOS sips: ${serializeError(error).message}`,
+      );
+    } finally {
+      if (temporaryPng !== null) await unlink(temporaryPng).catch(() => undefined);
+    }
+  }
+  const pixels = livePngPixelEvidence(pngBytes);
+  if (pixels.width !== dimensions.width || pixels.height !== dimensions.height) {
+    throw new Error(`${operation} screenshot dimensions changed during pixel decoding`);
+  }
+  if (pixels.sampledPixels < 2
+    || pixels.distinctColors < 8
+    || pixels.luminanceRange < 8) {
+    throw new Error(
+      `${operation} screenshot is blank or visually degenerate: ${JSON.stringify(pixels)}`,
+    );
+  }
+  return {
+    extension,
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    ...pixels,
+    claim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
+  };
+}
+
 async function liveScreenshotEvidence(context, state, operation) {
   if (!state?.screenshot?.url) {
     if (!context.options.requireLiveScreenshots) return null;
     throw new Error(`${operation} requires the screenshot returned with its fresh Computer Use state`);
   }
   const extension = screenshotArtifactExtension(state.screenshot.url);
-  const dimensions = liveScreenshotDimensions(
-    await readFile(fileURLToPath(state.screenshot.url)),
+  return await liveScreenshotArtifactEvidence(
+    fileURLToPath(state.screenshot.url),
     extension,
+    context.options,
+    operation,
+    context.artifactDirectory,
   );
-  if (dimensions.width < context.options.minimumScreenshotWidth
-    || dimensions.height < context.options.minimumScreenshotHeight) {
-    throw new Error(
-      `${operation} screenshot ${dimensions.width}×${dimensions.height} is below the required visible app size ${context.options.minimumScreenshotWidth}×${context.options.minimumScreenshotHeight}`,
-    );
-  }
-  return {
-    extension,
-    ...dimensions,
-    claim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
-  };
 }
 
-async function captureState(context, state, profileId, stage) {
+async function captureState(
+  context,
+  state,
+  profileId,
+  stage,
+  { enforceUnique = true } = {},
+) {
   let capture = state;
   if (!capture?.screenshot?.url) capture = await freshState(context);
   if (!capture.screenshot?.url) throw new Error('Atomizer Computer Use state omitted its screenshot');
@@ -2909,10 +4556,31 @@ async function captureState(context, state, profileId, stage) {
   const filename = `${requireSafeArtifactName(profileId)}--${requireSafeArtifactName(stage)}${extension}`;
   const destination = join(context.artifactDirectory, filename);
   await copyFile(fileURLToPath(capture.screenshot.url), destination);
+  const evidence = await liveScreenshotArtifactEvidence(
+    destination,
+    extension,
+    context.options,
+    `${profileId} ${stage}`,
+    context.artifactDirectory,
+  );
+  const duplicate = context.screenshotHashes.get(evidence.pixelSha256);
+  if (enforceUnique && duplicate !== undefined && duplicate !== destination) {
+    throw new Error(`Live exercise captured duplicate screenshot content: ${duplicate} and ${destination}`);
+  }
+  if (enforceUnique) {
+    context.screenshotHashes.set(evidence.pixelSha256, destination);
+    context.screenshotEvidence.set(destination, { path: destination, ...evidence });
+  }
   return destination;
 }
 
 async function persistRun(context, run) {
+  const screenshotPaths = fullExerciseScreenshotSet(run).paths;
+  if (run.visualContentReview && context.screenshotEvidence instanceof Map) {
+    run.visualContentReview.automatedScreenshotManifest = screenshotPaths
+      .map((path) => context.screenshotEvidence.get(path))
+      .filter(Boolean);
+  }
   run.summary = summarizeSignalLabLiveRun(run);
   const temporary = `${context.reportPath}.tmp`;
   await writeFile(temporary, `${JSON.stringify(run, null, 2)}\n`, 'utf8');
@@ -2945,25 +4613,53 @@ export async function finalizeSignalLabLiveVisualReview(input) {
       `Visual review requires the exact ${EXPECTED_SIGNAL_LAB_PROFILE_COUNT * FULL_EXERCISE_REQUIRED_STEPS.length}-screenshot full-exercise manifest`,
     );
   }
-  const screenshotManifest = [];
-  for (const path of screenshotSet.paths) {
-    const bytes = await readFile(path);
-    if (bytes.length === 0) throw new Error(`Visual review screenshot is empty: ${path}`);
-    screenshotManifest.push({
+  const captureTimeScreenshotManifest = run.visualContentReview?.automatedScreenshotManifest;
+  if (!Array.isArray(captureTimeScreenshotManifest)
+    || !sameOrderedValues(
+      captureTimeScreenshotManifest.map((entry) => entry?.path),
+      screenshotSet.paths,
+    )
+    || !screenshotManifestEntriesValid(captureTimeScreenshotManifest, run)) {
+    throw new Error('Visual review requires the exact valid capture-time automated screenshot manifest');
+  }
+  const reviewScreenshotManifest = [];
+  const screenshotHashes = new Map();
+  const screenshotOptions = {
+    minimumScreenshotWidth: run.options?.minimumScreenshotWidth
+      ?? DEFAULT_OPTIONS.minimumScreenshotWidth,
+    minimumScreenshotHeight: run.options?.minimumScreenshotHeight
+      ?? DEFAULT_OPTIONS.minimumScreenshotHeight,
+  };
+  for (const [index, path] of screenshotSet.paths.entries()) {
+    const extension = extname(path).toLowerCase();
+    const evidence = await liveScreenshotArtifactEvidence(
       path,
-      bytes: bytes.length,
-      sha256: createHash('sha256').update(bytes).digest('hex'),
-    });
+      extension,
+      screenshotOptions,
+      'Visual review',
+      dirname(reportPath),
+    );
+    const duplicate = screenshotHashes.get(evidence.pixelSha256);
+    if (duplicate !== undefined) {
+      throw new Error(`Visual review contains duplicate screenshot content: ${duplicate} and ${path}`);
+    }
+    screenshotHashes.set(evidence.pixelSha256, path);
+    const reviewedEntry = { path, ...evidence };
+    if (!sameScreenshotArtifactEvidence(captureTimeScreenshotManifest[index], reviewedEntry)) {
+      throw new Error(`Visual review screenshot changed since capture: ${path}`);
+    }
+    reviewScreenshotManifest.push(reviewedEntry);
   }
   run.visualContentReview = {
-    schemaVersion: 1,
-    automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+    schemaVersion: 2,
+    automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
     status: input.passed ? 'reviewed' : 'review-failed',
     passed: input.passed,
     reviewer,
     reviewedAt,
     findings: findings.map((finding) => finding.trim()),
-    screenshotManifest,
+    automatedScreenshotManifest: captureTimeScreenshotManifest,
+    reviewScreenshotManifest,
   };
   run.summary = summarizeSignalLabLiveRun(run);
   const temporary = `${reportPath}.tmp`;
@@ -2996,6 +4692,39 @@ function fullExerciseScreenshotSet(run) {
       && paths.length === EXPECTED_SIGNAL_LAB_PROFILE_COUNT * FULL_EXERCISE_REQUIRED_STEPS.length,
     paths,
   };
+}
+
+function screenshotManifestEntriesValid(manifest, run) {
+  return manifest.every((entry) => (
+    Number.isSafeInteger(entry?.bytes)
+      && entry.bytes > 0
+      && Number.isSafeInteger(entry?.width)
+      && entry.width >= (run.options?.minimumScreenshotWidth
+        ?? DEFAULT_OPTIONS.minimumScreenshotWidth)
+      && Number.isSafeInteger(entry?.height)
+      && entry.height >= (run.options?.minimumScreenshotHeight
+        ?? DEFAULT_OPTIONS.minimumScreenshotHeight)
+      && Number.isSafeInteger(entry?.sampledPixels)
+      && entry.sampledPixels >= 2
+      && Number.isSafeInteger(entry?.distinctColors)
+      && entry.distinctColors >= 8
+      && Number.isFinite(entry?.luminanceRange)
+      && entry.luminanceRange >= 8
+      && typeof entry.sha256 === 'string'
+      && /^[a-f0-9]{64}$/u.test(entry.sha256)
+      && typeof entry.pixelSha256 === 'string'
+      && /^[a-f0-9]{64}$/u.test(entry.pixelSha256)
+  )) && new Set(manifest.map(({ pixelSha256 }) => pixelSha256)).size === manifest.length;
+}
+
+function sameScreenshotArtifactEvidence(captured, current) {
+  return captured?.path === current?.path
+    && captured?.extension === current?.extension
+    && captured?.bytes === current?.bytes
+    && captured?.width === current?.width
+    && captured?.height === current?.height
+    && captured?.sha256 === current?.sha256
+    && captured?.pixelSha256 === current?.pixelSha256;
 }
 
 function completeRun(run) {
@@ -3300,11 +5029,69 @@ export function validateLiveStressEvidence(evidence, options = {}) {
       }
       const tour = progression.responsivenessTour;
       if (!tour || !Array.isArray(tour.routes)
-        || !sameOrderedValues(tour.routes.map(({ label }) => label), ['Waterfall', 'Channel', 'I/Q', 'Spectrum'])
+        || !sameOrderedValues(
+          tour.routes.map(({ label }) => label),
+          ['Waterfall', 'Channel', 'I/Q', 'Device', 'Spectrum'],
+        )
         || tour.routes.some(({ stopPresent }) => stopPresent !== true)
+        || tour.routes.some((route, index) => (
+          !Number.isSafeInteger(route.fromSequence)
+          || !Number.isSafeInteger(route.sequence)
+          || route.sequence <= route.fromSequence
+          || (index > 0 && route.fromSequence !== tour.routes[index - 1].sequence)
+          || route.acquisitionCounts?.run !== 0
+          || route.acquisitionCounts?.single !== 0
+          || route.acquisitionCounts?.stop !== 1
+          || route.acquisitionLandmarkCount !== 1
+          || route.acquisitionLandmarkPrecedesControls !== true
+          || route.acquisitionLandmarkControlBinding !== true
+          || !sameOrderedValues(
+            route.enabledControls ?? [],
+            activeRunRouteControlLabels(route.label),
+          )
+          || route.globalSweepIdentity?.valid !== true
+          || route.globalSweepIdentity?.evidenceCount !== 1
+          || route.globalSweepIdentity?.controls !== 'Stop'
+          || route.globalSweepIdentity?.sequence !== route.sequence
+          || typeof route.globalSweepIdentity?.sweepId !== 'string'
+          || (route.label === 'Device'
+            ? route.controlInteraction?.status
+                !== 'profile-selector-opened-and-cancelled-under-run'
+              || typeof route.controlInteraction.profileControlEvidenceBefore !== 'string'
+              || route.controlInteraction.profileControlEvidenceBefore.length === 0
+              || signalLabProfileControlBody(
+                route.controlInteraction.profileControlEvidenceBefore,
+              ) !== route.controlInteraction.profileControlEvidenceBefore
+              || typeof route.controlInteraction.profileControlEvidenceAfter !== 'string'
+              || signalLabProfileControlBody(
+                route.controlInteraction.profileControlEvidenceAfter,
+              ) !== route.controlInteraction.profileControlEvidenceAfter
+              || typeof route.controlInteraction.profileValueBefore !== 'string'
+              || route.controlInteraction.profileValueBefore.length === 0
+              || route.controlInteraction.profileValueAfter
+                !== route.controlInteraction.profileValueBefore
+              || route.controlInteraction.popupEvidence?.open !== true
+              || !['native-signal-lab-profile-menu-items', 'expanded-signal-lab-profile-control']
+                .includes(route.controlInteraction.popupEvidence?.source)
+              || (route.controlInteraction.popupEvidence.source
+                  === 'native-signal-lab-profile-menu-items'
+                ? !Array.isArray(route.controlInteraction.popupEvidence.nativeProfileOptions)
+                  || route.controlInteraction.popupEvidence.nativeProfileOptions.length === 0
+                : typeof route.controlInteraction.popupEvidence.expandedControl !== 'string'
+                  || route.controlInteraction.popupEvidence.expandedControl.length === 0)
+              || !Number.isSafeInteger(
+                route.controlInteraction.sweepSequenceBeforeInteraction,
+              )
+              || route.controlInteraction.sweepSequenceBeforeInteraction <= route.fromSequence
+              || route.controlInteraction.sweepSequenceAfterInteraction !== route.sequence
+              || route.sequence
+                <= route.controlInteraction.sweepSequenceBeforeInteraction
+            : route.controlInteraction !== null)
+          || SIGNAL_LAB_SIDEBAR_ROUTES.some((label) => route.routeCounts?.[label] !== 1)
+        ))
         || !Array.isArray(tour.controls)
         || !sameOrderedValues(tour.controls, ['sweep-setup', 'traces-and-markers'])) {
-        throw new Error('Continuous stress evidence omitted the active-Run workspace/control responsiveness tour');
+        throw new Error('Continuous stress evidence omitted an advancing active-Run workspace/control responsiveness tour');
       }
       const tourElapsedMs = requireNonNegativeLatency(tour.elapsedMs, 'active-Run responsiveness tour');
       if (tourElapsedMs > maximumResponsivenessTourMs) {
@@ -3408,25 +5195,38 @@ function classifierReleaseGateSummary(run) {
     const resultLabel = typeof evidence?.resultLabel === 'string' && evidence.resultLabel.trim()
       ? evidence.resultLabel.trim()
       : null;
+    const labelExpectation = liveSignalLabClassificationExpectation(profile, resultLabel);
     const expectation = scientificReleaseGate
-      ? liveSignalLabClassificationExpectation(profile, resultLabel)
+      ? labelExpectation
       : interleavedFullCatalogClassificationRecord(profile, resultLabel);
+    const fittedProfile = SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_PROFILE_IDS.includes(profile.id);
     const observationComplete = resultLabel !== null
-      && expectation.known
+      && (!fittedProfile || (
+        labelExpectation.known
+        && labelExpectation.compatible === true
+      ))
       && evidence?.resultLinkedToAutoTarget === true
       && evidence?.resultQualification === 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL';
     return {
       profileId: profile.id,
       observationComplete,
       expectation,
+      labelExpectation,
+      fittedProfile,
       gateStep,
     };
   });
   const validatedProfileIds = rows.filter(({ observationComplete, expectation }) => (
     observationComplete && expectation.oracleStatus === 'validated'
   )).map(({ profileId }) => profileId);
-  const failedProfileIds = rows.filter(({ observationComplete, expectation }) => (
-    observationComplete && expectation.oracleStatus === 'failed'
+  const failedProfileIds = rows.filter(({ labelExpectation, fittedProfile }) => (
+    fittedProfile && labelExpectation.oracleStatus === 'failed'
+  )).map(({ profileId }) => profileId);
+  const fittedProfileCompatibilityFailedIds = rows.filter(({
+    labelExpectation,
+    fittedProfile,
+  }) => fittedProfile && (
+    !labelExpectation.known || labelExpectation.compatible !== true
   )).map(({ profileId }) => profileId);
   const unvalidatedProfileIds = rows.filter(({ observationComplete, expectation }) => (
     observationComplete && expectation.oracleStatus === 'classification-oracle-unvalidated'
@@ -3543,6 +5343,7 @@ function classifierReleaseGateSummary(run) {
     validatedProfiles: validatedProfileIds.length,
     validatedProfileIds,
     failedProfileIds,
+    fittedProfileCompatibilityFailedIds,
     unvalidatedProfiles: unvalidatedProfileIds.length,
     unvalidatedProfileIds,
     unvalidatedClaim: 'classification-oracle-unvalidated-not-a-scientific-label-pass',
@@ -3563,6 +5364,7 @@ export function summarizeSignalLabLiveRun(run) {
   const actionLatencies = run.stress?.actionLatencies ?? [];
   const snapshotLatencies = run.stress?.accessibilitySnapshotLatencies ?? [];
   const fullAcceptance = isFullAcceptanceRunKind(run.kind);
+  const releasePolicy = liveSignalLabReleasePolicySummary(run.options, run.kind);
   const classifierReleaseGate = run.kind === 'classifier-release-gate';
   const defaultGeometrySmoke = run.kind === 'default-1024-user-path-smoke';
   const expectedProfiles = classifierReleaseGate || defaultGeometrySmoke
@@ -3635,6 +5437,34 @@ export function summarizeSignalLabLiveRun(run) {
       profile.steps?.single?.geometry?.plotPoints === 450
       && profile.steps?.marker?.markerGeometry?.plotPoints === 450
     ));
+  const fullScientificUiEvidenceComplete = run.kind === 'full-profile-exercise'
+    && run.profiles.every((profile) => {
+      const layout = profile.steps?.select?.layout;
+      const detect = profile.steps?.['continuous-detect']?.detectAcceptance;
+      const markerCenter = profile.steps?.marker?.markerCenterOracle;
+      const markerFreshness = profile.steps?.marker?.markerFreshness;
+      const waterfall = profile.steps?.waterfall?.waterfallOracle;
+      const channel = profile.steps?.channel?.channelOracle;
+      const iq = profile.steps?.iq?.iqOracle;
+      const iqFreshness = profile.steps?.iq?.freshCapture;
+      return storedStoppedLayoutEvidenceComplete(layout)
+        && detect?.autoTargetIsMaximumIntegratedExcess === true
+        && detect?.candidateRanking?.rankingEvidenceComplete === true
+        && detect?.candidateRanking?.evidenceSource
+          === 'development-complete-rank-population'
+        && ['validated-known-center', 'not-applicable'].includes(markerCenter?.status)
+        && markerFreshness?.status === 'fresh-current-sweep-marker-validated'
+        && waterfall?.status === 'coherent-nondegenerate-render-input-validated'
+        && typeof channel?.status === 'string'
+        && [
+          'validated-resolution-limited-narrow',
+          'validated-resolved-wideband',
+          'explicitly-unavailable-observation',
+          'measured-sanity-validated',
+        ].includes(channel.status)
+        && iq?.status === 'nondegenerate-capture-and-scaling-validated'
+        && iqFreshness?.status === 'fresh-current-profile-capture-validated';
+    });
   let expectedDefaultSourceSequence = 1;
   const defaultGeometryComplete = defaultGeometrySmoke
     && run.geometry?.policyId === 'shipped-default-1024-user-path-v1'
@@ -3667,22 +5497,29 @@ export function summarizeSignalLabLiveRun(run) {
         && step.sourceClockEvidence.lastSpectrumSequence === sequences.at(-1);
     });
   const visualContentReview = run.visualContentReview ?? {
-    automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+    automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
     status: 'manual-review-required',
   };
-  const visualManifest = Array.isArray(visualContentReview.screenshotManifest)
-    ? visualContentReview.screenshotManifest
+  const visualManifest = Array.isArray(visualContentReview.reviewScreenshotManifest)
+    ? visualContentReview.reviewScreenshotManifest
     : [];
+  const automatedScreenshotManifest = Array.isArray(
+    visualContentReview.automatedScreenshotManifest,
+  ) ? visualContentReview.automatedScreenshotManifest : [];
+  const automatedScreenshotManifestValid = screenshotSet.complete
+    && sameOrderedValues(
+      automatedScreenshotManifest.map((entry) => entry?.path),
+      screenshotSet.paths,
+    )
+    && screenshotManifestEntriesValid(automatedScreenshotManifest, run);
   const visualManifestValid = screenshotSet.complete
     && sameOrderedValues(
       visualManifest.map((entry) => entry?.path),
       screenshotSet.paths,
     )
-    && visualManifest.every((entry) => (
-      Number.isSafeInteger(entry?.bytes)
-        && entry.bytes > 0
-        && typeof entry.sha256 === 'string'
-        && /^[a-f0-9]{64}$/u.test(entry.sha256)
+    && screenshotManifestEntriesValid(visualManifest, run)
+    && visualManifest.every((entry, index) => (
+      sameScreenshotArtifactEvidence(automatedScreenshotManifest[index], entry)
     ));
   const visualContentReviewComplete = visualContentReview.status === 'reviewed'
     && visualContentReview.passed === true
@@ -3711,11 +5548,14 @@ export function summarizeSignalLabLiveRun(run) {
           && boundedStress
           && requiredStepsComplete
           && requiredOptionsEnabled
+          && releasePolicy.bound
           && completionWindowValid
           && (run.kind !== 'full-profile-exercise' || (
             classifierOracle.allProfileObservationsComplete
             && screenshotSet.complete
+            && automatedScreenshotManifestValid
             && markerOracleGeometryComplete
+            && fullScientificUiEvidenceComplete
           ))
         )));
   return {
@@ -3747,18 +5587,63 @@ export function summarizeSignalLabLiveRun(run) {
       rendererMemory,
     },
     classifierOracle,
+    releasePolicy,
     geometry: {
       evidence: run.geometry ?? null,
       markerOracleGeometryComplete,
       defaultGeometryComplete,
     },
+    fullScientificUiEvidenceComplete,
     visualContentReview,
+    automatedScreenshotManifestValid,
     visualContentReviewComplete,
     automatedOk: automatedChecksOk,
     automatedChecksOk,
     ok: automatedChecksOk
       && (run.kind !== 'full-profile-exercise' || visualContentReviewComplete),
   };
+}
+
+function storedStoppedLayoutEvidenceComplete(layout) {
+  return layout
+    && layout.acquisitionLandmarkCount === 1
+    && layout.acquisitionLandmarkPrecedesControls === true
+    && layout.acquisitionLandmarkControlBinding === true
+    && layout.globalSweepIdentity?.valid === true
+    && layout.globalSweepIdentity?.evidenceCount === 1
+    && layout.globalSweepIdentity?.controls === 'Run,Single'
+    && layout.acquisitionCounts?.run === 1
+    && layout.acquisitionCounts?.single === 1
+    && layout.acquisitionCounts?.stop === 0
+    && Array.isArray(layout.forbiddenNavigation)
+    && layout.forbiddenNavigation.length === 0
+    && Array.isArray(layout.localIqCaptureControls)
+    && layout.localIqCaptureControls.length === 0
+    && Array.isArray(layout.routeOrder)
+    && sameOrderedValues(layout.routeOrder, SIGNAL_LAB_SIDEBAR_ROUTES)
+    && SIGNAL_LAB_SIDEBAR_ROUTES.every((label) => layout.routeCounts?.[label] === 1);
+}
+
+function storedRunningLayoutEvidenceComplete(layout) {
+  return layout
+    && layout.acquisitionLandmarkCount === 1
+    && layout.acquisitionLandmarkPrecedesControls === true
+    && layout.acquisitionLandmarkControlBinding === true
+    && layout.globalSweepIdentity?.valid === true
+    && layout.globalSweepIdentity?.evidenceCount === 1
+    && layout.globalSweepIdentity?.controls === 'Stop'
+    && typeof layout.globalSweepIdentity?.sweepId === 'string'
+    && Number.isSafeInteger(layout.globalSweepIdentity?.sequence)
+    && layout.acquisitionCounts?.run === 0
+    && layout.acquisitionCounts?.single === 0
+    && layout.acquisitionCounts?.stop === 1
+    && Array.isArray(layout.forbiddenNavigation)
+    && layout.forbiddenNavigation.length === 0
+    && Array.isArray(layout.localIqCaptureControls)
+    && layout.localIqCaptureControls.length === 0
+    && Array.isArray(layout.routeOrder)
+    && sameOrderedValues(layout.routeOrder, SIGNAL_LAB_SIDEBAR_ROUTES)
+    && SIGNAL_LAB_SIDEBAR_ROUTES.every((label) => layout.routeCounts?.[label] === 1);
 }
 
 function sameOrderedValues(left, right) {

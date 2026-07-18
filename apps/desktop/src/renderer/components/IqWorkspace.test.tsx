@@ -73,7 +73,10 @@ describe('complex I/Q workspace', () => {
     expect(screen.getAllByText('0.00 dBFS')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
     expect(screen.getByText(/Use sidebar Single/i)).toBeTruthy();
-    expect(view.container.querySelector('[data-agent-exclusion="human-iq-capture-boundary"]')).toBeTruthy();
+    const workspace = screen.getByRole('region', { name: 'Complex I/Q workspace' });
+    expect(workspace.getAttribute('aria-description'))
+      .toBe('captureId=iq-capture-1; sequence=1; centerHz=100000000');
+    expect(view.container.querySelector('[data-agent-exclusion="human-iq-capture-boundary"]')).toBe(workspace);
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
   });
 

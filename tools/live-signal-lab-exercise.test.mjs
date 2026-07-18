@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { deflateSync } from 'node:zlib';
 import {
   CANONICAL_SIGNAL_LAB_PROFILE_IDS,
   createAtomizerLogRendererMemorySampler,
@@ -12,11 +14,18 @@ import {
   liveButtonIsEnabled,
   liveButtonExists,
   liveChannelSummary,
+  liveDetectCandidateRankingSummary,
   liveDetectAcceptanceSummary,
+  liveGlobalSweepIdentitySummary,
+  liveIqSummary,
+  liveLayoutContractSummary,
   liveMarkerSummary,
   liveMarkerCharacterizationSummary,
   liveMarkerM1ReadoutIsNormal,
+  liveScreenshotMeetsMinimum,
   liveScreenshotDimensions,
+  livePngPixelEvidence,
+  liveSignalLabAtomOpenSoakConfiguration,
   liveSignalLabClassificationTimeoutMs,
   liveSignalLabClassificationEvidenceSatisfied,
   liveSignalLabClassificationExpectation,
@@ -27,6 +36,8 @@ import {
   liveSignalLabRunKind,
   liveSignalLabSourceSessionSummary,
   liveSweepGeometrySummary,
+  liveSweepIdentitySummary,
+  liveWaterfallSummary,
   liveWorkspaceIsVisible,
   loadSignalLabLiveCatalog,
   parseAtomizerRendererMemoryLog,
@@ -35,12 +46,22 @@ import {
   SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_PROFILE_IDS,
   SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_SOURCE_PLAN,
   SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS,
+  SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
+  SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
   screenshotArtifactExtension,
   signalLabLiveCoverageMatrix,
   summarizeSignalLabLiveRun,
   validateLiveMarkerEvidence,
+  validateLiveChannelEvidence,
+  validateLiveIqEvidence,
+  validateLiveLayoutContract,
   validateLiveStressEvidence,
+  validateLiveWaterfallEvidence,
+  validateFreshIqCapture,
+  validateFreshMarkerEvidence,
+  validateGlobalSweepMatchesSpectrum,
   validateRendererMemorySamples,
+  validateSignalLabAtomOpenSoakCompletion,
 } from './live-signal-lab-exercise.mjs';
 
 const FULL_REQUIRED_STEPS = Object.freeze([
@@ -52,6 +73,126 @@ const FULL_REQUIRED_STEPS = Object.freeze([
   'channel',
   'iq',
 ]);
+
+const COMPLETE_STOPPED_LAYOUT = Object.freeze({
+  routeCounts: Object.freeze({
+    Spectrum: 1,
+    Waterfall: 1,
+    Channel: 1,
+    'I/Q': 1,
+    Detect: 1,
+    Generate: 1,
+    Device: 1,
+  }),
+  routeOrder: Object.freeze([
+    'Spectrum',
+    'Waterfall',
+    'Channel',
+    'I/Q',
+    'Detect',
+    'Generate',
+    'Device',
+  ]),
+  acquisitionCounts: Object.freeze({ run: 1, single: 1, stop: 0 }),
+  acquisitionLandmarkCount: 1,
+  acquisitionLandmarkPrecedesControls: true,
+  acquisitionLandmarkControlBinding: true,
+  globalSweepIdentity: Object.freeze({
+    evidenceCount: 1,
+    valid: true,
+    controls: 'Run,Single',
+    sweepId: null,
+    sequence: null,
+    evidence: 'DEV ACQUISITION LANDMARK fixture',
+  }),
+  forbiddenNavigation: Object.freeze([]),
+  localIqCaptureControls: Object.freeze([]),
+});
+
+const COMPLETE_RUNNING_LAYOUT = Object.freeze({
+  ...COMPLETE_STOPPED_LAYOUT,
+  acquisitionCounts: Object.freeze({ run: 0, single: 0, stop: 1 }),
+  globalSweepIdentity: Object.freeze({
+    evidenceCount: 1,
+    valid: true,
+    controls: 'Stop',
+    sweepId: 'sweep-11',
+    sequence: 11,
+    evidence: 'DEV ACQUISITION LANDMARK running fixture',
+  }),
+});
+
+function screenshotManifestEntry(path, index) {
+  return {
+    path,
+    extension: '.png',
+    bytes: 128,
+    width: 1_532,
+    height: 821,
+    sampledPixels: 20_000,
+    distinctColors: 128,
+    minimumLuminance: 1,
+    maximumLuminance: 240,
+    luminanceRange: 239,
+    sha256: index.toString(16).padStart(64, '0'),
+    pixelSha256: (index + 1).toString(16).padStart(64, '0'),
+    claim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
+  };
+}
+
+function pngChunk(type, data) {
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, 4, 4, 'ascii');
+  data.copy(chunk, 8);
+  // The harness does not need a PNG CRC implementation; its own decoder is
+  // deliberately geometry/pixel focused and the fixture never leaves tests.
+  return chunk;
+}
+
+function pngScreenshotFixture(seed, width = 8, height = 2, options = {}) {
+  const rgba = options.rgba === true;
+  const channels = rgba ? 4 : 3;
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([8, rgba ? 6 : 2, 0, 0, 0], 8);
+  const stride = width * channels;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let row = 0; row < height; row++) {
+    const rowOffset = row * (stride + 1);
+    raw[rowOffset] = 0;
+    for (let column = 0; column < width; column++) {
+      const pixel = row * width + column;
+      const base = rowOffset + 1 + column * channels;
+      raw[base] = pixel * 17 % 256;
+      raw[base + 1] = pixel * 43 % 256;
+      raw[base + 2] = (pixel * 71 + seed) % 256;
+      if (rgba) {
+        raw[base + 3] = typeof options.alpha === 'function'
+          ? options.alpha(pixel)
+          : options.alpha ?? 255;
+      }
+    }
+  }
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function screenshotManifestEntryFromBytes(path, bytes) {
+  return {
+    path,
+    extension: '.png',
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    ...livePngPixelEvidence(bytes),
+    claim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
+  };
+}
 
 function classifierFixtureLabel(profileId) {
   if (profileId === 'cw') return 'CW-like carrier';
@@ -78,9 +219,39 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
     steps: Object.fromEntries(FULL_REQUIRED_STEPS.map((step) => [step, {
       ok: true,
       screenshot: join(screenshotRoot, `${id}--${step}.png`),
+      ...(step === 'select' ? { layout: COMPLETE_STOPPED_LAYOUT } : {}),
       ...(step === 'single' ? { geometry: { plotPoints: 450 } } : {}),
-      ...(step === 'marker' ? { markerGeometry: { plotPoints: 450 } } : {}),
+      ...(step === 'marker' ? {
+        markerGeometry: { plotPoints: 450 },
+        markerFreshness: { status: 'fresh-current-sweep-marker-validated' },
+        markerCenterOracle: {
+          status: id === 'cw' ? 'validated-known-center' : 'not-applicable',
+        },
+      } : {}),
+      ...(step === 'waterfall' ? {
+        waterfallOracle: { status: 'coherent-nondegenerate-render-input-validated' },
+      } : {}),
+      ...(step === 'channel' ? {
+        channelOracle: {
+          status: id === 'cw'
+            ? 'validated-resolution-limited-narrow'
+            : id === 'lte-etm3.1'
+              ? 'validated-resolved-wideband'
+              : 'measured-sanity-validated',
+        },
+      } : {}),
+      ...(step === 'iq' ? {
+        iqOracle: { status: 'nondegenerate-capture-and-scaling-validated' },
+        freshCapture: { status: 'fresh-current-profile-capture-validated' },
+      } : {}),
       ...(step === 'continuous-detect' ? {
+        detectAcceptance: {
+          autoTargetIsMaximumIntegratedExcess: true,
+          candidateRanking: {
+            rankingEvidenceComplete: true,
+            evidenceSource: 'development-complete-rank-population',
+          },
+        },
         sweepProgression: {
           classificationEvidence: {
             resultLabel: classifierFixtureLabel(id),
@@ -128,7 +299,7 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
       },
     },
     visualContentReview: {
-      automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+      automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
       status: 'manual-review-required',
     },
     geometry: {
@@ -138,7 +309,33 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
       configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
     },
   };
-  run.options.screenshotPolicy = 'all';
+  Object.assign(run.options, {
+    profileTimeoutMs: 8_000,
+    acquisitionTimeoutMs: 12_000,
+    classificationTimeoutMs: 15_000,
+    maximumControlResponseMs: 7_000,
+    maximumAccessibilitySnapshotMs: 7_000,
+    maximumFirstSweepLatencyMs: 3_000,
+    maximumStopLatencyMs: 3_000,
+    maximumMillisecondsPerSweepOpportunity: 500,
+    maximumResponsivenessTourMs: 30_000,
+    minimumContinuousSweepProgressions: 2,
+    minimumScreenshotWidth: SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
+    minimumScreenshotHeight: SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
+    rendererMemoryPlateauWindow: 4,
+    rendererMemoryMaximumPlateauGrowthBytes: 64 * 1_024 * 1_024,
+    rendererMemoryHardLimitBytes: 2 * 1_024 * 1_024 * 1_024,
+    screenshotPolicy: 'all',
+    narrowMarkerProfileIds: ['cw'],
+    wideMarkerProfileIds: ['lte-etm3.1'],
+    iqZoomProfileIds: [...CANONICAL_SIGNAL_LAB_PROFILE_IDS],
+    iqContinuousProfileIds: ['cw', 'lte-etm3.1', 'bluetooth-classic-connected'],
+  });
+  const screenshotPaths = profiles.flatMap((profile) => (
+    FULL_REQUIRED_STEPS.map((step) => profile.steps[step].screenshot)
+  ));
+  run.visualContentReview.automatedScreenshotManifest = screenshotPaths
+    .map(screenshotManifestEntry);
   return run;
 }
 
@@ -177,7 +374,7 @@ test('live SignalLab harness is closed over the complete built profile catalog',
     fittedClassifierReleaseGateEligible
   )).length, 12);
   assert.ok(matrix.every(({ screenshotClaim }) => (
-    screenshotClaim === 'fresh-frame-and-dimensions-only-not-pixel-content-perfection'
+    screenshotClaim === 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content'
   )));
   assert.ok(matrix.every(({ screenshotContentReview }) => screenshotContentReview === 'manual-review-required'));
 });
@@ -433,23 +630,20 @@ test('default 1024 geometry is recorded separately from fitted 450-point claims'
 test('full summaries bind the canonical 34/34 catalog, required steps, stress, and memory', async () => {
   const catalog = await loadSignalLabLiveCatalog();
   const full = fullRunFixture(catalog);
-  const screenshotManifest = full.profiles.flatMap((profile) => (
-    FULL_REQUIRED_STEPS.map((step) => ({
-      path: profile.steps[step].screenshot,
-      bytes: 128,
-      sha256: 'a'.repeat(64),
-    }))
-  ));
+  const screenshotManifest = full.visualContentReview.automatedScreenshotManifest;
   full.visualContentReview = {
-    automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+    automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
     status: 'reviewed',
     passed: true,
     reviewedAt: '2026-07-18T08:03:00.000Z',
     reviewer: 'manual-visual-review',
-    screenshotManifest,
+    automatedScreenshotManifest: screenshotManifest,
+    reviewScreenshotManifest: screenshotManifest,
   };
   const completeSummary = summarizeSignalLabLiveRun(full);
   assert.equal(completeSummary.ok, true);
+  assert.equal(completeSummary.releasePolicy.status, 'canonical-release-policy-bound');
+  assert.deepEqual(completeSummary.releasePolicy.violations, []);
   assert.equal(completeSummary.classifierOracle.status, 'linked-results-recorded-no-scientific-oracle');
   assert.equal(completeSummary.classifierOracle.validatedProfiles, 0);
   assert.equal(completeSummary.classifierOracle.unvalidatedProfiles, 34);
@@ -457,8 +651,9 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
   const pendingVisualReview = summarizeSignalLabLiveRun({
     ...full,
     visualContentReview: {
-      automatedClaim: 'fresh-frame-and-dimensions-only-not-pixel-content-perfection',
+      automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
       status: 'manual-review-required',
+      automatedScreenshotManifest: screenshotManifest,
     },
   });
   assert.equal(pendingVisualReview.automatedChecksOk, true);
@@ -468,9 +663,13 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     ...full,
     visualContentReview: {
       ...full.visualContentReview,
-      screenshotManifest: full.visualContentReview.screenshotManifest.slice(1),
+      reviewScreenshotManifest: full.visualContentReview.reviewScreenshotManifest.slice(1),
     },
   }).ok, false);
+  const duplicateAutomatedFrame = structuredClone(full);
+  duplicateAutomatedFrame.visualContentReview.automatedScreenshotManifest[1].pixelSha256 =
+    duplicateAutomatedFrame.visualContentReview.automatedScreenshotManifest[0].pixelSha256;
+  assert.equal(summarizeSignalLabLiveRun(duplicateAutomatedFrame).automatedChecksOk, false);
   assert.equal(summarizeSignalLabLiveRun({ ...full, schemaVersion: 1 }).ok, false);
   assert.equal(summarizeSignalLabLiveRun({
     ...full,
@@ -513,6 +712,114 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     ...full,
     stress: { ...full.stress, bounds: undefined },
   }).ok, false);
+  const weakenedReleaseOptions = [
+    ['profileTimeoutMs', 8_001],
+    ['acquisitionTimeoutMs', 12_001],
+    ['classificationTimeoutMs', 15_001],
+    ['maximumControlResponseMs', 7_001],
+    ['maximumAccessibilitySnapshotMs', 7_001],
+    ['maximumFirstSweepLatencyMs', 3_001],
+    ['maximumStopLatencyMs', 3_001],
+    ['maximumMillisecondsPerSweepOpportunity', 501],
+    ['maximumResponsivenessTourMs', 30_001],
+    ['minimumContinuousSweepProgressions', 1],
+    ['minimumScreenshotWidth', SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH - 1],
+    ['minimumScreenshotHeight', SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT - 1],
+    ['rendererMemoryPlateauWindow', 3],
+    ['rendererMemoryPlateauWindow', 5],
+    ['rendererMemoryMaximumPlateauGrowthBytes', 64 * 1_024 * 1_024 + 1],
+    ['rendererMemoryHardLimitBytes', 2 * 1_024 * 1_024 * 1_024 + 1],
+    ['narrowMarkerProfileIds', []],
+    ['narrowMarkerProfileIds', ['cw', 'am']],
+    ['wideMarkerProfileIds', []],
+    ['wideMarkerProfileIds', ['lte-etm3.1', 'cw']],
+    ['iqZoomProfileIds', CANONICAL_SIGNAL_LAB_PROFILE_IDS.slice(0, -1)],
+    ['iqZoomProfileIds', [...CANONICAL_SIGNAL_LAB_PROFILE_IDS].reverse()],
+    ['iqContinuousProfileIds', ['cw', 'lte-etm3.1']],
+    ['iqContinuousProfileIds', ['lte-etm3.1', 'cw', 'bluetooth-classic-connected']],
+  ];
+  for (const [key, value] of weakenedReleaseOptions) {
+    const summary = summarizeSignalLabLiveRun({
+      ...full,
+      options: { ...full.options, [key]: value },
+    });
+    assert.equal(summary.releasePolicy.bound, false, key);
+    assert.equal(summary.automatedOk, false, key);
+  }
+  assert.equal(summarizeSignalLabLiveRun({
+    ...full,
+    options: {
+      ...full.options,
+      maximumControlResponseMs: 6_999,
+      minimumContinuousSweepProgressions: 3,
+      minimumScreenshotWidth: SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH + 1,
+      minimumScreenshotHeight: SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT + 1,
+    },
+  }).automatedOk, true);
+  const visibleRowsOnly = structuredClone(full);
+  visibleRowsOnly.profiles[0].steps['continuous-detect']
+    .detectAcceptance.candidateRanking.evidenceSource = 'visible-candidate-rows';
+  assert.equal(summarizeSignalLabLiveRun(visibleRowsOnly).fullScientificUiEvidenceComplete, false);
+  assert.equal(summarizeSignalLabLiveRun(visibleRowsOnly).automatedOk, false);
+  for (const layoutPatch of [
+    { acquisitionLandmarkCount: 0 },
+    { acquisitionLandmarkCount: 2 },
+    { acquisitionLandmarkPrecedesControls: false },
+  ]) {
+    const invalidStoredLayout = structuredClone(full);
+    Object.assign(
+      invalidStoredLayout.profiles[0].steps.select.layout,
+      layoutPatch,
+    );
+    assert.equal(
+      summarizeSignalLabLiveRun(invalidStoredLayout).fullScientificUiEvidenceComplete,
+      false,
+    );
+    assert.equal(summarizeSignalLabLiveRun(invalidStoredLayout).automatedOk, false);
+  }
+  const continuousFull = structuredClone(full);
+  continuousFull.kind = 'continuous-profile-switch-soak';
+  continuousFull.profiles = continuousFull.profiles.map((profile) => ({
+    id: profile.id,
+    failures: [],
+    steps: { switch: { ok: true } },
+  }));
+  assert.equal(summarizeSignalLabLiveRun(continuousFull).automatedOk, true);
+  const continuousNumericReleaseKeys = new Set([
+    'profileTimeoutMs',
+    'acquisitionTimeoutMs',
+    'classificationTimeoutMs',
+    'maximumControlResponseMs',
+    'maximumAccessibilitySnapshotMs',
+    'maximumFirstSweepLatencyMs',
+    'maximumStopLatencyMs',
+    'maximumMillisecondsPerSweepOpportunity',
+    'maximumResponsivenessTourMs',
+    'minimumContinuousSweepProgressions',
+    'rendererMemoryPlateauWindow',
+    'rendererMemoryMaximumPlateauGrowthBytes',
+    'rendererMemoryHardLimitBytes',
+  ]);
+  for (const [key, value] of weakenedReleaseOptions.filter(([key]) => (
+    continuousNumericReleaseKeys.has(key)
+  ))) {
+    assert.equal(summarizeSignalLabLiveRun({
+      ...continuousFull,
+      options: { ...continuousFull.options, [key]: value },
+    }).automatedOk, false, `continuous ${key}`);
+  }
+  assert.equal(summarizeSignalLabLiveRun({
+    ...continuousFull,
+    options: {
+      ...continuousFull.options,
+      minimumScreenshotWidth: 1,
+      minimumScreenshotHeight: 1,
+      narrowMarkerProfileIds: [],
+      wideMarkerProfileIds: [],
+      iqZoomProfileIds: [],
+      iqContinuousProfileIds: [],
+    },
+  }).automatedOk, true);
   const wrongCanonizedLabelProfiles = full.profiles.map((profile) => profile.id === 'cw'
     ? {
         ...profile,
@@ -535,31 +842,54 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     profiles: wrongCanonizedLabelProfiles,
     visualContentReview: {
       ...full.visualContentReview,
-      screenshotManifest: wrongCanonizedLabelProfiles.flatMap((profile) => (
-        FULL_REQUIRED_STEPS.map((step) => ({
-          path: profile.steps[step].screenshot,
-          bytes: 128,
-          sha256: 'a'.repeat(64),
-        }))
-      )),
+      reviewScreenshotManifest: wrongCanonizedLabelProfiles.flatMap((profile) => (
+        FULL_REQUIRED_STEPS.map((step) => profile.steps[step].screenshot)
+      )).map(screenshotManifestEntry),
+      automatedScreenshotManifest: wrongCanonizedLabelProfiles.flatMap((profile) => (
+        FULL_REQUIRED_STEPS.map((step) => profile.steps[step].screenshot)
+      )).map(screenshotManifestEntry),
     },
   });
   assert.equal(interleavedCanonizedLabel.classifierOracle.releaseGateComplete, false);
-  assert.deepEqual(interleavedCanonizedLabel.classifierOracle.failedProfileIds, []);
-  assert.equal(interleavedCanonizedLabel.classifierOracle.unvalidatedProfiles, 34);
-  assert.equal(interleavedCanonizedLabel.ok, true);
+  assert.deepEqual(interleavedCanonizedLabel.classifierOracle.failedProfileIds, ['cw']);
+  assert.equal(interleavedCanonizedLabel.classifierOracle.unvalidatedProfiles, 33);
+  assert.deepEqual(
+    interleavedCanonizedLabel.classifierOracle.fittedProfileCompatibilityFailedIds,
+    ['cw'],
+  );
+  assert.equal(interleavedCanonizedLabel.ok, false);
   const unknownObservation = structuredClone(full);
   unknownObservation.profiles[4].steps['continuous-detect']
     .sweepProgression.classificationEvidence.resultLabel = 'Unknown';
   assert.equal(
     summarizeSignalLabLiveRun(unknownObservation).classifierOracle.allProfileObservationsComplete,
+    true,
+  );
+  assert.equal(summarizeSignalLabLiveRun(unknownObservation).ok, true);
+  const fittedUnknownObservation = structuredClone(full);
+  fittedUnknownObservation.profiles[0].steps['continuous-detect']
+    .sweepProgression.classificationEvidence.resultLabel = 'Unknown';
+  assert.equal(
+    summarizeSignalLabLiveRun(fittedUnknownObservation).classifierOracle
+      .allProfileObservationsComplete,
     false,
   );
-  assert.equal(summarizeSignalLabLiveRun(unknownObservation).ok, false);
+  assert.equal(summarizeSignalLabLiveRun(fittedUnknownObservation).ok, false);
 
   const subset = {
     ...full,
     kind: 'profile-subset-exercise',
+    options: {
+      ...full.options,
+      maximumControlResponseMs: 99_999,
+      minimumContinuousSweepProgressions: 1,
+      minimumScreenshotWidth: 1,
+      minimumScreenshotHeight: 1,
+      narrowMarkerProfileIds: [],
+      wideMarkerProfileIds: [],
+      iqZoomProfileIds: [],
+      iqContinuousProfileIds: [],
+    },
     catalog: full.catalog.slice(0, 1),
     profiles: full.profiles.slice(0, 1),
     stress: { ...full.stress, bounds: undefined, rendererMemory: { status: 'not-supplied', samples: 0 } },
@@ -573,9 +903,11 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     },
     { kind: 'profile-subset-exercise', coverage: 'debug-subset', expected: 1, ok: true },
   );
+  assert.equal(summarizeSignalLabLiveRun(subset).releasePolicy.status,
+    'not-applicable-debug-or-specialized-run');
 });
 
-test('post-run visual finalizer hashes the exact 238-screenshot manifest before ok', async (t) => {
+test('post-run visual finalizer rehashes reduced fixtures without certifying them for release', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'live-signal-lab-review-'));
   t.after(async () => { await rm(directory, { recursive: true, force: true }); });
   const catalog = await loadSignalLabLiveCatalog();
@@ -583,12 +915,47 @@ test('post-run visual finalizer hashes the exact 238-screenshot manifest before 
   const screenshotPaths = run.profiles.flatMap((profile) => (
     FULL_REQUIRED_STEPS.map((step) => profile.steps[step].screenshot)
   ));
-  await Promise.all(screenshotPaths.map((path) => writeFile(path, `frame:${path}`, 'utf8')));
+  run.options.minimumScreenshotWidth = 8;
+  run.options.minimumScreenshotHeight = 2;
+  const screenshotBytes = screenshotPaths.map((_, index) => pngScreenshotFixture(index));
+  await Promise.all(screenshotPaths.map((path, index) => writeFile(
+    path,
+    screenshotBytes[index],
+  )));
+  const captureTimeScreenshotManifest = screenshotPaths.map((path, index) => (
+    screenshotManifestEntryFromBytes(path, screenshotBytes[index])
+  ));
+  run.visualContentReview.automatedScreenshotManifest = captureTimeScreenshotManifest;
   const reportPath = join(directory, 'report.json');
   await writeFile(reportPath, `${JSON.stringify(run, null, 2)}\n`, 'utf8');
 
-  assert.equal(summarizeSignalLabLiveRun(run).automatedOk, true);
+  assert.equal(summarizeSignalLabLiveRun(run).automatedOk, false);
+  assert.equal(summarizeSignalLabLiveRun(run).releasePolicy.bound, false);
   assert.equal(summarizeSignalLabLiveRun(run).ok, false);
+  await writeFile(screenshotPaths.at(-1), pngScreenshotFixture(0));
+  await assert.rejects(
+    finalizeSignalLabLiveVisualReview({
+      reportPath,
+      reviewer: 'visual-reviewer',
+      reviewedAt: '2026-07-18T08:03:00.000Z',
+      passed: true,
+      findings: ['Duplicate should be rejected before review finalization.'],
+    }),
+    /duplicate screenshot content/u,
+  );
+  await writeFile(screenshotPaths.at(-1), pngScreenshotFixture(screenshotPaths.length - 1));
+  await writeFile(screenshotPaths.at(-1), pngScreenshotFixture(250));
+  await assert.rejects(
+    finalizeSignalLabLiveVisualReview({
+      reportPath,
+      reviewer: 'visual-reviewer',
+      reviewedAt: '2026-07-18T08:03:00.000Z',
+      passed: true,
+      findings: ['Post-capture mutation must be rejected.'],
+    }),
+    /changed since capture/u,
+  );
+  await writeFile(screenshotPaths.at(-1), pngScreenshotFixture(screenshotPaths.length - 1));
   const finalized = await finalizeSignalLabLiveVisualReview({
     reportPath,
     reviewer: 'visual-reviewer',
@@ -596,16 +963,40 @@ test('post-run visual finalizer hashes the exact 238-screenshot manifest before 
     passed: true,
     findings: ['No clipping, overlap, or stale-frame mismatch observed.'],
   });
-  assert.equal(finalized.summary.ok, true);
-  assert.equal(finalized.visualContentReview.screenshotManifest.length, 238);
-  assert.ok(finalized.visualContentReview.screenshotManifest.every(({ bytes, sha256 }) => (
-    bytes > 0 && /^[a-f0-9]{64}$/u.test(sha256)
+  assert.equal(finalized.summary.visualContentReviewComplete, true);
+  assert.equal(finalized.summary.automatedOk, false);
+  assert.equal(finalized.summary.ok, false);
+  assert.deepEqual(
+    finalized.visualContentReview.automatedScreenshotManifest,
+    captureTimeScreenshotManifest,
+  );
+  assert.equal(finalized.visualContentReview.reviewScreenshotManifest.length, 238);
+  assert.ok(finalized.visualContentReview.reviewScreenshotManifest.every(({
+    bytes,
+    width,
+    height,
+    distinctColors,
+    luminanceRange,
+    sha256,
+    pixelSha256,
+  }) => (
+    bytes > 0
+      && width === 8
+      && height === 2
+      && distinctColors >= 8
+      && luminanceRange >= 8
+      && /^[a-f0-9]{64}$/u.test(sha256)
+      && /^[a-f0-9]{64}$/u.test(pixelSha256)
   )));
   const persisted = JSON.parse(await readFile(reportPath, 'utf8'));
-  assert.equal(persisted.summary.ok, true);
+  assert.equal(persisted.summary.ok, false);
   assert.deepEqual(
-    persisted.visualContentReview.screenshotManifest.map(({ path }) => path),
+    persisted.visualContentReview.reviewScreenshotManifest.map(({ path }) => path),
     screenshotPaths,
+  );
+  assert.deepEqual(
+    persisted.visualContentReview.automatedScreenshotManifest,
+    captureTimeScreenshotManifest,
   );
 });
 
@@ -712,6 +1103,8 @@ test('Detect embedded plot is not mistaken for the standalone Spectrum workspace
   assert.equal(liveWorkspaceIsVisible(detect, 'Detect'), true);
   assert.equal(liveWorkspaceIsVisible(detect, 'Spectrum'), false);
   assert.equal(liveWorkspaceIsVisible(spectrum, 'Spectrum'), true);
+  assert.equal(liveWorkspaceIsVisible('44 text Instrument source', 'Device'), true);
+  assert.equal(liveWorkspaceIsVisible('44 button Device', 'Device'), false);
 });
 
 test('exact button matching does not confuse Peak with Peak tracking', () => {
@@ -741,10 +1134,383 @@ test('Marker 1 Normal readout guard rejects persisted Delta and noise-density mo
   ].join('\n')), false);
 });
 
+test('Peak marker freshness binds a cleared M1 reading to the newly acquired sweep', () => {
+  const previous = liveSweepIdentitySummary(
+    '12 region Spectrum plot, Description: sweepId=sweep-41; sequence=41',
+  );
+  const current = liveSweepIdentitySummary(
+    '12 region Spectrum plot, Description: sweepId=sweep-42; sequence=42',
+  );
+  const marker = liveMarkerSummary([
+    '21 text M 1 · NORMAL',
+    '22 text -31.4 dBm',
+    '23 text 98.000 MHz',
+    '24 group Marker M1 current reading, Description: sourceSweepId=sweep-42',
+  ].join('\n'));
+  assert.equal(marker.powerDbm, -31.4);
+  assert.equal(validateFreshMarkerEvidence(
+    previous,
+    current,
+    marker,
+    { markerWasHidden: true, markerVisible: true },
+  ).status, 'fresh-current-sweep-marker-validated');
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      current,
+      { ...marker, powerDbm: null },
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /omitted its fresh finite M1 power/u,
+  );
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      current,
+      { ...marker, powerDbm: Number.NaN },
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /omitted its fresh finite M1 power/u,
+  );
+  const powerOutsideM1Readout = liveMarkerSummary([
+    '21 text M 1 · NORMAL',
+    '22 text 98.000 MHz',
+    '23 group Marker M1 current reading, Description: sourceSweepId=sweep-42',
+    '24 text No current power',
+    '25 text Unrelated candidate -12.0 dBm',
+  ].join('\n'));
+  assert.equal(powerOutsideM1Readout.powerDbm, null);
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      current,
+      powerOutsideM1Readout,
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /omitted its fresh finite M1 power/u,
+  );
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      { ...current, sweepId: previous.sweepId },
+      marker,
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /reused stale sweep/u,
+  );
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      { ...current, sequence: previous.sequence },
+      marker,
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /sequence did not advance/u,
+  );
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      current,
+      { ...marker, sourceSweepId: 'sweep-41' },
+      { markerWasHidden: true, markerVisible: true },
+    ),
+    /did not match current sweep/u,
+  );
+  assert.throws(
+    () => validateFreshMarkerEvidence(
+      previous,
+      current,
+      marker,
+      { markerWasHidden: false, markerVisible: true },
+    ),
+    /was not cleared/u,
+  );
+
+  const global = (sweepId, sequence) => (
+    `1 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Stop; sweepId=${sweepId}; sequence=${sequence}`
+  );
+  const local = (sweepId, sequence) => (
+    `2 region Spectrum plot, Description: sweepId=${sweepId}; sequence=${sequence}`
+  );
+  const matching = `${global('sweep-42', 42)}\n${local('sweep-42', 42)}`;
+  assert.deepEqual(liveSweepIdentitySummary(matching), { sweepId: 'sweep-42', sequence: 42 });
+  assert.equal(liveGlobalSweepIdentitySummary(matching).sequence, 42);
+  assert.doesNotThrow(() => validateGlobalSweepMatchesSpectrum(matching, 'fixture'));
+
+  const globalFirstStaleLocal = `${global('sweep-43', 43)}\n${local('sweep-42', 42)}`;
+  assert.deepEqual(liveSweepIdentitySummary(globalFirstStaleLocal), {
+    sweepId: 'sweep-42',
+    sequence: 42,
+  });
+  assert.throws(
+    () => validateGlobalSweepMatchesSpectrum(globalFirstStaleLocal, 'stale local fixture'),
+    /did not match the mounted Spectrum plot identity/u,
+  );
+  assert.throws(
+    () => validateGlobalSweepMatchesSpectrum(global('sweep-43', 43), 'missing local fixture'),
+    /did not match the mounted Spectrum plot identity/u,
+  );
+  assert.throws(
+    () => validateGlobalSweepMatchesSpectrum(
+      `${global('sweep-42', 43)}\n${local('sweep-42', 42)}`,
+      'mismatched sequence fixture',
+    ),
+    /did not match the mounted Spectrum plot identity/u,
+  );
+});
+
 test('I/Q local capture absence checks disabled and enabled controls', () => {
   assert.equal(liveButtonExists('12 button Capture I/Q', 'Capture I/Q'), true);
   assert.equal(liveButtonExists('12 button Capture I/Q (disabled)', 'Capture I/Q'), true);
   assert.equal(liveButtonExists('12 button Capture envelope', 'Capture I/Q'), false);
+});
+
+test('live layout contract requires one sidebar route and one global acquisition surface', () => {
+  const stopped = [
+    '1 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Run,Single; sweepId=none; sequence=none',
+    '2 button Spectrum, selected',
+    '3 button Waterfall',
+    '4 button Channel',
+    '5 button I/Q',
+    '6 button Detect',
+    '7 button Generate',
+    '8 button Device',
+    '9 button Run',
+    '10 button Single',
+  ].join('\n');
+  assert.deepEqual(liveLayoutContractSummary(stopped).acquisitionCounts, {
+    run: 1,
+    single: 1,
+    stop: 0,
+  });
+  assert.equal(liveLayoutContractSummary(stopped).acquisitionLandmarkCount, 1);
+  assert.equal(liveLayoutContractSummary(stopped).acquisitionLandmarkPrecedesControls, true);
+  assert.equal(liveLayoutContractSummary(stopped).acquisitionLandmarkControlBinding, true);
+  assert.doesNotThrow(() => validateLiveLayoutContract(stopped));
+  const running = stopped
+    .replace('controls=Run,Single', 'controls=Stop')
+    .replace('sweepId=none; sequence=none', 'sweepId=sweep-42; sequence=42')
+    .replace('9 button Run\n10 button Single', '9 button Stop');
+  assert.doesNotThrow(() => validateLiveLayoutContract(running, { running: true }));
+  assert.throws(
+    () => validateLiveLayoutContract(`${stopped}\n11 tab Spectrum`),
+    /Spectrum=2/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(stopped.replace(
+      '2 button Spectrum, selected\n3 button Waterfall',
+      '2 button Waterfall\n3 button Spectrum, selected',
+    )),
+    /route order changed/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(`${stopped}\n11 button Time \/ STFT \(disabled\)`),
+    /Removed navigation resurfaced/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(`${stopped}\n11 button Capture I\/Q \(disabled\)`),
+    /redundant local capture control/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(`${stopped}\n11 button Run`),
+    /not unique/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(stopped.replace(
+      '1 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Run,Single; sweepId=none; sequence=none\n',
+      '',
+    )),
+    /landmark must occur exactly once; observed 0/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(`${stopped}\n11 region Acquisition controls`),
+    /landmark must occur exactly once; observed 2/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(
+      `${stopped.replace(
+        '1 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Run,Single; sweepId=none; sequence=none\n',
+        '',
+      )}\n11 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Run,Single; sweepId=none; sequence=none`,
+    ),
+    /not nested after the Acquisition controls landmark/u,
+  );
+  assert.throws(
+    () => validateLiveLayoutContract(stopped.replace(
+      'DEV ACQUISITION LANDMARK; controls=Run,Single',
+      'DEV ACQUISITION LANDMARK; controls=Stop',
+    )),
+    /omitted its development child-control binding/u,
+  );
+});
+
+test('Waterfall live evidence rejects one-row and one-color canvases', () => {
+  const text = [
+    '21 image Measured power by frequency and sweep time, Description: rows=3; bins=450; colors=37; minDbm=-112.4; maxDbm=-31.2',
+    '22 text 3 / 35 COHERENT',
+    '23 text COHERENT HISTORY',
+    '24 text 3 / 35',
+  ].join('\n');
+  const summary = liveWaterfallSummary(text);
+  assert.equal(summary.coherentRows, 3);
+  assert.equal(summary.renderedBins, 450);
+  assert.equal(summary.renderedColors, 37);
+  assert.equal(
+    validateLiveWaterfallEvidence(summary, { id: 'cw' }).status,
+    'coherent-nondegenerate-render-input-validated',
+  );
+  assert.throws(
+    () => validateLiveWaterfallEvidence(liveWaterfallSummary(
+      text.replaceAll('rows=3', 'rows=1').replaceAll('3 / 35', '1 / 35'),
+    )),
+    /at least two coherent rows/u,
+  );
+  assert.throws(
+    () => validateLiveWaterfallEvidence(liveWaterfallSummary(
+      text.replace('colors=37', 'colors=1'),
+    )),
+    /blank or degenerate/u,
+  );
+});
+
+test('I/Q live evidence anchors plots, metrics, nonzero preview, and scaling', () => {
+  const text = [
+    '31 group I/Q plot scale',
+    '32 button Zoom I/Q plots out',
+    '33 button Fit I/Q plots to capture (disabled)',
+    '34 button Zoom I/Q plots in',
+    '35 text 1×, Description: I/Q plot zoom',
+    '36 image I and Q sample amplitude over capture time',
+    '37 image Complex I Q constellation preview',
+    '38 text Samples',
+    '39 text 16,384',
+    '40 text Duration',
+    '41 text 1.25 ms',
+    '42 text Preview RMS',
+    '43 text -18.25 dBFS',
+    '44 text Preview peak',
+    '45 text -2.50 dBFS',
+    '46 text Capture 12345678-1234-1234-1234-123456789abc · measured',
+    '47 text 4,096 evenly sampled preview points',
+    '48 region Complex I/Q workspace, Description: captureId=12345678-1234-1234-1234-123456789abc; sequence=42; centerHz=98000000',
+  ].join('\n');
+  const summary = liveIqSummary(text);
+  assert.deepEqual({
+    samples: summary.samples,
+    previewPoints: summary.previewPoints,
+    zoom: summary.zoom,
+    rms: summary.previewRmsDbfs,
+    peak: summary.previewPeakDbfs,
+    sequence: summary.captureSequence,
+    centerHz: summary.captureCenterHz,
+  }, {
+    samples: 16_384,
+    previewPoints: 4_096,
+    zoom: '1×',
+    rms: -18.25,
+    peak: -2.5,
+    sequence: 42,
+    centerHz: 98_000_000,
+  });
+  assert.equal(
+    validateLiveIqEvidence(summary, { id: 'lte-etm3.1' }).status,
+    'nondegenerate-capture-and-scaling-validated',
+  );
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(text.replace('-2.50 dBFS', '-30.00 dBFS'))),
+    /peak below RMS/u,
+  );
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(text.replace('-18.25 dBFS', '−∞ dBFS'))),
+    /zero, non-finite/u,
+  );
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(
+      text.replace('35 text 1×, Description: I/Q plot zoom', '35 text 1×'),
+    )),
+    /anchored plot-scaling/u,
+  );
+  const missingRmsValue = text.replace('43 text -18.25 dBFS\n', '');
+  assert.equal(liveIqSummary(missingRmsValue).previewRmsDbfs, null);
+  assert.equal(liveIqSummary(missingRmsValue).previewPeakDbfs, -2.5);
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(missingRmsValue)),
+    /preview is zero, non-finite/u,
+  );
+  const adjacentMisorderedValues = text.replace([
+    '42 text Preview RMS',
+    '43 text -18.25 dBFS',
+    '44 text Preview peak',
+    '45 text -2.50 dBFS',
+  ].join('\n'), [
+    '42 text Preview RMS',
+    '44 text Preview peak',
+    '45 text -2.50 dBFS',
+    '46 text -18.25 dBFS',
+  ].join('\n'));
+  assert.equal(liveIqSummary(adjacentMisorderedValues).previewRmsDbfs, null);
+  assert.equal(liveIqSummary(adjacentMisorderedValues).previewPeakDbfs, -2.5);
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(adjacentMisorderedValues)),
+    /preview is zero, non-finite/u,
+  );
+  const reversedMetricPairs = text.replace([
+    '42 text Preview RMS',
+    '43 text -18.25 dBFS',
+    '44 text Preview peak',
+    '45 text -2.50 dBFS',
+  ].join('\n'), [
+    '42 text Preview peak',
+    '43 text -2.50 dBFS',
+    '44 text Preview RMS',
+    '45 text -18.25 dBFS',
+  ].join('\n'));
+  assert.equal(liveIqSummary(reversedMetricPairs).metricOrderValid, false);
+  assert.throws(
+    () => validateLiveIqEvidence(liveIqSummary(reversedMetricPairs)),
+    /metrics are missing, duplicated, or misordered/u,
+  );
+  const exactCombinedMetrics = text.replace([
+    '42 text Preview RMS',
+    '43 text -18.25 dBFS',
+    '44 text Preview peak',
+    '45 text -2.50 dBFS',
+  ].join('\n'), [
+    '42 text Preview RMS -18.25 dBFS',
+    '44 text Preview peak -2.50 dBFS',
+  ].join('\n'));
+  assert.equal(liveIqSummary(exactCombinedMetrics).previewRmsDbfs, -18.25);
+  assert.equal(liveIqSummary(exactCombinedMetrics).previewPeakDbfs, -2.5);
+  assert.doesNotThrow(() => validateLiveIqEvidence(liveIqSummary(exactCombinedMetrics)));
+  const profile = { id: 'lte-etm3.1', centerHz: 98_000_000 };
+  const previous = {
+    captureId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    captureSequence: 41,
+  };
+  assert.equal(
+    validateFreshIqCapture(previous, summary, profile).status,
+    'fresh-current-profile-capture-validated',
+  );
+  assert.throws(
+    () => validateFreshIqCapture(
+      { ...previous, captureId: summary.captureId },
+      summary,
+      profile,
+    ),
+    /reused stale capture ID/u,
+  );
+  assert.throws(
+    () => validateFreshIqCapture(
+      { ...previous, captureSequence: summary.captureSequence },
+      summary,
+      profile,
+    ),
+    /did not advance its capture sequence/u,
+  );
+  assert.throws(
+    () => validateFreshIqCapture(previous, { ...summary, captureCenterHz: 99_000_000 }, profile),
+    /did not match 98000000 Hz/u,
+  );
 });
 
 test('Detect acceptance binds Auto-most-prominent, its target, and no inner scroll', () => {
@@ -770,6 +1536,9 @@ test('Detect acceptance binds Auto-most-prominent, its target, and no inner scro
   assert.equal(summary.autoTargetSupportCellCount, 37);
   assert.equal(summary.autoTargetPersistenceSweeps, 8);
   assert.equal(summary.autoTargetEvidenceValid, true);
+  assert.equal(summary.autoTargetIsMaximumIntegratedExcess, true);
+  assert.equal(summary.candidateRanking.rankingEvidenceComplete, true);
+  assert.equal(liveDetectCandidateRankingSummary(accepted).candidates.length, 1);
   assert.equal(summary.autoClassification, 'LTE 98%');
   assert.equal(summary.autoTargetClassificationLabel, 'LTE');
   assert.equal(summary.autoClassificationResultLabel, 'LTE');
@@ -795,6 +1564,24 @@ test('Detect acceptance binds Auto-most-prominent, its target, and no inner scro
     'MEASURED WAVEFORM HYPOTHESIS',
   )).autoAcceptanceComplete, false);
   assert.equal(liveDetectAcceptanceSummary(`${accepted}\n110 text integrated excess -30.0 dBm · 4 cells · AUTO TARGET`).autoAcceptanceComplete, false);
+  const visiblyStrongerNonAuto = `${accepted}\n110 text 02\n111 text integrated excess -10.0 dBm · 9 cells`;
+  assert.equal(
+    liveDetectAcceptanceSummary(visiblyStrongerNonAuto).autoTargetIsMaximumIntegratedExcess,
+    false,
+  );
+  assert.equal(liveDetectAcceptanceSummary(visiblyStrongerNonAuto).autoAcceptanceComplete, false);
+  const hiddenAgileWinnerRegression = accepted.replace(
+    'toggle button Auto · most prominent (pressed)',
+    'toggle button Auto · most prominent (pressed), Description: DEV RANK POPULATION; winner=physical-1; candidate=physical-1,raw=physical-1,power=-22.4 dBm,cells=37; candidate=agile-1,raw=physical-2,power=-10.0 dBm,cells=9',
+  );
+  assert.equal(
+    liveDetectCandidateRankingSummary(hiddenAgileWinnerRegression).evidenceSource,
+    'development-complete-rank-population',
+  );
+  assert.equal(
+    liveDetectAcceptanceSummary(hiddenAgileWinnerRegression).autoTargetIsMaximumIntegratedExcess,
+    false,
+  );
   const intentionalCandidateScroll = `${accepted}\n110 vertical scroll bar Evidence candidate rows`;
   assert.equal(liveDetectAcceptanceSummary(intentionalCandidateScroll).hasInnerScroll, false);
   assert.deepEqual(
@@ -867,6 +1654,7 @@ test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', (
   const marker = liveMarkerSummary(narrowText);
   const narrow = liveMarkerCharacterizationSummary(narrowText);
   assert.equal(marker.frequencyHz, 98_000_000);
+  assert.equal(marker.powerDbm, -31.4);
   assert.deepEqual({
     widthClassification: narrow.widthClassification,
     threeDecibelStatus: narrow.threeDecibelStatus,
@@ -886,6 +1674,24 @@ test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', (
     { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
     'resolution-limited-narrow',
   ));
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      { ...marker, powerDbm: null },
+      narrow,
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+      'resolution-limited-narrow',
+    ),
+    /omitted a finite parsed marker power/u,
+  );
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      { ...marker, powerDbm: Number.NaN },
+      narrow,
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+      'resolution-limited-narrow',
+    ),
+    /omitted a finite parsed marker power/u,
+  );
   const collapsedMarkerText = [
     '201 text M 1 · NORMAL -31.4 dBm 98.000 MHz',
     '204 section Marker M1 local characterization',
@@ -900,6 +1706,48 @@ test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', (
     { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
     'resolution-limited-narrow',
   ));
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      marker,
+      {
+        ...narrow,
+        threeDecibelBandwidthHz: 200_000,
+        threeDecibelStartHz: 97_900_000,
+        threeDecibelStopHz: 98_100_000,
+      },
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+      'resolution-limited-narrow',
+    ),
+    /not bounded below 90%|not a narrow grid-limited response/u,
+  );
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      marker,
+      {
+        ...narrow,
+        threeDecibelBandwidthHz: 20_000,
+        threeDecibelStartHz: 97_990_000,
+        threeDecibelStopHz: 98_010_000,
+      },
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+      'resolution-limited-narrow',
+    ),
+    /not a narrow grid-limited response/u,
+  );
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      marker,
+      {
+        ...narrow,
+        componentOccupiedBandwidthHz: 200_000,
+        componentOccupiedBandwidthStartHz: 97_900_000,
+        componentOccupiedBandwidthStopHz: 98_100_000,
+      },
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+      'resolution-limited-narrow',
+    ),
+    /not bounded below 90%/u,
+  );
 
   const wideText = narrowText
     .replace('Narrow · resolution limited', 'Resolved local response · >2 resolution elements')
@@ -923,6 +1771,74 @@ test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', (
     { id: 'lte-etm3.1', centerHz: 98_000_000, recommendedSpanHz: 40_000_000 },
     'resolved-wideband',
   ));
+  for (const [label, characterization] of [
+    ['exact-full 3 dB', {
+      ...wide,
+      threeDecibelBandwidthHz: 40_000_000,
+      threeDecibelStartHz: 78_000_000,
+      threeDecibelStopHz: 118_000_000,
+    }],
+    ['near-full 3 dB', {
+      ...wide,
+      threeDecibelBandwidthHz: 36_100_000,
+      threeDecibelStartHz: 79_950_000,
+      threeDecibelStopHz: 116_050_000,
+    }],
+    ['near-full component OBW', {
+      ...wide,
+      componentOccupiedBandwidthHz: 36_100_000,
+      componentOccupiedBandwidthStartHz: 79_950_000,
+      componentOccupiedBandwidthStopHz: 116_050_000,
+    }],
+  ]) {
+    assert.throws(
+      () => validateLiveMarkerEvidence(
+        wideMarker,
+        characterization,
+        { id: 'lte-etm3.1', centerHz: 98_000_000, recommendedSpanHz: 40_000_000 },
+        'resolved-wideband',
+      ),
+      /not bounded below 90%|not a resolved response/u,
+      label,
+    );
+  }
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      wideMarker,
+      {
+        ...wide,
+        threeDecibelBandwidthHz: 20_000_000,
+        threeDecibelStartHz: 78_000_000,
+        threeDecibelStopHz: 98_000_000,
+      },
+      { id: 'lte-etm3.1', centerHz: 98_000_000, recommendedSpanHz: 40_000_000 },
+      'resolved-wideband',
+    ),
+    /not strictly inside the visible profile span/u,
+  );
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      wideMarker,
+      {
+        ...wide,
+        componentOccupiedBandwidthHz: 5_000_000,
+        componentOccupiedBandwidthStartHz: 95_500_000,
+        componentOccupiedBandwidthStopHz: 100_500_000,
+      },
+      { id: 'lte-etm3.1', centerHz: 98_000_000, recommendedSpanHz: 40_000_000 },
+      'resolved-wideband',
+    ),
+    /not coherent with and enclosing its 3 dB response/u,
+  );
+  assert.throws(
+    () => validateLiveMarkerEvidence(
+      { ...wideMarker, frequencyHz: 102_000_000, powerCentroidHz: 102_000_000 },
+      wide,
+      { id: 'lte-etm3.1', centerHz: 98_000_000, recommendedSpanHz: 40_000_000 },
+      'resolved-wideband',
+    ),
+    /missed its independent catalog center/u,
+  );
   const incoherentWideText = narrowText
     .replace('Narrow · resolution limited', 'Resolved local response · >2 resolution elements')
     .replace('686 Hz', '9.8 MHz')
@@ -1029,6 +1945,12 @@ test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', (
 });
 
 test('Computer Use screenshot size evidence reads PNG and JPEG headers exactly', () => {
+  assert.equal(SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH, 1_280);
+  assert.equal(SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT, 720);
+  assert.equal(liveScreenshotMeetsMinimum({ width: 1_434, height: 768 }), true);
+  assert.equal(liveScreenshotMeetsMinimum({ width: 1_280, height: 720 }), true);
+  assert.equal(liveScreenshotMeetsMinimum({ width: 1_279, height: 720 }), false);
+  assert.equal(liveScreenshotMeetsMinimum({ width: 1_434, height: 719 }), false);
   const png = Buffer.alloc(24);
   Buffer.from('89504e470d0a1a0a', 'hex').copy(png, 0);
   Buffer.from('IHDR', 'ascii').copy(png, 12);
@@ -1040,6 +1962,177 @@ test('Computer Use screenshot size evidence reads PNG and JPEG headers exactly',
   jpeg.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x03, 0x35, 0x05, 0xfc]);
   assert.deepEqual(liveScreenshotDimensions(jpeg, '.jpg'), { width: 1_532, height: 821 });
   assert.throws(() => liveScreenshotDimensions(Buffer.alloc(4), '.png'), /truncated or lacks IHDR/u);
+
+  const pixels = livePngPixelEvidence(pngScreenshotFixture(17));
+  assert.equal(pixels.width, 8);
+  assert.equal(pixels.height, 2);
+  assert.equal(pixels.sampledPixels, 16);
+  assert.ok(pixels.distinctColors >= 8);
+  assert.ok(pixels.luminanceRange >= 8);
+
+  const opaqueRgba = livePngPixelEvidence(pngScreenshotFixture(
+    17,
+    8,
+    2,
+    { rgba: true, alpha: 255 },
+  ));
+  const transparentRgba = livePngPixelEvidence(pngScreenshotFixture(
+    17,
+    8,
+    2,
+    { rgba: true, alpha: 0 },
+  ));
+  assert.notEqual(opaqueRgba.pixelSha256, transparentRgba.pixelSha256);
+  assert.equal(transparentRgba.distinctColors, 1);
+  assert.equal(transparentRgba.luminanceRange, 0);
+  assert.throws(
+    () => livePngPixelEvidence(pngScreenshotFixture(1, 8_193, 1)),
+    /dimensions exceed the bounded live-evidence decoder/u,
+  );
+});
+
+test('Atom-open soak defaults to 30 minutes and keeps checkpoints bounded', () => {
+  assert.deepEqual(liveSignalLabAtomOpenSoakConfiguration(), {
+    durationMs: 30 * 60 * 1_000,
+    checkpointIntervalMs: 30_000,
+  });
+  assert.deepEqual(liveSignalLabAtomOpenSoakConfiguration({
+    durationMs: 2_000,
+    checkpointIntervalMs: 250,
+  }), {
+    durationMs: 2_000,
+    checkpointIntervalMs: 250,
+  });
+  assert.throws(
+    () => liveSignalLabAtomOpenSoakConfiguration({
+      durationMs: 1_000,
+      checkpointIntervalMs: 1_000,
+    }),
+    /shorter than durationMs/u,
+  );
+  const mib = 1_024 * 1_024;
+  const rendererMemorySamples = [400, 402, 401, 403, 404, 405, 404, 406]
+    .map((value, index) => ({
+      bytes: value * mib,
+      source: 'electron-renderer-log',
+      capturedAt: new Date(Date.UTC(2026, 6, 18, 8, 0, index + 1)).toISOString(),
+      identity: 'pid:91500',
+      checkpoint: index === 0
+        ? 'soak-start'
+        : index === 7
+          ? 'soak-complete'
+          : 'soak-profile-complete',
+    }));
+  const report = {
+    startedAt: '2026-07-18T08:00:00.000Z',
+    completedAt: '2026-07-18T08:00:10.000Z',
+    configuration: { durationMs: 2_000, checkpointIntervalMs: 250 },
+    initialSequence: 10,
+    finalSequence: 18,
+    monotonicTiming: {
+      startedMilliseconds: 500,
+      completedMilliseconds: 2_500.5,
+      elapsedMilliseconds: 2_000.5,
+    },
+    checkpoints: Array.from({ length: 8 }, (_, index) => ({
+      checkpoint: index + 1,
+      route: ['Waterfall', 'Channel', 'I/Q', 'Detect', 'Spectrum'][index % 5],
+      fromSequence: 10 + index,
+      sequence: 11 + index,
+      elapsedMilliseconds: (index + 1) * 250,
+      layout: {
+        ...COMPLETE_RUNNING_LAYOUT,
+        globalSweepIdentity: {
+          ...COMPLETE_RUNNING_LAYOUT.globalSweepIdentity,
+          sweepId: `sweep-${11 + index}`,
+          sequence: 11 + index,
+        },
+      },
+      atomPanelOpen: true,
+      ...(index === 7 ? { terminal: true } : {}),
+    })),
+    finalStopSucceeded: true,
+    stress: { rendererMemorySamples },
+  };
+  assert.equal(
+    validateSignalLabAtomOpenSoakCompletion(report).status,
+    'atom-open-duration-memory-and-final-stop-validated',
+  );
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion({
+      ...report,
+      configuration: undefined,
+    }),
+    /did not meet configured monotonic duration 1800000 ms/u,
+  );
+  const brokenChain = structuredClone(report);
+  brokenChain.checkpoints[3].fromSequence = 99;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(brokenChain),
+    /not a strictly chained advancing sweep/u,
+  );
+  const nonadvancing = structuredClone(report);
+  nonadvancing.checkpoints[3].sequence = nonadvancing.checkpoints[3].fromSequence;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(nonadvancing),
+    /not a strictly chained advancing sweep/u,
+  );
+  const staleGlobalCheckpoint = structuredClone(report);
+  staleGlobalCheckpoint.checkpoints[3].layout.globalSweepIdentity.sequence -= 1;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(staleGlobalCheckpoint),
+    /omitted its expected Detect running-layout or Atom-open evidence/u,
+  );
+  const wrongRoute = structuredClone(report);
+  wrongRoute.checkpoints[2].route = 'Spectrum';
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(wrongRoute),
+    /expected I\/Q running-layout or Atom-open evidence/u,
+  );
+  const missingTerminal = structuredClone(report);
+  delete missingTerminal.checkpoints.at(-1).terminal;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(missingTerminal),
+    /exactly one final terminal checkpoint/u,
+  );
+  const earlyTerminal = structuredClone(report);
+  earlyTerminal.checkpoints[2].terminal = true;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(earlyTerminal),
+    /exactly one final terminal checkpoint/u,
+  );
+  const hiddenAtom = structuredClone(report);
+  hiddenAtom.checkpoints[4].atomPanelOpen = false;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(hiddenAtom),
+    /expected Spectrum running-layout or Atom-open evidence/u,
+  );
+  const stoppedLayout = structuredClone(report);
+  stoppedLayout.checkpoints[1].layout = COMPLETE_STOPPED_LAYOUT;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(stoppedLayout),
+    /expected Channel running-layout or Atom-open evidence/u,
+  );
+  const shortTerminal = structuredClone(report);
+  shortTerminal.checkpoints.at(-1).elapsedMilliseconds = 1_999;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(shortTerminal),
+    /terminal checkpoint does not prove the configured duration/u,
+  );
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion({
+      ...report,
+      finalStopSucceeded: false,
+    }),
+    /final global Stop did not complete/u,
+  );
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion({
+      ...report,
+      stress: { rendererMemorySamples: [] },
+    }),
+    /requires at least 8 measured renderer-memory samples/u,
+  );
 });
 
 test('bounded stress evidence rejects slow controls and missing sweep progression', () => {
@@ -1070,9 +2163,45 @@ test('bounded stress evidence rejects slow controls and missing sweep progressio
           millisecondsPerSequenceOpportunity: 100,
         },
         responsivenessTour: {
-          routes: ['Waterfall', 'Channel', 'I/Q', 'Spectrum'].map((label) => ({
-            label,
+          routes: [
+            { label: 'Waterfall', fromSequence: 20, sequence: 21, enabledControls: ['Edit Color floor'] },
+            { label: 'Channel', fromSequence: 21, sequence: 22, enabledControls: ['Edit Center frequency'] },
+            { label: 'I/Q', fromSequence: 22, sequence: 23, enabledControls: ['Edit Center frequency'] },
+            { label: 'Device', fromSequence: 23, sequence: 25, enabledControls: ['SignalLab profile'] },
+            { label: 'Spectrum', fromSequence: 25, sequence: 26, enabledControls: [] },
+          ].map((route) => ({
+            ...route,
             stopPresent: true,
+            controlInteraction: route.label === 'Device'
+              ? {
+                  status: 'profile-selector-opened-and-cancelled-under-run',
+                  profileControlEvidenceBefore: 'pop up button Description: SignalLab profile, Value: cw',
+                  profileControlEvidenceAfter: 'pop up button Description: SignalLab profile, Value: cw, focused',
+                  profileValueBefore: 'cw',
+                  profileValueAfter: 'cw',
+                  popupEvidence: {
+                    open: true,
+                    source: 'native-signal-lab-profile-menu-items',
+                    expandedControl: null,
+                    nativeProfileOptions: ['cw · 98.000 MHz', 'fm · 98.000 MHz'],
+                  },
+                  sweepSequenceBeforeInteraction: 24,
+                  sweepSequenceAfterInteraction: 25,
+                }
+              : null,
+            acquisitionCounts: { run: 0, single: 0, stop: 1 },
+            acquisitionLandmarkCount: 1,
+            acquisitionLandmarkPrecedesControls: true,
+            acquisitionLandmarkControlBinding: true,
+            globalSweepIdentity: {
+              evidenceCount: 1,
+              valid: true,
+              controls: 'Stop',
+              sweepId: `sweep-${route.sequence}`,
+              sequence: route.sequence,
+              evidence: 'DEV ACQUISITION LANDMARK stress fixture',
+            },
+            routeCounts: COMPLETE_STOPPED_LAYOUT.routeCounts,
           })),
           controls: ['sweep-setup', 'traces-and-markers'],
           elapsedMs: 200,
@@ -1126,7 +2255,86 @@ test('bounded stress evidence rejects slow controls and missing sweep progressio
         },
       }],
     }),
-    /omitted the active-Run workspace\/control responsiveness tour/u,
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const missingTourLandmark = structuredClone(evidence);
+  missingTourLandmark.sweepProgressions[1]
+    .responsivenessTour.routes[0].acquisitionLandmarkCount = 0;
+  assert.throws(
+    () => validateLiveStressEvidence(missingTourLandmark),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const missingRouteControl = structuredClone(evidence);
+  missingRouteControl.sweepProgressions[1]
+    .responsivenessTour.routes[0].enabledControls = [];
+  assert.throws(
+    () => validateLiveStressEvidence(missingRouteControl),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const mismatchedRouteControl = structuredClone(evidence);
+  mismatchedRouteControl.sweepProgressions[1]
+    .responsivenessTour.routes[1].enabledControls = ['Edit Color floor'];
+  assert.throws(
+    () => validateLiveStressEvidence(mismatchedRouteControl),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const disabledDeviceProfile = structuredClone(evidence);
+  disabledDeviceProfile.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction.profileControlEvidenceBefore += ' (disabled)';
+  disabledDeviceProfile.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction.profileControlEvidenceAfter += ' (disabled)';
+  assert.throws(
+    () => validateLiveStressEvidence(disabledDeviceProfile),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const missingDeviceInteraction = structuredClone(evidence);
+  missingDeviceInteraction.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction = null;
+  assert.throws(
+    () => validateLiveStressEvidence(missingDeviceInteraction),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const changedDeviceProfile = structuredClone(evidence);
+  changedDeviceProfile.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction.profileValueAfter = 'fm';
+  assert.throws(
+    () => validateLiveStressEvidence(changedDeviceProfile),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const inertDeviceClick = structuredClone(evidence);
+  inertDeviceClick.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction.popupEvidence = {
+      open: false,
+      source: null,
+      expandedControl: null,
+      nativeProfileOptions: [],
+    };
+  assert.throws(
+    () => validateLiveStressEvidence(inertDeviceClick),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const staleDeviceProgression = structuredClone(evidence);
+  staleDeviceProgression.sweepProgressions[1]
+    .responsivenessTour.routes[3].controlInteraction.sweepSequenceAfterInteraction = 24;
+  assert.throws(
+    () => validateLiveStressEvidence(staleDeviceProgression),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const staleGlobalRouteClock = structuredClone(evidence);
+  staleGlobalRouteClock.sweepProgressions[1]
+    .responsivenessTour.routes[2].globalSweepIdentity.sequence = 22;
+  assert.throws(
+    () => validateLiveStressEvidence(staleGlobalRouteClock),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
+  );
+  const invalidGlobalRouteEvidence = structuredClone(evidence);
+  invalidGlobalRouteEvidence.sweepProgressions[1]
+    .responsivenessTour.routes[2].globalSweepIdentity.evidenceCount = 0;
+  invalidGlobalRouteEvidence.sweepProgressions[1]
+    .responsivenessTour.routes[2].globalSweepIdentity.valid = false;
+  assert.throws(
+    () => validateLiveStressEvidence(invalidGlobalRouteEvidence),
+    /omitted an advancing active-Run workspace\/control responsiveness tour/u,
   );
   assert.throws(
     () => validateLiveStressEvidence({
@@ -1411,8 +2619,58 @@ test('channel summary anchors on the 3 dB result rather than the workspace name'
   assert.deepEqual(liveChannelSummary(text), {
     status: 'resolution-limited',
     bandwidthHz: 686,
-    detail: '133 text 3 dB BANDWIDTH | 134 text Resolution-limited | 135 text Response 686 Hz · RBW/grid 489 Hz',
+    startHz: null,
+    stopHz: null,
+    resolutionScaleHz: 489,
+    metricNode: null,
+    detail: 'text 3 dB BANDWIDTH | text Resolution-limited | text Response 686 Hz · RBW/grid 489 Hz',
   });
+  assert.equal(validateLiveChannelEvidence(
+    liveChannelSummary(text),
+    { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+  ).status, 'validated-resolution-limited-narrow');
+  assert.throws(
+    () => validateLiveChannelEvidence(
+      { status: 'resolved', bandwidthHz: 190_000, detail: 'whole view' },
+      { id: 'cw', centerHz: 98_000_000, recommendedSpanHz: 200_000 },
+    ),
+    /explicitly resolution-limited/u,
+  );
+  const resolved = liveChannelSummary(
+    '133 group 3 dB bandwidth 17.5 MHz; 938.75 MHz to 956.25 MHz; interpolated',
+  );
+  assert.equal(resolved.metricNode?.startsWith('group 3 dB bandwidth'), true);
+  assert.equal(validateLiveChannelEvidence(
+    resolved,
+    {
+      id: 'lte-etm3.1',
+      centerHz: 947_500_000,
+      recommendedSpanHz: 30_000_000,
+      occupiedBandwidthHz: 18_000_000,
+    },
+    { strictNarrow: false, strictWideband: true },
+  ).status, 'validated-resolved-wideband');
+  assert.throws(
+    () => validateLiveChannelEvidence(
+      { ...resolved, stopHz: 955_000_000 },
+      {
+        id: 'lte-etm3.1',
+        centerHz: 947_500_000,
+        recommendedSpanHz: 30_000_000,
+        occupiedBandwidthHz: 18_000_000,
+      },
+      { strictNarrow: false, strictWideband: true },
+    ),
+    /conflicts with range span/u,
+  );
+  const occupiedBandwidthOnly = liveChannelSummary([
+    '133 text 3 dB BANDWIDTH',
+    '134 text —',
+    '135 text OCCUPIED BANDWIDTH · 99%',
+    '136 text 18 MHz',
+  ].join('\n'));
+  assert.equal(occupiedBandwidthOnly.status, 'unparseable');
+  assert.equal(occupiedBandwidthOnly.bandwidthHz, null);
 });
 
 test('unavailable 3 dB result never borrows the following channel center', () => {

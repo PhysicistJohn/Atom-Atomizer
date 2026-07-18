@@ -9,6 +9,7 @@ import {
 import { observableClassDefinitions } from '../../../../../../Atom-Classifier/src/observable-classifier-model.js';
 import { zeroSpanConfigSchema, type DetectedSignal, type FirmwareTraceFrame, type FirmwareTraceId, type InstrumentAcquisitionCapability, type MarkerId, type MarkerReading, type SignalDetectionConfig, type SpectrumDisplayConfiguration, type Sweep, type TraceFrame, type TraceId, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
   classificationSpectrumSelection,
   compareClassificationCaptureTargetSignals,
@@ -66,6 +67,12 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
   const autoTargetRankEvidence = autoTargetProjection === undefined
     ? undefined
     : classificationCaptureTargetRankEvidence(autoTargetProjection.rawTarget);
+  const developerAutoRankingDescription = DEVELOPMENT_RENDERER
+    ? `DEV RANK POPULATION; winner=${autoTargetProjection?.projectedRepresentative.id ?? 'none'}; ${captureTargetProjections.map((projection) => {
+      const evidence = classificationCaptureTargetRankEvidence(projection.rawTarget);
+      return `candidate=${projection.projectedRepresentative.id},raw=${projection.rawTarget.id},power=${evidence ? formatLevel(10 * Math.log10(evidence.integratedExcessPowerMw)) : 'unavailable'},cells=${evidence?.supportCellCount ?? 0}`;
+    }).join('; ')}`
+    : undefined;
   const targetableRepresentativeIds = new Set(captureTargetProjections
     .map((projection) => projection.projectedRepresentative.id));
   const spectrumSelection = classificationSpectrumSelection(
@@ -123,7 +130,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
     </section>
 
     <section className="candidate-panel">
-      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} disabled={autoTargetProjection === undefined} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · most prominent</button></div></div>
+      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} aria-description={developerAutoRankingDescription} disabled={autoTargetProjection === undefined} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · most prominent</button></div></div>
       {currentEvidenceCount ? <div className="candidate-list" role="region" aria-label="Current detector and classification evidence">
         {activePhysicalRows.length > 0 && <div className="candidate-group-label"><span>ACTIVE PHYSICAL ROWS</span><em>CURRENT PHYSICAL</em></div>}
         {activePhysicalRows.map((detection, index) => {

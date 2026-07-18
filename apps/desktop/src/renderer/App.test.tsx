@@ -1057,6 +1057,9 @@ describe('operator vertical slice', () => {
     for (let look = 1; look <= 8; look++) {
       fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
       await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(look));
+      await waitFor(() => expect(
+        screen.getByRole('button', { name: /^Single$/i }).hasAttribute('disabled'),
+      ).toBe(false));
     }
 
     const expectedCenterHz = Math.round(88_000_000 + Math.floor(requested.points / 2)
@@ -1374,6 +1377,62 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
     expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
+  });
+
+  it('publishes one advancing global sweep identity across every non-Spectrum Run route', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return {
+        sessionId: signalLabIqSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected spectrum Run configuration');
+    const streamingConfiguration = structuredClone(activeConfiguration);
+    const streamingRevision = configurationRevision;
+    const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
+
+    for (const route of ['Waterfall', 'Channel', 'I/Q', 'Device'] as const) {
+      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${route.replace('/', '\\/')}$`, 'i') }));
+      if (route === 'Waterfall') {
+        await screen.findByLabelText(/Measured power by frequency and sweep time/i);
+        expect(screen.getByLabelText('Edit Color floor').getAttribute('aria-disabled')).toBe('false');
+      } else if (route === 'Channel') {
+        await screen.findByText(/Channel setup/i);
+        expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+      } else if (route === 'I/Q') {
+        await screen.findByText(/Complex baseband/i);
+        expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+      } else {
+        await screen.findByText(/Instrument source/i);
+        expect((screen.getByRole('combobox', { name: 'SignalLab profile' }) as HTMLSelectElement).disabled)
+          .toBe(false);
+      }
+      const measurement = signalLabStreamingMeasurement(
+        streamingConfiguration,
+        `route-${route}`,
+        streamingRevision,
+        'producer-epoch:1',
+        true,
+      );
+      await act(async () => {
+        instrumentEventListener?.({ type: 'measurement', measurement });
+      });
+      await waitFor(() => expect(acquisition.getAttribute('aria-description')).toBe(
+        `DEV ACQUISITION LANDMARK; controls=Stop; sweepId=${measurement.measurementId}; sequence=${measurement.sequence}`,
+      ));
+      expect(within(acquisition).getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+    }
   });
 
   it('pauses bounded I/Q at buffer boundaries for SignalLab profile and channel changes, then resumes', async () => {

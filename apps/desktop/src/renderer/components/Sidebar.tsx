@@ -1,5 +1,6 @@
 import { Activity, BarChart3, Cpu, Layers3, LoaderCircle, Play, Radio, Repeat2, ScanSearch, StopCircle, Waves } from 'lucide-react';
 import type { MeasurementViewId } from '@tinysa/contracts';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import type { AcquisitionState, WorkspaceId } from '../ui-contracts.js';
 
 type VisibleMeasurementViewId = Exclude<MeasurementViewId, 'envelope-stft'>;
@@ -30,6 +31,7 @@ export function Sidebar({
   acquisitionBusy,
   acquisitionDisabled,
   acquisitionDisabledReason,
+  latestSweep,
   onSelect,
   onMeasurementView,
   onRun,
@@ -48,6 +50,7 @@ export function Sidebar({
   acquisitionBusy: boolean;
   acquisitionDisabled: boolean;
   acquisitionDisabledReason?: string;
+  latestSweep?: { readonly id: string; readonly sequence: number };
   onSelect(id: WorkspaceId): void;
   onMeasurementView(id: VisibleMeasurementViewId): void;
   onRun(): void;
@@ -75,7 +78,14 @@ export function Sidebar({
         return <button type="button" key={item.id} className={`nav-item ${activeItem ? 'active' : ''}`} disabled={disabled} onClick={() => onSelect(item.id)} aria-current={activeItem ? 'page' : undefined} title={disabled ? 'Connected driver exposes no configurable signal source' : item.label} data-agent-control={`workspace.${item.id}`}><span className="nav-icon"><Icon size={19}/>{item.id === 'generator' && output !== 'off' && <i className={`rf-mini ${output}`}/>}</span><span>{item.label}</span></button>;
       })}
     </nav>
-    <section className={`sidebar-acquisition ${continuous || acquiringSingle ? 'active' : ''}`} aria-label="Acquisition controls" data-agent-exclusion={iqAcquisition ? 'human-iq-capture-boundary' : undefined}>
+    <section
+      className={`sidebar-acquisition ${continuous || acquiringSingle ? 'active' : ''}`}
+      aria-label="Acquisition controls"
+      aria-description={DEVELOPMENT_RENDERER
+        ? `DEV ACQUISITION LANDMARK; controls=${continuous ? 'Stop' : 'Run,Single'}; sweepId=${latestSweep?.id ?? 'none'}; sequence=${latestSweep?.sequence ?? 'none'}`
+        : undefined}
+      data-agent-exclusion={iqAcquisition ? 'human-iq-capture-boundary' : undefined}
+    >
       <div className="sidebar-acquisition-state" aria-live="polite"><i/><span>{acquisitionStatus}</span></div>
       {continuous
         ? <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.continuous.stop'} className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop bounded I/Q buffer acquisition after the in-flight buffer' : 'Stop continuous spectrum acquisition'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>

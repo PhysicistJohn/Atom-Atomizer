@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MarkerConfiguration, TraceBankConfiguration } from '@tinysa/contracts';
+import type { MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
 import { DEFAULT_ANALYZER } from '../ui-contracts.js';
 import { MeasurementWorkspace } from './MeasurementWorkspace.js';
+import { MeasurementDock } from './MeasurementDock.js';
 import { Sidebar } from './Sidebar.js';
 
 const traces = [
@@ -21,6 +22,33 @@ const markers = Array.from({ length: 8 }, (_, index) => ({
   frequencyHz: 98_000_000,
   tracking: 'fixed',
 })) as MarkerConfiguration[];
+
+const markerReading = {
+  markerId: 1,
+  traceId: 1,
+  mode: 'normal',
+  binIndex: 2,
+  frequencyHz: 98_000_000,
+  powerDbm: -31.4,
+  localCharacterization: {
+    markerCenterMethod: 'local-peak',
+    markerFrequencyHz: 98_000_000,
+    localPeakHz: 98_000_000,
+    localPeakDbm: -31.4,
+    componentThresholdDbm: -90,
+    robustFloorDbm: -105,
+    peakToRobustFloorDb: 73.6,
+    prominenceDb: 73.6,
+    requiredProminenceDb: 6,
+    widthClassification: 'unavailable',
+    componentRelationship: 'no-qualified-component',
+    unavailableReason: 'no-qualified-local-component',
+    evidence: 'host-derived-local-scalar-trace',
+    qualification: 'observed-response-not-deconvolved-or-calibrated-snr',
+  },
+  sourceSweepId: 'sweep-current-42',
+  evidence: 'host-derived',
+} satisfies MarkerReading;
 
 afterEach(cleanup);
 
@@ -51,6 +79,8 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(navigation.textContent).not.toMatch(/Classify|Time\s*\/\s*STFT/i);
     expect(within(navigation).queryByRole('button', { name: 'Run' })).toBeNull();
     const acquisition = within(view.container).getByRole('region', { name: 'Acquisition controls' });
+    expect(acquisition.getAttribute('aria-description'))
+      .toBe('DEV ACQUISITION LANDMARK; controls=Run,Single; sweepId=none; sequence=none');
     const run = within(acquisition).getByRole('button', { name: 'Run' });
     const single = within(acquisition).getByRole('button', { name: 'Single' });
     run.focus();
@@ -73,6 +103,7 @@ describe('desktop navigation and compact measurement layout', () => {
       continuous
       acquisitionBusy={false}
       acquisitionDisabled
+      latestSweep={{ id: 'sweep-42', sequence: 42 }}
       onSelect={vi.fn()}
       onMeasurementView={vi.fn()}
       onRun={vi.fn()}
@@ -80,9 +111,31 @@ describe('desktop navigation and compact measurement layout', () => {
       onStop={onStop}
     />);
     const acquisition = within(view.container).getByRole('region', { name: 'Acquisition controls' });
+    expect(acquisition.getAttribute('aria-description'))
+      .toBe('DEV ACQUISITION LANDMARK; controls=Stop; sweepId=sweep-42; sequence=42');
     expect(within(acquisition).getByText('Running spectrum')).toBeTruthy();
     expect(within(acquisition).queryByRole('button', { name: 'Run' })).toBeNull();
     expect(within(acquisition).queryByRole('button', { name: 'Single' })).toBeNull();
+    view.rerender(<Sidebar
+      active="device"
+      measurementView="channel"
+      output="off"
+      generationAvailable
+      connected
+      acquisition="streaming"
+      continuous
+      acquisitionBusy={false}
+      acquisitionDisabled
+      latestSweep={{ id: 'sweep-43', sequence: 43 }}
+      onSelect={vi.fn()}
+      onMeasurementView={vi.fn()}
+      onRun={vi.fn()}
+      onSingle={vi.fn()}
+      onStop={onStop}
+    />);
+    expect(acquisition.getAttribute('aria-description'))
+      .toBe('DEV ACQUISITION LANDMARK; controls=Stop; sweepId=sweep-43; sequence=43');
+    expect(within(acquisition).getByRole('button', { name: 'Stop' })).toBeTruthy();
     fireEvent.click(within(acquisition).getByRole('button', { name: 'Stop' }));
     expect(onStop).toHaveBeenCalledOnce();
   });
@@ -137,6 +190,35 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(topBar.queryByRole('button', { name: 'Single' })).toBeNull();
     expect(view.container.querySelector('.envelope-stft-view')).toBeNull();
     expect(within(view.container).getByLabelText('Spectrum plot')).toBeTruthy();
+  });
+
+  it('binds the DEV marker readout diagnostic to its source sweep', () => {
+    const view = render(<MeasurementDock
+      traces={traces}
+      frames={[]}
+      firmwareFrames={[]}
+      visibleFirmwareTraceIds={[]}
+      onFirmwareTraceVisibility={vi.fn()}
+      activeTraceId={1}
+      onActiveTrace={vi.fn()}
+      markers={markers.map((marker) => marker.id === 1
+        ? { ...marker, enabled: true }
+        : marker)}
+      readings={[markerReading]}
+      activeMarkerId={1}
+      search={{ minimumLevelDbm: -90, minimumExcursionDb: 6 }}
+      display={{ referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }}
+      onTrace={vi.fn()}
+      onTraceReset={vi.fn()}
+      onMarker={vi.fn()}
+      onActiveMarker={vi.fn()}
+      onSearch={vi.fn()}
+      onSearchConfiguration={vi.fn()}
+      onDisplay={vi.fn()}
+      onAutoScale={vi.fn()}
+    />);
+    expect(within(view.container).getByLabelText('Marker M1 current reading')
+      .getAttribute('aria-description')).toBe('sourceSweepId=sweep-current-42');
   });
 
 });

@@ -16,6 +16,7 @@ import type {
   TraceId,
 } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
 
 type Panel = 'markers' | 'traces' | 'display';
@@ -72,7 +73,13 @@ export function MeasurementDock(props: MeasurementDockProps) {
           data-agent-control={`marker.${marker.id}.${active ? 'enabled' : 'select'}`}
         ><span>M{marker.id}</span><i/></button>;
       })}</div>
-      <div className="active-marker-result"><small>M{activeMarker.id} · {activeMarker.mode.replace('-', ' ').toUpperCase()}</small><strong>{activeReading ? formatMarkerReading(activeReading) : 'No trace data'}</strong><span>{activeReading ? formatFrequency(activeReading.frequencyHz) : 'Place on the trace or run a peak search'}</span></div>
+      <div
+        className="active-marker-result"
+        aria-label={`Marker M${activeMarker.id} current reading`}
+        aria-description={DEVELOPMENT_RENDERER && activeReading
+          ? `sourceSweepId=${activeReading.sourceSweepId}`
+          : undefined}
+      ><small>M{activeMarker.id} · {activeMarker.mode.replace('-', ' ').toUpperCase()}</small><strong>{activeReading ? formatMarkerReading(activeReading) : 'No trace data'}</strong><span>{activeReading ? formatFrequency(activeReading.frequencyHz) : 'Place on the trace or run a peak search'}</span></div>
       {activeReading && <MarkerCharacterizationCard reading={activeReading}/>}
       <div className="parameter-stack marker-settings">
         <ToggleParameter label={`Marker M${activeMarker.id} visibility`} value={activeMarker.enabled} controlId={`marker.${activeMarker.id}.enabled`} onToggle={(enabled) => props.onMarker({ ...activeMarker, enabled })}/>

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DetectedSignal, Sweep, WaveformClassification, ZeroSpanConfig } from '@tinysa/contracts';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
 import { ClassificationWorkspace, classificationCaptureGeometryMenu, selectClassificationCaptureGeometry, waveformLabel } from './ClassificationWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
+import { WaterfallView } from './WaterfallView.js';
 
 const sweep = {
   kind: 'spectrum',
@@ -248,6 +249,8 @@ describe('analysis visual contracts', () => {
     expect(within(view.container).getByLabelText('Measured power by frequency')).toBeTruthy();
     const auto = within(view.container).getByRole('button', { name: /Auto · most prominent/i });
     expect(auto.getAttribute('aria-pressed')).toBe('false');
+    expect(auto.getAttribute('aria-description')).toContain('DEV RANK POPULATION');
+    expect(auto.getAttribute('aria-description')).toContain(`winner=${visibleWide.id}`);
     expect(view.container.querySelector('.detection-band.selected')).not.toBeNull();
     expect(view.container.querySelector('.candidate-row')?.getAttribute('data-agent-control'))
       .toBe(`classification.candidate.${visibleWide.id}.select`);
@@ -361,6 +364,8 @@ describe('analysis visual contracts', () => {
 
   it('renders detection geometry only when the owning workspace enables it', () => {
     const view = render(<SpectrumPlot sweep={sweep} detections={[detection]} busy={false}/>);
+    expect(within(view.container).getByLabelText('Spectrum plot').getAttribute('aria-description'))
+      .toBe('sweepId=sweep-1; sequence=1');
     expect(view.container.querySelector('.detection-band')).toBeNull();
     expect(view.container.querySelector('.detection-center')).toBeNull();
 
@@ -373,6 +378,37 @@ describe('analysis visual contracts', () => {
     expect(center?.getAttribute('x2')).toBe('360');
     expect(band?.classList.contains('selected')).toBe(true);
     expect(center?.classList.contains('selected')).toBe(true);
+  });
+
+  it('publishes DEV waterfall render evidence during the existing canvas paint', async () => {
+    const context = {
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      fillRect: vi.fn(),
+      beginPath: vi.fn(),
+      moveTo: vi.fn(),
+      lineTo: vi.fn(),
+      stroke: vi.fn(),
+    };
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context as unknown as CanvasRenderingContext2D);
+    const older = {
+      ...sweep,
+      id: 'sweep-0',
+      sequence: 0,
+      powerDbm: [-110, -95, -65, -85, -105],
+    } satisfies Sweep;
+    const view = render(<WaterfallView
+      history={[sweep, older]}
+      configuration={{ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }}
+      onConfiguration={vi.fn()}
+    />);
+    const canvas = within(view.container).getByLabelText('Measured power by frequency and sweep time');
+    await waitFor(() => expect(canvas.getAttribute('aria-description'))
+      .toMatch(/rows=2; bins=5; colors=2; minDbm=-110; maxDbm=-40/u));
+    expect(context.fillRect).toHaveBeenCalledTimes(11);
+    getContext.mockRestore();
   });
 
   it('uses canonical waveform names and a positive classification pill', () => {

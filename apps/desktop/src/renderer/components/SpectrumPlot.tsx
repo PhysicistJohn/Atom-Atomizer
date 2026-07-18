@@ -3,6 +3,7 @@ import { useId } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { DetectedSignal, FirmwareTraceFrame, FirmwareTraceId, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import { powerY, traceGeometry, validSpectrumDisplay } from '../plot-geometry.js';
 import { AtomicMark } from './AtomicMark.js';
 
@@ -125,7 +126,13 @@ export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwa
     }
   };
 
-  return <section className={`plot-panel ${sweep && activeMarker ? 'has-marker-readout-gutter' : ''}`} aria-label="Spectrum plot">
+  return <section
+    className={`plot-panel ${sweep && activeMarker ? 'has-marker-readout-gutter' : ''}`}
+    aria-label="Spectrum plot"
+    aria-description={DEVELOPMENT_RENDERER && sweep
+      ? `sweepId=${sweep.id}; sequence=${sweep.sequence}`
+      : undefined}
+  >
     <div className="panel-header"><div><span className="live-indicator"/><strong>{busy ? 'Acquiring' : sweep ? `Sweep ${sweep.sequence}` : 'No sweep'}</strong>{hostTraceLegend.length + firmwareTraceLegend.length > 0 && <small>{hostTraceLegend.map(({ trace }) => `H${trace.traceId} ${traceAbbreviation(trace.mode)}`).join(' · ')}{firmwareTraceLegend.map(({ trace }) => ` · D${trace.traceId} ${trace.role.toUpperCase()}`).join('')}</small>}</div><div className="plot-meta"><span><Activity size={13}/>{sweepPointCount === undefined ? '—' : `${sweepPointCount} points`}</span><span><Orbit size={13}/>{renderableDetections.length} signal{renderableDetections.length === 1 ? '' : 's'}</span><span>{hostTraceLegend.length} host · {firmwareTraceLegend.length} device</span></div></div>
     {sweep && activeMarker && <MarkerReadoutGutter marker={activeMarker}/>}
     <div className={`plot-canvas ${busy ? 'is-loading' : ''} ${onMarkerPlace ? 'marker-placeable' : ''}`}>

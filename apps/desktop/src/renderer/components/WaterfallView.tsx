@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { History } from 'lucide-react';
 import type { Sweep, WaterfallConfiguration } from '@tinysa/contracts';
 import { formatFrequency } from '../format.js';
+import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter } from './ParameterRow.js';
 
 export interface WaterfallViewProps {
@@ -27,14 +28,39 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
     context.fillStyle = '#070b10';
     context.fillRect(0, 0, width, height);
     const rowHeight = height / configuration.historyDepth;
+    const collectEvidence = DEVELOPMENT_RENDERER;
+    let minimumDbm = Number.POSITIVE_INFINITY;
+    let maximumDbm = Number.NEGATIVE_INFINITY;
+    let firstColor: string | undefined;
+    let differentColor = false;
     for (let row = 0; row < compatible.length; row++) {
       const sweep = compatible[row]!;
       const cellWidth = width / sweep.powerDbm.length;
       for (let column = 0; column < sweep.powerDbm.length; column++) {
-        const normalized = (sweep.powerDbm[column]! - configuration.floorDbm) / (configuration.ceilingDbm - configuration.floorDbm);
-        context.fillStyle = atomicColor(normalized);
+        const powerDbm = sweep.powerDbm[column]!;
+        const normalized = (powerDbm - configuration.floorDbm) / (configuration.ceilingDbm - configuration.floorDbm);
+        const color = atomicColor(normalized);
+        context.fillStyle = color;
         context.fillRect(column * cellWidth, row * rowHeight, Math.ceil(cellWidth + 0.25), Math.ceil(rowHeight + 0.25));
+        if (collectEvidence) {
+          minimumDbm = Math.min(minimumDbm, powerDbm);
+          maximumDbm = Math.max(maximumDbm, powerDbm);
+          if (firstColor === undefined) firstColor = color;
+          else if (color !== firstColor) differentColor = true;
+        }
       }
+    }
+    if (collectEvidence) {
+      if (compatible.length > 0 && reference) {
+        element.setAttribute(
+          'aria-description',
+          `rows=${compatible.length}; bins=${reference.powerDbm.length}; colors=${differentColor ? 2 : firstColor === undefined ? 0 : 1}; minDbm=${minimumDbm}; maxDbm=${maximumDbm}`,
+        );
+      } else {
+        element.removeAttribute('aria-description');
+      }
+    } else {
+      element.removeAttribute('aria-description');
     }
     context.strokeStyle = 'rgba(214, 229, 224, .08)';
     context.lineWidth = 1;
@@ -57,7 +83,12 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
   return <section className="waterfall-view" aria-label="Sweep-history waterfall">
     <div className="waterfall-canvas-shell">
       <div className="waterfall-y-axis"><span>NOW</span><span>−{configuration.historyDepth - 1}</span><em>SWEEP AGE</em></div>
-      <canvas ref={canvas} width="1200" height="560" aria-label="Measured power by frequency and sweep time"/>
+      <canvas
+        ref={canvas}
+        width="1200"
+        height="560"
+        aria-label="Measured power by frequency and sweep time"
+      />
       {!reference && <div className="analysis-empty"><History size={22}/><strong>No history</strong><span>Run to build sweep history.</span></div>}
       <div className="waterfall-scale"><span>{configuration.floorDbm} dBm</span><i/><span>{configuration.ceilingDbm} dBm</span></div>
     </div>
