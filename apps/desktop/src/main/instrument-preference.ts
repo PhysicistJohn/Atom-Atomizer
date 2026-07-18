@@ -174,6 +174,9 @@ function isMissing(value: unknown): boolean { return isNodeError(value) && value
 function isNodeError(value: unknown): value is NodeJS.ErrnoException { return value instanceof Error && 'code' in value; }
 function message(value: unknown): string { return value instanceof Error ? value.message : String(value); }
 async function syncDirectory(path: string): Promise<void> {
+  // Windows/NTFS rejects fsync on a directory handle (EPERM); directory-entry
+  // durability there is a platform guarantee this call cannot add to.
+  if (process.platform === 'win32') return;
   const handle = await open(path, constants.O_RDONLY | noFollowFlag());
   try { await handle.sync(); } finally { await handle.close(); }
 }
