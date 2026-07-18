@@ -744,7 +744,11 @@ async function readAdmittedArtifact(path: string, repositoryRoot: string, label:
   const metadata = await lstat(path);
   if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`${label} must be a regular non-symlink file`);
   if (await realpath(path) !== path) throw new Error(`${label} path must not contain indirection`);
-  if ((metadata.mode & 0o022) !== 0) throw new Error(`${label} must not be group- or world-writable`);
+  // Windows has no POSIX permission-bit executable/writable flags; fs.Stats.mode
+  // there just mirrors the read-only attribute across owner/group/other.
+  if (process.platform !== 'win32' && (metadata.mode & 0o022) !== 0) {
+    throw new Error(`${label} must not be group- or world-writable`);
+  }
   if (typeof process.getuid === 'function' && metadata.uid !== process.getuid() && metadata.uid !== 0) {
     throw new Error(`${label} must be owned by the current user or root`);
   }

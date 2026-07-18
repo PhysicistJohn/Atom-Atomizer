@@ -235,8 +235,12 @@ function requireSafeSignalLabBridge(path) {
     throw new Error(`Built SignalLab bridge must be a regular non-symlink file: ${path}`);
   }
   if (realpathSync(path) !== path) throw new Error(`Built SignalLab bridge path must not contain indirection: ${path}`);
-  if ((metadata.mode & 0o111) === 0) throw new Error(`Built SignalLab bridge is not executable: ${path}`);
-  if ((metadata.mode & 0o022) !== 0) throw new Error(`Built SignalLab bridge must not be group- or world-writable: ${path}`);
+  // Windows has no POSIX permission-bit executable/writable flags; fs.Stats.mode
+  // there just mirrors the read-only attribute across owner/group/other.
+  if (process.platform !== 'win32') {
+    if ((metadata.mode & 0o111) === 0) throw new Error(`Built SignalLab bridge is not executable: ${path}`);
+    if ((metadata.mode & 0o022) !== 0) throw new Error(`Built SignalLab bridge must not be group- or world-writable: ${path}`);
+  }
   if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
     throw new Error(`Built SignalLab bridge must be owned by the current user: ${path}`);
   }

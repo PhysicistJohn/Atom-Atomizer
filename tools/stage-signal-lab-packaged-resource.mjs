@@ -262,9 +262,14 @@ export async function verifySignalLabPackagedResource(rootValue, options = {}) {
       await chmod(resolve(root, path), path === 'dist/bridge/atomizer-bridge.js' ? 0o555 : 0o444);
     }
   }
-  const entryMode = (await lstat(resolve(root, 'dist', 'bridge', 'atomizer-bridge.js'))).mode;
-  if ((entryMode & 0o111) === 0 || (entryMode & 0o022) !== 0) {
-    throw new Error('Packaged SignalLab bridge must be executable and not group- or world-writable');
+  if (process.platform !== 'win32') {
+    // Windows has no POSIX permission-bit executable flag, and fs.Stats.mode
+    // there just mirrors the read-only attribute across owner/group/other,
+    // so these bits carry no meaningful signal on it.
+    const entryMode = (await lstat(resolve(root, 'dist', 'bridge', 'atomizer-bridge.js'))).mode;
+    if ((entryMode & 0o111) === 0 || (entryMode & 0o022) !== 0) {
+      throw new Error('Packaged SignalLab bridge must be executable and not group- or world-writable');
+    }
   }
   return Object.freeze({ root, files: actualPaths.size });
 }
@@ -340,7 +345,10 @@ async function requireRegularFile(path, root, label) {
     throw new Error(`${label} must be a regular non-symlink file`);
   }
   if (await realpath(path) !== path) throw new Error(`${label} path contains indirection`);
-  if ((metadata.mode & 0o022) !== 0) throw new Error(`${label} must not be group- or world-writable`);
+  // See the comment on the bridge-entry check above: meaningless on win32.
+  if (process.platform !== 'win32' && (metadata.mode & 0o022) !== 0) {
+    throw new Error(`${label} must not be group- or world-writable`);
+  }
 }
 
 async function readJsonRegularFile(path, root, label) {
