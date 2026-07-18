@@ -568,7 +568,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Versioned detector contract with absolute and noise-relative thresholds, minimum bandwidth and persistence.
 - Declared noise-floor estimator, deterministic contiguous-bin segmentation, quality flags and source-sweep provenance.
 - Stateful cross-sweep tracker with documented association, drift, merge/split, expiry and stable-ID behavior.
-- Merged Detect workspace with current-active-only physical bandwidth shading and dashed region-center lines; synchronized active/qualifying/agile evidence groups; exact-visible-sweep Auto targeting of the strongest current physical row; compact non-scrolling detected-power status/capture strip; filtering, alert policy boundary, and session persistence; Spectrum never renders those annotations.
+- Merged Detect workspace with current-active-only physical bandwidth shading and dashed region-center lines; synchronized active/qualifying/agile evidence groups; exact-visible-sweep Auto targeting of the eligible physical projection with greatest current-source-sweep integrated excess power; compact non-scrolling detected-power status/capture strip; filtering, alert policy boundary, and session persistence; Spectrum never renders those annotations.
 - Synthetic golden corpus and labeled captured corpus; quality/performance report.
 
 **Acceptance**

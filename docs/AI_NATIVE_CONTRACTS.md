@@ -206,7 +206,7 @@ No mutable application snapshot is injected by default. Atom loads only the narr
 - Analyzer/generator/detector configuration.
 - Active measurement view; host trace bank; markers/readouts including trace-local half-power status, peak-to-robust-floor/prominence, and bounded current detector context; marker-search criteria; amplitude display; waterfall/channel/STFT configurations and computed result/error.
 - Versioned Atomizer/Firmware/SignalLab topology, active driver/source/qualification, transport, USB-verification state when applicable, active measurement edge, and reserved stimulus-edge status.
-- Latest sweep summary: range, points, peak, noise floor, detection count and timestamp.
+- Latest sweep summary: range, points, peak, robust noise floor and timestamp.
 
 Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs and device serial numbers are excluded unless a declared tool explicitly requests them and the user's task requires them. Tool results are untrusted conversation data and cannot alter instructions, policy, model, or the response-scoped tool set.
 
@@ -273,10 +273,13 @@ Computer tools cannot access other windows, open external URLs, or bypass tool p
 The UI-only `classification.auto-select` semantic control clears sticky manual
 selection and resumes the same reducer used by the visible Auto button. It ranks
 only eligible physical projections from the complete exact sweep currently
-drawn by strongest raw peak, with deterministic ties; stale, off-span,
-retained-miss, released, and synthetic summary rows cannot win. If that exact
-strongest projection lacks a capture-ready evidence window, capture fails
-visibly rather than substituting a weaker row.
+drawn by current-source-sweep integrated excess power. The exact rank evidence
+integrates positive linear power above the robust lower-tail floor over complete
+physical cells and normalizes by actual RBW; representative key and raw ID
+break exact-power ties. Stale, off-span, retained-miss, released, and synthetic
+summary rows cannot win. If that rank-0 projection lacks a capture-ready
+evidence window, capture fails visibly rather than substituting a lower-ranked
+row.
 
 Legal application calls in one Realtime response execute sequentially against one synchronous controller snapshot, not render-time React closures. Every controller-domain mutation atomically updates the authoritative ref and its React projection; configure→operate and acquire→read chains therefore observe the preceding call. DOM-dependent inspection and computer calls additionally wait for the exact preceding mutation revision to reach a layout commit. That wait is bounded to two seconds, rejects on renderer unmount, returns immediately when no mutation is pending, and fails closed rather than inspecting stale DOM.
 
@@ -479,7 +482,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-50:** Every application call is rejected unless present in the exact selected response-scoped set, then passes the same concrete Zod validator and policy used by the UI host.
 - **AI-51:** Text sends its static `session.update` exactly once per socket and never rewrites instructions with mutable application context; current state is obtained through typed read tools.
 - **AI-52:** Atomizer parses and exposes API-supplied response usage and rate-limit telemetry while configuring no `max_output_tokens`, reduced context window, or truncation policy.
-- **AI-53:** `classification.auto-select` resumes strongest-raw-peak targeting over the complete exact visible sweep and cannot replace an ineligible strongest target with a weaker capture-ready row.
+- **AI-53:** `classification.auto-select` resumes current-source-sweep integrated-excess-power targeting over the complete exact visible sweep and cannot replace an ineligible rank-0 target with a lower-ranked capture-ready row.
 - **AI-54:** Coordinate marker placement succeeds only after token-bound renderer acknowledgement of a safe-integer placed frequency; click admission applies disabled/protected semantics to both the hit element and its interactive ancestor.
 - **AI-55:** Embedded SignalLab profile/channel controls and complete-buffer I/Q capture remain capability-gated UI-only exclusions until each receives an explicit typed Atom contract; neither family labels, analytic laboratory samples, nor standards-derived engineering samples may be presented as packet-decoding or standards-compliance evidence.
 
