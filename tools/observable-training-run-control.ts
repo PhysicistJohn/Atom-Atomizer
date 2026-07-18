@@ -1198,7 +1198,9 @@ function mkdirStrictDirectory(path: string): void {
 function fsyncDirectory(path: string): void {
   // Windows/NTFS rejects fsync on a directory handle (EPERM); directory-entry
   // durability there is a platform guarantee this call cannot add to.
-  if (platform() === 'win32') return;
+  // Uses process.platform (not the os.platform() import) because this module's
+  // own tests mock node:os to force darwin-branch behavior in liveness checks.
+  if (process.platform === 'win32') return;
   const descriptor = openSync(path, 'r');
   try {
     fsyncSync(descriptor);

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -1108,11 +1108,51 @@ async function requireSafeExecutable(path: string): Promise<void> {
   catch (cause) { throw new Error(`SignalLab measurement bridge is unavailable: ${path}`, { cause }); }
   if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`SignalLab measurement bridge must be a regular non-symlink file: ${path}`);
   if (await realpath(path) !== path) throw new Error(`SignalLab measurement bridge path must not contain indirection: ${path}`);
+  if (process.platform === 'win32') {
+    // Windows has no POSIX permission-bit executable flag (a script's
+    // runnability comes from its extension/association, not chmod), and
+    // fs.Stats.mode there synthesizes owner/group/other from the same
+    // read-only attribute, so 0o111/0o022 checks are meaningless on it.
+    // The equivalent write-exposure check uses the real Windows ACL.
+    if (windowsAclGrantsBroadWriteAccess(path)) {
+      throw new Error(`SignalLab measurement bridge must not be group- or world-writable: ${path}`);
+    }
+    return;
+  }
   if ((metadata.mode & 0o111) === 0) throw new Error(`SignalLab measurement bridge is not executable: ${path}`);
   if ((metadata.mode & 0o022) !== 0) throw new Error(`SignalLab measurement bridge must not be group- or world-writable: ${path}`);
   if (typeof process.getuid === 'function' && metadata.uid !== process.getuid() && metadata.uid !== 0) {
     throw new Error(`SignalLab measurement bridge must be owned by the current user or root: ${path}`);
   }
+}
+
+/** Well-known SIDs broad enough to make a grant to them "world- or group-writable" in intent. */
+const WINDOWS_BROAD_WRITE_SIDS = Object.freeze(['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-4']);
+
+const WINDOWS_ACL_CHECK_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+$path = $env:ATOMIZER_BRIDGE_ACL_CHECK_PATH
+$acl = Get-Acl -LiteralPath $path
+$broadSids = @(${WINDOWS_BROAD_WRITE_SIDS.map((sid) => `'${sid}'`).join(',')})
+$writeMask = [System.Security.AccessControl.FileSystemRights]'Write, WriteData, AppendData, Modify, FullControl'
+foreach ($rule in $acl.Access) {
+  if ($rule.AccessControlType -ne 'Allow') { continue }
+  $sid = $rule.IdentityReference
+  try { $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch {}
+  if ($broadSids -contains $sid -and ($rule.FileSystemRights -band $writeMask) -ne 0) {
+    Write-Output 'UNSAFE'
+    exit 0
+  }
+}
+Write-Output 'SAFE'
+`;
+
+function windowsAclGrantsBroadWriteAccess(path: string): boolean {
+  const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_ACL_CHECK_SCRIPT], {
+    encoding: 'utf8',
+    env: { ...process.env, ATOMIZER_BRIDGE_ACL_CHECK_PATH: path },
+  });
+  return output.includes('UNSAFE');
 }
 
 function normalizeOptions(options: SignalLabBridgeClientOptions): NormalizedSignalLabBridgeClientOptions {

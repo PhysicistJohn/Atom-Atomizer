@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -66,7 +67,13 @@ describe('SignalLab bridge resolver', () => {
     await expect(resolveSignalLabBridgeLocation({
       environment: { [SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE]: link },
     })).rejects.toThrow(/non-symlink/);
-    await chmod(fixture.executable, 0o722);
+    if (process.platform === 'win32') {
+      // chmod only toggles the read-only attribute on Windows; it never
+      // widens the ACL, so a real "world-writable" file needs a real grant.
+      execFileSync('icacls', [fixture.executable, '/grant', 'Everyone:(W)']);
+    } else {
+      await chmod(fixture.executable, 0o722);
+    }
     await expect(resolveSignalLabBridgeLocation({
       environment: { [SIGNAL_LAB_BRIDGE_ENVIRONMENT_VARIABLE]: fixture.executable },
     })).rejects.toThrow(/group- or world-writable/);
