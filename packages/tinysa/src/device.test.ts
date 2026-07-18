@@ -100,6 +100,32 @@ describe('device fail-loud lifecycle', () => {
     await service.disconnect();
   });
 
+  it.each([
+    { startHz: 88_000_000, stopHz: 108_000_000, points: 450 },
+    { startHz: 88_000_000, stopHz: 108_000_000, points: 449 },
+    { startHz: 0, stopHz: 1_000_000, points: 20 },
+    { startHz: 12_345_601, stopHz: 12_345_800, points: 101 },
+  ])('reproduces the exact requested endpoints for a raw-format sweep across $points points', async ({ startHz, stopHz, points }) => {
+    const bytes = new FakeTinySaTransport({
+      versionResponse: 'tinySA4_v1.4-217-gc5dd31f\r\nHW Version:V0.5.4 max2871',
+      infoResponse: 'tinySA ULTRA+ ZS407\r\nVersion: tinySA4_v1.4-217-gc5dd31f\r\nPlatform: STM32F303',
+    });
+    const transport = new PhysicalFixtureTransport(bytes);
+    const service = new TinySaDeviceService(transport);
+    await service.connect(transport.port);
+    await service.configureAnalyzer({ ...analyzer, acquisitionFormat: 'raw', startHz, stopHz, points });
+
+    const sweep = await service.acquireSweep();
+
+    expect(sweep.frequencyHz).toHaveLength(points);
+    expect(sweep.powerDbm).toHaveLength(points);
+    expect(sweep.actualStartHz).toBe(startHz);
+    expect(sweep.actualStopHz).toBe(stopHz);
+    expect(sweep.frequencyHz[0]).toBe(startHz);
+    expect(sweep.frequencyHz.at(-1)).toBe(stopHz);
+    await service.disconnect();
+  });
+
   it('isolates throwing device observers from connection and RF lifecycle state', async () => {
     const transport = new PhysicalFixtureTransport(new FakeTinySaTransport());
     const service = new TinySaDeviceService(transport);

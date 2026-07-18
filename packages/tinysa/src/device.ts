@@ -1540,8 +1540,9 @@ function parseTextSweep(response: string, expectedPoints: number): { frequencyHz
 }
 
 function rawSweepFrequencies(startHz: number, stopHz: number, points: number): number[] {
-  const step = (stopHz - startHz) / points;
-  return Array.from({ length: points }, (_, index) => Math.trunc(startHz + step * index));
+  if (points === 1) return [startHz];
+  const step = (stopHz - startHz) / (points - 1);
+  return Array.from({ length: points }, (_, index) => (index === points - 1 ? stopHz : Math.trunc(startHz + step * index)));
 }
 
 function assertAnalyzerReadback(config: AnalyzerConfig, readback: AnalyzerReadback): void {

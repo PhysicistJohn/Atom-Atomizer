@@ -91,9 +91,10 @@ class TwinBridgeClient {
     this.#child.stdout.once('end', () => {
       if (this.#state === 'closed' || this.#state === 'faulted') return;
       if (this.#state === 'closing' && this.#shutdownAcknowledged) return;
-      this.#poison(new Error(this.#stdout.length
+      const reason = this.#stdout.length
         ? 'Digital twin bridge ended with an unterminated response frame'
-        : 'Digital twin bridge stdout ended unexpectedly'));
+        : 'Digital twin bridge stdout ended unexpectedly';
+      this.#poison(new Error(this.#stderr ? `${reason}: ${singleLine(this.#stderr)}` : reason));
     });
     this.#child.stderr.on('data', (chunk: Buffer | string) => this.#acceptStderr(toBuffer(chunk)));
     this.#child.once('exit', (code, signal) => this.#acceptProcessExit(code, signal));

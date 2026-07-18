@@ -4,6 +4,7 @@ import {
   sweptSpectrumConfigurationSchema,
   zeroSpanConfigSchema,
   zeroSpanConfigPatchSchema,
+  ZS407_FIRMWARE_LIMITS,
   type AnalyzerConfig,
   type DetectedPowerTimeseriesConfiguration,
   type InstrumentAcquisitionCapability,
@@ -14,6 +15,13 @@ import {
 
 type SpectrumCapability = Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
 type DetectedPowerCapability = Extract<InstrumentAcquisitionCapability, { kind: 'detected-power-timeseries' }>;
+
+// 450 is the ZS407's hardware sweep-point ceiling (ZS407_FIRMWARE_LIMITS.maximumSweepPoints),
+// not a meaningful default for SignalLab's synthetic scalar source, which supports far more
+// points. A still-generic 450 carried over from the ZS407-oriented default is upgraded to
+// SignalLab's own preferred resolution instead of silently staying at a real-hardware ceiling
+// that happens to also be a valid (but needlessly coarse) value in SignalLab's own range.
+const SIGNAL_LAB_DEFAULT_SWEEP_POINTS = 1024;
 
 /** Build the exact request supported by the active scalar-spectrum driver. */
 export function sweptSpectrumConfigurationFor(
@@ -130,18 +138,23 @@ export function reconcileAnalyzerConfiguration(
     stopHz = maximumAdmittedValue(capability.frequencyHz);
     if (stopHz <= startHz) throw new Error('Swept-spectrum capability cannot represent a positive span');
   }
+  if (capability.controls.model === 'synthetic-scalar') {
+    const points = staged.points === ZS407_FIRMWARE_LIMITS.maximumSweepPoints && rangeContains(SIGNAL_LAB_DEFAULT_SWEEP_POINTS, capability.points)
+      ? SIGNAL_LAB_DEFAULT_SWEEP_POINTS
+      : reconcileRangeValue(staged.points, capability.points, 'minimum');
+    return analyzerConfigSchema.parse({
+      ...staged,
+      startHz,
+      stopHz,
+      points,
+      sweepTimeSeconds: exactSyntheticSweepTime(capability.sweepTimeSeconds, 'swept spectrum'),
+    });
+  }
   const geometry = {
     startHz,
     stopHz,
     points: reconcileRangeValue(staged.points, capability.points, 'minimum'),
   };
-  if (capability.controls.model === 'synthetic-scalar') {
-    return analyzerConfigSchema.parse({
-      ...staged,
-      ...geometry,
-      sweepTimeSeconds: exactSyntheticSweepTime(capability.sweepTimeSeconds, 'swept spectrum'),
-    });
-  }
   const controls = capability.controls;
   return analyzerConfigSchema.parse({
     ...staged,
