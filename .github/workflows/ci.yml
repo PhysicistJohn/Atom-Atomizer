@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/TinySA_SignalLab
-          ref: 1442ef2db83d53eea6c5e77924a8d7adc8118942
+          ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
           path: TinySA_SignalLab
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/TinySA_SignalLab
-          ref: 1442ef2db83d53eea6c5e77924a8d7adc8118942
+          ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
           path: TinySA_SignalLab
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
