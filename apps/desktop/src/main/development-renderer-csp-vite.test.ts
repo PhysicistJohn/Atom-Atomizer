@@ -118,7 +118,7 @@ describe('Atomizer live Vite development CSP', () => {
     } finally {
       await terminateChild(viteProcess);
       viteProcess = undefined;
-      await rm(outputDirectory, { recursive: true, force: true });
+      await rm(outputDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }, 20_000);
 });

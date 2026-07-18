@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   createOptionalBayesianClassifierVitePlugin,
@@ -29,10 +30,10 @@ describe('optional Bayesian classifier Vite boundary', () => {
       source: string,
       id: string,
     ) => { code: string; map: null } | null;
-    const providerPath = new URL(
+    const providerPath = fileURLToPath(new URL(
       '../renderer/bayesian-classifier-provider.ts',
       import.meta.url,
-    ).pathname;
+    ));
 
     expect(transform('', providerPath)?.code).toContain('model assets are not bundled');
     expect(existenceChecks).toBe(3);
@@ -50,10 +51,10 @@ describe('optional Bayesian classifier Vite boundary', () => {
     ) => { code: string; map: null } | null;
 
     expect(transform('', '/unrelated.ts')).toBeNull();
-    const provider = transform('', new URL(
-      '../renderer/bayesian-classifier-provider.ts?import',
+    const provider = transform('', `${fileURLToPath(new URL(
+      '../renderer/bayesian-classifier-provider.ts',
       import.meta.url,
-    ).pathname);
+    ))}?import`);
     expect(provider?.code).toContain('model assets are not bundled');
     expect(provider?.code).not.toContain('SignalLabBayesianClassifier');
   });

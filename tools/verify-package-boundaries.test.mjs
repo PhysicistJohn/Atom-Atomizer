@@ -372,7 +372,7 @@ async function withFixture(action) {
     await createFixture(root);
     await action(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

@@ -58,8 +58,18 @@ export class InstrumentPreferenceStore {
 
   async load(): Promise<LoadedInstrumentPreference> {
     let handle: FileHandle;
-    try { handle = await open(this.#path, constants.O_RDONLY | noFollowFlag()); }
+    try {
+      // Windows has no O_NOFOLLOW (noFollowFlag() is a no-op there), so an
+      // open() alone would silently follow a symlink; lstat first to catch
+      // it before opening. This has a TOCTOU gap the O_NOFOLLOW path does
+      // not, but it is the only check available on that platform.
+      if (process.platform === 'win32' && (await lstat(this.#path).catch(() => undefined))?.isSymbolicLink()) {
+        throw new InstrumentPreferenceError('Instrument preference must be a regular, non-symbolic-link file');
+      }
+      handle = await open(this.#path, constants.O_RDONLY | noFollowFlag());
+    }
     catch (value) {
+      if (value instanceof InstrumentPreferenceError) throw value;
       if (isMissing(value)) {
         return {
           source: 'factory-default',
@@ -148,7 +158,10 @@ export class InstrumentPreferenceStore {
       try {
         const { mkdir } = await import('node:fs/promises');
         await mkdir(this.directory, { mode: 0o700 });
-        await parentHandle.sync();
+        // Windows/NTFS rejects fsync on a directory handle (EPERM);
+        // directory-entry durability there is a platform guarantee this
+        // call cannot add to.
+        if (process.platform !== 'win32') await parentHandle.sync();
       } finally {
         await parentHandle.close();
       }

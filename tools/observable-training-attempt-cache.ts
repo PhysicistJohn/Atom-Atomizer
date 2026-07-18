@@ -532,6 +532,9 @@ function publishDeterministicFile(
 }
 
 function fsyncDirectory(path: string): void {
+  // Windows/NTFS rejects fsync on a directory handle (EPERM); directory-entry
+  // durability there is a platform guarantee this call cannot add to.
+  if (process.platform === 'win32') return;
   const descriptor = openSync(path, 'r');
   try {
     fsyncSync(descriptor);

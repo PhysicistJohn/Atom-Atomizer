@@ -11,7 +11,7 @@ import {
 } from './instrument-preference.js';
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))));
 
 async function store() {
   const root = await mkdtemp(join(tmpdir(), 'atomizer-instrument-preference-'));
@@ -102,12 +102,18 @@ describe('InstrumentPreferenceStore', () => {
     await expect(fixture.store.load()).resolves.toMatchObject({ preference: { driverId: 'tinysa-zs407' } });
   });
 
-  it('rejects group-readable files and multiply-linked preference inodes', async () => {
+  // Windows has no POSIX permission bits (fs.Stats.mode there just mirrors the
+  // read-only attribute across owner/group/other), and instrument-preference.ts
+  // correctly skips this check there rather than fake it -- so there is
+  // nothing for chmod(0o640) to cause a rejection on that platform.
+  it.skipIf(process.platform === 'win32')('rejects group-readable preference files', async () => {
     const permissions = await store();
     await permissions.store.save('signal-lab', 'signal-lab', 'signal-lab:default');
     await chmod(permissions.store.path, 0o640);
     await expect(permissions.store.load()).rejects.toThrow(/owner-only/);
+  });
 
+  it('rejects multiply-linked preference inodes', async () => {
     const linked = await store();
     await linked.store.save('signal-lab', 'signal-lab', 'signal-lab:default');
     await link(linked.store.path, join(linked.root, 'second-link.json'));

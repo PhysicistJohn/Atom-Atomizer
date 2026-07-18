@@ -22,7 +22,7 @@ const READY = JSON.stringify({
 const temporaryRepositories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(temporaryRepositories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(temporaryRepositories.splice(0).map((path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 describe('physical and executable-twin discovery', () => {
@@ -88,7 +88,10 @@ describe('physical and executable-twin discovery', () => {
   });
 });
 
-describe('Renode bridge process admission and protocol containment', () => {
+// RenodeDigitalTwinTransport itself is darwin/linux-only (digital-twin-transport.ts
+// throws on any other platform before it would spawn anything), and every fixture
+// here launches a POSIX shell script as the fake bridge process.
+describe.skipIf(process.platform === 'win32')('Renode bridge process admission and protocol containment', () => {
   it('keeps discovery boot-proof-free across connect, close, and rediscovery', async () => {
     const repository = await bridgeRepository(`
 printf '%s\\n' '${READY}'

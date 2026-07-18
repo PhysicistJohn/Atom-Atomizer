@@ -47,7 +47,7 @@ type FixtureBehavior = 'normal' | 'dishonest-ready-hash' | 'mutate-artifact-duri
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 describe('SignalLab instrument driver', () => {
@@ -57,7 +57,7 @@ describe('SignalLab instrument driver', () => {
     const packagedResourcesRoot = resolve(fixture.atomizerRoot, 'Atomizer.app', 'Contents', 'Resources');
     await mkdir(packagedResourcesRoot, { recursive: true });
     await cp(signalLabRoot, resolve(packagedResourcesRoot, 'signal-lab'), { recursive: true });
-    await rm(signalLabRoot, { recursive: true, force: true });
+    await rm(signalLabRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 
     const driver = new SignalLabInstrumentDriver({
       atomizerRepositoryRoot: fixture.atomizerRoot,
@@ -443,10 +443,15 @@ describe('SignalLab instrument driver', () => {
 
     session.subscribe((event) => events.push(event));
 
-    expect(events).toEqual([
-      expect.objectContaining({ type: 'status', status: 'faulted' }),
-      expect.objectContaining({ type: 'error', error: expect.objectContaining({ recoverable: false }) }),
-    ]);
+    // The child's exit is itself an async event; Windows delivers process-exit
+    // notifications noticeably later than POSIX does, so the replay buffer may
+    // not be populated in the same tick as subscribe() on that platform.
+    await vi.waitFor(() => {
+      expect(events).toEqual([
+        expect.objectContaining({ type: 'status', status: 'faulted' }),
+        expect.objectContaining({ type: 'error', error: expect.objectContaining({ recoverable: false }) }),
+      ]);
+    });
     await expect(session.configure({
       sessionId: session.sessionId,
       configurationRevision: 'configuration:after-terminal-handoff',

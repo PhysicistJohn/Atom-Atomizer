@@ -17,7 +17,7 @@ const temporaryRoots = [];
 const posixTest = process.platform === 'win32' ? test.skip : test;
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
 });
 
 posixTest('stages one executable, self-contained packaged SignalLab resource root', async () => {

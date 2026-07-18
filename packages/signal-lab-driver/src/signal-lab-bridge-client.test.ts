@@ -15,7 +15,11 @@ import {
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  // Windows can briefly hold a lock on a just-exited child's temp directory;
+  // retry instead of failing the test on a transient EBUSY/EPERM.
+  await Promise.all(temporaryRoots.splice(0).map((path) => rm(path, {
+    recursive: true, force: true, maxRetries: 5, retryDelay: 100,
+  })));
 });
 
 describe('SignalLab bridge resolver', () => {
@@ -376,13 +380,18 @@ describe('SignalLab bridge client', () => {
     await expect(client.close()).rejects.toThrow(/closed stdout unexpectedly/);
   });
 
+  // Windows' named-pipe child stdio reports EOF to the parent noticeably
+  // later than a POSIX pipe does, so the 1s budget below is too tight there
+  // for stdout-EOF detection to reliably win the race against the request's
+  // own timeout.
   it('treats clean stdout EOF as terminal even when the child otherwise stays alive', async () => {
+    const budgetMs = process.platform === 'win32' ? 4_000 : 1_000;
     const fixture = await createFixture('close-stdout-after-ready');
     const failures: Error[] = [];
     let client: SignalLabBridgeClient;
     try {
       client = await SignalLabBridgeClient.launch(await fixture.location(), {
-        readyTimeoutMs: 1_000, requestTimeoutMs: 1_000, shutdownTimeoutMs: 200,
+        readyTimeoutMs: budgetMs, requestTimeoutMs: budgetMs, shutdownTimeoutMs: 200,
         onTerminalFailure: (error) => failures.push(error),
       });
     } catch (value) {
@@ -393,7 +402,7 @@ describe('SignalLab bridge client', () => {
     await expect(client.status()).rejects.toThrow(/closed stdout unexpectedly/);
     expect(failures).toHaveLength(1);
     await expect(client.close()).rejects.toThrow(/closed stdout unexpectedly/);
-  });
+  }, 15_000);
 
   it('reaps the child before rejecting a duplicate-ready handoff failure', async () => {
     const fixture = await createFixture('duplicate-ready');
