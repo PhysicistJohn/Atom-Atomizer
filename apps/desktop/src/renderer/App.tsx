@@ -379,7 +379,7 @@ export function App({
   const [envelope, setEnvelope, envelopeRef] = useControllerState<EnvelopeClassification | undefined>(undefined, markRenderMutation);
   const [diagnostics, setDiagnostics, diagnosticsRef] = useControllerState<readonly string[]>([], markRenderMutation);
   const [screenFrame, setScreenFrame, screenFrameRef] = useControllerState<InstrumentScreenFrame | undefined>(undefined, markRenderMutation);
-  const [iqCapture, setIqCapture] = useControllerState<ComplexIqMeasurement | undefined>(undefined, markRenderMutation);
+  const [iqCapture, setIqCapture, iqCaptureRef] = useControllerState<ComplexIqMeasurement | undefined>(undefined, markRenderMutation);
   const [selectedProfile, setSelectedProfile, selectedProfileRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
   const [selectedSignalLabChannel, setSelectedSignalLabChannel, selectedSignalLabChannelRef] = useControllerState<SignalLabChannelState | undefined>(undefined, markRenderMutation);
   const [acquisition, setAcquisition, acquisitionRef] = useControllerState<AcquisitionState>('idle', markRenderMutation);
@@ -1512,7 +1512,7 @@ export function App({
       if (currentGeneratorOutput() !== 'off') {
         throw new Error(`Continuous I/Q acquisition cannot resume after ${label} while RF output is ${currentGeneratorOutput()}`);
       }
-      requireContinuousIqResumeAdmission(after);
+      requireIqAcquisitionAdmission(after);
       setAcquisition('streaming');
       setNotice(`Continuous I/Q acquisition resumed after ${label}`);
       return result;
@@ -1528,7 +1528,7 @@ export function App({
     }
   }
 
-  function requireContinuousIqResumeAdmission(session: InstrumentSessionSnapshot): void {
+  function requireIqAcquisitionAdmission(session: InstrumentSessionSnapshot): void {
     const iq = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
     if (iq?.kind !== 'complex-iq') throw new Error('The active session no longer advertises complex-I/Q acquisition');
     const profile = session.capabilities.features.find((candidate) => candidate.kind === 'signal-lab-profile-selection');
@@ -1938,6 +1938,7 @@ export function App({
     readonly publish?: () => boolean;
   } = {}): Promise<ComplexIqMeasurement> {
     const activeSession = requireConnected();
+    requireIqAcquisitionAdmission(activeSession);
     const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
     if (capability?.kind !== 'complex-iq') throw new Error('Active instrument does not advertise complex-I/Q acquisition');
     const requested = complexIqConfigurationFor(
@@ -2030,6 +2031,7 @@ export function App({
       return Promise.reject(new Error('Continuous acquisition is already running'));
     }
     const active = requireConnected();
+    requireIqAcquisitionAdmission(active);
     const capability = active.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
     if (capability?.kind !== 'complex-iq') {
       return Promise.reject(new Error('Active instrument does not advertise complex-I/Q acquisition'));
@@ -2644,6 +2646,9 @@ export function App({
   function applyWorkspace(next: WorkspaceId): void {
     const canonical = next === 'detection' ? 'classification' : next;
     assertWorkspaceTransition(workspaceRef.current, canonical, currentGeneratorOutput());
+    if (canonical === 'iq' && !instrumentRef.current.session?.capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')) {
+      throw new Error('The connected instrument does not advertise complex-I/Q acquisition');
+    }
     setWorkspace(canonical);
     setError(undefined);
   }
@@ -2962,6 +2967,7 @@ export function App({
     const currentZeroCapture = zeroCaptureRef.current;
     const currentZeroCaptureReceipt = zeroCaptureReceiptRef.current;
     const currentEnvelope = envelopeRef.current;
+    const currentIqCapture = iqCaptureRef.current;
     const currentTraceFrames = traceFramesRef.current;
     const currentMarkers = markersRef.current;
     const currentMarkerReadings = readMarkers(
@@ -2982,12 +2988,38 @@ export function App({
       measurementView: currentMeasurementView,
       acquisition: acquisitionRef.current,
       continuous: continuousRef.current,
+      continuousMode: continuousModeRef.current,
       simulated: currentInstrument.session !== undefined && currentInstrument.session.provenance.execution !== 'physical',
       topology: systemTopology(),
       visibleError: errorRef.current ?? null,
       instrument: currentInstrument,
       generatorOutput: currentGeneratorOutput(),
       scalarConfiguration: agentConfigurationContext(),
+      iq: {
+        stagedConfiguration: iqConfigurationRef.current,
+        latestCapture: currentIqCapture ? {
+          id: currentIqCapture.measurementId,
+          sequence: currentIqCapture.sequence,
+          centerHz: currentIqCapture.centerHz,
+          sampleCount: currentIqCapture.sampleCount,
+          sampleRateHz: currentIqCapture.sampleRateHz,
+          bandwidthHz: currentIqCapture.bandwidthHz,
+          sampleFormat: currentIqCapture.sampleFormat,
+          timing: {
+            capturedAt: currentIqCapture.capturedAt,
+            elapsedMilliseconds: currentIqCapture.elapsedMilliseconds,
+            durationSeconds: currentIqCapture.sampleCount / currentIqCapture.sampleRateHz,
+          },
+          provenance: {
+            sessionId: currentIqCapture.sessionId,
+            configurationRevision: currentIqCapture.configurationRevision,
+            producerConfigurationEpoch: currentIqCapture.producerConfigurationEpoch ?? null,
+            qualification: currentIqCapture.qualification,
+            sourceKind: currentInstrument.session?.provenance.sourceKind ?? null,
+            execution: currentInstrument.session?.provenance.execution ?? null,
+          },
+        } : null,
+      },
       generator: generatorRef.current,
       detectionConfig: detectionConfigRef.current,
       historyCount: currentHistory.length,
@@ -3033,17 +3065,17 @@ export function App({
       case 'get_application_state': {
         const context = JSON.parse(applicationContext()) as {
           workspace: WorkspaceId; measurementView: MeasurementViewId; acquisition: AcquisitionState;
-          continuous: boolean; simulated: boolean; visibleError: string | null; historyCount: number;
+          continuous: boolean; continuousMode: ContinuousAcquisitionMode; simulated: boolean; visibleError: string | null; historyCount: number;
           topology: unknown; scalarConfiguration: unknown; generator: GeneratorConfig;
-          detectionConfig: SignalDetectionConfig; measurement: unknown; latestSweep: unknown;
+          detectionConfig: SignalDetectionConfig; measurement: unknown; latestSweep: unknown; iq: unknown;
         };
         return {
           workspace: context.workspace, measurementView: context.measurementView,
-          acquisition: context.acquisition, continuous: context.continuous, simulated: context.simulated,
+          acquisition: context.acquisition, continuous: context.continuous, continuousMode: context.continuousMode, simulated: context.simulated,
           error: context.visibleError, historyCount: context.historyCount, topology: context.topology,
           connection: instrumentRef.current.session ? 'connected' : 'disconnected',
           scalarConfiguration: context.scalarConfiguration, generator: context.generator,
-          detection: context.detectionConfig, measurement: context.measurement,
+          detection: context.detectionConfig, measurement: context.measurement, iq: context.iq,
           latestSweep: context.latestSweep, agentSurfaceVersion: ATOM_AGENT_VERSION,
         };
       }
@@ -3124,9 +3156,40 @@ export function App({
         applyWorkspace('spectrum');
         return { patch, scalarConfiguration: agentConfigurationContext(next), continuous: continuousRequested.current };
       }
-      case 'acquire_sweep': { assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput()); const result = await acquire(); applyWorkspace('spectrum'); return { acquired: true, sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity }; }
-      case 'start_continuous_sweeps': assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput()); await startContinuous(); applyWorkspace('spectrum'); return { streaming: true };
-      case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, sweepsRetained: historyRef.current.length };
+      case 'acquire_sweep': {
+        if (workspaceRef.current === 'iq') {
+          assertWorkspaceTransition(workspaceRef.current, 'iq', currentGeneratorOutput());
+          const result = await acquireIq();
+          applyWorkspace('iq');
+          return {
+            acquired: true,
+            acquisitionMode: 'complex-iq',
+            captureId: result.measurementId,
+            sequence: result.sequence,
+            centerHz: result.centerHz,
+            sampleCount: result.sampleCount,
+            sampleRateHz: result.sampleRateHz,
+            qualification: result.qualification,
+          };
+        }
+        assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput());
+        const result = await acquire();
+        applyWorkspace('spectrum');
+        return { acquired: true, acquisitionMode: 'swept-spectrum', sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity };
+      }
+      case 'start_continuous_sweeps': {
+        if (workspaceRef.current === 'iq') {
+          assertWorkspaceTransition(workspaceRef.current, 'iq', currentGeneratorOutput());
+          await startContinuousIq();
+          applyWorkspace('iq');
+        } else {
+          assertWorkspaceTransition(workspaceRef.current, 'spectrum', currentGeneratorOutput());
+          await runInstrumentTransaction('start-continuous-acquisition', () => startContinuousOwned());
+          applyWorkspace('spectrum');
+        }
+        return { streaming: true, continuousMode: continuousModeRef.current, workspace: workspaceRef.current };
+      }
+      case 'stop_continuous_sweeps': await stopContinuous(); return { streaming: false, continuousMode: continuousModeRef.current, sweepsRetained: historyRef.current.length };
       case 'get_measurement_state': return JSON.parse(applicationContext()).measurement;
       case 'set_measurement_view': {
         const view = measurementViewIdSchema.parse((args as { view: MeasurementViewId }).view);

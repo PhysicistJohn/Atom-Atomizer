@@ -84,14 +84,13 @@ export function Sidebar({
       aria-description={DEVELOPMENT_RENDERER
         ? `DEV ACQUISITION LANDMARK; controls=${continuous ? 'Stop' : 'Run,Single'}; sweepId=${latestSweep?.id ?? 'none'}; sequence=${latestSweep?.sequence ?? 'none'}`
         : undefined}
-      data-agent-exclusion={iqAcquisition ? 'human-iq-capture-boundary' : undefined}
     >
       <div className="sidebar-acquisition-state" aria-live="polite"><i/><span>{acquisitionStatus}</span></div>
       {continuous
-        ? <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.continuous.stop'} className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop bounded I/Q buffer acquisition after the in-flight buffer' : 'Stop continuous spectrum acquisition'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>
+        ? <button type="button" data-agent-control="acquisition.continuous.stop" className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop bounded I/Q buffer acquisition after the in-flight buffer' : 'Stop continuous spectrum acquisition'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>
         : <div className="sidebar-acquisition-buttons">
-          <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.continuous.start'} disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Run one-at-a-time bounded I/Q buffers' : 'Start continuous spectrum acquisition'} onClick={onRun}><Repeat2 size={13}/><span>Run</span></button>
-          <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.single'} disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Acquire one bounded I/Q buffer' : 'Acquire one spectrum sweep'} onClick={onSingle}>{acquisitionBusy ? <LoaderCircle className="spin" size={13}/> : <Play size={13} fill="currentColor"/>}<span>{acquiringSingle ? 'Acquiring…' : 'Single'}</span></button>
+          <button type="button" data-agent-control="acquisition.continuous.start" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Run one-at-a-time bounded I/Q buffers' : 'Start continuous spectrum acquisition'} onClick={onRun}><Repeat2 size={13}/><span>Run</span></button>
+          <button type="button" data-agent-control="acquisition.single" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Acquire one bounded I/Q buffer' : 'Acquire one spectrum sweep'} onClick={onSingle}>{acquisitionBusy ? <LoaderCircle className="spin" size={13}/> : <Play size={13} fill="currentColor"/>}<span>{acquiringSingle ? 'Acquiring…' : 'Single'}</span></button>
         </div>}
     </section>
   </aside>;

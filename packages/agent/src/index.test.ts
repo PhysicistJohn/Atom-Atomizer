@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, ATOM_MAX_LOADED_TOOLS, ATOM_TOOL_LOADER_NAME, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeResponseTools, createAtomRealtimeToolResponseConfig, createAtomRealtimeVoiceSessionConfig, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, realtimeToolDefinitions, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
+import { ATOM_AGENT_INSTRUCTIONS, ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_TRANSCRIPTION_MODEL, ATOM_AGENT_VAD_THRESHOLD, ATOM_AGENT_VOICE, ATOM_MAX_LOADED_TOOLS, ATOM_TOOL_LOADER_NAME, agentApiCoverage, agentComputerActionControlIds, agentControlBinding, agentControlBindings, agentHighImpactSemanticControlIds, agentSemanticControlIds, agentToolDefinitions, agentToolInputSchemas, agentToolPolicies, createAtomRealtimeCallBootstrapConfig, createAtomRealtimeResponseTools, createAtomRealtimeToolResponseConfig, createAtomRealtimeVoiceSessionConfig, parseAtomRealtimeRateLimits, parseAtomRealtimeUsage, realtimeToolDefinitions, validateAgentToolCall, validateAtomToolLoadCall, verifyAtomRealtimeVoiceSession, type AgentToolName } from './index.js';
 
 const validToolArguments = {
   get_application_state: {}, get_system_topology: {}, get_agent_surface: {}, get_instrument_state: {}, get_latest_sweep_summary: {},
@@ -57,6 +57,7 @@ describe('Atom agent contracts',()=>{
   it('keeps both legacy analysis workspace routes valid while the renderer presents one merged surface',()=>{
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'detection'}).success).toBe(true);
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'classification'}).success).toBe(true);
+    expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'iq'}).success).toBe(true);
   });
   it('gives every tool one closed concrete object input schema',()=>{
     expect(agentToolDefinitions).toHaveLength(50);
@@ -157,15 +158,22 @@ describe('Atom agent contracts',()=>{
   });
   it('binds every semantic and patterned UI hook to exactly one existing typed tool contract',()=>{
     const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
+    const highImpactControls=new Set<string>(agentHighImpactSemanticControlIds);
     expect(new Set(Object.keys(agentToolPolicies))).toEqual(tools);
     for(const controlId of agentSemanticControlIds){
       const binding=agentControlBinding(controlId);
       expect(tools.has(binding.preferredTool)).toBe(true);
       expect(binding.guarantee.length).toBeGreaterThan(20);
-      expect(binding.risk).not.toBe('high-impact');
+      expect(binding.risk === 'high-impact',controlId).toBe(highImpactControls.has(controlId));
     }
     for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
+    for(const controlId of agentHighImpactSemanticControlIds){
+      expect(agentComputerActionControlIds).not.toContain(controlId);
+      expect(agentControlBinding(controlId).risk).toBe('high-impact');
+    }
     expect(agentComputerActionControlIds).toContain('classification.auto-select');
+    expect(agentControlBinding('workspace.iq').preferredTool).toBe('navigate_workspace');
+    expect(agentControlBinding('connection.retry-cleanup').preferredTool).toBe('disconnect_device');
     expect(agentControlBinding('classification.auto-select').preferredTool).toBe('computer_action');
     expect(agentControlBinding('classification.auto-select').guarantee)
       .toContain('integrated excess power');
@@ -175,6 +183,12 @@ describe('Atom agent contracts',()=>{
     expect(agentControlBinding('stft.attenuation-mode').preferredTool).toBe('configure_zero_span');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
+  });
+  it('documents contextual Single and Run behavior for the I/Q workspace',()=>{
+    expect(agentToolDefinitions.find(({name})=>name==='acquire_sweep')?.description).toContain('I/Q workspace');
+    expect(agentToolDefinitions.find(({name})=>name==='start_continuous_sweeps')?.description).toContain('I/Q workspace');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('typed global Single and Run controls');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('latest capture provenance');
   });
   it('has an evidence and failure disposition for every generic instrument and file API method',()=>{
     expect(Object.keys(agentApiCoverage)).toEqual(['getState','discover','connect','disconnect','configure','acquire','startStreaming','stopStreaming','executeFeature','readPreference','writePreference','subscribe','exportSweep']);

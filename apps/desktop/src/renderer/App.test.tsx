@@ -1379,6 +1379,208 @@ describe('operator vertical slice', () => {
     expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
   });
 
+  it('lets Atom navigate to and inspect I/Q without blocking an active spectrum Run', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'iq-route-run-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-route-run-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","inspect_interface"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'iq-route-run-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'iq-route-run-navigate', name: 'navigate_workspace', arguments: '{"workspace":"iq"}' },
+        { callId: 'iq-route-run-inspect', name: 'inspect_interface', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'iq-route-run-2', transport: 'realtime-websocket', text: 'I/Q is visible while spectrum acquisition continues.', toolCalls: [] });
+
+    render(<App/>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open and inspect I/Q without stopping Run.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown> });
+    expect(results[0]).toMatchObject({ ok: true, output: { workspace: 'iq' } });
+    expect(results[1]).toMatchObject({
+      ok: true,
+      output: {
+        activeWorkspace: 'iq',
+        rendered: expect.arrayContaining([
+          expect.objectContaining({ controlId: 'workspace.iq', enabled: true, preferredTool: 'navigate_workspace' }),
+          expect.objectContaining({ controlId: 'acquisition.continuous.stop', enabled: true, preferredTool: 'stop_continuous_sweeps' }),
+        ]),
+      },
+    });
+    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  });
+
+  it('rejects typed I/Q navigation when the connected source has no complex-I/Q capability', async () => {
+    mockConnectedInstrument(signalLabSession);
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'iq-capability-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-capability-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'iq-capability-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-capability-navigate', name: 'navigate_workspace', arguments: '{"workspace":"iq"}' }] })
+      .mockResolvedValueOnce({ conversationId: 'iq-capability-2', transport: 'realtime-websocket', text: 'I/Q is unavailable on this source.', toolCalls: [] });
+
+    render(<App/>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open I/Q.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const result = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as { ok?: boolean; error?: string };
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/does not advertise complex-I\/Q acquisition/i) });
+    expect(screen.queryByRole('region', { name: /Complex I\/Q workspace/i })).toBeNull();
+  });
+
+  it('lets Atom navigate to I/Q and use contextual Single with exact capture readback', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind !== 'complex-iq') throw new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`);
+      return complexIqMeasurement(activeConfiguration, configurationRevision, 'agent-iq-single');
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'iq-single-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-single-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","acquire_sweep","get_application_state","inspect_interface"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'iq-single-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'iq-single-navigate', name: 'navigate_workspace', arguments: '{"workspace":"iq"}' },
+        { callId: 'iq-single-acquire', name: 'acquire_sweep', arguments: '{}' },
+        { callId: 'iq-single-state', name: 'get_application_state', arguments: '{}' },
+        { callId: 'iq-single-inspect', name: 'inspect_interface', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'iq-single-2', transport: 'realtime-websocket', text: 'One bounded I/Q buffer acquired.', toolCalls: [] });
+
+    render(<App/>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open I/Q, capture one buffer, and verify it.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown> });
+    expect(results.every(({ ok }) => ok), JSON.stringify(results)).toBe(true);
+    expect(results[1]?.output).toMatchObject({
+      acquired: true,
+      acquisitionMode: 'complex-iq',
+      captureId: 'agent-iq-single',
+      sampleCount: 2,
+      sampleRateHz: 2_000_000,
+      qualification: 'analytic-complex-baseband',
+    });
+    expect(results[2]?.output).toMatchObject({
+      workspace: 'iq',
+      continuous: false,
+      continuousMode: 'spectrum',
+      iq: {
+        stagedConfiguration: expect.objectContaining({ kind: 'complex-iq', sampleCount: 2, sampleRateHz: 2_000_000 }),
+        latestCapture: {
+          id: 'agent-iq-single',
+          sequence: expect.any(Number),
+          centerHz: expect.any(Number),
+          sampleCount: 2,
+          sampleRateHz: 2_000_000,
+          bandwidthHz: 1_500_000,
+          sampleFormat: 'cf32le',
+          timing: {
+            capturedAt: '2026-07-10T00:00:01.000Z',
+            elapsedMilliseconds: 4,
+            durationSeconds: 0.000001,
+          },
+          provenance: {
+            sessionId: signalLabIqSession.sessionId,
+            configurationRevision: expect.any(String),
+            producerConfigurationEpoch: 'producer-epoch:1',
+            qualification: 'analytic-complex-baseband',
+            sourceKind: 'signal-lab',
+            execution: 'signal-lab-simulation',
+          },
+        },
+      },
+    });
+    expect(results[3]?.output).toMatchObject({
+      activeWorkspace: 'iq',
+      rendered: expect.arrayContaining([
+        expect.objectContaining({ controlId: 'acquisition.single', enabled: true, humanOnly: false }),
+        expect.objectContaining({ controlId: 'acquisition.continuous.start', enabled: true, humanOnly: false }),
+      ]),
+    });
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+  });
+
+  it('lets Atom navigate to I/Q, Run, inspect/read back, and Stop one bounded buffer', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'iq-run-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-run-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","start_continuous_sweeps","get_application_state","inspect_interface","stop_continuous_sweeps"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'iq-run-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'iq-run-navigate', name: 'navigate_workspace', arguments: '{"workspace":"iq"}' },
+        { callId: 'iq-run-start', name: 'start_continuous_sweeps', arguments: '{}' },
+        { callId: 'iq-run-state-active', name: 'get_application_state', arguments: '{}' },
+        { callId: 'iq-run-inspect', name: 'inspect_interface', arguments: '{}' },
+        { callId: 'iq-run-stop', name: 'stop_continuous_sweeps', arguments: '{}' },
+        { callId: 'iq-run-state-stopped', name: 'get_application_state', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'iq-run-2', transport: 'realtime-websocket', text: 'Bounded I/Q Run verified and stopped.', toolCalls: [] });
+
+    render(<App/>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Open I/Q, Run, verify the controls and state, then Stop.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(await screen.findByRole('button', { name: /Stopping/i })).toBeTruthy();
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    const results = outputs.map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: Record<string, unknown> });
+    expect(results.every(({ ok }) => ok), JSON.stringify(results)).toBe(true);
+    expect(results[1]?.output).toEqual({ streaming: true, continuousMode: 'complex-iq', workspace: 'iq' });
+    expect(results[2]?.output).toMatchObject({ workspace: 'iq', continuous: true, continuousMode: 'complex-iq', iq: { latestCapture: null } });
+    expect(results[3]?.output).toMatchObject({
+      activeWorkspace: 'iq',
+      rendered: expect.arrayContaining([
+        expect.objectContaining({ controlId: 'workspace.iq', enabled: true }),
+        expect.objectContaining({ controlId: 'acquisition.continuous.stop', enabled: true, humanOnly: false }),
+      ]),
+    });
+    expect(results[4]?.output).toMatchObject({ streaming: false, continuousMode: 'complex-iq' });
+    expect(results[5]?.output).toMatchObject({
+      workspace: 'iq',
+      continuous: false,
+      continuousMode: 'complex-iq',
+      iq: { latestCapture: expect.objectContaining({ id: 'iq-buffer-1', sampleCount: 2, sampleRateHz: 2_000_000 }) },
+    });
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(1);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: /^Run$/i })).toBeTruthy();
+  });
+
   it('publishes one advancing global sweep identity across every non-Spectrum Run route', async () => {
     mockConnectedInstrument(signalLabIqSession);
     vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
@@ -1685,6 +1887,11 @@ describe('operator vertical slice', () => {
   });
 
   it('exposes retained failed-connect cleanup and blocks a new connection until the safe retry succeeds', async () => {
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'cleanup-inspect-load', name: 'load_atom_tools', arguments: '{"toolNames":["inspect_interface"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'cleanup-inspect', name: 'inspect_interface', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-2', transport: 'realtime-websocket', text: 'Safe cleanup is available.', toolCalls: [] });
     render(<App/>);
     const connectionButton = await screen.findByRole('button', { name: /No instrument.*Choose an instrument source/i });
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
@@ -1700,6 +1907,23 @@ describe('operator vertical slice', () => {
     const dialog = screen.getByRole('dialog', { name: 'Connect' });
     expect(within(dialog).getByRole('alert').textContent).toMatch(/Connection cleanup required/i);
     expect(within(dialog).getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(true);
+
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Inspect the cleanup control.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const inspected = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
+      ok?: boolean;
+      output?: { rendered?: readonly { controlId?: string; enabled?: boolean; preferredTool?: string }[] };
+    };
+    expect(inspected).toMatchObject({
+      ok: true,
+      output: {
+        rendered: expect.arrayContaining([
+          expect.objectContaining({ controlId: 'connection.retry-cleanup', enabled: true, preferredTool: 'disconnect_device' }),
+        ]),
+      },
+    });
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry safe cleanup' }));
     await waitFor(() => expect(window.atomizerInstrument.disconnect).toHaveBeenCalledOnce());

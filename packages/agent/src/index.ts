@@ -103,7 +103,7 @@ export interface AgentTurnResult {
 }
 
 export const agentSemanticControlIds = [
-  'workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.generator', 'workspace.device',
+  'workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.iq', 'workspace.generator', 'workspace.device',
   'measurement.view.spectrum', 'measurement.view.waterfall', 'measurement.view.channel', 'measurement.view.envelope-stft',
   'measurement.setup', 'measurement.controls', 'measurement.markers', 'measurement.traces', 'measurement.display',
   'spectrum.marker-place',
@@ -111,12 +111,16 @@ export const agentSemanticControlIds = [
   'marker.search.peak', 'marker.search.minimum', 'marker.search.left', 'marker.search.right',
   'display.auto-scale', 'classification.auto-select', 'classification.capture-envelope', 'stft.capture', 'generator.apply',
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
-  'connection.open', 'connection.close', 'connection.cancel', 'connection.refresh', 'connection.connect', 'connection.disconnect',
-  'device.capture-screen', 'device.refresh-diagnostics', 'atom.toggle',
+  'connection.open', 'connection.close', 'connection.cancel', 'connection.refresh', 'connection.connect', 'connection.disconnect', 'connection.retry-cleanup',
+  'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
   'export.csv', 'export.json', 'error.dismiss', 'notice.dismiss', 'atom.close',
   'atom.microphone-mute', 'atom.speaker-mute',
 ] as const;
 export type AgentSemanticControlId = typeof agentSemanticControlIds[number];
+
+export const agentHighImpactSemanticControlIds = [
+  'device.remote-touch', 'generator.rf-output', 'atom.approve-high-impact',
+] as const satisfies readonly AgentSemanticControlId[];
 
 export const agentComputerActionControlIds = [
   'measurement.setup', 'measurement.controls', 'measurement.markers', 'measurement.traces', 'measurement.display',
@@ -136,12 +140,12 @@ export interface AgentControlBinding {
 
 /** Closed mapping from every renderer agent hook to its typed operation and evidence class. */
 export const agentControlBindings: readonly AgentControlBinding[] = [
-  { pattern: /^workspace\.(spectrum|detection|classification|generator|device)$/, preferredTool: 'navigate_workspace', risk: 'operate', projection: 'ui-only', guarantee: 'Changes only the active Atomizer workspace and preserves the RF-output navigation guard.' },
+  { pattern: /^workspace\.(spectrum|detection|classification|iq|generator|device)$/, preferredTool: 'navigate_workspace', risk: 'operate', projection: 'ui-only', guarantee: 'Changes only the active Atomizer workspace while preserving RF-output and acquisition-capability navigation guards.' },
   { pattern: /^measurement\.view\.(spectrum|waterfall|channel|envelope-stft)$/, preferredTool: 'set_measurement_view', risk: 'operate', projection: 'ui-only', guarantee: 'Selects one bounded analysis projection without changing evidence.' },
   { pattern: /^measurement\.(setup|controls|markers|traces|display)$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Opens or closes one local measurement control surface.' },
   { pattern: /^spectrum\.marker-place$/, preferredTool: 'configure_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Places the active marker at one bounded frequency derived from the visible plot coordinate.' },
-  { pattern: /^acquisition\.single$/, preferredTool: 'acquire_sweep', risk: 'operate', projection: 'transport', guarantee: 'Requests one complete acquisition from the connected execution backend.' },
-  { pattern: /^acquisition\.continuous\.start$/, preferredTool: 'start_continuous_sweeps', risk: 'operate', projection: 'transport', guarantee: 'Starts serialized acquisition until stop or first failure.' },
+  { pattern: /^acquisition\.single$/, preferredTool: 'acquire_sweep', risk: 'operate', projection: 'transport', guarantee: 'Requests one complete complex-I/Q buffer on the I/Q workspace or one complete scalar sweep on every other acquisition workspace.' },
+  { pattern: /^acquisition\.continuous\.start$/, preferredTool: 'start_continuous_sweeps', risk: 'operate', projection: 'transport', guarantee: 'Starts backpressured bounded I/Q buffers on the I/Q workspace or serialized scalar sweeps elsewhere until stop or first failure.' },
   { pattern: /^acquisition\.continuous\.stop$/, preferredTool: 'stop_continuous_sweeps', risk: 'operate', projection: 'transport', guarantee: 'Stops after the current in-flight command completes.' },
   { pattern: /^analyzer\.(start|stop|points|rbw(-mode)?|transfer|attenuation(-mode)?|sweep-time(-mode)?|detector|spur-rejection|avoid-spurs|lna|trigger|trigger-level)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'commanded', guarantee: 'Stages a capability-validated analyzer patch while preserving omitted controls.' },
   { pattern: /^analyzer\.preset\.(fm|2g4|5g)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'ui-only', guarantee: 'Stages one declared frequency preset while preserving the remaining analyzer configuration.' },
@@ -179,6 +183,7 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^connection\.candidate\.[1-9][0-9]*\.select$/, preferredTool: 'computer_click', risk: 'operate', projection: 'ui-only', guarantee: 'Selects one rendered candidate without opening its transport.' },
   { pattern: /^connection\.connect$/, preferredTool: 'connect_device', risk: 'operate', projection: 'transport', guarantee: 'Connects the currently selected exact candidate through the typed identity gate.' },
   { pattern: /^connection\.disconnect$/, preferredTool: 'disconnect_device', risk: 'operate', projection: 'transport', guarantee: 'Disconnects through RF-off and transport teardown sequencing.' },
+  { pattern: /^connection\.retry-cleanup$/, preferredTool: 'disconnect_device', risk: 'operate', projection: 'transport', guarantee: 'Retries only the retained failed connection teardown before any new connection can be admitted.' },
   { pattern: /^export\.(csv|json)$/, preferredTool: 'export_latest_sweep', risk: 'operate', projection: 'host-derived', guarantee: 'Opens one explicit native export transaction for complete evidence.' },
   { pattern: /^(error|notice)\.dismiss$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Dismisses only the visible local message.' },
   { pattern: /^atom\.close$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Closes only the Atom panel.' },
@@ -214,8 +219,8 @@ export const agentApiCoverage = {
   connect: { tools: ['connect_device'], projection: 'device-state', guarantee: 'Connects exactly one fresh candidate through its owning driver and retains source-discriminated provenance.', failure: 'Stale, disappeared, or changed candidates fail; no source is substituted.' },
   disconnect: { tools: ['disconnect_device'], projection: 'device-state', guarantee: 'Stops streaming, commands output off when possible, closes transport, and returns terminal state.', failure: 'RF-off and close failures are preserved; RF state becomes unknown.' },
   configure: { tools: ['configure_analyzer', 'configure_zero_span'], projection: 'device-state', guarantee: 'Admits only a configuration kind and range declared by the connected driver.', failure: 'Unsupported acquisition kinds or out-of-capability values reject before driver I/O.' },
-  acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing measurement.', failure: 'Incomplete, malformed, wrong-session, or wrong-configuration evidence is rejected.' },
-  startStreaming: { tools: ['start_continuous_sweeps'], projection: 'transport-evidence', guarantee: 'Starts one serialized sweep loop.', failure: 'First acquisition failure terminates the loop visibly.' },
+  acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing contextual scalar or complex-I/Q measurement.', failure: 'Incomplete, malformed, wrong-kind, wrong-session, or wrong-configuration evidence is rejected.' },
+  startStreaming: { tools: ['start_continuous_sweeps'], projection: 'transport-evidence', guarantee: 'Starts one serialized scalar stream or one-at-a-time backpressured complex-I/Q buffer loop.', failure: 'First acquisition failure terminates the active mode visibly.' },
   stopStreaming: { tools: ['stop_continuous_sweeps'], projection: 'device-state', guarantee: 'Stops after the in-flight operation settles.', failure: 'A non-running stream is rejected rather than treated as success.' },
   executeFeature: { tools: ['configure_generator', 'set_rf_output', 'read_device_diagnostics', 'capture_device_screen', 'remote_device_touch'], projection: 'device-state', guarantee: 'Executes only a feature and range declared by the active driver; RF enable and touch remain approved.', failure: 'Unsupported features fail rather than falling back to another driver or transport.' },
   readPreference: { tools: ['get_instrument_state'], projection: 'ui-context', guarantee: 'Reports the persisted or factory startup driver preference.', failure: 'Preference load failure remains visible startup evidence.' },
@@ -227,7 +232,7 @@ export const agentApiCoverage = {
 if (Object.keys(agentApiCoverage).length !== ATOMIZER_DRIVER_API_METHODS.length) throw new Error('Atom generic driver API coverage is not exhaustive');
 
 const agentToolDescriptors: readonly AgentToolDescriptor[] = [
-  { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, operation state, simulation status, history count, and visible errors.' },
+  { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, contextual continuous-acquisition mode, operation state, staged complex-I/Q configuration and latest bounded I/Q capture summary, simulation status, history count, and visible errors.' },
   { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer driver host plus active SignalLab, physical TinySA, or firmware-twin source without conflating USB, firmware execution, or synthetic evidence.' },
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
   { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance and warnings, declared capabilities, active configuration, streaming state, startup preference, and RF command state. A missing RF-generator feature or rfOutput=not-supported grants no RF-output authority.' },
@@ -245,10 +250,10 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'computer_type', description: 'Type bounded text only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when the focused editable Atomizer control exactly matches expectedTarget through native delivery.' },
   { type: 'function', name: 'computer_key', description: 'Send one allow-listed key only with a current focus grant from the last screenshot or successful focus-producing click/type/key action, when Atomizer focus exactly matches expectedTarget through native delivery.' },
   { type: 'function', name: 'computer_scroll', description: 'Scroll at coordinates from exactly one latest, unconsumed Atomizer screenshot. Before hit-testing, Atomizer recaptures under the same visual normalization and requires the exact bitmap, window geometry, and display scale to match; stale IDs, changed visual state, and protected targets fail closed.' },
-  { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output guard as the visual UI. The legacy detection route resolves to the merged classification workspace.' },
+  { type: 'function', name: 'navigate_workspace', description: 'Navigate to a first-class workspace through the same RF-output and acquisition-capability guards as the visual UI. I/Q requires a connected complex-I/Q capability. The legacy detection route resolves to the merged classification workspace.' },
   { type: 'function', name: 'configure_analyzer', description: 'Apply a non-empty patch to visible swept-spectrum staging. Receiver controls are capability-validated; synthetic sources accept only geometry and their exact timing. Omitted fields are preserved, and staging is distinct from the host-admitted configuration.' },
-  { type: 'function', name: 'acquire_sweep', description: 'Apply the latest staged analyzer revision and acquire exactly one complete sweep; mismatched requested configuration is rejected before measurement reducers.' },
-  { type: 'function', name: 'start_continuous_sweeps', description: 'Apply the latest staged analyzer revision and acquire serialized sweeps until explicitly stopped or a failure occurs; superseded in-flight sweeps are quarantined.' },
+  { type: 'function', name: 'acquire_sweep', description: 'Activate the global Single control contextually. On the I/Q workspace, apply the staged complex-I/Q configuration and acquire one complete bounded buffer while staying on I/Q. Elsewhere, apply the staged analyzer revision and acquire one complete scalar sweep. Wrong-kind, wrong-session, wrong-revision, or mismatched geometry evidence is rejected.' },
+  { type: 'function', name: 'start_continuous_sweeps', description: 'Activate the global Run control contextually. On the I/Q workspace, start one-at-a-time backpressured bounded buffers while staying on I/Q. Elsewhere, apply the latest analyzer revision and acquire serialized scalar sweeps. Acquisition continues until explicitly stopped or the first failure.' },
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.' },
   { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, separately labeled firmware-readback trace visibility, eight marker configurations/readings with trace-local 3 dB response status, separately labeled 99% robust-floor-subtracted threshold-component OBW, peak-to-robust-floor/prominence and bounded detector context, peak-search criteria, and amplitude display scale. Neither width is calibrated SNR, deconvolved emitter bandwidth, whole-span OBW, or protocol allocation.' },
   { type: 'function', name: 'set_measurement_view', description: 'Select Spectrum, Waterfall, or Channel as the active bounded renderer view. The legacy envelope-stft value resolves to Spectrum; dedicated STFT analysis tools remain available.' },
@@ -353,7 +358,7 @@ export const agentToolInputSchemas = {
   computer_type: z.object({ expectedTarget: z.string().min(1).max(128), text: z.string().min(1).max(2_000) }).strict(),
   computer_key: z.object({ expectedTarget: z.string().min(1).max(128), key: z.enum(['ENTER', 'ESCAPE', 'TAB', 'ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT', 'BACKSPACE', 'META+K', 'CTRL+K']) }).strict(),
   computer_scroll: z.object({ screenshotId: z.uuid(), x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), deltaX: z.number().int().min(-2_000).max(2_000), deltaY: z.number().int().min(-2_000).max(2_000) }).strict(),
-  navigate_workspace: z.object({ workspace: z.enum(['spectrum', 'detection', 'classification', 'generator', 'device']) }).strict(),
+  navigate_workspace: z.object({ workspace: z.enum(['spectrum', 'detection', 'classification', 'iq', 'generator', 'device']) }).strict(),
   configure_analyzer: analyzerConfigPatchSchema,
   acquire_sweep: z.object({}).strict(),
   start_continuous_sweeps: z.object({}).strict(),
@@ -607,9 +612,10 @@ You are Atom, the native AI copilot inside Atomizer. Help RF hobbyists learn and
 - JSON schemas are authoritative. Obey types, enums, units, bounds, required fields, and closed objects exactly.
 - configure_analyzer is a non-empty staged patch. The active driver's closed capability model admits every supported receiver control (format, RBW, attenuation, sweep time, detector, spur handling, LNA, and trigger) or rejects it; synthetic sources carry only their declared exact timing and never receive invented RF controls.
 - configure_zero_span is a non-empty staged detected-power patch. Its frequency, sample count, duration, RBW, attenuation, and trigger are merged with staged values, then admitted by the active driver's closed capability model; synthetic sources accept only their declared geometry and exact timing and reject RF controls. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
+- The legacy acquire_sweep and start_continuous_sweeps names are the typed global Single and Run controls. After navigate_workspace selects I/Q, they acquire one bounded complex-I/Q buffer or start one-at-a-time backpressured I/Q buffers and stay on I/Q. On every other acquisition workspace they retain scalar-spectrum behavior. Use get_application_state to verify workspace, continuousMode, staged I/Q geometry, and latest capture provenance; stop_continuous_sweeps stops either mode.
 - A response containing any operate or high-impact call is one ordered fail-fast batch: Atomizer preflights every schema and response-scoped authorization before effects, executes in emitted order only if that preflight passes, and skips every remaining non-cleanup call after the first failure or approval denial. Three narrow safety cleanups remain best-effort in emitted order after either barrier: set_rf_output with enabled false, stop_continuous_sweeps, and disconnect_device. Treat each structured skipped result as non-execution and continue only from actual results. An all-observe batch remains independent, so one failed read does not prevent other valid reads in that same response.
 - Mutable backend readiness is never a whole-batch preflight assumption. Immediately before every high-impact call Atomizer requires a complete active sessionId, driverId, sourceKind, and execution identity. Approval-required calls bind approval to that exact identity and re-attest it after approval; a missing or changed backend rejects execution. This permits an earlier successful connect_device call to establish the backend for a later high-impact call in the same ordered batch.
-- For "place a marker on the peak" or equivalent requests, preload both acquire_sweep and search_marker in the operation's one response-scoped tool set. Preloading does not authorize or execute an acquisition. Use search_marker action "peak", not a guessed or partial configure_marker replacement. Search the marker's assigned current complete host trace directly when it has data. Only when that trace has no data, or the user requests fresh evidence, acquire one complete sweep before searching. Tool calls are executed in emitted order, so in that recovery or fresh-evidence case emit acquisition before search. Load get_measurement_state too when the user asks for readback or characterization.
+- For "place a marker on the peak" or equivalent requests, preload both acquire_sweep and search_marker in the operation's one response-scoped tool set. If the current workspace may be I/Q and a fresh scalar sweep is required, also load navigate_workspace and navigate to spectrum before acquire_sweep. Preloading does not authorize or execute an acquisition. Use search_marker action "peak", not a guessed or partial configure_marker replacement. Search the marker's assigned current complete host trace directly when it has data. Only when that trace has no data, or the user requests fresh evidence, acquire one complete sweep before searching. Tool calls are executed in emitted order, so in that recovery or fresh-evidence case emit acquisition before search. Load get_measurement_state too when the user asks for readback or characterization.
 - Trace Off is configure_trace mode "blank". D1–D4 firmware overlay visibility is separate and never mutates firmware trace state.
 - A connection requires a fresh list_connection_candidates result and its opaque candidateId. Opening a dialog is not connecting.
 - Coordinate click/scroll requires the immediately preceding one-use screenshotId. Type/key requires the exact focused target. Prefer semantic computer_action.
