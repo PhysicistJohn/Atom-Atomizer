@@ -102,6 +102,23 @@ jobs:
       - name: Install Atomizer
         working-directory: TinySA_Atomizer
         run: npm ci
+      - name: Ensure the Electron binary actually landed
+        working-directory: TinySA_Atomizer
+        shell: bash
+        # Both repos pin the identical electron@43.1.0, and SignalLab's own
+        # npm ci (just above) already primed electron's shared download
+        # cache -- Atomizer's npm ci then extracts from that warm cache
+        # instead of downloading, which has been silently leaving
+        # node_modules/electron/dist empty on this job. Self-heal by forcing
+        # electron's own postinstall to run again, with diagnostics if it
+        # still doesn't land.
+        run: |
+          if [ ! -e node_modules/electron/dist/electron ]; then
+            echo "Electron binary missing after npm ci; forcing its install script"
+            ls -la node_modules/electron/dist 2>&1 || echo "node_modules/electron/dist does not exist"
+            node node_modules/electron/install.js
+          fi
+          test -e node_modules/electron/dist/electron
       - name: Require real SignalLab bridge interoperability
         working-directory: TinySA_Atomizer
         run: npm run check
