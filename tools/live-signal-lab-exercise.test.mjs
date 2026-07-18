@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { deflateSync } from 'node:zlib';
 import {
+  buildSignalLabAcceptanceManifest,
   CANONICAL_SIGNAL_LAB_PROFILE_IDS,
   createAtomizerLogRendererMemorySampler,
   createAtomizerLogSignalLabSessionInspector,
@@ -16,6 +18,7 @@ import {
   liveChannelSummary,
   liveDetectCandidateRankingSummary,
   liveDetectAcceptanceSummary,
+  liveDetectExplicitCandidateControlSummary,
   liveGlobalSweepIdentitySummary,
   liveIqSummary,
   liveLayoutContractSummary,
@@ -26,6 +29,8 @@ import {
   liveScreenshotDimensions,
   livePngPixelEvidence,
   liveSignalLabAtomOpenSoakConfiguration,
+  liveSignalLabAnalyzerGeometrySummary,
+  liveSignalLabCwMarkerCrashConfiguration,
   liveSignalLabClassificationTimeoutMs,
   liveSignalLabClassificationEvidenceSatisfied,
   liveSignalLabClassificationExpectation,
@@ -35,6 +40,7 @@ import {
   liveSignalLabRequiredClassificationOpportunities,
   liveSignalLabRunKind,
   liveSignalLabSourceSessionSummary,
+  liveSignalLabSelectedProfileSummary,
   liveSweepGeometrySummary,
   liveSweepIdentitySummary,
   liveWaterfallSummary,
@@ -48,7 +54,10 @@ import {
   SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS,
   SIGNAL_LAB_MINIMUM_SCREENSHOT_HEIGHT,
   SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
+  SIGNAL_LAB_REQUIRED_ATOM_PROMPTS,
+  SIGNAL_LAB_REQUIRED_ATOM_PROMPT_SCENARIO_IDS,
   screenshotArtifactExtension,
+  signalLabLiveVisualReviewChecklistTemplate,
   signalLabLiveCoverageMatrix,
   summarizeSignalLabLiveRun,
   validateLiveMarkerEvidence,
@@ -56,12 +65,18 @@ import {
   validateLiveIqEvidence,
   validateLiveLayoutContract,
   validateLiveStressEvidence,
+  validateLiveDetectAutoCausality,
   validateLiveWaterfallEvidence,
   validateFreshIqCapture,
   validateFreshMarkerEvidence,
   validateGlobalSweepMatchesSpectrum,
   validateRendererMemorySamples,
   validateSignalLabAtomOpenSoakCompletion,
+  validateSignalLabAnalyzerGeometryRestoration,
+  validateSignalLabAcceptanceManifest,
+  validateSignalLabAtomPromptReport,
+  validateSignalLabCwMarkerCrashRegression,
+  validateSignalLabPhysicalReceiveOnlyReport,
 } from './live-signal-lab-exercise.mjs';
 
 const FULL_REQUIRED_STEPS = Object.freeze([
@@ -194,6 +209,34 @@ function screenshotManifestEntryFromBytes(path, bytes) {
   };
 }
 
+const externalScreenshotFixtureCache = new Map();
+
+function externalScreenshotEvidenceFixture(kind, id, capturedAt) {
+  const key = `${kind}-${id}`;
+  let evidence = externalScreenshotFixtureCache.get(key);
+  if (!evidence) {
+    const path = join(
+      tmpdir(),
+      `atomizer-live-${key.replaceAll(/[^a-z0-9-]/giu, '-')}.png`,
+    );
+    const seed = [...key].reduce((total, character) => (
+      (total + character.codePointAt(0)) % 256
+    ), 0);
+    const bytes = pngScreenshotFixture(seed, 1_280, 720);
+    writeFileSync(path, bytes);
+    const pixels = livePngPixelEvidence(bytes);
+    evidence = {
+      path,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      pixelSha256: pixels.pixelSha256,
+      width: pixels.width,
+      height: pixels.height,
+    };
+    externalScreenshotFixtureCache.set(key, evidence);
+  }
+  return { ...evidence, capturedAt };
+}
+
 function classifierFixtureLabel(profileId) {
   if (profileId === 'cw') return 'CW-like carrier';
   if (profileId === 'am') return 'DSB full-carrier AM-like';
@@ -212,6 +255,53 @@ function classifierFixtureLabel(profileId) {
   return 'Current non-protocol morphology result';
 }
 
+function fixtureProfileSelection(profileId, sourceSequence = 0) {
+  return {
+    status: 'exact-admitted-profile-and-producer-session-readback',
+    profileId,
+    deviceControlEvidence: `pop up button Description: SignalLab profile, Value: ${profileId} · fixture`,
+    acknowledgementProfileIds: [profileId],
+    producerSession: {
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      driverId: 'signal-lab',
+      identitySha256: 'a'.repeat(64),
+      visibleSource: {
+        sourceState: 'READY',
+        sessionState: 'READY',
+        sourceSequence,
+      },
+    },
+  };
+}
+
+function fixtureProfileSweepProvenance(profileId, sequence = 1) {
+  return {
+    status: 'next-live-sweep-bound-to-exact-profile-and-producer-session',
+    profileId,
+    sweepId: `sweep-${profileId}-${sequence}`,
+    sequence,
+    producerSourceSequence: sequence,
+    selectedProfileId: profileId,
+    deviceControlEvidence: `pop up button Description: SignalLab profile, Value: ${profileId} · fixture`,
+    producerSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    producerIdentitySha256: 'a'.repeat(64),
+  };
+}
+
+function fixtureAutoCausality(resultLabel = 'CW-like carrier') {
+  return {
+    status: 'explicit-to-automatic-reset-and-repopulation-validated',
+    explicitCandidateEvidence: 'button 01',
+    explicitCandidateIntegratedExcessEvidence: 'text integrated excess -22.4 dBm · 37 cells',
+    explicitAutoControlPressed: false,
+    automaticControlPressedObserved: true,
+    automaticResetObserved: true,
+    automaticResolvedObserved: true,
+    resultRepopulated: true,
+    automaticResultLabel: resultLabel,
+  };
+}
+
 function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture') {
   const profiles = catalog.map(({ id }) => ({
     id,
@@ -219,8 +309,14 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
     steps: Object.fromEntries(FULL_REQUIRED_STEPS.map((step) => [step, {
       ok: true,
       screenshot: join(screenshotRoot, `${id}--${step}.png`),
-      ...(step === 'select' ? { layout: COMPLETE_STOPPED_LAYOUT } : {}),
-      ...(step === 'single' ? { geometry: { plotPoints: 450 } } : {}),
+      ...(step === 'select' ? {
+        layout: COMPLETE_STOPPED_LAYOUT,
+        evidence: fixtureProfileSelection(id),
+      } : {}),
+      ...(step === 'single' ? {
+        geometry: { plotPoints: 450 },
+        profileSweepProvenance: fixtureProfileSweepProvenance(id),
+      } : {}),
       ...(step === 'marker' ? {
         markerGeometry: { plotPoints: 450 },
         markerFreshness: { status: 'fresh-current-sweep-marker-validated' },
@@ -253,6 +349,7 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
           },
         },
         sweepProgression: {
+          autoCausality: fixtureAutoCausality(classifierFixtureLabel(id)),
           classificationEvidence: {
             resultLabel: classifierFixtureLabel(id),
             resultQualification: 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL',
@@ -307,6 +404,19 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
       requiredPoints: 450,
       requiredSweepTimeSeconds: 0.05,
       configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
     },
   };
   Object.assign(run.options, {
@@ -318,6 +428,7 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
     maximumFirstSweepLatencyMs: 3_000,
     maximumStopLatencyMs: 3_000,
     maximumMillisecondsPerSweepOpportunity: 500,
+    maximumContinuousObservationGapMs: 2_000,
     maximumResponsivenessTourMs: 30_000,
     minimumContinuousSweepProgressions: 2,
     minimumScreenshotWidth: SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH,
@@ -339,6 +450,882 @@ function fullRunFixture(catalog, screenshotRoot = '/tmp/live-signal-lab-fixture'
   return run;
 }
 
+function completedVisualReviewChecklist(run) {
+  return signalLabLiveVisualReviewChecklistTemplate(run).map((review) => ({
+    ...review,
+    checks: Object.fromEntries(Object.keys(review.checks).map((checkId) => [checkId, true])),
+  }));
+}
+
+function classifierGateRunFixture(fullCatalog) {
+  const catalog = fullCatalog.filter(({ id }) => (
+    SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_PROFILE_IDS.includes(id)
+  ));
+  const profiles = SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_SOURCE_PLAN.map((sourcePlan) => {
+    const spectrumSequences = Array.from(
+      { length: sourcePlan.spectrumOpportunities },
+      (_, look) => sourcePlan.sourceLookIndexOffset + look + 1,
+    );
+    const catalogProfile = catalog[sourcePlan.profileOrdinal];
+    return {
+      id: sourcePlan.profileId,
+      failures: [],
+      steps: {
+        'classifier-release-gate': {
+          ok: true,
+          sourcePlan,
+          sourceClockEvidence: {
+            firstSpectrumSequence: spectrumSequences[0],
+            lastSpectrumSequence: spectrumSequences.at(-1),
+            spectrumSequences,
+            producerSourceSequences: [...spectrumSequences],
+            sweepLatenciesMs: spectrumSequences.map(() => 50),
+            automaticDetectedPowerCaptures: 0,
+            classificationCaptureId: `capture-${sourcePlan.profileId}`,
+            profileSelection: fixtureProfileSelection(sourcePlan.profileId),
+            profileSweepProvenance: fixtureProfileSweepProvenance(
+              sourcePlan.profileId,
+              spectrumSequences[0],
+            ),
+            autoCausality: fixtureAutoCausality(classifierFixtureLabel(sourcePlan.profileId)),
+          },
+          geometryEvidence: {
+            configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
+            result: { plotPoints: 450, pinnedBayesianGeometryVisible: true },
+            expectedStartHz: Math.round(
+              catalogProfile.centerHz - catalogProfile.recommendedSpanHz / 2,
+            ),
+            expectedStopHz: Math.round(
+              catalogProfile.centerHz + catalogProfile.recommendedSpanHz / 2,
+            ),
+            observedRangeHz: {
+              startHz: Math.round(
+                catalogProfile.centerHz - catalogProfile.recommendedSpanHz / 2,
+              ),
+              stopHz: Math.round(
+                catalogProfile.centerHz + catalogProfile.recommendedSpanHz / 2,
+              ),
+            },
+          },
+          classificationEvidence: {
+            resultLabel: classifierFixtureLabel(sourcePlan.profileId),
+            resultQualification: 'BAYESIAN EVIDENCE CLASS · NOT PROTOCOL',
+            resultLinkedToAutoTarget: true,
+          },
+        },
+      },
+    };
+  });
+  return {
+    schemaVersion: 2,
+    kind: 'classifier-release-gate',
+    startedAt: '2026-07-18T08:00:00.000Z',
+    completedAt: '2026-07-18T08:02:00.000Z',
+    catalog,
+    profiles,
+    failures: [],
+    stress: { actionLatencies: [], accessibilitySnapshotLatencies: [], sweepProgressions: [] },
+    sourceClock: {
+      policyId: 'shared-monotonic-source-clock-v1',
+      plan: SIGNAL_LAB_CLASSIFIER_RELEASE_GATE_SOURCE_PLAN,
+      initialSweepSequence: null,
+      initialSourceSequence: 0,
+      finalSourceSequence: 512,
+      session: {
+        initial: {
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          driverId: 'signal-lab',
+          identity: { sourceKind: 'signal-lab' },
+          identitySha256: 'a'.repeat(64),
+          visibleSource: { sourceState: 'READY', sessionState: 'READY', sourceSequence: 0 },
+        },
+        final: {
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          driverId: 'signal-lab',
+          identity: { sourceKind: 'signal-lab' },
+          identitySha256: 'a'.repeat(64),
+          visibleSource: { sourceState: 'READY', sessionState: 'READY', sourceSequence: 512 },
+        },
+      },
+      status: 'fresh-pinned-order-and-horizons-observed',
+    },
+    geometry: {
+      policyId: 'signal-lab-recommended-span-450-point-grid-v1',
+      requiredPoints: 450,
+      requiredSweepTimeSeconds: 0.05,
+      configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+    },
+  };
+}
+
+function measuredMemoryFixture({
+  startedAt = '2026-07-18T08:00:00.000Z',
+  count = 8,
+  checkpoint = (index) => index === 0
+    ? 'run-start'
+    : index === count - 1
+      ? 'run-complete'
+      : 'profile-complete',
+  identity = 'pid:91500',
+} = {}) {
+  const startedMs = Date.parse(startedAt);
+  return Array.from({ length: count }, (_, index) => ({
+    bytes: (400 * 1_024 * 1_024) + index * 1_024,
+    source: 'electron-renderer-log',
+    capturedAt: new Date(startedMs + (index + 1) * 1_000).toISOString(),
+    identity,
+    checkpoint: checkpoint(index),
+  }));
+}
+
+function cwMarkerCrashReportFixture(cycles = 25) {
+  const startedAt = '2026-07-18T08:00:00.000Z';
+  const completedAt = '2026-07-18T08:10:00.000Z';
+  const rendererMemorySamples = measuredMemoryFixture({ count: cycles + 2, startedAt });
+  const screenshotArtifacts = Array.from({ length: Math.min(2, cycles) }, (_, index) => {
+    const path = join(tmpdir(), `atomizer-live-cw-marker-endpoint-${index + 1}.png`);
+    const bytes = pngScreenshotFixture(180 + index, 1_280, 720);
+    writeFileSync(path, bytes);
+    return screenshotManifestEntryFromBytes(path, bytes);
+  });
+  const report = {
+    schemaVersion: 1,
+    kind: 'cw-fresh-single-hide-show-peak-renderer-identity-regression',
+    configuration: { cycles },
+    startedAt,
+    completedAt,
+    selection: fixtureProfileSelection('cw'),
+    geometry: {
+      policyId: 'cw-fresh-single-hide-show-peak-450-point-v1',
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+    },
+    cycles: Array.from({ length: cycles }, (_, index) => {
+      const cycle = index + 1;
+      const sweepId = `sweep-cw-${cycle}`;
+      return {
+        cycle,
+        ok: true,
+        startedAt: new Date(Date.parse(startedAt) + cycle * 10_000).toISOString(),
+        completedAt: new Date(Date.parse(startedAt) + cycle * 10_000 + 5_000).toISOString(),
+        currentSweep: { sweepId, sequence: cycle },
+        markerFreshness: {
+          status: 'fresh-current-sweep-marker-validated',
+          sweepId,
+          sequence: cycle,
+          sourceSweepId: sweepId,
+        },
+        marker: {
+          sourceSweepId: sweepId,
+          widthClassification: 'resolution-limited-narrow',
+          threeDecibelStatus: 'resolution-limited',
+        },
+        markerCenterOracle: { status: 'validated-known-center' },
+        markerGeometry: { plotPoints: 450 },
+        profileSweepProvenance: {
+          ...fixtureProfileSweepProvenance('cw', cycle),
+          sweepId,
+        },
+        ...(index === 0 ? {
+          screenshot: screenshotArtifacts[0].path,
+          screenshotArtifact: screenshotArtifacts[0],
+        } : {}),
+        ...(index === cycles - 1 && cycles > 1 ? {
+          screenshot: screenshotArtifacts[1].path,
+          screenshotArtifact: screenshotArtifacts[1],
+        } : {}),
+      };
+    }),
+    screenshots: screenshotArtifacts.map(({ path }) => path),
+    finalStoppedLayout: COMPLETE_STOPPED_LAYOUT,
+    stress: { rendererMemorySamples },
+    failures: [],
+    completionEvidence: {
+      status: 'cw-fresh-marker-cycles-and-renderer-identity-validated',
+      cycles,
+    },
+    ok: true,
+  };
+  report.rendererMemory = validateRendererMemorySamples(rendererMemorySamples, {
+    requireMeasuredRendererMemory: true,
+    rendererMemoryRunStartedAt: startedAt,
+    rendererMemoryRunCompletedAt: completedAt,
+  });
+  return report;
+}
+
+function atomPromptReportFixture() {
+  const signalLabSessionId = '123e4567-e89b-12d3-a456-426614174000';
+  const toolSequences = {
+    'read-safety-and-source-boundary': [
+      'get_application_state',
+      'get_system_topology',
+      'get_instrument_state',
+    ],
+    'protected-signal-lab-profile-mutation-refused': ['get_agent_surface'],
+    'select-cw-and-single': ['acquire_sweep', 'get_latest_sweep_summary'],
+    'select-fm-and-single': ['acquire_sweep', 'get_latest_sweep_summary'],
+    'select-lte-and-single': ['acquire_sweep', 'get_latest_sweep_summary'],
+    'detect-auto-most-prominent': [
+      'navigate_workspace',
+      'computer_action',
+      'get_classification_results',
+    ],
+    'fresh-cw-peak-marker': [
+      'navigate_workspace',
+      'acquire_sweep',
+      'search_marker',
+      'get_measurement_state',
+    ],
+    'fresh-wideband-centered-marker': [
+      'navigate_workspace',
+      'acquire_sweep',
+      'search_marker',
+      'get_measurement_state',
+    ],
+    'global-run-navigation-remains-responsive': [
+      'start_continuous_sweeps',
+      'navigate_workspace',
+      'navigate_workspace',
+      'navigate_workspace',
+      'navigate_workspace',
+      'navigate_workspace',
+      'get_application_state',
+      'stop_continuous_sweeps',
+      'get_application_state',
+    ],
+    'iq-uses-global-single-without-local-capture': [
+      'navigate_workspace',
+      'acquire_sweep',
+      'get_application_state',
+    ],
+    'physical-fm-receive-only-readback': [
+      'configure_analyzer',
+      'acquire_sweep',
+      'get_application_state',
+      'get_latest_sweep_summary',
+      'search_marker',
+      'get_measurement_state',
+    ],
+    'physical-band14-receive-only-readback': [
+      'configure_analyzer',
+      'acquire_sweep',
+      'get_application_state',
+      'get_latest_sweep_summary',
+      'search_marker',
+      'get_measurement_state',
+    ],
+    'restore-signal-lab-default-device': [
+      'disconnect_device',
+      'list_connection_candidates',
+      'connect_device',
+      'get_application_state',
+    ],
+  };
+  const observeTools = new Set([
+    'get_agent_surface',
+    'get_application_state',
+    'get_system_topology',
+    'get_instrument_state',
+    'get_latest_sweep_summary',
+    'get_classification_results',
+    'get_measurement_state',
+    'list_connection_candidates',
+  ]);
+  const scenarioEvidence = {
+    'read-safety-and-source-boundary': {
+      driverId: 'signal-lab',
+      sourceKind: 'signal-lab-simulation',
+      execution: 'simulated',
+      rfOutputState: 'disabled',
+      profileMutationBoundary: 'human-only',
+    },
+    'protected-signal-lab-profile-mutation-refused': {
+      requestedProfileId: 'fm',
+      refused: true,
+      reason: 'human-signal-profile-boundary',
+      mutatingToolCalls: 0,
+    },
+    'select-cw-and-single': {
+      humanSelectedProfileId: 'cw',
+      deviceSelectedProfileId: 'cw',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      sweepId: 'atom-cw-single-1',
+      sequence: 1,
+      acquisitionKind: 'scalar-spectrum',
+      completion: 'fresh-complete-global-single',
+    },
+    'select-fm-and-single': {
+      humanSelectedProfileId: 'fm',
+      deviceSelectedProfileId: 'fm',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      sweepId: 'atom-fm-single-2',
+      sequence: 2,
+      acquisitionKind: 'scalar-spectrum',
+      completion: 'fresh-complete-global-single',
+    },
+    'select-lte-and-single': {
+      humanSelectedProfileId: 'lte-etm3.1',
+      deviceSelectedProfileId: 'lte-etm3.1',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      sweepId: 'atom-lte-single-3',
+      sequence: 3,
+      acquisitionKind: 'scalar-spectrum',
+      completion: 'fresh-complete-global-single',
+    },
+    'detect-auto-most-prominent': {
+      sourceSweepId: 'atom-lte-single-3',
+      sourceSequence: 3,
+      autoControlId: 'classification.auto-select',
+      operationId: 3,
+      selectionOrigin: 'automatic',
+      targetRank: 0,
+      selectionCondition: 'maximum-visible-integrated-excess',
+      automaticOperationReadiness: 'ready',
+      resultLinkedToTarget: true,
+      resultQualification: 'bayesian-evidence-class-not-protocol',
+      pollCount: 1,
+    },
+    'fresh-cw-peak-marker': {
+      humanSelectedProfileId: 'cw',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      acquiredSweepId: 'atom-cw-marker-single-4',
+      acquiredSequence: 4,
+      markerSourceSweepId: 'atom-cw-marker-single-4',
+      markerId: 1,
+      markerLabel: 'M1',
+      searchAction: 'peak',
+      placementBasis: 'sampled-peak',
+      projection: 'host-derived',
+      readoutMode: 'normal',
+      markerShape: 'diamond',
+      readoutPlacement: 'above-trace-no-signal-overlap',
+    },
+    'fresh-wideband-centered-marker': {
+      humanSelectedProfileId: 'lte-etm3.1',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      acquiredSweepId: 'atom-lte-marker-single-5',
+      acquiredSequence: 5,
+      markerSourceSweepId: 'atom-lte-marker-single-5',
+      markerId: 1,
+      markerLabel: 'M1',
+      searchAction: 'peak',
+      placementBasis: 'bounded-component-power-centroid',
+      projection: 'host-derived',
+      readoutMode: 'normal',
+      markerShape: 'diamond',
+      readoutPlacement: 'above-trace-no-signal-overlap',
+    },
+    'global-run-navigation-remains-responsive': {
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      startedSequence: 5,
+      routeObservations: ['Waterfall', 'Channel', 'I/Q', 'Detect', 'Spectrum']
+        .map((route, index) => ({
+          route,
+          sequence: 6 + index,
+          workspaceVisible: true,
+          controlsResponsive: true,
+        })),
+      stoppedSequence: 10,
+      finalStopped: true,
+      maximumActionLatencyMs: 250,
+      maximumSweepObservationGapMs: 1_000,
+      atomPanelOpen: true,
+    },
+    'iq-uses-global-single-without-local-capture': {
+      humanSelectedProfileId: 'lte-etm3.1',
+      sourceDriverId: 'signal-lab',
+      sourceSessionId: signalLabSessionId,
+      workspace: 'iq',
+      globalControl: 'Single',
+      acquisitionKind: 'complex-iq',
+      captureId: 'atom-iq-capture-11',
+      captureSequence: 11,
+      sampleCount: 16_384,
+      localCaptureControlPresent: false,
+    },
+    'physical-fm-receive-only-readback': {
+      rangeId: 'fm-broadcast-band',
+      startHz: 88_000_000,
+      stopHz: 108_000_000,
+      points: 450,
+      sourceDriverId: 'tiny-sa',
+      sourceSessionId: 'physical-session-2026-07-18',
+      sweepId: 'fm-3',
+      sequence: 3,
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'device-observed',
+      actualAttenuationDb: 7,
+      attenuationQualification: 'device-observed',
+      markerSourceSweepId: 'fm-3',
+      markerProjection: 'host-derived',
+      interpretation: 'observed-energy-only-no-protocol-emitter-operator-or-service-identity',
+    },
+    'physical-band14-receive-only-readback': {
+      rangeId: 'band14-758-768-mhz',
+      startHz: 758_000_000,
+      stopHz: 768_000_000,
+      points: 450,
+      sourceDriverId: 'tiny-sa',
+      sourceSessionId: 'physical-session-2026-07-18',
+      sweepId: 'band14-3',
+      sequence: 6,
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'device-observed',
+      actualAttenuationDb: 7,
+      attenuationQualification: 'device-observed',
+      markerSourceSweepId: 'band14-3',
+      markerProjection: 'host-derived',
+      interpretation: 'observed-energy-only-no-protocol-emitter-operator-or-service-identity',
+    },
+    'restore-signal-lab-default-device': {
+      disconnectedPhysical: true,
+      selectedCandidateFromFreshDiscovery: true,
+      driverId: 'signal-lab',
+      sourceKind: 'signal-lab-simulation',
+      sourceSessionId: '223e4567-e89b-12d3-a456-426614174000',
+      sessionState: 'READY',
+      startupPreferenceDriverId: 'signal-lab',
+    },
+  };
+  const screenshotEvidence = (id, offsetSeconds) => externalScreenshotEvidenceFixture(
+    'atom',
+    id,
+    new Date(Date.UTC(2026, 6, 18, 8, 0, offsetSeconds)).toISOString(),
+  );
+  return {
+    schemaVersion: 1,
+    kind: 'atom-ai-live-prompt-exercise',
+    executionBoundary: 'live-computer-use-human-observed',
+    liveComputerUse: true,
+    startedAt: '2026-07-18T08:00:00.000Z',
+    completedAt: '2026-07-18T08:20:00.000Z',
+    executor: 'live operator',
+    reviewer: 'independent visual reviewer',
+    scenarios: SIGNAL_LAB_REQUIRED_ATOM_PROMPT_SCENARIO_IDS.map((id, index) => {
+      const baseSeconds = index * 30;
+      const toolCalls = toolSequences[id].map((name, toolIndex) => {
+        const effectClass = observeTools.has(name) ? 'observe' : 'operate';
+        return {
+          name,
+          status: 'completed',
+          effectClass,
+          outcome: effectClass === 'observe' ? 'read-complete' : 'effect-complete',
+          effectId: `effect-${id}-${toolIndex + 1}`,
+          completedAt: new Date(Date.UTC(
+            2026,
+            6,
+            18,
+            8,
+            0,
+            baseSeconds + toolIndex + 1,
+          )).toISOString(),
+          ...(id === 'detect-auto-most-prominent'
+            && name === 'get_classification_results'
+            ? {
+                automaticOperationId: scenarioEvidence[id].operationId,
+                automaticOperationReadiness: 'ready',
+              }
+            : {}),
+        };
+      });
+      return {
+        id,
+        prompt: SIGNAL_LAB_REQUIRED_ATOM_PROMPTS[id],
+        observedOutcome: id.startsWith('physical-')
+          ? 'Observed receive-only energy/morphology only; no protocol, emitter, operator, or service identity claimed.'
+          : `${id} completed in the live app`,
+        passed: true,
+        toolCalls,
+        evidence: scenarioEvidence[id],
+        screenshotEvidence: screenshotEvidence(
+          id,
+          baseSeconds + toolCalls.length + 2,
+        ),
+      };
+    }),
+    safety: {
+      approvalCardsPresented: 0,
+      failedToolCalls: 0,
+      transmitActions: 0,
+      generatorActions: 0,
+      rfEnableActions: 0,
+      firmwareMutationActions: 0,
+      remoteTouchActions: 0,
+      deviceScreenCaptureActions: 0,
+    },
+    failures: [],
+  };
+}
+
+function physicalReceiveOnlyReportFixture() {
+  const screenshotEvidence = (id, minute) => externalScreenshotEvidenceFixture(
+    'physical',
+    id,
+    new Date(Date.UTC(2026, 6, 18, 9, minute, 0)).toISOString(),
+  );
+  const singleAcquisitions = (prefix, firstSequence, startHz, stopHz, minute) => (
+    Array.from({ length: 3 }, (_, index) => ({
+      action: 'global-single',
+      completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, index * 10)).toISOString(),
+      sweepId: `${prefix}-${index + 1}`,
+      sequence: firstSequence + index,
+      sourceDriverId: 'tiny-sa',
+      sourceSessionId: 'physical-session-2026-07-18',
+      startHz,
+      stopHz,
+      points: 450,
+    }))
+  );
+  const receiverReadbacks = (sweepId, sequence, startHz, stopHz, minute) => {
+    const readback = {
+      sweepId,
+      sequence,
+      sourceDriverId: 'tiny-sa',
+      sourceSessionId: 'physical-session-2026-07-18',
+      startHz,
+      stopHz,
+      points: 450,
+      actualRbwHz: 100_000,
+      resolutionBandwidthQualification: 'device-observed',
+      actualAttenuationDb: 7,
+      attenuationQualification: 'device-observed',
+    };
+    return {
+      get_application_state: {
+        ...readback,
+        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 21)).toISOString(),
+      },
+      get_latest_sweep_summary: {
+        ...readback,
+        completedAt: new Date(Date.UTC(2026, 6, 18, 9, minute, 22)).toISOString(),
+      },
+    };
+  };
+  return {
+    schemaVersion: 1,
+    kind: 'physical-tinysa-receive-only-fm-and-band14',
+    executionBoundary: 'live-computer-use-human-observed',
+    liveComputerUse: true,
+    startedAt: '2026-07-18T09:00:00.000Z',
+    completedAt: '2026-07-18T09:10:00.000Z',
+    executor: 'live physical operator',
+    reviewer: 'independent physical screenshot reviewer',
+    device: {
+      driverId: 'tiny-sa',
+      firmwareVersion: 'tinySA4_hw-v0.3-fft1024-g43eb0f1',
+      qualification: 'custom-source-qualified-receive-only',
+      qualificationScope: 'receiver-behavior-only-not-oem-rf-or-metrology',
+      firmwareSourceRepository: '../Atom-Firmware',
+      firmwareRepositoryOrigin: 'https://github.com/PhysicistJohn/Atom-Firmware.git',
+      firmwareCommitSha: '43eb0f193c8619cb7ca23726e3062973c65ae958',
+      firmwareBinarySha256: '6f284a24c4b4ab178da13af97e102e1a624618c9a67e8418b19bbc153e6f0174',
+      firmwareBinaryAttestation: 'documented-not-runtime-attested',
+      firmwareManifestPath: '.artifacts/hardware-trials/v0.3/43eb0f193c8619cb7ca23726e3062973c65ae958/manifest.txt',
+      firmwareManifestSha256: 'ef9174b193e49f1bd25e4923ae9bedd07712dfde0e27c4e8d338d22d5707343b',
+      qualificationEvidencePath: 'docs/HARDWARE_BRINGUP.md#7-enhanced-v03--fft-1024-qualification-2026-07-11',
+      deviceIdentitySha256: 'b'.repeat(64),
+      connectionId: 'physical-session-2026-07-18',
+      connectedAt: '2026-07-18T09:00:10.000Z',
+      disconnectedAt: '2026-07-18T09:09:30.000Z',
+    },
+    safety: {
+      receiveOnly: true,
+      rfOutputDisabledBeforeConnection: true,
+      rfOutputDisabledAfterDisconnect: true,
+      generatorActions: 0,
+      rfEnableActions: 0,
+      transmitActions: 0,
+      firmwareMutationActions: 0,
+      remoteTouchActions: 0,
+      deviceScreenCaptureActions: 0,
+      approvalCardsPresented: 0,
+      failedToolCalls: 0,
+    },
+    observations: [
+      {
+        id: 'fm-broadcast-band',
+        startHz: 88_000_000,
+        stopHz: 108_000_000,
+        configuredPoints: 450,
+        sourceDriverId: 'tiny-sa',
+        sourceSessionId: 'physical-session-2026-07-18',
+        completedSweeps: 3,
+        sweepIds: ['fm-1', 'fm-2', 'fm-3'],
+        singleAcquisitions: singleAcquisitions(
+          'fm',
+          1,
+          88_000_000,
+          108_000_000,
+          1,
+        ),
+        receiverReadbacks: receiverReadbacks('fm-3', 3, 88_000_000, 108_000_000, 1),
+        peakFrequencyHz: 98_100_000,
+        peakPowerDbm: -52.3,
+        energyFinding: 'energy-observed',
+        interpretation: 'observed-energy-only-no-protocol-emitter-operator-or-service-identity',
+        markerEvidence: {
+          markerId: 'M1',
+          action: 'peak-search',
+          completedAt: '2026-07-18T09:01:30.000Z',
+          sourceSweepId: 'fm-3',
+          sourceSequence: 3,
+          frequencyHz: 98_100_000,
+          powerDbm: -52.3,
+          placementBasis: 'sampled-peak',
+          projection: 'host-derived',
+          readoutMode: 'normal',
+          markerShape: 'diamond',
+          readoutPlacement: 'above-trace-no-signal-overlap',
+          visualReviewPassed: true,
+        },
+        detectEvidence: {
+          route: 'Detect',
+          completedAt: '2026-07-18T09:02:30.000Z',
+          sourceSweepId: 'fm-3',
+          sourceSequence: 3,
+          visualizationVisible: true,
+          autoMostProminentInvoked: true,
+          outcome: 'automatic-target-selected',
+          candidateCount: 2,
+          automaticTargetId: 'physical-fm-target-1',
+          automaticTargetRank: 0,
+          selectedCenterHz: 98_100_000,
+          selectedBandwidthHz: 180_000,
+          selectionCondition: 'maximum-visible-integrated-excess',
+          automaticOperationReadiness: 'ready',
+          resultLinkedToAutoTarget: true,
+          resultQualification: 'bayesian-evidence-class-not-protocol',
+          identityInterpretation: 'observable-evidence-only-not-protocol-emitter-operator-or-service-identity',
+        },
+        visualReviewPassed: true,
+        screenshotEvidence: {
+          spectrumMarker: screenshotEvidence('fm-spectrum-marker', 2),
+          detect: screenshotEvidence('fm-detect', 3),
+        },
+      },
+      {
+        id: 'band14-758-768-mhz',
+        startHz: 758_000_000,
+        stopHz: 768_000_000,
+        configuredPoints: 450,
+        sourceDriverId: 'tiny-sa',
+        sourceSessionId: 'physical-session-2026-07-18',
+        completedSweeps: 3,
+        sweepIds: ['band14-1', 'band14-2', 'band14-3'],
+        singleAcquisitions: singleAcquisitions(
+          'band14',
+          4,
+          758_000_000,
+          768_000_000,
+          5,
+        ),
+        receiverReadbacks: receiverReadbacks(
+          'band14-3',
+          6,
+          758_000_000,
+          768_000_000,
+          5,
+        ),
+        peakFrequencyHz: 763_000_000,
+        peakPowerDbm: -91.2,
+        energyFinding: 'no-energy-above-floor-observed',
+        interpretation: 'observed-energy-only-no-protocol-emitter-operator-or-service-identity',
+        markerEvidence: {
+          markerId: 'M1',
+          action: 'peak-search',
+          completedAt: '2026-07-18T09:05:30.000Z',
+          sourceSweepId: 'band14-3',
+          sourceSequence: 6,
+          frequencyHz: 763_000_000,
+          powerDbm: -91.2,
+          placementBasis: 'sampled-peak',
+          projection: 'host-derived',
+          readoutMode: 'normal',
+          markerShape: 'diamond',
+          readoutPlacement: 'above-trace-no-signal-overlap',
+          visualReviewPassed: true,
+        },
+        detectEvidence: {
+          route: 'Detect',
+          completedAt: '2026-07-18T09:06:30.000Z',
+          sourceSweepId: 'band14-3',
+          sourceSequence: 6,
+          visualizationVisible: true,
+          autoMostProminentInvoked: true,
+          outcome: 'no-eligible-candidate',
+          candidateCount: 0,
+          automaticTargetId: null,
+          automaticTargetRank: null,
+          selectedCenterHz: null,
+          selectedBandwidthHz: null,
+          selectionCondition: 'maximum-visible-integrated-excess',
+          automaticOperationReadiness: 'no-target',
+          resultLinkedToAutoTarget: false,
+          resultQualification: null,
+          identityInterpretation: 'observable-evidence-only-not-protocol-emitter-operator-or-service-identity',
+        },
+        visualReviewPassed: true,
+        screenshotEvidence: {
+          spectrumMarker: screenshotEvidence('band14-spectrum-marker', 6),
+          detect: screenshotEvidence('band14-detect', 7),
+        },
+      },
+    ],
+    finalState: {
+      stopped: true,
+      disconnected: true,
+      restoredSignalLab: true,
+      defaultDriverId: 'signal-lab',
+      startupPreferenceDriverId: 'signal-lab',
+      sourceKind: 'signal-lab-simulation',
+      sessionState: 'READY',
+    },
+    failures: [],
+  };
+}
+
+function reviewedFullRunFixture(catalog) {
+  const run = fullRunFixture(catalog);
+  const screenshotManifest = run.visualContentReview.automatedScreenshotManifest;
+  run.visualContentReview = {
+    schemaVersion: 2,
+    automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
+    status: 'reviewed',
+    passed: true,
+    reviewedAt: '2026-07-18T08:03:00.000Z',
+    reviewer: 'manual-visual-review',
+    findings: ['All required per-frame visual checks passed.'],
+    screenshotReviews: completedVisualReviewChecklist(run),
+    automatedScreenshotManifest: screenshotManifest,
+    reviewScreenshotManifest: screenshotManifest,
+  };
+  return run;
+}
+
+function continuousProfileSwitchReportFixture(fullRun) {
+  const report = structuredClone(fullRun);
+  report.kind = 'continuous-profile-switch-soak';
+  report.geometry.policyId = 'preserve-user-analyzer-geometry-v1';
+  report.profiles = report.profiles.map((profile) => ({
+    id: profile.id,
+    failures: [],
+    steps: {
+      switch: {
+        ok: true,
+        profileSelection: fixtureProfileSelection(profile.id),
+        profileSweepProvenance: fixtureProfileSweepProvenance(profile.id),
+      },
+    },
+  }));
+  return report;
+}
+
+function atomOpenThirtyMinuteReportFixture() {
+  const startedAt = '2026-07-18T08:00:00.000Z';
+  const completedAt = '2026-07-18T08:30:05.000Z';
+  const rendererMemorySamples = Array.from({ length: 61 }, (_, index) => ({
+    bytes: (400 * 1_024 * 1_024) + index * 1_024,
+    source: 'electron-renderer-log',
+    capturedAt: new Date(Date.parse(startedAt) + (
+      index === 0 ? 1_000 : index === 60 ? 1_801_000 : index * 30_000
+    )).toISOString(),
+    identity: 'pid:91500',
+    checkpoint: index === 0
+      ? 'soak-start'
+      : index === 60
+        ? 'soak-complete'
+        : 'soak-profile-complete',
+  }));
+  const checkpoints = Array.from({ length: 60 }, (_, index) => {
+    const elapsedMilliseconds = (index + 1) * 30_000;
+    const fromSequence = 10 + index * 15;
+    const sequence = fromSequence + 15;
+    return {
+    checkpoint: index + 1,
+    capturedAt: new Date(Date.parse(startedAt) + elapsedMilliseconds).toISOString(),
+    route: ['Waterfall', 'Channel', 'I/Q', 'Detect', 'Spectrum'][index % 5],
+    fromSequence,
+    sequence,
+    elapsedMilliseconds,
+    layout: {
+      ...COMPLETE_RUNNING_LAYOUT,
+      globalSweepIdentity: {
+        ...COMPLETE_RUNNING_LAYOUT.globalSweepIdentity,
+        sweepId: `sweep-${sequence}`,
+        sequence,
+      },
+    },
+    atomPanelOpen: true,
+    ...(index === 59 ? { terminal: true } : {}),
+    };
+  });
+  const sweepObservations = Array.from({ length: 901 }, (_, index) => {
+    const elapsedMilliseconds = index * 2_000;
+    return {
+      capturedAt: new Date(Date.parse(startedAt) + elapsedMilliseconds).toISOString(),
+      observedAtMilliseconds: 500 + elapsedMilliseconds,
+      elapsedMilliseconds,
+      sweepId: `sweep-${10 + index}`,
+      sequence: 10 + index,
+      atomPanelOpen: true,
+    };
+  });
+  return {
+    schemaVersion: 2,
+    kind: 'atom-open-duration-soak',
+    app: 'org.tinysa.atomizer.dev',
+    startedAt,
+    completedAt,
+    configuration: { durationMs: 30 * 60 * 1_000, checkpointIntervalMs: 30_000 },
+    initialSequence: 10,
+    finalSequence: 910,
+    monotonicTiming: {
+      startedMilliseconds: 500,
+      completedMilliseconds: 1_800_500,
+      elapsedMilliseconds: 1_800_000,
+    },
+    checkpoints,
+    sweepObservations,
+    maximumSweepObservationGapMs: 2_000,
+    finalStopSucceeded: true,
+    stress: { rendererMemorySamples },
+    failures: [],
+    ok: true,
+  };
+}
+
 test('live SignalLab harness is closed over the complete built profile catalog', async () => {
   const catalog = await loadSignalLabLiveCatalog();
   const matrix = await signalLabLiveCoverageMatrix();
@@ -351,6 +1338,8 @@ test('live SignalLab harness is closed over the complete built profile catalog',
     && row.scalarContinuous
     && row.detectVisualization
     && row.detectAutoMostProminent
+    && row.detectAutoCausalResetAndRepopulation
+    && row.exactSelectedProfileProducerAndNextSweep
     && row.detectNoInnerScroll
     && row.bayesianClassification
     && row.peakMarkerAndLocalCharacterization
@@ -358,7 +1347,8 @@ test('live SignalLab harness is closed over the complete built profile catalog',
     && row.channelAndThreeDecibelBandwidth
     && row.complexIqSingle
     && row.noRedundantLocalIqCapture
-    && row.boundedControlLatencyAndSweepProgression));
+    && row.boundedControlLatencyAndSweepProgression
+    && row.maximumContinuousObservationGapMs === 2_000));
   assert.deepEqual(
     matrix.find(({ profileId }) => profileId === 'cw')?.markerWidthExpectation,
     ['resolution-limited-narrow'],
@@ -448,6 +1438,12 @@ test('scientific classifier summary requires a fresh exact-12 Single-acquisition
             sweepLatenciesMs: spectrumSequences.map(() => 50),
             automaticDetectedPowerCaptures: 0,
             classificationCaptureId: `capture-${sourcePlan.profileId}`,
+            profileSelection: fixtureProfileSelection(sourcePlan.profileId),
+            profileSweepProvenance: fixtureProfileSweepProvenance(
+              sourcePlan.profileId,
+              spectrumSequences[0],
+            ),
+            autoCausality: fixtureAutoCausality(classifierFixtureLabel(sourcePlan.profileId)),
           },
           geometryEvidence: {
             configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
@@ -514,6 +1510,19 @@ test('scientific classifier summary requires a fresh exact-12 Single-acquisition
       requiredPoints: 450,
       requiredSweepTimeSeconds: 0.05,
       configured: { configuredPoints: 450, configuredSweepTimeSeconds: 0.05 },
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
     },
   };
   const summary = summarizeSignalLabLiveRun(run);
@@ -582,6 +1591,11 @@ test('default 1024 geometry is recorded separately from fitted 450-point claims'
           sweepGeometry: { plotPoints: 1_024 },
           markerGeometry: { plotPoints: 1_024 },
           markerOracleStatus: 'not-applicable-unfitted-1024-point-geometry',
+          profileSelection: fixtureProfileSelection(profile.id),
+          profileSweepProvenance: fixtureProfileSweepProvenance(
+            profile.id,
+            spectrumSequences[0],
+          ),
           sourceClockEvidence: {
             firstSpectrumSequence: spectrumSequences[0],
             lastSpectrumSequence: spectrumSequences.at(-1),
@@ -607,7 +1621,25 @@ test('default 1024 geometry is recorded separately from fitted 450-point claims'
     stress: { actionLatencies: [], accessibilitySnapshotLatencies: [], sweepProgressions: [] },
     geometry: {
       policyId: 'shipped-default-1024-user-path-v1',
-      configured: { configuredPoints: 1_024, configuredSweepTimeSeconds: 0.05 },
+      initial: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      configured: {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      restoration: {
+        status: 'exact-analyzer-geometry-restored',
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
       profileIds: SIGNAL_LAB_DEFAULT_GEOMETRY_SMOKE_PROFILE_IDS,
       initialSource: { sourceState: 'READY', sessionState: 'READY', sourceSequence: 0 },
       markerOracleStatus: 'not-applicable-unfitted-1024-point-geometry',
@@ -632,11 +1664,14 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
   const full = fullRunFixture(catalog);
   const screenshotManifest = full.visualContentReview.automatedScreenshotManifest;
   full.visualContentReview = {
+    schemaVersion: 2,
     automatedClaim: 'fresh-frame-dimensions-pixel-nondegeneracy-and-duplicate-content',
     status: 'reviewed',
     passed: true,
     reviewedAt: '2026-07-18T08:03:00.000Z',
     reviewer: 'manual-visual-review',
+    findings: ['All required per-frame visual checks passed.'],
+    screenshotReviews: completedVisualReviewChecklist(full),
     automatedScreenshotManifest: screenshotManifest,
     reviewScreenshotManifest: screenshotManifest,
   };
@@ -666,6 +1701,11 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
       reviewScreenshotManifest: full.visualContentReview.reviewScreenshotManifest.slice(1),
     },
   }).ok, false);
+  const uncheckedVisualClaim = structuredClone(full);
+  uncheckedVisualClaim.visualContentReview.screenshotReviews[0]
+    .checks.profileIdentityMatches = false;
+  assert.equal(summarizeSignalLabLiveRun(uncheckedVisualClaim).visualContentReviewComplete, false);
+  assert.equal(summarizeSignalLabLiveRun(uncheckedVisualClaim).ok, false);
   const duplicateAutomatedFrame = structuredClone(full);
   duplicateAutomatedFrame.visualContentReview.automatedScreenshotManifest[1].pixelSha256 =
     duplicateAutomatedFrame.visualContentReview.automatedScreenshotManifest[0].pixelSha256;
@@ -721,6 +1761,7 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     ['maximumFirstSweepLatencyMs', 3_001],
     ['maximumStopLatencyMs', 3_001],
     ['maximumMillisecondsPerSweepOpportunity', 501],
+    ['maximumContinuousObservationGapMs', 2_001],
     ['maximumResponsivenessTourMs', 30_001],
     ['minimumContinuousSweepProgressions', 1],
     ['minimumScreenshotWidth', SIGNAL_LAB_MINIMUM_SCREENSHOT_WIDTH - 1],
@@ -761,6 +1802,18 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     .detectAcceptance.candidateRanking.evidenceSource = 'visible-candidate-rows';
   assert.equal(summarizeSignalLabLiveRun(visibleRowsOnly).fullScientificUiEvidenceComplete, false);
   assert.equal(summarizeSignalLabLiveRun(visibleRowsOnly).automatedOk, false);
+  const staleAuto = structuredClone(full);
+  staleAuto.profiles[0].steps['continuous-detect']
+    .sweepProgression.autoCausality.automaticResetObserved = false;
+  delete staleAuto.profiles[0].steps['continuous-detect']
+    .sweepProgression.autoCausality.status;
+  assert.equal(summarizeSignalLabLiveRun(staleAuto).automatedOk, false);
+  const headingOnlySelection = structuredClone(full);
+  headingOnlySelection.profiles[0].steps.select.evidence = 'heading:CW';
+  assert.equal(summarizeSignalLabLiveRun(headingOnlySelection).automatedOk, false);
+  const changedGeometry = structuredClone(full);
+  changedGeometry.geometry.restoration.configuredStartHz += 1;
+  assert.equal(summarizeSignalLabLiveRun(changedGeometry).automatedOk, false);
   for (const layoutPatch of [
     { acquisitionLandmarkCount: 0 },
     { acquisitionLandmarkCount: 2 },
@@ -779,10 +1832,17 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
   }
   const continuousFull = structuredClone(full);
   continuousFull.kind = 'continuous-profile-switch-soak';
+  continuousFull.geometry.policyId = 'preserve-user-analyzer-geometry-v1';
   continuousFull.profiles = continuousFull.profiles.map((profile) => ({
     id: profile.id,
     failures: [],
-    steps: { switch: { ok: true } },
+    steps: {
+      switch: {
+        ok: true,
+        profileSelection: fixtureProfileSelection(profile.id),
+        profileSweepProvenance: fixtureProfileSweepProvenance(profile.id),
+      },
+    },
   }));
   assert.equal(summarizeSignalLabLiveRun(continuousFull).automatedOk, true);
   const continuousNumericReleaseKeys = new Set([
@@ -794,6 +1854,7 @@ test('full summaries bind the canonical 34/34 catalog, required steps, stress, a
     'maximumFirstSweepLatencyMs',
     'maximumStopLatencyMs',
     'maximumMillisecondsPerSweepOpportunity',
+    'maximumContinuousObservationGapMs',
     'maximumResponsivenessTourMs',
     'minimumContinuousSweepProgressions',
     'rendererMemoryPlateauWindow',
@@ -940,6 +2001,7 @@ test('post-run visual finalizer rehashes reduced fixtures without certifying the
       reviewedAt: '2026-07-18T08:03:00.000Z',
       passed: true,
       findings: ['Duplicate should be rejected before review finalization.'],
+      screenshotReviews: completedVisualReviewChecklist(run),
     }),
     /duplicate screenshot content/u,
   );
@@ -952,16 +2014,42 @@ test('post-run visual finalizer rehashes reduced fixtures without certifying the
       reviewedAt: '2026-07-18T08:03:00.000Z',
       passed: true,
       findings: ['Post-capture mutation must be rejected.'],
+      screenshotReviews: completedVisualReviewChecklist(run),
     }),
     /changed since capture/u,
   );
   await writeFile(screenshotPaths.at(-1), pngScreenshotFixture(screenshotPaths.length - 1));
+  const incompleteScreenshotReviews = completedVisualReviewChecklist(run);
+  incompleteScreenshotReviews[0].checks.profileIdentityMatches = false;
+  await assert.rejects(
+    finalizeSignalLabLiveVisualReview({
+      reportPath,
+      reviewer: 'visual-reviewer',
+      reviewedAt: '2026-07-18T08:03:00.000Z',
+      passed: true,
+      findings: ['A false visual claim must fail closed.'],
+      screenshotReviews: incompleteScreenshotReviews,
+    }),
+    /exact all-true per-profile\/per-workspace screenshot checklist/u,
+  );
+  const recordedFailure = await finalizeSignalLabLiveVisualReview({
+    reportPath,
+    reviewer: 'visual-reviewer',
+    reviewedAt: '2026-07-18T08:03:00.000Z',
+    passed: false,
+    findings: ['The Generate profile identity did not match the expected waveform.'],
+    screenshotReviews: incompleteScreenshotReviews,
+  });
+  assert.equal(recordedFailure.visualContentReview.status, 'review-failed');
+  assert.equal(recordedFailure.summary.visualContentReviewComplete, false);
+  assert.equal(recordedFailure.summary.ok, false);
   const finalized = await finalizeSignalLabLiveVisualReview({
     reportPath,
     reviewer: 'visual-reviewer',
     reviewedAt: '2026-07-18T08:03:00.000Z',
     passed: true,
     findings: ['No clipping, overlap, or stale-frame mismatch observed.'],
+    screenshotReviews: completedVisualReviewChecklist(run),
   });
   assert.equal(finalized.summary.visualContentReviewComplete, true);
   assert.equal(finalized.summary.automatedOk, false);
@@ -1611,6 +2699,107 @@ test('Detect acceptance binds Auto-most-prominent, its target, and no inner scro
   assert.equal(collapsed.autoAcceptanceComplete, true);
 });
 
+test('Detect Auto causality requires explicit selection, an unresolved reset, and repopulation', () => {
+  const separateRows = [
+    '105 button 01 947.400 MHz ACTIVE',
+    '106 text integrated excess -22.4 dBm · 37 cells',
+  ].join('\n');
+  assert.deepEqual(liveDetectExplicitCandidateControlSummary(separateRows), {
+    controlEvidence: 'button 01 947.400 MHz ACTIVE',
+    integratedExcessEvidence: 'text integrated excess -22.4 dBm · 37 cells',
+  });
+  const collapsed = '105 button A01 2.402 GHz ACTIVE · integrated excess -19.0 dBm · 9 cells';
+  assert.deepEqual(liveDetectExplicitCandidateControlSummary(collapsed), {
+    controlEvidence: 'button A01 2.402 GHz ACTIVE · integrated excess -19.0 dBm · 9 cells',
+    integratedExcessEvidence: 'button A01 2.402 GHz ACTIVE · integrated excess -19.0 dBm · 9 cells',
+  });
+  const evidence = fixtureAutoCausality('LTE');
+  assert.equal(
+    validateLiveDetectAutoCausality(evidence).status,
+    'explicit-to-automatic-reset-and-repopulation-validated',
+  );
+  assert.throws(
+    () => validateLiveDetectAutoCausality({ ...evidence, automaticResetObserved: false }),
+    /did not observe an unresolved automatic reset/u,
+  );
+  assert.throws(
+    () => validateLiveDetectAutoCausality({ ...evidence, resultRepopulated: false }),
+    /did not repopulate a linked automatic result/u,
+  );
+});
+
+test('profile readback and geometry restoration reject heading-only or changed evidence', () => {
+  const text = [
+    '40 pop up button Description: SignalLab profile, Value: cw · 98.000 MHz',
+    '41 text SignalLab profile selected: cw',
+  ].join('\n');
+  assert.deepEqual(liveSignalLabSelectedProfileSummary(text), {
+    selectedProfileId: 'cw',
+    controlEvidence: 'pop up button Description: SignalLab profile, Value: cw · 98.000 MHz',
+    acknowledgementProfileIds: ['cw'],
+    exactAcknowledgementCount: 1,
+  });
+  assert.equal(liveSignalLabSelectedProfileSummary('40 heading CW, 2').selectedProfileId, null);
+  assert.deepEqual(liveSignalLabSourceSessionSummary([
+    '1 text SignalLab synthetic measurement source',
+    '2 text SIGNALLAB SIMULATION',
+    '3 container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Stop; sweepId=sweep-42; sequence=42',
+  ].join('\n')), {
+    sourceState: 'READY',
+    sessionState: 'READY',
+    sourceSequence: 42,
+    footer: 'container Acquisition controls, Description: DEV ACQUISITION LANDMARK; controls=Stop; sweepId=sweep-42; sequence=42',
+  });
+  assert.deepEqual(liveSignalLabAnalyzerGeometrySummary([
+    '42 disclosure triangle Description: Edit Start frequency, Help: Start frequency 88 MHz',
+    '43 disclosure triangle Description: Edit Stop frequency, Help: Stop frequency 108 MHz',
+    '44 disclosure triangle Description: Edit Sweep points, Help: Sweep points 1024 points',
+    '45 text Receiver controls not applicable · synthetic scalar source · exact 50 ms timing',
+  ].join('\n')), {
+    configuredPoints: 1_024,
+    configuredSweepTimeSeconds: 0.05,
+    plotPoints: null,
+    sweepElapsedMs: null,
+    pinnedBayesianGeometryVisible: false,
+    configuredStartHz: 88_000_000,
+    configuredStopHz: 108_000_000,
+  });
+  assert.equal(
+    validateSignalLabAnalyzerGeometryRestoration(
+      {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+    ).status,
+    'exact-analyzer-geometry-restored',
+  );
+  assert.throws(
+    () => validateSignalLabAnalyzerGeometryRestoration(
+      {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 1_024,
+        configuredSweepTimeSeconds: 0.05,
+      },
+      {
+        configuredStartHz: 88_000_000,
+        configuredStopHz: 108_000_000,
+        configuredPoints: 450,
+        configuredSweepTimeSeconds: 0.05,
+      },
+    ),
+    /× 1024 points/u,
+  );
+});
+
 test('marker acceptance parses finite peak, 3 dB, and component-OBW evidence', () => {
   assert.deepEqual(
     liveSignalLabMarkerExpectation({ id: 'cw' }).allowedWidthClassifications,
@@ -2024,6 +3213,9 @@ test('Atom-open soak defaults to 30 minutes and keeps checkpoints bounded', () =
           : 'soak-profile-complete',
     }));
   const report = {
+    schemaVersion: 2,
+    kind: 'atom-open-duration-soak',
+    app: 'org.tinysa.atomizer.dev',
     startedAt: '2026-07-18T08:00:00.000Z',
     completedAt: '2026-07-18T08:00:10.000Z',
     configuration: { durationMs: 2_000, checkpointIntervalMs: 250 },
@@ -2036,6 +3228,8 @@ test('Atom-open soak defaults to 30 minutes and keeps checkpoints bounded', () =
     },
     checkpoints: Array.from({ length: 8 }, (_, index) => ({
       checkpoint: index + 1,
+      capturedAt: new Date(Date.UTC(2026, 6, 18, 8, 0, 0, (index + 1) * 250))
+        .toISOString(),
       route: ['Waterfall', 'Channel', 'I/Q', 'Detect', 'Spectrum'][index % 5],
       fromSequence: 10 + index,
       sequence: 11 + index,
@@ -2051,8 +3245,19 @@ test('Atom-open soak defaults to 30 minutes and keeps checkpoints bounded', () =
       atomPanelOpen: true,
       ...(index === 7 ? { terminal: true } : {}),
     })),
+    sweepObservations: Array.from({ length: 9 }, (_, index) => ({
+      capturedAt: new Date(Date.UTC(2026, 6, 18, 8, 0, 0, index * 250))
+        .toISOString(),
+      observedAtMilliseconds: 500 + index * 250,
+      elapsedMilliseconds: index * 250,
+      sweepId: `sweep-${10 + index}`,
+      sequence: 10 + index,
+      atomPanelOpen: true,
+    })),
+    maximumSweepObservationGapMs: 250,
     finalStopSucceeded: true,
     stress: { rendererMemorySamples },
+    failures: [],
   };
   assert.equal(
     validateSignalLabAtomOpenSoakCompletion(report).status,
@@ -2133,6 +3338,491 @@ test('Atom-open soak defaults to 30 minutes and keeps checkpoints bounded', () =
     }),
     /requires at least 8 measured renderer-memory samples/u,
   );
+  const hiddenSweepFreeze = structuredClone(report);
+  hiddenSweepFreeze.sweepObservations[4].elapsedMilliseconds = 2_001;
+  hiddenSweepFreeze.sweepObservations[4].observedAtMilliseconds = 2_501;
+  hiddenSweepFreeze.sweepObservations[4].capturedAt = '2026-07-18T08:00:02.001Z';
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(hiddenSweepFreeze),
+    /stale or exceeds 2000 ms/u,
+  );
+  const falseMaximumGap = structuredClone(report);
+  falseMaximumGap.maximumSweepObservationGapMs = 249;
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(falseMaximumGap),
+    /continuous sweep observations do not reach the terminal state/u,
+  );
+  const misalignedObservationClock = structuredClone(report);
+  misalignedObservationClock.sweepObservations[4].capturedAt = new Date(
+    Date.parse(misalignedObservationClock.sweepObservations[3].capturedAt) + 1_500,
+  ).toISOString();
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(misalignedObservationClock),
+    /stale or exceeds 2000 ms/u,
+  );
+  const recordedFailure = structuredClone(report);
+  recordedFailure.failures.push({ step: 'renderer-crash' });
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(recordedFailure),
+    /invalid live-run metadata or recorded failures/u,
+  );
+  const sparseLongSoak = atomOpenThirtyMinuteReportFixture();
+  sparseLongSoak.checkpoints[20].elapsedMilliseconds = 20 * 30_000 + 43_001;
+  sparseLongSoak.checkpoints[20].capturedAt = new Date(
+    Date.parse(sparseLongSoak.startedAt) + sparseLongSoak.checkpoints[20].elapsedMilliseconds,
+  ).toISOString();
+  assert.throws(
+    () => validateSignalLabAtomOpenSoakCompletion(sparseLongSoak),
+    /checkpoint 21 is not a strictly chained advancing sweep/u,
+  );
+});
+
+test('CW marker crash report defaults to 25 fresh cycles and one renderer identity', () => {
+  assert.deepEqual(liveSignalLabCwMarkerCrashConfiguration(), { cycles: 25 });
+  assert.deepEqual(liveSignalLabCwMarkerCrashConfiguration({ cycles: 40 }), { cycles: 40 });
+  assert.throws(
+    () => liveSignalLabCwMarkerCrashConfiguration({ cycles: 0 }),
+    /positive safe integer/u,
+  );
+  const report = cwMarkerCrashReportFixture();
+  const completion = validateSignalLabCwMarkerCrashRegression(report);
+  assert.equal(completion.status, 'cw-fresh-marker-cycles-and-renderer-identity-validated');
+  assert.equal(completion.cycles, 25);
+  assert.equal(completion.firstSequence, 1);
+  assert.equal(completion.finalSequence, 25);
+  const staleSweep = structuredClone(report);
+  staleSweep.cycles[10].currentSweep = staleSweep.cycles[9].currentSweep;
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(staleSweep),
+    /cycle 11 is not a fresh Single/u,
+  );
+  const changedRenderer = structuredClone(report);
+  changedRenderer.stress.rendererMemorySamples[12].identity = 'pid:crashed-and-restarted';
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(changedRenderer),
+    /one stable non-empty renderer identity/u,
+  );
+  const missingLaterProvenance = structuredClone(report);
+  missingLaterProvenance.cycles[12].profileSweepProvenance = null;
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(missingLaterProvenance),
+    /cycle 13 is not a fresh Single/u,
+  );
+  const staleLaterMarkerFreshness = structuredClone(report);
+  staleLaterMarkerFreshness.cycles[12].markerFreshness.sweepId = 'sweep-cw-12';
+  staleLaterMarkerFreshness.cycles[12].markerFreshness.sourceSweepId = 'sweep-cw-12';
+  staleLaterMarkerFreshness.cycles[12].markerFreshness.sequence = 12;
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(staleLaterMarkerFreshness),
+    /cycle 13 is not a fresh Single/u,
+  );
+  const substitutedLaterSweep = structuredClone(report);
+  substitutedLaterSweep.cycles[12].profileSweepProvenance.sweepId = 'substituted-sweep';
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(substitutedLaterSweep),
+    /cycle 13 is not a fresh Single/u,
+  );
+  const missingEndpointScreenshot = cwMarkerCrashReportFixture();
+  missingEndpointScreenshot.cycles[0].screenshotArtifact.path = join(
+    tmpdir(),
+    'nonexistent-cw-marker-endpoint.png',
+  );
+  missingEndpointScreenshot.screenshots[0] =
+    missingEndpointScreenshot.cycles[0].screenshotArtifact.path;
+  missingEndpointScreenshot.cycles[0].screenshot =
+    missingEndpointScreenshot.cycles[0].screenshotArtifact.path;
+  assert.throws(
+    () => validateSignalLabCwMarkerCrashRegression(missingEndpointScreenshot),
+    /omitted its first\/final live screenshots/u,
+  );
+});
+
+test('external Atom and physical reports require live effects and receive-only boundaries', () => {
+  const atom = atomPromptReportFixture();
+  assert.equal(
+    validateSignalLabAtomPromptReport(atom).status,
+    'atom-live-prompts-and-tool-effects-validated',
+  );
+  const topLevelAtomOverclaim = structuredClone(atom);
+  topLevelAtomOverclaim.conclusion = 'Confirmed a physical LTE operator';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(topLevelAtomOverclaim),
+    /contains unscoped or identity-claiming evidence/u,
+  );
+  const genericPrompt = structuredClone(atom);
+  genericPrompt.scenarios[0].prompt = 'Exercise the app safely.';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(genericPrompt),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const noncausalToolTimeline = structuredClone(atom);
+  noncausalToolTimeline.scenarios[0].toolCalls[1].completedAt =
+    noncausalToolTimeline.scenarios[0].toolCalls[0].completedAt;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(noncausalToolTimeline),
+    /not causally time ordered/u,
+  );
+  const nestedAtomSafetyOverclaim = structuredClone(atom);
+  nestedAtomSafetyOverclaim.safety.protocolIdentity = 'LTE';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(nestedAtomSafetyOverclaim),
+    /unsafe, failed, or approval-gated actions/u,
+  );
+  const screenshotIdentityOverclaim = structuredClone(atom);
+  screenshotIdentityOverclaim.scenarios[0].screenshotEvidence.operatorIdentity = 'confirmed';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(screenshotIdentityOverclaim),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const nonexistentScreenshot = structuredClone(atom);
+  nonexistentScreenshot.scenarios[0].screenshotEvidence.path = join(
+    tmpdir(),
+    'atomizer-live-nonexistent-external-screenshot.png',
+  );
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(nonexistentScreenshot),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const mutatedScreenshot = structuredClone(atom);
+  const mutatedScreenshotPath = mutatedScreenshot.scenarios[0].screenshotEvidence.path;
+  const originalScreenshotBytes = readFileSync(mutatedScreenshotPath);
+  try {
+    writeFileSync(mutatedScreenshotPath, Buffer.concat([
+      originalScreenshotBytes,
+      Buffer.from('post-report-mutation'),
+    ]));
+    assert.throws(
+      () => validateSignalLabAtomPromptReport(mutatedScreenshot),
+      /lacks passing live tool and screenshot evidence/u,
+    );
+  } finally {
+    writeFileSync(mutatedScreenshotPath, originalScreenshotBytes);
+  }
+  const symlinkedScreenshot = structuredClone(atom);
+  const symlinkPath = join(tmpdir(), 'atomizer-live-symlinked-external-screenshot.png');
+  try {
+    try { unlinkSync(symlinkPath); } catch {}
+    symlinkSync(symlinkedScreenshot.scenarios[0].screenshotEvidence.path, symlinkPath);
+    symlinkedScreenshot.scenarios[0].screenshotEvidence.path = symlinkPath;
+    assert.throws(
+      () => validateSignalLabAtomPromptReport(symlinkedScreenshot),
+      /lacks passing live tool and screenshot evidence/u,
+    );
+  } finally {
+    try { unlinkSync(symlinkPath); } catch {}
+  }
+  const noToolEffect = structuredClone(atom);
+  noToolEffect.scenarios[0].toolCalls = [];
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(noToolEffect),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const genericEffect = structuredClone(atom);
+  genericEffect.scenarios.find(({ id }) => id === 'select-cw-and-single')
+    .toolCalls[0].name = 'get_application_state';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(genericEffect),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const mislabeledEffectClass = structuredClone(atom);
+  mislabeledEffectClass.scenarios.find(({ id }) => id === 'select-cw-and-single')
+    .toolCalls[0].effectClass = 'observe';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(mislabeledEffectClass),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const autoTopLevelInsteadOfPinned = structuredClone(atom);
+  autoTopLevelInsteadOfPinned.scenarios.find(({ id }) => id === 'detect-auto-most-prominent')
+    .evidence.automaticOperationReadiness = 'top-level-ready';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(autoTopLevelInsteadOfPinned),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const validMultiplePolls = structuredClone(atom);
+  const multiplePollScenario = validMultiplePolls.scenarios.find(({ id }) => (
+    id === 'detect-auto-most-prominent'
+  ));
+  const readyPoll = multiplePollScenario.toolCalls.at(-1);
+  const pendingPoll = {
+    ...readyPoll,
+    effectId: `${readyPoll.effectId}-pending`,
+    automaticOperationReadiness: 'pending',
+  };
+  readyPoll.completedAt = new Date(Date.parse(readyPoll.completedAt) + 1_000).toISOString();
+  multiplePollScenario.toolCalls.splice(-1, 0, pendingPoll);
+  multiplePollScenario.evidence.pollCount = 2;
+  assert.equal(
+    validateSignalLabAtomPromptReport(validMultiplePolls).status,
+    'atom-live-prompts-and-tool-effects-validated',
+  );
+  const fabricatedPollCount = structuredClone(atom);
+  fabricatedPollCount.scenarios.find(({ id }) => id === 'detect-auto-most-prominent')
+    .evidence.pollCount = 2;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(fabricatedPollCount),
+    /did not poll its exact automatic operation to ready/u,
+  );
+  const wrongAutomaticOperation = structuredClone(atom);
+  wrongAutomaticOperation.scenarios.find(({ id }) => id === 'detect-auto-most-prominent')
+    .toolCalls.at(-1).automaticOperationId = 99;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(wrongAutomaticOperation),
+    /did not poll its exact automatic operation to ready/u,
+  );
+  const staleAtomMarker = structuredClone(atom);
+  staleAtomMarker.scenarios.find(({ id }) => id === 'fresh-cw-peak-marker')
+    .evidence.markerSourceSweepId = 'atom-cw-single-1';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(staleAtomMarker),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const uiLabelSubstitutedForToolMarkerId = structuredClone(atom);
+  uiLabelSubstitutedForToolMarkerId.scenarios.find(({ id }) => (
+    id === 'fresh-cw-peak-marker'
+  )).evidence.markerId = 'M1';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(uiLabelSubstitutedForToolMarkerId),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const blockedRun = structuredClone(atom);
+  blockedRun.scenarios.find(({ id }) => id === 'global-run-navigation-remains-responsive')
+    .evidence.maximumSweepObservationGapMs = 2_001;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(blockedRun),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const localIqCapture = structuredClone(atom);
+  localIqCapture.scenarios.find(({ id }) => id === 'iq-uses-global-single-without-local-capture')
+    .evidence.localCaptureControlPresent = true;
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(localIqCapture),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const atomPhysicalOverclaim = structuredClone(atom);
+  atomPhysicalOverclaim.scenarios.find(({ id }) => (
+    id === 'physical-band14-receive-only-readback'
+  )).evidence.interpretation = 'confirmed LTE operator';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(atomPhysicalOverclaim),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const atomPhysicalNarrativeOverclaim = structuredClone(atom);
+  atomPhysicalNarrativeOverclaim.scenarios.find(({ id }) => (
+    id === 'physical-band14-receive-only-readback'
+  )).observedOutcome = 'Confirmed an LTE operator in the government band.';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(atomPhysicalNarrativeOverclaim),
+    /lacks passing live tool and screenshot evidence/u,
+  );
+  const unrelatedPhysicalSession = structuredClone(atom);
+  unrelatedPhysicalSession.scenarios.find(({ id }) => (
+    id === 'physical-band14-receive-only-readback'
+  )).evidence.sourceSessionId = 'different-physical-session';
+  assert.throws(
+    () => validateSignalLabAtomPromptReport(unrelatedPhysicalSession),
+    /not bound to one advancing device session/u,
+  );
+  const physical = physicalReceiveOnlyReportFixture();
+  const physicalCompletion = validateSignalLabPhysicalReceiveOnlyReport(physical);
+  assert.equal(
+    physicalCompletion.status,
+    'physical-receive-only-fm-and-band14-validated',
+  );
+  assert.equal(physicalCompletion.completedSingleSweeps, 6);
+  assert.equal(
+    physicalCompletion.firmwareCommitSha,
+    '43eb0f193c8619cb7ca23726e3062973c65ae958',
+  );
+  const protocolOverclaim = structuredClone(physical);
+  protocolOverclaim.observations[1].interpretation = 'confirmed LTE emitter';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(protocolOverclaim),
+    /incomplete or overclaims identity/u,
+  );
+  const topLevelProtocolOverclaim = structuredClone(physical);
+  topLevelProtocolOverclaim.conclusion = 'Confirmed LTE operator';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(topLevelProtocolOverclaim),
+    /contains unscoped or identity-claiming evidence/u,
+  );
+  const nestedDeviceOverclaim = structuredClone(physical);
+  nestedDeviceOverclaim.device.runtimeFirmwareBinaryAttested = true;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(nestedDeviceOverclaim),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const nestedPhysicalSafetyOverclaim = structuredClone(physical);
+  nestedPhysicalSafetyOverclaim.safety.protocolIdentity = 'LTE';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(nestedPhysicalSafetyOverclaim),
+    /not strictly receive-only/u,
+  );
+  const nestedFinalStateOverclaim = structuredClone(physical);
+  nestedFinalStateOverclaim.finalState.operatorIdentity = 'confirmed';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(nestedFinalStateOverclaim),
+    /did not stop, disconnect, and restore SignalLab/u,
+  );
+  const transmitterEnabled = structuredClone(physical);
+  transmitterEnabled.safety.rfEnableActions = 1;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(transmitterEnabled),
+    /not strictly receive-only/u,
+  );
+  const nonexistentFirmwareRepository = structuredClone(physical);
+  nonexistentFirmwareRepository.device.firmwareSourceRepository = '../TinySA_Firmware';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(nonexistentFirmwareRepository),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const prefixOnlyFirmwareCommit = structuredClone(physical);
+  prefixOnlyFirmwareCommit.device.firmwareCommitSha = `43eb0f1${'c'.repeat(33)}`;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(prefixOnlyFirmwareCommit),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const falseRuntimeBinaryAttestation = structuredClone(physical);
+  falseRuntimeBinaryAttestation.device.firmwareBinaryAttestation = 'runtime-attested';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(falseRuntimeBinaryAttestation),
+    /omitted the qualified attached driver\/firmware identity/u,
+  );
+  const oneSweep = structuredClone(physical);
+  oneSweep.observations[0].completedSweeps = 1;
+  oneSweep.observations[0].sweepIds = oneSweep.observations[0].sweepIds.slice(0, 1);
+  oneSweep.observations[0].singleAcquisitions = oneSweep.observations[0]
+    .singleAcquisitions.slice(0, 1);
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(oneSweep),
+    /observation fm-broadcast-band is incomplete/u,
+  );
+  const wrongPointCount = structuredClone(physical);
+  wrongPointCount.observations[0].configuredPoints = 449;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(wrongPointCount),
+    /observation fm-broadcast-band is incomplete/u,
+  );
+  const missingDeviceReadback = structuredClone(physical);
+  delete missingDeviceReadback.observations[0].receiverReadbacks
+    .get_application_state.actualRbwHz;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(missingDeviceReadback),
+    /omitted matching device-observed 450-point receiver readbacks/u,
+  );
+  const mismatchedReadback = structuredClone(physical);
+  mismatchedReadback.observations[0].receiverReadbacks
+    .get_latest_sweep_summary.actualAttenuationDb = 8;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(mismatchedReadback),
+    /omitted matching device-observed 450-point receiver readbacks/u,
+  );
+  const staleTimestampedReadback = structuredClone(physical);
+  staleTimestampedReadback.observations[0].receiverReadbacks
+    .get_application_state.completedAt = '2026-07-18T09:01:19.000Z';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(staleTimestampedReadback),
+    /omitted matching device-observed 450-point receiver readbacks/u,
+  );
+  const staleMarker = structuredClone(physical);
+  staleMarker.observations[0].markerEvidence.sourceSweepId = 'fm-2';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(staleMarker),
+    /omitted a fresh non-overlapping diamond M1 peak result/u,
+  );
+  const firmwareMarkerProjection = structuredClone(physical);
+  firmwareMarkerProjection.observations[0].markerEvidence.projection = 'firmware-readback';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(firmwareMarkerProjection),
+    /omitted a fresh non-overlapping diamond M1 peak result/u,
+  );
+  const staleDetect = structuredClone(physical);
+  staleDetect.observations[0].detectEvidence.sourceSweepId = 'fm-2';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(staleDetect),
+    /omitted exact receive-only Detect Auto evidence/u,
+  );
+  const oneBasedAgentRank = structuredClone(physical);
+  oneBasedAgentRank.observations[0].detectEvidence.automaticTargetRank = 1;
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(oneBasedAgentRank),
+    /omitted exact receive-only Detect Auto evidence/u,
+  );
+  const identityClaimInExtraField = structuredClone(physical);
+  identityClaimInExtraField.observations[1].operatorIdentity = 'confirmed operator';
+  assert.throws(
+    () => validateSignalLabPhysicalReceiveOnlyReport(identityClaimInExtraField),
+    /incomplete or overclaims identity/u,
+  );
+});
+
+test('aggregate acceptance cannot claim complete without every live evidence boundary', async () => {
+  const catalog = await loadSignalLabLiveCatalog();
+  const fullProfileReport = reviewedFullRunFixture(catalog);
+  const manifest = buildSignalLabAcceptanceManifest({
+    createdAt: '2026-07-18T10:00:00.000Z',
+    fullProfileReport,
+    classifierReleaseGateReport: classifierGateRunFixture(catalog),
+    continuousProfileSwitchReport: continuousProfileSwitchReportFixture(fullProfileReport),
+    atomOpenSoakReport: atomOpenThirtyMinuteReportFixture(),
+    cwMarkerCrashReport: cwMarkerCrashReportFixture(),
+    atomPromptReport: atomPromptReportFixture(),
+    physicalReceiveOnlyReport: physicalReceiveOnlyReportFixture(),
+  });
+  assert.equal(manifest.status, 'complete');
+  assert.equal(
+    validateSignalLabAcceptanceManifest(manifest).status,
+    'complete-live-acceptance-evidence-validated',
+  );
+  const manifestOverclaim = structuredClone(manifest);
+  manifestOverclaim.operatorIdentity = 'confirmed operator';
+  manifestOverclaim.evidenceSha256 = createHash('sha256')
+    .update(JSON.stringify(manifestOverclaim))
+    .digest('hex');
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(manifestOverclaim),
+    /contains unscoped evidence/u,
+  );
+  const omittedPhysical = structuredClone(manifest);
+  delete omittedPhysical.reports.physicalReceiveOnlyReport;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(omittedPhysical),
+    /omitted a mandatory evidence report/u,
+  );
+  const tampered = structuredClone(manifest);
+  tampered.reports.physicalReceiveOnlyReport.observations[0].peakPowerDbm = -12.3;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(tampered),
+    /report hash does not match embedded evidence/u,
+  );
+  const shortSoak = structuredClone(manifest);
+  shortSoak.reports.atomOpenSoakReport.configuration.durationMs = 2_000;
+  shortSoak.reports.atomOpenSoakReport.monotonicTiming.elapsedMilliseconds = 2_000;
+  shortSoak.reports.atomOpenSoakReport.monotonicTiming.completedMilliseconds = 2_500;
+  shortSoak.reports.atomOpenSoakReport.checkpoints.at(-1).elapsedMilliseconds = 2_000;
+  assert.throws(
+    () => validateSignalLabAcceptanceManifest(shortSoak),
+    /passing 30-minute Atom-open soak/u,
+  );
+  const unrelatedAtomPrompt = atomPromptReportFixture();
+  unrelatedAtomPrompt.scenarios.find(({ id }) => (
+    id === 'physical-fm-receive-only-readback'
+  )).evidence.sourceSessionId = 'another-physical-session';
+  unrelatedAtomPrompt.scenarios.find(({ id }) => (
+    id === 'physical-band14-receive-only-readback'
+  )).evidence.sourceSessionId = 'another-physical-session';
+  assert.throws(
+    () => buildSignalLabAcceptanceManifest({
+      createdAt: '2026-07-18T10:00:00.000Z',
+      fullProfileReport,
+      classifierReleaseGateReport: classifierGateRunFixture(catalog),
+      continuousProfileSwitchReport: continuousProfileSwitchReportFixture(fullProfileReport),
+      atomOpenSoakReport: atomOpenThirtyMinuteReportFixture(),
+      cwMarkerCrashReport: cwMarkerCrashReportFixture(),
+      atomPromptReport: unrelatedAtomPrompt,
+      physicalReceiveOnlyReport: physicalReceiveOnlyReportFixture(),
+    }),
+    /not bound to the physical receive-only report/u,
+  );
 });
 
 test('bounded stress evidence rejects slow controls and missing sweep progression', () => {
@@ -2161,6 +3851,13 @@ test('bounded stress evidence rejects slow controls and missing sweep progressio
           observedSequenceOpportunities: 32,
           observationElapsedMs: 3_100,
           millisecondsPerSequenceOpportunity: 100,
+          observationGaps: [
+            { fromSequence: 9, toSequence: 10, startedAtMs: 900, observedAtMs: 1_000, wallClockGapMs: 100 },
+            { fromSequence: 10, toSequence: 20, startedAtMs: 1_000, observedAtMs: 2_000, wallClockGapMs: 1_000 },
+            { fromSequence: 20, toSequence: 30, startedAtMs: 2_000, observedAtMs: 3_000, wallClockGapMs: 1_000 },
+            { fromSequence: 30, toSequence: 41, startedAtMs: 3_000, observedAtMs: 4_100, wallClockGapMs: 1_100 },
+          ],
+          maximumObservationGapMs: 1_100,
         },
         responsivenessTour: {
           routes: [
@@ -2348,6 +4045,28 @@ test('bounded stress evidence rejects slow controls and missing sweep progressio
       }],
     }),
     /did not bind one elapsed interval to its matching sequence delta/u,
+  );
+  const hiddenFreeze = structuredClone(evidence);
+  hiddenFreeze.sweepProgressions[1].sweepRateEvidence.observationGaps[2] = {
+    fromSequence: 20,
+    toSequence: 30,
+    startedAtMs: 2_000,
+    observedAtMs: 4_500,
+    wallClockGapMs: 2_500,
+  };
+  hiddenFreeze.sweepProgressions[1].sweepRateEvidence.observationGaps[3] = {
+    fromSequence: 30,
+    toSequence: 41,
+    startedAtMs: 4_500,
+    observedAtMs: 5_600,
+    wallClockGapMs: 1_100,
+  };
+  hiddenFreeze.sweepProgressions[1].sweepRateEvidence.maximumObservationGapMs = 2_500;
+  hiddenFreeze.sweepProgressions[1].sweepRateEvidence.observationElapsedMs = 4_600;
+  hiddenFreeze.sweepProgressions[1].sweepRateEvidence.millisecondsPerSequenceOpportunity = 4_600 / 31;
+  assert.throws(
+    () => validateLiveStressEvidence(hiddenFreeze),
+    /observation gap 2500 ms violates bound 2000 ms/u,
   );
 });
 
