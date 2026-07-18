@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,7 +12,10 @@ const APP_NAME = 'Atomizer Dev';
 const BUNDLE_ID = 'org.tinysa.atomizer.dev';
 const CONTRACT_VERSION = 3;
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..', '..');
+// Persist one canonical checkout identity even when the installer was invoked
+// through a compatibility symlink such as ../TinySA. This keeps logs, Vite
+// source identities, and future reinstalls bound to Atom-Atomizer itself.
+const repoRoot = realpathSync(resolve(here, '..', '..'));
 const sourceApp = join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app');
 const destination = join(homedir(), 'Applications', `${APP_NAME}.app`);
 const plistBuddy = '/usr/libexec/PlistBuddy';

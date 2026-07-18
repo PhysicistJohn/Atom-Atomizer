@@ -51,6 +51,15 @@ test('the installed Electron launcher contains every launcher-local runtime depe
   }
 });
 
+test('the installer persists the canonical repository path instead of a symlink spelling', () => {
+  const installer = readFileSync(join(here, 'install.mjs'), 'utf8');
+  assert.match(
+    installer,
+    /const repoRoot = realpathSync\(resolve\(here, '\.\.', '\.\.'\)\);/,
+    'launcher-config repoRoot must be canonicalized before it is persisted',
+  );
+});
+
 describe('bounded renderer diagnostics', () => {
   test('retains Electron 43 legacy console text instead of logging only its numeric level', () => {
     assert.deepEqual(

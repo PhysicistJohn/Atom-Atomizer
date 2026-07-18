@@ -3477,6 +3477,7 @@ export function App({
 
   function commitZeroSpanConfiguration(input: ZeroSpanConfig): ZeroSpanConfig {
     const next = zeroSpanConfigSchema.parse(input);
+    if (sameStructuredValue(next, zeroConfigRef.current)) return zeroConfigRef.current;
     setZeroConfig(next);
     return next;
   }

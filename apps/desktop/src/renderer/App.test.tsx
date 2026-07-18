@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { StrictMode } from 'react';
+import { Profiler, StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
@@ -3257,6 +3257,57 @@ describe('operator vertical slice', () => {
       expect(within(acquisition).getByRole('button', { name: /^Stop$/i })).toBeTruthy();
     }
   });
+
+  it('does not republish an equal detected-power configuration after every SignalLab Run sweep', async () => {
+    mockConnectedInstrument(signalLabSession);
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return {
+        sessionId: signalLabSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) =>
+      evidenceBoundTestClassification(detection, evidence, `high-rate-${measurementSequence}`));
+
+    let commits = 0;
+    render(<StrictMode><Profiler id="high-rate" onRender={() => { commits++; }}><App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/></Profiler></StrictMode>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected spectrum Run configuration');
+    const streamingConfiguration = structuredClone(activeConfiguration);
+    const streamingRevision = configurationRevision;
+
+    commits = 0;
+    for (let index = 0; index < 8; index++) {
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: signalLabStreamingMeasurement(
+            streamingConfiguration,
+            `high-rate-${index}`,
+            streamingRevision,
+            'producer-epoch:1',
+            true,
+          ),
+        });
+        await Promise.resolve();
+      });
+    }
+
+    expect(classify).toHaveBeenCalledTimes(8);
+    // One controller commit admits each sweep and at most one publishes its
+    // immediate classifier result. A third commit per look means the passive
+    // target-mirroring effect republished an equal detected-power config.
+    expect(commits).toBeLessThanOrEqual(16);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+  }, 30_000);
 
   it('pauses bounded I/Q at buffer boundaries for SignalLab profile and channel changes, then resumes', async () => {
     const pending = mockDeferredSignalLabIqBuffers();
