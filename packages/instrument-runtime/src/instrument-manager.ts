@@ -578,7 +578,9 @@ export class InstrumentManager {
     requireFeatureCapability(active, request);
     const command = instrumentFeatureCommandSchema.parse({ ...request, sessionId: active.session.sessionId });
     const invalidationReason = request.kind === 'signal-lab-profile-selection'
-      ? 'source-profile-changed' as const
+      ? request.action === 'select-profile'
+        ? 'source-profile-changed' as const
+        : 'source-channel-changed' as const
       : (request.kind === 'rf-generator' && request.action === 'configure') || request.kind === 'touch'
         ? 'instrument-mode-changed' as const
         : undefined;
@@ -612,10 +614,12 @@ export class InstrumentManager {
         if (result.kind !== 'signal-lab-profile-selection'
           || previousProducerEpoch === undefined
           || result.producerConfigurationEpoch === previousProducerEpoch) {
-          throw new InstrumentManagerError('driver-contract', 'SignalLab profile mutation did not advance its producer configuration epoch');
+          throw new InstrumentManagerError('driver-contract', 'SignalLab source mutation did not advance its producer configuration epoch');
         }
         active.producerConfigurationEpoch = result.producerConfigurationEpoch;
-        active.capabilities = withSelectedSignalLabProfile(active.capabilities, request.profileId);
+        active.capabilities = request.action === 'select-profile'
+          ? withSelectedSignalLabProfile(active.capabilities, request.profileId)
+          : withSignalLabChannel(active.capabilities, request.channel);
       } else if (request.kind === 'rf-generator') {
         if (request.action === 'configure') {
           await this.#acknowledgeRfOutputOff(
@@ -1065,8 +1069,12 @@ function requireFeatureCapability(active: ActiveSession, request: InstrumentFeat
     if (active.session.candidate.sourceKind !== 'signal-lab') {
       throw new InstrumentManagerError('driver-contract', 'SignalLab profile selection is bound to a non-SignalLab candidate');
     }
-    if (!capability.profiles.some((profile) => profile.profileId === request.profileId)) {
+    if (request.action === 'select-profile'
+      && !capability.profiles.some((profile) => profile.profileId === request.profileId)) {
       throw new InstrumentManagerError('unsupported-capability', `SignalLab profile ${request.profileId} is not advertised`);
+    }
+    if (request.action === 'configure-channel' && capability.channel === undefined) {
+      throw new InstrumentManagerError('unsupported-capability', 'SignalLab channel configuration is not advertised');
     }
   }
 }
@@ -1085,6 +1093,23 @@ function withSelectedSignalLabProfile(
     return { ...feature, selectedProfileId: profileId };
   });
   if (!updated) throw new InstrumentManagerError('driver-contract', 'SignalLab profile result has no matching capability');
+  return instrumentCapabilitiesSchema.parse({ ...capabilities, features });
+}
+
+function withSignalLabChannel(
+  capabilities: InstrumentCapabilities,
+  channel: Extract<InstrumentFeatureRequest, { kind: 'signal-lab-profile-selection'; action: 'configure-channel' }>['channel'],
+): InstrumentCapabilities {
+  let updated = false;
+  const features = capabilities.features.map((feature) => {
+    if (feature.kind !== 'signal-lab-profile-selection') return feature;
+    if (feature.channel === undefined) {
+      throw new InstrumentManagerError('driver-contract', 'SignalLab channel result has no matching capability');
+    }
+    updated = true;
+    return { ...feature, channel };
+  });
+  if (!updated) throw new InstrumentManagerError('driver-contract', 'SignalLab channel result has no matching capability');
   return instrumentCapabilitiesSchema.parse({ ...capabilities, features });
 }
 
@@ -1110,8 +1135,9 @@ function assertMeasurementBinding(
 ): void {
   if (measurement.sessionId !== active.session.sessionId) throw new InstrumentManagerError('driver-contract', 'Measurement session ID does not match the active session');
   if (measurement.configurationRevision !== configuration.configurationRevision) throw new InstrumentManagerError('driver-contract', 'Measurement configuration revision does not match the active revision');
-  if (measurement.qualification !== active.session.provenance.qualification) {
-    throw new InstrumentManagerError('driver-contract', 'Measurement qualification does not match verified session provenance');
+  const expectedQualification = expectedMeasurementQualification(active, measurement);
+  if (measurement.qualification !== expectedQualification) {
+    throw new InstrumentManagerError('driver-contract', 'Measurement qualification does not match the admitted source and measurement kind');
   }
   if (active.session.provenance.sourceKind === 'signal-lab') {
     if (active.producerConfigurationEpoch === undefined
@@ -1160,6 +1186,25 @@ function assertMeasurementBinding(
   }
 }
 
+function expectedMeasurementQualification(
+  active: ActiveSession,
+  measurement: InstrumentMeasurement,
+): InstrumentMeasurement['qualification'] {
+  if (active.session.provenance.sourceKind !== 'signal-lab' || measurement.kind !== 'complex-iq') {
+    return active.session.provenance.qualification;
+  }
+  const source = active.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+  const selected = source?.kind === 'signal-lab-profile-selection'
+    ? source.profiles.find((profile) => profile.profileId === source.selectedProfileId)
+    : undefined;
+  if (!selected || !('qualification' in selected)) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q measurement has no complete admitted selected-profile qualification');
+  }
+  return selected.qualification === 'visual'
+    ? 'analytic-complex-baseband'
+    : 'standards-derived-complex-baseband';
+}
+
 function assertFeatureResult(
   result: InstrumentFeatureResult,
   request: InstrumentFeatureRequest,
@@ -1194,8 +1239,16 @@ function assertFeatureResult(
     if (result.kind !== 'diagnostics' || result.report !== request.report) {
       throw new InstrumentManagerError('driver-contract', 'Diagnostics result does not match the request');
     }
-  } else if (result.kind !== 'signal-lab-profile-selection' || result.profileId !== request.profileId) {
-    throw new InstrumentManagerError('driver-contract', 'SignalLab profile result does not match the request');
+  } else if (request.action === 'select-profile') {
+    if (result.kind !== 'signal-lab-profile-selection'
+      || result.action !== 'select-profile'
+      || result.profileId !== request.profileId) {
+      throw new InstrumentManagerError('driver-contract', 'SignalLab profile result does not match the request');
+    }
+  } else if (result.kind !== 'signal-lab-profile-selection'
+    || result.action !== 'configure-channel'
+    || !isDeepStrictEqual(result.channel, request.channel)) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab channel result does not match the request');
   }
 }
 

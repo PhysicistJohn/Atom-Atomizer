@@ -903,6 +903,102 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     });
   });
 
+  it('preserves SignalLab analytic complex-baseband qualification without weakening scalar provenance', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, signalLabIqCapabilities())),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+    const requested = {
+      kind: 'complex-iq' as const,
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 50_000,
+      sampleCount: 4,
+      sampleFormat: 'cf32le' as const,
+    };
+    const admitted = await manager.configure(requested);
+    const measurement = (): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> => ({
+      schemaVersion: 1,
+      measurementId: 'measurement:signal-lab:iq',
+      sessionId: session!.sessionId,
+      configurationRevision: admitted.configurationRevision,
+      producerConfigurationEpoch: 'producer-epoch:1',
+      sequence: 1,
+      capturedAt: CAPTURED_AT,
+      elapsedMilliseconds: 1,
+      resolutionBandwidthHz: null,
+      attenuationDb: null,
+      qualification: 'analytic-complex-baseband',
+      complete: true,
+      ...requested,
+      samples: new Uint8Array(32),
+    });
+    session!.onAcquire = async () => measurement();
+    await expect(manager.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq', qualification: 'analytic-complex-baseband',
+    });
+
+    const next = await manager.configure(requested);
+    session!.onAcquire = async () => ({
+      ...measurement(),
+      configurationRevision: next.configurationRevision,
+      measurementId: 'measurement:signal-lab:iq:wrong-qualification',
+      qualification: 'standards-derived-complex-baseband',
+    });
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'driver-contract', message: expect.stringMatching(/qualification does not match/i),
+    });
+  });
+
+  it('requires standards-derived complex-baseband qualification for standards-derived SignalLab profiles', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, signalLabIqCapabilities('lte-etm1.1'))),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+    const requested = {
+      kind: 'complex-iq' as const,
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 2_000_000,
+      sampleCount: 4,
+      sampleFormat: 'cf32le' as const,
+    };
+    let admitted = await manager.configure(requested);
+    const measurement = (qualification: 'analytic-complex-baseband' | 'standards-derived-complex-baseband') => ({
+      schemaVersion: 1 as const,
+      measurementId: `measurement:signal-lab:iq:${qualification}`,
+      sessionId: session!.sessionId,
+      configurationRevision: admitted.configurationRevision,
+      producerConfigurationEpoch: 'producer-epoch:1',
+      sequence: 1,
+      capturedAt: CAPTURED_AT,
+      elapsedMilliseconds: 1,
+      resolutionBandwidthHz: null,
+      attenuationDb: null,
+      qualification,
+      complete: true as const,
+      ...requested,
+      samples: new Uint8Array(32),
+    });
+    session!.onAcquire = async () => measurement('standards-derived-complex-baseband');
+    await expect(manager.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq', qualification: 'standards-derived-complex-baseband',
+    });
+
+    admitted = await manager.configure(requested);
+    session!.onAcquire = async () => measurement('analytic-complex-baseband');
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'driver-contract', message: expect.stringMatching(/qualification does not match/i),
+    });
+  });
+
   it('accepts truthful half-open sweep grids and rejects incomplete or out-of-range geometry', async () => {
     let session: StubSession;
     const driver = new StubDriver(
@@ -1491,6 +1587,64 @@ describe('InstrumentManager feature boundary', () => {
     expect(session!.featureCalls).toHaveLength(1);
   });
 
+  it('configures only an advertised SignalLab channel and publishes the new producer state', async () => {
+    let session: StubSession;
+    const channel = { model: 'awgn' as const, noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 };
+    const updatedChannel = { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5 };
+    const feature: InstrumentFeatureCapability = {
+      kind: 'signal-lab-profile-selection',
+      profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
+      selectedProfileId: 'cw',
+      channel,
+    };
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, signalLabCapabilities([feature]))),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const events: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => events.push(event));
+    await manager.connect((await manager.discover()).candidates[0]!);
+    await manager.configure(syntheticSweepConfiguration());
+    events.length = 0;
+
+    await expect(manager.executeFeature({
+      kind: 'signal-lab-profile-selection', action: 'configure-channel', channel: updatedChannel,
+    })).resolves.toMatchObject({ action: 'configure-channel', channel: updatedChannel });
+    expect(session!.featureCalls[0]).toMatchObject({
+      sessionId: session!.sessionId, action: 'configure-channel', channel: updatedChannel,
+    });
+    expect(manager.snapshot()?.configuration).toBeUndefined();
+    expect(manager.snapshot()?.provenance).toMatchObject({ producerConfigurationEpoch: 'producer-epoch:2' });
+    expect(manager.snapshot()?.capabilities.features).toContainEqual(expect.objectContaining({
+      kind: 'signal-lab-profile-selection', selectedProfileId: 'cw', channel: updatedChannel,
+    }));
+    expect(events.map((event) => event.type)).toEqual(['feature-result', 'configuration-invalidated']);
+    expect(events[1]).toMatchObject({ type: 'configuration-invalidated', reason: 'source-channel-changed' });
+    await expect(manager.acquire()).rejects.toMatchObject({ code: 'not-configured' });
+  });
+
+  it('rejects SignalLab channel mutation when the source did not advertise channel control', async () => {
+    let session: StubSession;
+    const feature: InstrumentFeatureCapability = {
+      kind: 'signal-lab-profile-selection',
+      profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
+      selectedProfileId: 'cw',
+    };
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, signalLabCapabilities([feature]))),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    await expect(manager.executeFeature({
+      kind: 'signal-lab-profile-selection', action: 'configure-channel',
+      channel: { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 },
+    })).rejects.toMatchObject({ code: 'unsupported-capability' });
+    expect(session!.featureCalls).toHaveLength(0);
+  });
+
   it('faults after uncertain profile mutation, blocks operations, and reconnects cleanly', async () => {
     let session: StubSession;
     let manager: InstrumentManager;
@@ -1958,6 +2112,58 @@ function signalLabCapabilities(features: readonly InstrumentFeatureCapability[])
       },
     ],
     features: admittedFeatures,
+  };
+}
+
+function signalLabIqCapabilities(selectedProfileId: 'cw' | 'lte-etm1.1' = 'cw'): InstrumentCapabilities {
+  const scalar = signalLabCapabilities([{
+    kind: 'signal-lab-profile-selection',
+    profiles: [
+      {
+        profileId: 'cw', label: 'CW', family: 'tone', model: 'cw-model', qualification: 'visual',
+        centerFrequencyHz: 100_000_000, occupiedBandwidthHz: 1, recommendedSpanHz: 2_000_000,
+        projection: { allocation: 'carrier', modulation: 'unmodulated', timing: 'continuous' },
+        source: {
+          organization: 'TinySA SignalLab',
+          references: [{
+            specification: 'SignalLab fixture', clause: 'CW', revision: '1',
+            url: 'https://example.test/signal-lab/cw',
+          }],
+        },
+        disclosure: 'Analytic fixture profile.',
+      },
+      {
+        profileId: 'lte-etm1.1', label: 'LTE E-TM 1.1', family: 'e-utra', model: 'E-TM 1.1',
+        qualification: 'standards-derived', centerFrequencyHz: 1_842_500_000,
+        occupiedBandwidthHz: 9_000_000, recommendedSpanHz: 12_000_000,
+        projection: {
+          allocation: 'full', modulation: 'ofdm-mixed', timing: 'frame', duplex: 'fdd',
+          subcarrierSpacingHz: 15_000, nominalResourceBlocks: 50,
+        },
+        source: {
+          organization: '3GPP',
+          references: [{
+            specification: 'TS 36.141', clause: '6.1', revision: 'Release 18',
+            url: 'https://www.3gpp.org/dynareport/36141.htm',
+          }],
+        },
+        disclosure: 'Standards-derived deterministic fixture projection.',
+      },
+    ],
+    selectedProfileId,
+    iqProfileIds: ['cw', 'lte-etm1.1'],
+  }]);
+  return {
+    ...scalar,
+    acquisitions: [...scalar.acquisitions, {
+      kind: 'complex-iq',
+      centerFrequencyHz: { min: 1, max: 6_000_000_000, step: 1 },
+      sampleRateHz: { min: 1_000_000, max: 245_760_000, step: 1 },
+      bandwidthHz: { min: 1_000, max: 245_760_000, step: 1 },
+      bandwidthMode: 'independent',
+      sampleCount: { min: 1, max: 65_536, step: 1 },
+      sampleFormat: 'cf32le',
+    }],
   };
 }
 

@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
+  SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
+  ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
   ZS407_SHIPPED_FIRMWARE_SOURCE_COMMIT,
   instrumentCandidateSchema,
   type AnalyzerConfig,
   type DeviceCapabilities,
   type DeviceDiagnostics,
   type DeviceEvent,
+  type DeviceIdentity,
   type DeviceSnapshot,
   type GeneratorConfig,
   type InstrumentSessionEvent,
@@ -302,6 +305,178 @@ describe('TinySaZs407InstrumentDriver', () => {
     expect(detected.powerDbm).toHaveLength(20);
   });
 
+  it('projects custom-unqualified ZS407 normal-path receive tuning without generator, screen, or touch', async () => {
+    const device = new FakeTinySaDevice(
+      { candidates: [physical], failures: [] },
+      customReceiveOnlyDeviceCapabilities(),
+    );
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({
+      ...descriptor,
+      discoveryRevision: 'discovery:custom-receive-only',
+    }));
+
+    expect(session).toMatchObject({
+      rfOutput: 'not-supported',
+      provenance: {
+        sourceKind: 'serial-port',
+        device: {
+          firmwareQualification: 'custom-unqualified',
+          usbIdentityVerified: true,
+        },
+      },
+      capabilities: {
+        acquisitions: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'swept-spectrum',
+            frequencyHz: { min: 0, max: 900_000_000, step: 1 },
+          }),
+          expect.objectContaining({
+            kind: 'detected-power-timeseries',
+            centerFrequencyHz: { min: 0, max: 900_000_000, step: 1 },
+          }),
+        ]),
+        features: [{ kind: 'diagnostics', reports: ['identity', 'health', 'configuration'] }],
+      },
+    });
+    expect(session.provenance).not.toHaveProperty('device.firmwareSourceCommit');
+
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:band-14-downlink',
+      configuration: {
+        kind: 'swept-spectrum',
+        startHz: 758_000_000,
+        stopHz: 768_000_000,
+        points: 20,
+        sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'quasi-peak', spurRejection: 'on', lowNoiseAmplifier: 'on',
+          avoidSpurs: 'off', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    expect(device.analyzer).toMatchObject({ startHz: 758_000_000, stopHz: 768_000_000, points: 20 });
+    await expect(session.acquire()).resolves.toMatchObject({
+      kind: 'swept-spectrum',
+      frequencyHz: expect.arrayContaining([758_000_000, 768_000_000]),
+      qualification: 'device-observed',
+    });
+    expect(device.generatorOutput).toHaveBeenLastCalledWith(false);
+  });
+
+  it('projects frozen-source-qualified 43eb0f1 as receive-only and rejects prohibited features before device calls', async () => {
+    const firmwareVersion = 'tinySA4_hw-v0.3-fft1024-g43eb0f1';
+    const sourceRecord = SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES[firmwareVersion];
+    const device = new FakeTinySaDevice(
+      { candidates: [physical], failures: [] },
+      sourceQualifiedCustomReceiveOnlyDeviceCapabilities(),
+      {
+        model: 'tinySA Ultra+ ZS407',
+        hardwareVersion: 'V0.5.4 max2871',
+        firmwareVersion,
+        firmwareReportedRevision: sourceRecord.reportedRevision,
+        firmwareSourceCommit: sourceRecord.sourceCommit,
+        firmwareQualification: 'custom-source-qualified-receive-only',
+        firmwareWarning: sourceRecord.warning,
+        port: physical,
+        simulated: false,
+        usbIdentityVerified: true,
+        execution: 'physical',
+      },
+    );
+    const configureGenerator = vi.spyOn(device, 'configureGenerator');
+    const captureScreen = vi.spyOn(device, 'captureScreen');
+    const touch = vi.spyOn(device, 'touch');
+    const releaseTouch = vi.spyOn(device, 'releaseTouch');
+    const driver = new TinySaZs407InstrumentDriver(device);
+    const descriptor = (await driver.discover()).candidates[0]!;
+    const session = await driver.connect(instrumentCandidateSchema.parse({
+      ...descriptor,
+      discoveryRevision: 'discovery:source-qualified-custom-receiver',
+    }));
+
+    expect(session).toMatchObject({
+      rfOutput: 'not-supported',
+      provenance: {
+        sourceKind: 'serial-port',
+        device: {
+          firmwareVersion,
+          firmwareReportedRevision: '43eb0f1',
+          firmwareSourceCommit: ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+          firmwareQualification: 'custom-source-qualified-receive-only',
+          firmwareWarning: sourceRecord.warning,
+        },
+      },
+      capabilities: {
+        acquisitions: expect.arrayContaining([
+          expect.objectContaining({ kind: 'swept-spectrum', points: { min: 20, max: 450, step: 1 } }),
+        ]),
+        features: [{ kind: 'diagnostics', reports: ['identity', 'health', 'configuration'] }],
+      },
+    });
+
+    await expect(session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'rf-generator',
+      action: 'configure',
+      frequencyHz: 100_000_000,
+      levelDbm: -40,
+      path: 'normal',
+      modulation: { mode: 'off' },
+    })).rejects.toThrow(/does not advertise the rf-generator feature/i);
+    await expect(session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'rf-generator',
+      action: 'set-output',
+      enabled: false,
+    })).rejects.toThrow(/does not advertise the rf-generator feature/i);
+    await expect(session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'screen',
+      action: 'capture',
+    })).rejects.toThrow(/does not advertise the screen feature/i);
+    await expect(session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'touch',
+      action: 'tap',
+      x: 3,
+      y: 4,
+    })).rejects.toThrow(/does not advertise the touch feature/i);
+
+    expect(configureGenerator).not.toHaveBeenCalled();
+    expect(device.generatorOutput).not.toHaveBeenCalled();
+    expect(captureScreen).not.toHaveBeenCalled();
+    expect(touch).not.toHaveBeenCalled();
+    expect(releaseTouch).not.toHaveBeenCalled();
+
+    await session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:source-qualified-fm-450',
+      configuration: {
+        kind: 'swept-spectrum',
+        startHz: 88_000_000,
+        stopHz: 108_000_000,
+        points: 450,
+        sweepTimeSeconds: 0.25,
+        controls: {
+          schemaVersion: 1, model: 'receiver', acquisitionFormat: 'text', resolutionBandwidthKhz: 30,
+          attenuationDb: 7, detector: 'quasi-peak', spurRejection: 'on', lowNoiseAmplifier: 'on',
+          avoidSpurs: 'off', trigger: { mode: 'auto' },
+        },
+      },
+    });
+    await expect(session.acquire()).resolves.toMatchObject({
+      kind: 'swept-spectrum',
+      frequencyHz: expect.arrayContaining([88_000_000, 108_000_000]),
+    });
+    expect(device.generatorOutput).toHaveBeenCalledTimes(1);
+    expect(device.generatorOutput).toHaveBeenLastCalledWith(false);
+    await session.disconnect();
+  });
+
   it('rejects incomplete device acquisitions instead of laundering them as complete', async () => {
     const device = new FakeTinySaDevice();
     const driver = new TinySaZs407InstrumentDriver(device);
@@ -542,7 +717,11 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
   #snapshot: DeviceSnapshot = disconnectedSnapshot();
   #listeners = new Set<(event: DeviceEvent) => void>();
 
-  constructor(private readonly discovery: TransportDiscoveryResult = { candidates: [physical, twin], failures: [] }) {}
+  constructor(
+    private readonly discovery: TransportDiscoveryResult = { candidates: [physical, twin], failures: [] },
+    private readonly capabilities: DeviceCapabilities = fullDeviceCapabilities(),
+    private readonly physicalIdentity?: DeviceIdentity,
+  ) {}
 
   async listDevices(): Promise<TransportDiscoveryResult> { return this.discovery; }
   snapshot(): DeviceSnapshot { return structuredClone(this.#snapshot); }
@@ -554,15 +733,17 @@ class FakeTinySaDevice implements TinySaInstrumentDevicePort {
         firmwareQualification: 'executable-twin', port: candidate, simulated: true,
         usbIdentityVerified: false, execution: 'firmware-digital-twin', digitalTwin: candidate.digitalTwin,
       }
-      : {
+      : this.physicalIdentity
+        ? { ...structuredClone(this.physicalIdentity), port: candidate }
+        : {
         model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'tinySA4_v1.4.6-gfffffff',
         firmwareReportedRevision: 'fffffff', firmwareQualification: 'custom-unqualified', port: candidate,
         firmwareWarning: 'Custom firmware revision fffffff is admitted without source qualification.',
         simulated: false, usbIdentityVerified: true, execution: 'physical',
-      };
+        };
     this.#snapshot = {
       connection: 'ready', mode: 'idle', generatorOutput: 'off', verification: 'commanded',
-      sessionId: 'session:tiny', capabilities: fullDeviceCapabilities(),
+      sessionId: 'session:tiny', capabilities: structuredClone(this.capabilities),
       identity,
       connectedAt: '2026-07-14T12:00:00.000Z',
       pendingPort: candidate,
@@ -662,6 +843,64 @@ function fullDeviceCapabilities(): DeviceCapabilities {
     commands: ['version', 'info', 'help', 'output', 'mode', 'sweep', 'scan', 'scanraw', 'zero', 'rbw', 'attenuate', 'sweeptime', 'trace', 'calc', 'spur', 'avoid', 'lna', 'trigger', 'freq', 'level', 'modulation', 'capture', 'touch', 'release'],
     evidence: 'device-observed', hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
     qualification: 'custom-firmware-unqualified',
+  };
+}
+
+function customReceiveOnlyDeviceCapabilities(): DeviceCapabilities {
+  const {
+    analyzerNormalMaximumHz,
+    analyzerUltraTransitionHz,
+    generatorFrequency,
+    generatorFundamentalMaximumHz,
+    generatorLevel,
+    markerCount,
+    traceCount,
+    ...base
+  } = fullDeviceCapabilities();
+  void [
+    analyzerNormalMaximumHz,
+    analyzerUltraTransitionHz,
+    generatorFrequency,
+    generatorFundamentalMaximumHz,
+    generatorLevel,
+    markerCount,
+    traceCount,
+  ];
+  return {
+    ...base,
+    analyzerFrequency: { min: 0, max: 900_000_000, step: 1, unit: 'Hz' },
+    scalarReceiver: {
+      sweptSpectrum: true,
+      detectedPower: true,
+      acquisitionFormats: ['text'],
+      resolutionBandwidthAutomatic: true,
+      attenuationAutomatic: true,
+      sweepTimeAutomatic: false,
+      detectors: ['sample', 'quasi-peak'],
+      spurRejection: ['off', 'on', 'auto'],
+      lowNoiseAmplifier: ['off', 'on'],
+      avoidSpurs: ['off', 'on', 'auto'],
+      triggerModes: ['auto'],
+    },
+    screenCapture: false,
+    remoteTouch: false,
+    rawSweep: false,
+    firmwareMarkers: false,
+    firmwareTraces: false,
+    modulation: [],
+    qualification: 'custom-firmware-unqualified',
+  };
+}
+
+function sourceQualifiedCustomReceiveOnlyDeviceCapabilities(): DeviceCapabilities {
+  return {
+    ...customReceiveOnlyDeviceCapabilities(),
+    analyzerNormalMaximumHz: 900_000_000,
+    sweepPoints: { min: 20, max: 450, step: 1, unit: 'points' },
+    maxSweepPoints: 450,
+    firmwareSourceCommit: ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+    evidence: 'device-observed',
+    qualification: 'custom-firmware-source-qualified-receive-only',
   };
 }
 

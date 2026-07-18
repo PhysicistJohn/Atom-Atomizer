@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -13,6 +14,13 @@ export const SIGNAL_LAB_BRIDGE_PROTOCOL = 'signal-lab-measurement-bridge' as con
 const MAX_FREQUENCY_HZ = 17_922_600_000;
 const MAX_SPECTRUM_POINTS = 4_096;
 const MAX_DETECTED_POWER_POINTS = 4_096;
+const MIN_COMPLEX_IQ_SAMPLE_RATE_HZ = 1_000_000;
+const MAX_COMPLEX_IQ_SAMPLE_RATE_HZ = 245_760_000;
+const MIN_COMPLEX_IQ_BANDWIDTH_HZ = 1_000;
+const MAX_COMPLEX_IQ_BANDWIDTH_HZ = 245_760_000;
+const MAX_COMPLEX_IQ_SAMPLES = 65_536;
+const COMPLEX_IQ_BYTES_PER_SAMPLE = 8;
+const MAX_COMPLEX_IQ_BYTES = MAX_COMPLEX_IQ_SAMPLES * COMPLEX_IQ_BYTES_PER_SAMPLE;
 const MIN_SAMPLE_PERIOD_SECONDS = 0.000_001;
 const MAX_SAMPLE_PERIOD_SECONDS = 10;
 const MAX_REQUEST_LINE_BYTES = 65_536;
@@ -43,6 +51,11 @@ export const SIGNAL_LAB_PROFILE_IDS = Object.freeze([
   'bluetooth-classic-connected', 'bluetooth-le-advertising',
 ] as const);
 export type SignalLabProfileId = (typeof SIGNAL_LAB_PROFILE_IDS)[number];
+/** Every member of the closed SignalLab catalog has an admitted deterministic
+ * complex-envelope generator. Standards-labelled profiles remain engineering
+ * projections and are not promoted to conformance evidence by this registry. */
+export const SIGNAL_LAB_IQ_PROFILE_IDS = SIGNAL_LAB_PROFILE_IDS;
+export type SignalLabIqProfileId = (typeof SIGNAL_LAB_IQ_PROFILE_IDS)[number];
 
 export interface SignalLabBridgeLocation {
   readonly executablePath: string;
@@ -93,6 +106,27 @@ export type SignalLabBridgeCapability =
     maximumSamplePeriodSeconds: typeof MAX_SAMPLE_PERIOD_SECONDS;
     powerUnit: 'dBm';
     qualification: 'synthetic-visual-projection';
+  }>
+  | Readonly<{
+    kind: 'complex-iq';
+    minimumCenterFrequencyHz: 1;
+    maximumCenterFrequencyHz: typeof MAX_FREQUENCY_HZ;
+    frequencyStepHz: 1;
+    frequencyUnit: 'Hz';
+    minimumSampleRateHz: typeof MIN_COMPLEX_IQ_SAMPLE_RATE_HZ;
+    maximumSampleRateHz: typeof MAX_COMPLEX_IQ_SAMPLE_RATE_HZ;
+    minimumBandwidthHz: typeof MIN_COMPLEX_IQ_BANDWIDTH_HZ;
+    maximumBandwidthHz: typeof MAX_COMPLEX_IQ_BANDWIDTH_HZ;
+    bandwidthMode: 'independent';
+    minimumSamples: 1;
+    maximumSamples: typeof MAX_COMPLEX_IQ_SAMPLES;
+    sampleFormat: 'cf32le';
+    encoding: 'base64';
+    layout: 'interleaved-iq';
+    byteOrder: 'little-endian';
+    timingQualification: 'simulation-exact';
+    qualification: 'profile-dependent-complex-baseband';
+    profiles: typeof SIGNAL_LAB_IQ_PROFILE_IDS;
   }>;
 
 export interface SignalLabBridgeReady {
@@ -167,7 +201,7 @@ export interface SignalLabBridgeStatus {
   readonly identity: SignalLabBridgeIdentity;
 }
 
-interface SignalLabMeasurementBase {
+interface SignalLabMeasurementCorrelation {
   readonly measurementId: string;
   readonly sessionId: string;
   readonly configurationRevision: string;
@@ -175,11 +209,14 @@ interface SignalLabMeasurementBase {
   readonly capturedAt: string;
   readonly elapsedSeconds: number;
   readonly complete: true;
-  readonly qualification: 'synthetic-visual-projection';
   readonly provenance: SignalLabBridgeIdentity;
 }
 
-export interface SignalLabSpectrumMeasurement extends SignalLabMeasurementBase {
+interface SignalLabScalarMeasurementBase extends SignalLabMeasurementCorrelation {
+  readonly qualification: 'synthetic-visual-projection';
+}
+
+export interface SignalLabSpectrumMeasurement extends SignalLabScalarMeasurementBase {
   readonly kind: 'swept-spectrum';
   readonly startHz: number;
   readonly stopHz: number;
@@ -188,7 +225,7 @@ export interface SignalLabSpectrumMeasurement extends SignalLabMeasurementBase {
   readonly powerDbm: readonly number[];
 }
 
-export interface SignalLabDetectedPowerMeasurement extends SignalLabMeasurementBase {
+export interface SignalLabDetectedPowerMeasurement extends SignalLabScalarMeasurementBase {
   readonly kind: 'detected-power-timeseries';
   readonly centerFrequencyHz: number;
   readonly points: number;
@@ -196,7 +233,31 @@ export interface SignalLabDetectedPowerMeasurement extends SignalLabMeasurementB
   readonly powerDbm: readonly number[];
 }
 
-export type SignalLabBridgeMeasurement = SignalLabSpectrumMeasurement | SignalLabDetectedPowerMeasurement;
+export interface SignalLabComplexIqMeasurement extends SignalLabMeasurementCorrelation {
+  readonly kind: 'complex-iq';
+  readonly centerHz: number;
+  readonly sampleRateHz: number;
+  readonly bandwidthHz: number;
+  readonly sampleFormat: 'cf32le';
+  readonly sampleCount: number;
+  readonly byteLength: number;
+  readonly encoding: 'base64';
+  readonly layout: 'interleaved-iq';
+  readonly byteOrder: 'little-endian';
+  readonly samplesBase64: string;
+  readonly samplesSha256: string;
+  readonly samples: Uint8Array<ArrayBuffer>;
+  readonly timingQualification: 'simulation-exact';
+  readonly qualification: 'analytic-complex-baseband' | 'standards-derived-complex-baseband';
+  readonly representation: 'normalized-complex-envelope';
+  readonly normalization: 'unit-peak';
+  readonly channelApplication: 'not-applied';
+}
+
+export type SignalLabBridgeMeasurement =
+  | SignalLabSpectrumMeasurement
+  | SignalLabDetectedPowerMeasurement
+  | SignalLabComplexIqMeasurement;
 
 export interface SignalLabBridgeClientOptions {
   readonly readyTimeoutMs?: number;
@@ -250,6 +311,16 @@ export class SignalLabBridgeTerminalError extends Error {
   override readonly name = 'SignalLabBridgeTerminalError';
 }
 
+export class SignalLabBridgeRequestError extends Error {
+  override readonly name = 'SignalLabBridgeRequestError';
+  readonly code: 'IQ_PROFILE_UNAVAILABLE';
+
+  constructor(code: 'IQ_PROFILE_UNAVAILABLE', message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 export async function resolveSignalLabBridgeLocation(
   options: SignalLabBridgeResolverOptions = {},
 ): Promise<SignalLabBridgeLocation> {
@@ -272,7 +343,7 @@ export async function resolveSignalLabBridgeLocation(
     ? resolve(override)
     : packagedResourcesRoot
       ? resolve(packagedResourcesRoot, SIGNAL_LAB_PACKAGED_BRIDGE_RELATIVE_PATH)
-      : resolve(atomizerRepositoryRoot, '..', 'TinySA_SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
+      : resolve(atomizerRepositoryRoot, '..', 'Atom-SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
   await requireSafeExecutable(executablePath);
   return Object.freeze({
     executablePath,
@@ -387,6 +458,22 @@ export class SignalLabBridgeClient {
     return this.#request('acquire_detected_power', params);
   }
 
+  async acquireIq(params: Readonly<{
+    centerHz: number;
+    sampleRateHz: number;
+    bandwidthHz: number;
+    sampleCount: number;
+    sampleFormat: 'cf32le';
+  }>): Promise<SignalLabComplexIqMeasurement> {
+    integer(params.centerHz, 1, MAX_FREQUENCY_HZ, 'I/Q center frequency');
+    integer(params.sampleRateHz, MIN_COMPLEX_IQ_SAMPLE_RATE_HZ, MAX_COMPLEX_IQ_SAMPLE_RATE_HZ, 'I/Q sample rate');
+    integer(params.bandwidthHz, MIN_COMPLEX_IQ_BANDWIDTH_HZ, MAX_COMPLEX_IQ_BANDWIDTH_HZ, 'I/Q bandwidth');
+    if (params.bandwidthHz > params.sampleRateHz) throw new RangeError('SignalLab analytic I/Q bandwidth cannot exceed sample rate');
+    integer(params.sampleCount, 1, MAX_COMPLEX_IQ_SAMPLES, 'I/Q sample count');
+    literal(params.sampleFormat, 'cf32le', 'SignalLab I/Q sample format');
+    return this.#request('acquire_iq', params);
+  }
+
   async close(): Promise<void> {
     if (this.#state === 'closed') return;
     if (this.#state === 'faulted') {
@@ -395,7 +482,11 @@ export class SignalLabBridgeClient {
       try {
         await withTimeout(this.#exit, this.#options.shutdownTimeoutMs, 'SignalLab bridge did not terminate after a terminal fault');
       } catch (cleanup) {
-        throw new AggregateError([terminal, cleanup], 'SignalLab bridge faulted and process termination could not be confirmed');
+        throw new AggregateError(
+          [terminal, cleanup],
+          `${terminal.message}; SignalLab bridge process termination could not be confirmed`,
+          { cause: terminal },
+        );
       }
       throw terminal;
     }
@@ -574,6 +665,12 @@ export class SignalLabBridgeClient {
       pending.resolve(response);
     } catch (value) {
       const error = asError(value, 'SignalLab bridge response violated the versioned contract');
+      if (error instanceof SignalLabBridgeRequestError) {
+        this.#pending = undefined;
+        clearTimeout(pending.timer);
+        pending.reject(error);
+        return;
+      }
       this.#fail(error);
     }
   }
@@ -608,13 +705,14 @@ export class SignalLabBridgeClient {
   }
 }
 
-type BridgeMethod = 'status' | 'select_profile' | 'configure_channel' | 'acquire_spectrum' | 'acquire_detected_power' | 'shutdown';
+type BridgeMethod = 'status' | 'select_profile' | 'configure_channel' | 'acquire_spectrum' | 'acquire_detected_power' | 'acquire_iq' | 'shutdown';
 interface BridgeParams {
   status: Record<string, never>;
   select_profile: { profile: SignalLabProfileId };
   configure_channel: { channel: SignalLabChannelConfiguration };
   acquire_spectrum: { startHz: number; stopHz: number; points: number };
   acquire_detected_power: { centerFrequencyHz: number; points: number; samplePeriodSeconds: number };
+  acquire_iq: { centerHz: number; sampleRateHz: number; bandwidthHz: number; sampleCount: number; sampleFormat: 'cf32le' };
   shutdown: Record<string, never>;
 }
 interface BridgeResult {
@@ -623,6 +721,7 @@ interface BridgeResult {
   configure_channel: SignalLabBridgeStatus;
   acquire_spectrum: SignalLabSpectrumMeasurement;
   acquire_detected_power: SignalLabDetectedPowerMeasurement;
+  acquire_iq: SignalLabComplexIqMeasurement;
   shutdown: { kind: 'shutdown'; closed: true };
 }
 interface PendingRequest {
@@ -826,9 +925,15 @@ function parseResponse(value: unknown, pending: PendingRequest, ready: SignalLab
     oneOf(error.code, [
       'INVALID_ENCODING', 'INVALID_JSON', 'INVALID_REQUEST', 'LINE_TOO_LARGE', 'LINE_TERMINATOR_REQUIRED',
       'DUPLICATE_REQUEST_ID', 'SESSION_REQUEST_LIMIT', 'OVERLOADED', 'REQUEST_TIMEOUT', 'SERVICE_CLOSED',
-      'SHUTTING_DOWN', 'RESPONSE_TOO_LARGE', 'INTERNAL_ERROR',
+      'IQ_PROFILE_UNAVAILABLE', 'SHUTTING_DOWN', 'RESPONSE_TOO_LARGE', 'INTERNAL_ERROR',
     ] as const, 'SignalLab error code');
     const detail = boundedString(error.message, 1, 256, 'SignalLab error message');
+    if (error.code === 'IQ_PROFILE_UNAVAILABLE' && pending.method === 'acquire_iq') {
+      throw new SignalLabBridgeRequestError(
+        'IQ_PROFILE_UNAVAILABLE',
+        `SignalLab bridge rejected ${pending.method}: IQ_PROFILE_UNAVAILABLE: ${detail}`,
+      );
+    }
     throw new SignalLabBridgeTerminalError(`SignalLab bridge rejected ${pending.method}: ${String(error.code)}: ${detail}`);
   }
   throw new SignalLabBridgeProtocolError('SignalLab response must carry a literal boolean ok discriminator');
@@ -857,6 +962,20 @@ function parseSuccessResult(value: unknown, pending: PendingRequest, ready: Sign
       || measurement.samplePeriodSeconds !== requested.samplePeriodSeconds) {
       throw new SignalLabBridgeProtocolError(
         'SignalLab detected-power result geometry does not match the admitted request',
+      );
+    }
+    return measurement;
+  }
+  if (method === 'acquire_iq') {
+    const measurement = parseComplexIq(value, ready);
+    const requested = pending.params as BridgeParams['acquire_iq'];
+    if (measurement.centerHz !== requested.centerHz
+      || measurement.sampleRateHz !== requested.sampleRateHz
+      || measurement.bandwidthHz !== requested.bandwidthHz
+      || measurement.sampleCount !== requested.sampleCount
+      || measurement.sampleFormat !== requested.sampleFormat) {
+      throw new SignalLabBridgeProtocolError(
+        'SignalLab complex-I/Q result geometry does not match the admitted request',
       );
     }
     return measurement;
@@ -911,9 +1030,9 @@ function parseStatus(value: unknown, ready: SignalLabBridgeReady): SignalLabBrid
 
 function parseSpectrum(value: unknown, ready: SignalLabBridgeReady): SignalLabSpectrumMeasurement {
   const measurement = exactRecord(value, [
-    ...MEASUREMENT_BASE_KEYS, 'kind', 'startHz', 'stopHz', 'points', 'frequencyHz', 'powerDbm',
+    ...SCALAR_MEASUREMENT_BASE_KEYS, 'kind', 'startHz', 'stopHz', 'points', 'frequencyHz', 'powerDbm',
   ], [], 'SignalLab spectrum measurement');
-  const base = parseMeasurementBase(measurement, ready);
+  const base = parseScalarMeasurementBase(measurement, ready);
   literal(measurement.kind, 'swept-spectrum', 'SignalLab spectrum kind');
   const startHz = integer(measurement.startHz, 1, MAX_FREQUENCY_HZ, 'SignalLab spectrum start');
   const stopHz = integer(measurement.stopHz, 1, MAX_FREQUENCY_HZ, 'SignalLab spectrum stop');
@@ -932,9 +1051,9 @@ function parseSpectrum(value: unknown, ready: SignalLabBridgeReady): SignalLabSp
 
 function parseDetectedPower(value: unknown, ready: SignalLabBridgeReady): SignalLabDetectedPowerMeasurement {
   const measurement = exactRecord(value, [
-    ...MEASUREMENT_BASE_KEYS, 'kind', 'centerFrequencyHz', 'points', 'samplePeriodSeconds', 'powerDbm',
+    ...SCALAR_MEASUREMENT_BASE_KEYS, 'kind', 'centerFrequencyHz', 'points', 'samplePeriodSeconds', 'powerDbm',
   ], [], 'SignalLab detected-power measurement');
-  const base = parseMeasurementBase(measurement, ready);
+  const base = parseScalarMeasurementBase(measurement, ready);
   literal(measurement.kind, 'detected-power-timeseries', 'SignalLab detected-power kind');
   const centerFrequencyHz = integer(measurement.centerFrequencyHz, 1, MAX_FREQUENCY_HZ, 'SignalLab detected-power center');
   const points = integer(measurement.points, 1, MAX_DETECTED_POWER_POINTS, 'SignalLab detected-power points');
@@ -944,12 +1063,101 @@ function parseDetectedPower(value: unknown, ready: SignalLabBridgeReady): Signal
   return Object.freeze({ ...base, kind: 'detected-power-timeseries', centerFrequencyHz, points, samplePeriodSeconds, powerDbm: Object.freeze(powerDbm) });
 }
 
-const MEASUREMENT_BASE_KEYS = [
-  'measurementId', 'sessionId', 'configurationRevision', 'sequence', 'capturedAt', 'elapsedSeconds',
-  'complete', 'qualification', 'provenance',
-] as const;
+function parseComplexIq(value: unknown, ready: SignalLabBridgeReady): SignalLabComplexIqMeasurement {
+  const measurement = exactRecord(value, [
+    ...MEASUREMENT_CORRELATION_KEYS,
+    'kind', 'centerHz', 'sampleRateHz', 'bandwidthHz', 'sampleFormat', 'sampleCount', 'byteLength',
+    'encoding', 'layout', 'byteOrder', 'samplesBase64', 'samplesSha256', 'timingQualification',
+    'qualification', 'representation', 'normalization', 'channelApplication',
+  ], [], 'SignalLab complex-I/Q measurement');
+  const base = parseMeasurementCorrelation(measurement, ready);
+  literal(measurement.kind, 'complex-iq', 'SignalLab complex-I/Q kind');
+  const centerHz = integer(measurement.centerHz, 1, MAX_FREQUENCY_HZ, 'SignalLab complex-I/Q center');
+  const sampleRateHz = integer(
+    measurement.sampleRateHz,
+    MIN_COMPLEX_IQ_SAMPLE_RATE_HZ,
+    MAX_COMPLEX_IQ_SAMPLE_RATE_HZ,
+    'SignalLab complex-I/Q sample rate',
+  );
+  const bandwidthHz = integer(
+    measurement.bandwidthHz,
+    MIN_COMPLEX_IQ_BANDWIDTH_HZ,
+    MAX_COMPLEX_IQ_BANDWIDTH_HZ,
+    'SignalLab complex-I/Q bandwidth',
+  );
+  if (bandwidthHz > sampleRateHz) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q bandwidth cannot exceed sample rate');
+  }
+  literal(measurement.sampleFormat, 'cf32le', 'SignalLab complex-I/Q sample format');
+  const sampleCount = integer(measurement.sampleCount, 1, MAX_COMPLEX_IQ_SAMPLES, 'SignalLab complex-I/Q sample count');
+  const expectedByteLength = sampleCount * COMPLEX_IQ_BYTES_PER_SAMPLE;
+  const byteLength = integer(measurement.byteLength, COMPLEX_IQ_BYTES_PER_SAMPLE, MAX_COMPLEX_IQ_BYTES, 'SignalLab complex-I/Q byte length');
+  if (byteLength !== expectedByteLength) {
+    throw new SignalLabBridgeProtocolError('SignalLab cf32le byte length does not match its sample count');
+  }
+  literal(measurement.encoding, 'base64', 'SignalLab complex-I/Q encoding');
+  literal(measurement.layout, 'interleaved-iq', 'SignalLab complex-I/Q layout');
+  literal(measurement.byteOrder, 'little-endian', 'SignalLab complex-I/Q byte order');
+  const samplesBase64 = boundedString(
+    measurement.samplesBase64,
+    12,
+    4 * Math.ceil(MAX_COMPLEX_IQ_BYTES / 3),
+    'SignalLab complex-I/Q samples',
+  );
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(samplesBase64)) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q samples are not canonical RFC 4648 base64');
+  }
+  const decoded = Buffer.from(samplesBase64, 'base64');
+  if (decoded.toString('base64') !== samplesBase64) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q samples are not canonical RFC 4648 base64');
+  }
+  if (decoded.byteLength !== byteLength) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q decoded bytes do not match byteLength');
+  }
+  const samplesSha256 = sha256(measurement.samplesSha256, 'SignalLab complex-I/Q sample hash');
+  if (createHash('sha256').update(decoded).digest('hex') !== samplesSha256) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q sample hash does not match the decoded bytes');
+  }
+  literal(measurement.timingQualification, 'simulation-exact', 'SignalLab complex-I/Q timing qualification');
+  const qualification = oneOf(
+    measurement.qualification,
+    ['analytic-complex-baseband', 'standards-derived-complex-baseband'] as const,
+    'SignalLab complex-I/Q qualification',
+  );
+  literal(measurement.representation, 'normalized-complex-envelope', 'SignalLab complex-I/Q representation');
+  literal(measurement.normalization, 'unit-peak', 'SignalLab complex-I/Q normalization');
+  literal(measurement.channelApplication, 'not-applied', 'SignalLab complex-I/Q channel application');
+  const samples = Uint8Array.from(decoded);
+  return Object.freeze({
+    ...base,
+    kind: 'complex-iq',
+    centerHz,
+    sampleRateHz,
+    bandwidthHz,
+    sampleFormat: 'cf32le',
+    sampleCount,
+    byteLength,
+    encoding: 'base64',
+    layout: 'interleaved-iq',
+    byteOrder: 'little-endian',
+    samplesBase64,
+    samplesSha256,
+    samples,
+    timingQualification: 'simulation-exact',
+    qualification,
+    representation: 'normalized-complex-envelope',
+    normalization: 'unit-peak',
+    channelApplication: 'not-applied',
+  });
+}
 
-function parseMeasurementBase(value: Record<string, unknown>, ready: SignalLabBridgeReady): SignalLabMeasurementBase {
+const MEASUREMENT_CORRELATION_KEYS = [
+  'measurementId', 'sessionId', 'configurationRevision', 'sequence', 'capturedAt', 'elapsedSeconds',
+  'complete', 'provenance',
+] as const;
+const SCALAR_MEASUREMENT_BASE_KEYS = [...MEASUREMENT_CORRELATION_KEYS, 'qualification'] as const;
+
+function parseMeasurementCorrelation(value: Record<string, unknown>, ready: SignalLabBridgeReady): SignalLabMeasurementCorrelation {
   uuid(value.measurementId, 'SignalLab measurement ID');
   literal(value.sessionId, ready.sessionId, 'SignalLab measurement session ID');
   uuid(value.configurationRevision, 'SignalLab measurement configuration revision');
@@ -957,15 +1165,23 @@ function parseMeasurementBase(value: Record<string, unknown>, ready: SignalLabBr
   instant(value.capturedAt, 'SignalLab measurement timestamp');
   const elapsedSeconds = finite(value.elapsedSeconds, 0, 60, 'SignalLab measurement elapsed time');
   literal(value.complete, true, 'SignalLab measurement completeness');
-  literal(value.qualification, 'synthetic-visual-projection', 'SignalLab measurement qualification');
   const provenance = parseIdentity(value.provenance);
   if (!isDeepStrictEqual(provenance, ready.identity)) throw new SignalLabBridgeProtocolError('SignalLab measurement provenance drifted from ready');
   return {
     measurementId: value.measurementId as string, sessionId: ready.sessionId,
     configurationRevision: value.configurationRevision as string, sequence,
     capturedAt: value.capturedAt as string, elapsedSeconds, complete: true,
-    qualification: 'synthetic-visual-projection', provenance,
+    provenance,
   };
+}
+
+function parseScalarMeasurementBase(
+  value: Record<string, unknown>,
+  ready: SignalLabBridgeReady,
+): SignalLabScalarMeasurementBase {
+  const base = parseMeasurementCorrelation(value, ready);
+  literal(value.qualification, 'synthetic-visual-projection', 'SignalLab measurement qualification');
+  return { ...base, qualification: 'synthetic-visual-projection' };
 }
 
 function parseIdentity(value: unknown): SignalLabBridgeIdentity {
@@ -996,7 +1212,7 @@ function parseIdentity(value: unknown): SignalLabBridgeIdentity {
 }
 
 function parseCapabilities(value: unknown): readonly SignalLabBridgeCapability[] {
-  const values = array(value, 2, 2, 'SignalLab capabilities');
+  const values = array(value, 3, 3, 'SignalLab capabilities');
   const spectrum = exactRecord(values[0], [
     'kind', 'minimumFrequencyHz', 'maximumFrequencyHz', 'minimumPoints', 'maximumPoints',
     'frequencyUnit', 'powerUnit', 'qualification',
@@ -1024,6 +1240,39 @@ function parseCapabilities(value: unknown): readonly SignalLabBridgeCapability[]
   literal(detected.maximumSamplePeriodSeconds, MAX_SAMPLE_PERIOD_SECONDS, 'SignalLab maximum sample period');
   literal(detected.powerUnit, 'dBm', 'SignalLab detected-power unit');
   literal(detected.qualification, 'synthetic-visual-projection', 'SignalLab detected-power qualification');
+  const iq = exactRecord(values[2], [
+    'kind', 'minimumCenterFrequencyHz', 'maximumCenterFrequencyHz', 'frequencyStepHz', 'frequencyUnit',
+    'minimumSampleRateHz', 'maximumSampleRateHz', 'minimumBandwidthHz', 'maximumBandwidthHz',
+    'bandwidthMode', 'minimumSamples', 'maximumSamples', 'sampleFormat', 'encoding', 'layout', 'byteOrder',
+    'timingQualification', 'qualification', 'profiles',
+  ], [], 'SignalLab complex-I/Q capability');
+  literal(iq.kind, 'complex-iq', 'SignalLab complex-I/Q capability kind');
+  literal(iq.minimumCenterFrequencyHz, 1, 'SignalLab minimum complex-I/Q center');
+  literal(iq.maximumCenterFrequencyHz, MAX_FREQUENCY_HZ, 'SignalLab maximum complex-I/Q center');
+  literal(iq.frequencyStepHz, 1, 'SignalLab complex-I/Q frequency step');
+  literal(iq.frequencyUnit, 'Hz', 'SignalLab complex-I/Q frequency unit');
+  literal(iq.minimumSampleRateHz, MIN_COMPLEX_IQ_SAMPLE_RATE_HZ, 'SignalLab minimum complex-I/Q sample rate');
+  literal(iq.maximumSampleRateHz, MAX_COMPLEX_IQ_SAMPLE_RATE_HZ, 'SignalLab maximum complex-I/Q sample rate');
+  literal(iq.minimumBandwidthHz, MIN_COMPLEX_IQ_BANDWIDTH_HZ, 'SignalLab minimum complex-I/Q bandwidth');
+  literal(iq.maximumBandwidthHz, MAX_COMPLEX_IQ_BANDWIDTH_HZ, 'SignalLab maximum complex-I/Q bandwidth');
+  literal(iq.bandwidthMode, 'independent', 'SignalLab complex-I/Q bandwidth mode');
+  literal(iq.minimumSamples, 1, 'SignalLab minimum complex-I/Q samples');
+  literal(iq.maximumSamples, MAX_COMPLEX_IQ_SAMPLES, 'SignalLab maximum complex-I/Q samples');
+  literal(iq.sampleFormat, 'cf32le', 'SignalLab complex-I/Q sample format');
+  literal(iq.encoding, 'base64', 'SignalLab complex-I/Q encoding');
+  literal(iq.layout, 'interleaved-iq', 'SignalLab complex-I/Q layout');
+  literal(iq.byteOrder, 'little-endian', 'SignalLab complex-I/Q byte order');
+  literal(iq.timingQualification, 'simulation-exact', 'SignalLab complex-I/Q timing qualification');
+  literal(iq.qualification, 'profile-dependent-complex-baseband', 'SignalLab complex-I/Q qualification');
+  const iqProfiles = array(
+    iq.profiles,
+    SIGNAL_LAB_IQ_PROFILE_IDS.length,
+    SIGNAL_LAB_IQ_PROFILE_IDS.length,
+    'SignalLab complex-I/Q profiles',
+  ).map((value) => oneOf(value, SIGNAL_LAB_IQ_PROFILE_IDS, 'SignalLab complex-I/Q profile'));
+  if (!isDeepStrictEqual(iqProfiles, SIGNAL_LAB_IQ_PROFILE_IDS)) {
+    throw new SignalLabBridgeProtocolError('SignalLab complex-I/Q profile registry must exactly match the closed catalog in producer order');
+  }
   return Object.freeze([
     Object.freeze({
       kind: 'swept-spectrum' as const, minimumFrequencyHz: 1 as const, maximumFrequencyHz: MAX_FREQUENCY_HZ,
@@ -1036,6 +1285,27 @@ function parseCapabilities(value: unknown): readonly SignalLabBridgeCapability[]
       frequencyUnit: 'Hz' as const, minimumPoints: 1 as const, maximumPoints: MAX_DETECTED_POWER_POINTS,
       minimumSamplePeriodSeconds: MIN_SAMPLE_PERIOD_SECONDS, maximumSamplePeriodSeconds: MAX_SAMPLE_PERIOD_SECONDS,
       powerUnit: 'dBm' as const, qualification: 'synthetic-visual-projection' as const,
+    }),
+    Object.freeze({
+      kind: 'complex-iq' as const,
+      minimumCenterFrequencyHz: 1 as const,
+      maximumCenterFrequencyHz: MAX_FREQUENCY_HZ,
+      frequencyStepHz: 1 as const,
+      frequencyUnit: 'Hz' as const,
+      minimumSampleRateHz: MIN_COMPLEX_IQ_SAMPLE_RATE_HZ,
+      maximumSampleRateHz: MAX_COMPLEX_IQ_SAMPLE_RATE_HZ,
+      minimumBandwidthHz: MIN_COMPLEX_IQ_BANDWIDTH_HZ,
+      maximumBandwidthHz: MAX_COMPLEX_IQ_BANDWIDTH_HZ,
+      bandwidthMode: 'independent' as const,
+      minimumSamples: 1 as const,
+      maximumSamples: MAX_COMPLEX_IQ_SAMPLES,
+      sampleFormat: 'cf32le' as const,
+      encoding: 'base64' as const,
+      layout: 'interleaved-iq' as const,
+      byteOrder: 'little-endian' as const,
+      timingQualification: 'simulation-exact' as const,
+      qualification: 'profile-dependent-complex-baseband' as const,
+      profiles: SIGNAL_LAB_IQ_PROFILE_IDS,
     }),
   ]);
 }

@@ -86,7 +86,7 @@ describe('SignalLab bridge resolver', () => {
 
 describe('SignalLab bridge client', () => {
   const atomizerRepositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
-  const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'TinySA_SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
+  const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'Atom-SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
   const electronExecutable = findElectronExecutable(atomizerRepositoryRoot);
   const signalLabIntegrationRequired = process.env.SIGNAL_LAB_INTEGRATION_REQUIRED === '1';
   if (signalLabIntegrationRequired && !existsSync(shippedBridge)) {
@@ -106,6 +106,10 @@ describe('SignalLab bridge client', () => {
     const status = await client.status();
     expect(status.profiles).toHaveLength(34);
     expect(status.identity.claims).toEqual({ usbEmulated: false, firmwareExecuted: false, rfEmitted: false });
+    expect(client.ready.capabilities.find((capability) => capability.kind === 'complex-iq')).toMatchObject({
+      bandwidthMode: 'independent', minimumBandwidthHz: 1_000, maximumBandwidthHz: 245_760_000,
+      qualification: 'profile-dependent-complex-baseband', profiles: [...SIGNAL_LAB_PROFILE_IDS],
+    });
     expect(status.catalog.find((item) => item.id === 'lte-band38-tdd-10m')?.projection).toMatchObject({
       duplex: 'tdd', timing: 'tdd-frame',
     });
@@ -154,6 +158,28 @@ describe('SignalLab bridge client', () => {
     });
     const spectrum = await client.acquireSpectrum({ startHz: 99_900_000, stopHz: 100_100_000, points: 17 });
     expect(spectrum.frequencyHz).toHaveLength(17);
+    await client.selectProfile('fm');
+    await expect(client.acquireIq({
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 100_000,
+      sampleCount: 256,
+      sampleFormat: 'cf32le',
+    })).resolves.toMatchObject({
+      kind: 'complex-iq', sampleRateHz: 2_000_000, bandwidthHz: 100_000,
+      sampleCount: 256, byteLength: 2_048, qualification: 'analytic-complex-baseband',
+    });
+    await client.selectProfile('lte-etm1.1');
+    await expect(client.acquireIq({
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 2_000_000,
+      sampleCount: 256,
+      sampleFormat: 'cf32le',
+    })).resolves.toMatchObject({
+      kind: 'complex-iq', sampleRateHz: 2_000_000, bandwidthHz: 2_000_000,
+      sampleCount: 256, byteLength: 2_048, qualification: 'standards-derived-complex-baseband',
+    });
     await client.close();
   });
 
@@ -181,7 +207,7 @@ describe('SignalLab bridge client', () => {
     });
     expect(client.ready.identity.claims).toEqual({ usbEmulated: false, firmwareExecuted: false, rfEmitted: false });
     expect(client.ready.capabilities.map((capability) => capability.kind)).toEqual([
-      'swept-spectrum', 'detected-power-timeseries',
+      'swept-spectrum', 'detected-power-timeseries', 'complex-iq',
     ]);
     expect((await client.status()).profile).toBe('cw');
     expect((await client.selectProfile('fm')).profile).toBe('fm');
@@ -198,6 +224,40 @@ describe('SignalLab bridge client', () => {
       kind: 'detected-power-timeseries', centerFrequencyHz: 100_000_125,
       points: 4, samplePeriodSeconds: 0.001, complete: true,
     });
+    const iq = await client.acquireIq({
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 100_000,
+      sampleCount: 4,
+      sampleFormat: 'cf32le',
+    });
+    expect(iq).toMatchObject({
+      kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+      bandwidthHz: 100_000, sampleCount: 4, byteLength: 32,
+      sampleFormat: 'cf32le', timingQualification: 'simulation-exact',
+      qualification: 'analytic-complex-baseband', representation: 'normalized-complex-envelope',
+      normalization: 'unit-peak', channelApplication: 'not-applied', complete: true,
+    });
+    expect(iq.samples).toEqual(new Uint8Array(32));
+    expect(iq.samplesBase64).toBe(Buffer.alloc(32).toString('base64'));
+    await expect(client.acquireIq({
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 3_000_000,
+      sampleCount: 4,
+      sampleFormat: 'cf32le',
+    })).rejects.toThrow(/bandwidth cannot exceed sample rate/);
+    await client.selectProfile('lte-etm1.1');
+    await expect(client.acquireIq({
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 2_000_000,
+      sampleCount: 4,
+      sampleFormat: 'cf32le',
+    })).resolves.toMatchObject({
+      kind: 'complex-iq', qualification: 'standards-derived-complex-baseband',
+    });
+    await expect(client.status()).resolves.toMatchObject({ profile: 'lte-etm1.1' });
     await client.close();
     expect(diagnostics).toContain('fixture diagnostic');
   });
@@ -244,6 +304,7 @@ describe('SignalLab bridge client', () => {
       ['wrong-detected-center', 'detected'],
       ['wrong-detected-points', 'detected'],
       ['wrong-detected-sample-period', 'detected'],
+      ['wrong-iq-center', 'iq'],
     ] as const;
     for (const [mode, kind] of cases) {
       const fixture = await createFixture(mode);
@@ -257,7 +318,9 @@ describe('SignalLab bridge client', () => {
       const spectrumRequest = { startHz: 99_000_000, stopHz: 101_000_000, points: 5 };
       const request = kind === 'spectrum'
         ? client.acquireSpectrum(spectrumRequest)
-        : client.acquireDetectedPower({ centerFrequencyHz: 100_000_000, points: 4, samplePeriodSeconds: 0.001 });
+        : kind === 'detected'
+          ? client.acquireDetectedPower({ centerFrequencyHz: 100_000_000, points: 4, samplePeriodSeconds: 0.001 })
+          : client.acquireIq({ centerHz: 100_000_000, sampleRateHz: 2_000_000, bandwidthHz: 2_000_000, sampleCount: 4, sampleFormat: 'cf32le' });
 
       // A malicious result matches this post-dispatch mutation exactly. It
       // must still be compared with the private snapshot that was serialized.
@@ -272,7 +335,79 @@ describe('SignalLab bridge client', () => {
       expect(failures).toHaveLength(1);
       await expect(client.close()).rejects.toThrow(/result geometry does not match the admitted request/);
     }
-  }, 30_000); // 5 sequential process launches; Windows process spawn/teardown overhead adds up past the 5s default.
+  }, 30_000); // Sequential process launches; Windows process spawn/teardown overhead adds up past the 5s default.
+
+  it('keeps the first protocol fault primary when process reaping also times out under load', async () => {
+    const fixture = await createFixture('shifted-spectrum-geometry');
+    let closeUnderLoad: Promise<void> | undefined;
+    let observedTerminal: Error | undefined;
+    let client!: SignalLabBridgeClient;
+    client = await SignalLabBridgeClient.launch(await fixture.location(), {
+      readyTimeoutMs: 1_000,
+      requestTimeoutMs: 1_000,
+      shutdownTimeoutMs: 10,
+      onTerminalFailure: (error) => {
+        observedTerminal = error;
+        // close() starts its bounded exit join synchronously. Saturating this
+        // worker past that bound deterministically puts the cleanup timeout
+        // and the already-recorded protocol fault on the same error path.
+        closeUnderLoad = client.close();
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      },
+    });
+
+    let requestFailure: unknown;
+    try {
+      await client.acquireSpectrum({ startHz: 99_000_000, stopHz: 101_000_000, points: 5 });
+    } catch (value) {
+      requestFailure = value;
+    }
+    expect(requestFailure).toBeInstanceOf(Error);
+    expect(requestFailure).toBe(observedTerminal);
+    expect(closeUnderLoad).toBeDefined();
+
+    let closeFailure: unknown;
+    try {
+      await closeUnderLoad;
+    } catch (value) {
+      closeFailure = value;
+    }
+    expect(closeFailure).toBeInstanceOf(AggregateError);
+    const aggregate = closeFailure as AggregateError;
+    expect(aggregate.message).toMatch(/result geometry does not match the admitted request/);
+    expect(aggregate.message).toMatch(/process termination could not be confirmed/);
+    expect(aggregate.cause).toBe(requestFailure);
+    expect(aggregate.errors[0]).toBe(requestFailure);
+    expect(aggregate.errors[1]).toEqual(expect.objectContaining({
+      message: 'SignalLab bridge did not terminate after a terminal fault',
+    }));
+
+    const cleanupDeadline = Date.now() + 1_000;
+    while (!client.cleanupConfirmed && Date.now() < cleanupDeadline) {
+      await new Promise((resolveValue) => setTimeout(resolveValue, 5));
+    }
+    expect(client.cleanupConfirmed).toBe(true);
+  });
+
+  it('faults on non-canonical, length-inconsistent, or hash-inconsistent I/Q payloads', async () => {
+    for (const mode of ['noncanonical-iq-base64', 'wrong-iq-byte-length', 'wrong-iq-hash'] as const) {
+      const fixture = await createFixture(mode);
+      const client = await SignalLabBridgeClient.launch(await fixture.location(), {
+        readyTimeoutMs: 1_000,
+        requestTimeoutMs: 1_000,
+        shutdownTimeoutMs: 200,
+      });
+      await expect(client.acquireIq({
+        centerHz: 100_000_000,
+        sampleRateHz: 2_000_000,
+        bandwidthHz: 2_000_000,
+        sampleCount: 4,
+        sampleFormat: 'cf32le',
+      })).rejects.toThrow(/base64|byte length|hash/i);
+      await expect(client.status()).rejects.toThrow(/base64|byte length|hash/i);
+      await expect(client.close()).rejects.toThrow(/base64|byte length|hash/i);
+    }
+  });
 
   it('makes any selected-waveform metadata or optional asset-hash drift terminal', async () => {
     for (const mode of ['waveform-metadata-drift', 'waveform-asset-hash-drift'] as const) {
@@ -430,7 +565,8 @@ describe('SignalLab bridge client', () => {
 type FixtureMode = 'valid' | 'wrong-correlation' | 'delayed-status' | 'silent-after-ready' | 'exit-after-ready'
   | 'close-stdout-after-ready' | 'malformed-ready' | 'extra-ready-field' | 'duplicate-ready' | 'electron-node-runtime'
   | 'shifted-spectrum-geometry' | 'wrong-spectrum-points' | 'wrong-detected-center'
-  | 'wrong-detected-points' | 'wrong-detected-sample-period'
+  | 'wrong-detected-points' | 'wrong-detected-sample-period' | 'wrong-iq-center'
+  | 'noncanonical-iq-base64' | 'wrong-iq-byte-length' | 'wrong-iq-hash'
   | 'waveform-metadata-drift' | 'waveform-asset-hash-drift' | 'insecure-source-url'
   | 'duplicate-source-url' | 'source-reference-whitespace' | 'source-qualification-mismatch'
   | 'legacy-standard-field' | 'projection-boosted' | 'projection-single-prb'
@@ -447,8 +583,8 @@ async function createFixture(mode: FixtureMode): Promise<{
 }> {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'atomizer-signal-lab-')));
   temporaryRoots.push(root);
-  const atomizerRoot = resolve(root, 'TinySA');
-  const signalLabRoot = resolve(root, 'TinySA_SignalLab');
+  const atomizerRoot = resolve(root, 'Atom-Atomizer');
+  const signalLabRoot = resolve(root, 'Atom-SignalLab');
   const executable = resolve(signalLabRoot, 'dist', 'bridge', 'atomizer-bridge.js');
   const packagedResourcesRoot = resolve(root, 'Atomizer.app', 'Contents', 'Resources');
   const packagedExecutable = resolve(packagedResourcesRoot, SIGNAL_LAB_PACKAGED_BRIDGE_RELATIVE_PATH);
@@ -491,6 +627,7 @@ if (${JSON.stringify(mode)} === 'electron-node-runtime'
   process.exit(9);
 }
 const readline = require('node:readline');
+const { createHash } = require('node:crypto');
 const ready = ${JSON.stringify(ready)};
 process.stdout.write(JSON.stringify(ready) + '\\n');
 process.stderr.write('fixture diagnostic\\n');
@@ -593,6 +730,25 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
       const resultPoints = ${JSON.stringify(mode)} === 'wrong-detected-points' ? points + 1 : points;
       const resultSamplePeriodSeconds = ${JSON.stringify(mode)} === 'wrong-detected-sample-period' ? samplePeriodSeconds * 2 : samplePeriodSeconds;
       reply(request, measurement({ kind: 'detected-power-timeseries', centerFrequencyHz: resultCenterFrequencyHz, points: resultPoints, samplePeriodSeconds: resultSamplePeriodSeconds, powerDbm: Array(resultPoints).fill(-65) }));
+    } else if (request.method === 'acquire_iq') {
+      sequence += 1;
+      const { centerHz, sampleRateHz, bandwidthHz, sampleCount, sampleFormat } = request.params;
+      const samples = Buffer.alloc(sampleCount * 8);
+      const resultCenterHz = ${JSON.stringify(mode)} === 'wrong-iq-center' ? centerHz + 1 : centerHz;
+      const resultByteLength = ${JSON.stringify(mode)} === 'wrong-iq-byte-length' ? samples.byteLength + 8 : samples.byteLength;
+      const canonicalBase64 = samples.toString('base64');
+      const resultBase64 = ${JSON.stringify(mode)} === 'noncanonical-iq-base64' ? ' ' + canonicalBase64 : canonicalBase64;
+      const canonicalHash = createHash('sha256').update(samples).digest('hex');
+      const resultHash = ${JSON.stringify(mode)} === 'wrong-iq-hash' ? 'f'.repeat(64) : canonicalHash;
+      reply(request, measurement({
+        kind: 'complex-iq', centerHz: resultCenterHz, sampleRateHz, bandwidthHz, sampleFormat, sampleCount,
+        byteLength: resultByteLength, encoding: 'base64', layout: 'interleaved-iq',
+        byteOrder: 'little-endian', samplesBase64: resultBase64, samplesSha256: resultHash,
+        timingQualification: 'simulation-exact', qualification: ['cw', 'am', 'fm'].includes(profile)
+          ? 'analytic-complex-baseband' : 'standards-derived-complex-baseband',
+        representation: 'normalized-complex-envelope', normalization: 'unit-peak',
+        channelApplication: 'not-applied',
+      }));
     } else if (request.method === 'shutdown') {
       reply(request, { kind: 'shutdown', closed: true });
       setTimeout(() => process.exit(0), 5);
@@ -645,6 +801,15 @@ function readyMessage() {
         minimumSamplePeriodSeconds: 0.000_001, maximumSamplePeriodSeconds: 10,
         powerUnit: 'dBm', qualification: 'synthetic-visual-projection',
       },
+      {
+        kind: 'complex-iq', minimumCenterFrequencyHz: 1, maximumCenterFrequencyHz: 17_922_600_000,
+        frequencyStepHz: 1, frequencyUnit: 'Hz', minimumSampleRateHz: 1_000_000,
+        maximumSampleRateHz: 245_760_000, minimumBandwidthHz: 1_000,
+        maximumBandwidthHz: 245_760_000, bandwidthMode: 'independent', minimumSamples: 1, maximumSamples: 65_536,
+        sampleFormat: 'cf32le', encoding: 'base64', layout: 'interleaved-iq',
+        byteOrder: 'little-endian', timingQualification: 'simulation-exact',
+        qualification: 'profile-dependent-complex-baseband', profiles: [...SIGNAL_LAB_PROFILE_IDS],
+      },
     ],
     limits: {
       maxRequestLineBytes: 65_536, maxResponseLineBytes: 1_048_576,
@@ -655,15 +820,24 @@ function readyMessage() {
 
 function waveforms() {
   return SIGNAL_LAB_PROFILE_IDS.map((id) => ({
-    id, label: id.toUpperCase(), family: id === 'cw' ? 'tone' : 'analog', model: `${id}-model`,
-    qualification: 'visual', centerHz: 100_000_000, occupiedBandwidthHz: id === 'cw' ? 1 : 20_000,
+    id, label: id.toUpperCase(), family: id === 'cw' ? 'tone'
+      : id === 'am' || id === 'fm' ? 'analog'
+        : id.startsWith('gsm') || id.startsWith('edge') ? 'geran'
+          : id.startsWith('lte') ? 'e-utra'
+            : id.startsWith('nr') ? 'nr'
+              : id.startsWith('wifi') ? 'wlan' : 'bluetooth',
+    model: `${id}-model`,
+    qualification: id === 'cw' || id === 'am' || id === 'fm' ? 'visual' : 'standards-derived',
+    centerHz: 100_000_000, occupiedBandwidthHz: id === 'cw' ? 1 : 20_000,
     recommendedSpanHz: id === 'cw' ? 100_000 : 100_000,
     projection: {
       allocation: id === 'cw' ? 'carrier' : 'sidebands', modulation: id === 'cw' ? 'unmodulated' : 'fm',
       timing: 'continuous',
     },
     source: {
-      organization: 'TinySA SignalLab',
+      organization: id === 'cw' || id === 'am' || id === 'fm' ? 'TinySA SignalLab'
+        : id.startsWith('wifi') ? 'IEEE'
+          : id.startsWith('bluetooth') ? 'Bluetooth SIG' : '3GPP',
       references: [{
         specification: 'fixture', clause: 'fixture', revision: '1',
         url: 'https://example.test/signal-lab',

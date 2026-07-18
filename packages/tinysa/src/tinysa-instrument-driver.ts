@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
   deviceIdentitySchema,
+  isSourceQualifiedZs407CustomReceiverFirmwareIdentity,
   isSupportedZs407FirmwareIdentity,
   isZs407FirmwareVersionRevisionPair,
   instrumentCandidateSchema,
@@ -250,6 +251,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     const command = instrumentFeatureCommandSchema.parse(commandValue);
     this.#requireSession(command.sessionId);
     if (command.kind === 'rf-generator') {
+      this.#requireFeature('rf-generator');
       if (command.action === 'configure') {
         this.#configuration = undefined;
         await this.device.configureGenerator(defaultGeneratorConfiguration(command));
@@ -259,6 +261,7 @@ class TinySaInstrumentSession implements InstrumentSession {
       return { ...command };
     }
     if (command.kind === 'screen') {
+      this.#requireFeature('screen');
       const frame = await this.device.captureScreen();
       return {
         sessionId: this.sessionId,
@@ -274,6 +277,7 @@ class TinySaInstrumentSession implements InstrumentSession {
       };
     }
     if (command.kind === 'touch') {
+      this.#requireFeature('touch');
       this.#configuration = undefined;
       const point = { x: command.x, y: command.y };
       let touchFailure: unknown;
@@ -301,6 +305,7 @@ class TinySaInstrumentSession implements InstrumentSession {
       return { ...command, accepted: true };
     }
     if (command.kind === 'diagnostics') {
+      this.#requireFeature('diagnostics');
       const diagnostics = await this.device.readDiagnostics();
       return { ...command, lines: diagnosticLines(diagnostics, command.report) };
     }
@@ -318,6 +323,11 @@ class TinySaInstrumentSession implements InstrumentSession {
   #requireOpen(): void { if (this.#closed) throw new Error('TinySA instrument session is closed'); }
   #requireSession(sessionId: string): void {
     if (sessionId !== this.sessionId) throw new Error('TinySA command session ID does not match the active session');
+  }
+  #requireFeature(kind: 'rf-generator' | 'screen' | 'touch' | 'diagnostics'): void {
+    if (!this.capabilities.features.some((feature) => feature.kind === kind)) {
+      throw new Error(`TinySA session does not advertise the ${kind} feature`);
+    }
   }
 
   #forwardDeviceEvent(event: DeviceEvent): void {
@@ -372,6 +382,7 @@ function tinySaSessionProvenance(
       throw new Error('TinySA physical identity does not match the admitted serial candidate');
     }
     if (identity.firmwareQualification !== 'supported-oem'
+      && identity.firmwareQualification !== 'custom-source-qualified-receive-only'
       && identity.firmwareQualification !== 'custom-unqualified') {
       throw new Error(`TinySA physical identity has invalid firmware qualification ${identity.firmwareQualification}`);
     }
@@ -390,6 +401,17 @@ function tinySaSessionProvenance(
         || identity.firmwareWarning !== undefined) {
         throw new Error('TinySA supported OEM identity has contradictory firmware provenance');
       }
+    } else if (identity.firmwareQualification === 'custom-source-qualified-receive-only') {
+      if (!identity.firmwareSourceCommit
+        || !identity.firmwareWarning
+        || !isSourceQualifiedZs407CustomReceiverFirmwareIdentity(
+          identity.firmwareVersion,
+          identity.firmwareReportedRevision,
+          identity.firmwareSourceCommit,
+          identity.firmwareWarning,
+        )) {
+        throw new Error('TinySA source-qualified custom receive-only identity has contradictory firmware provenance');
+      }
     } else if (identity.firmwareSourceCommit !== undefined
       || !identity.firmwareWarning
       || !identity.firmwareWarning.toLowerCase().includes(identity.firmwareReportedRevision.toLowerCase())) {
@@ -405,15 +427,26 @@ function tinySaSessionProvenance(
         firmwareQualification: 'supported-oem' as const,
         usbIdentityVerified: true as const,
       }
-      : {
-        model: identity.model,
-        hardwareVersion: identity.hardwareVersion,
-        firmwareVersion: identity.firmwareVersion,
-        firmwareReportedRevision: identity.firmwareReportedRevision,
-        firmwareQualification: 'custom-unqualified' as const,
-        firmwareWarning: identity.firmwareWarning!,
-        usbIdentityVerified: true as const,
-      };
+      : identity.firmwareQualification === 'custom-source-qualified-receive-only'
+        ? {
+          model: identity.model,
+          hardwareVersion: identity.hardwareVersion,
+          firmwareVersion: identity.firmwareVersion,
+          firmwareReportedRevision: identity.firmwareReportedRevision,
+          firmwareSourceCommit: identity.firmwareSourceCommit!,
+          firmwareQualification: 'custom-source-qualified-receive-only' as const,
+          firmwareWarning: identity.firmwareWarning!,
+          usbIdentityVerified: true as const,
+        }
+        : {
+          model: identity.model,
+          hardwareVersion: identity.hardwareVersion,
+          firmwareVersion: identity.firmwareVersion,
+          firmwareReportedRevision: identity.firmwareReportedRevision,
+          firmwareQualification: 'custom-unqualified' as const,
+          firmwareWarning: identity.firmwareWarning!,
+          usbIdentityVerified: true as const,
+        };
     return {
       sourceKind: 'serial-port',
       execution: 'physical',

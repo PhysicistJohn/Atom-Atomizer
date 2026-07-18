@@ -2,10 +2,12 @@ import {
   DIGITAL_TWIN_FIRMWARE_SOURCE_COMMIT,
   FIRMWARE_SOURCE_COMMIT,
   extractZs407FirmwareReportedRevision,
+  resolveSourceQualifiedZs407CustomReceiverFirmwareIdentity,
   resolveSupportedZs407FirmwareSourceCommit,
   TINYSA_SHELL_PROMPT,
   TINYSA_USB_PRODUCT_ID,
   TINYSA_USB_VENDOR_ID,
+  ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS,
   ZS407_FIRMWARE_LIMITS,
   analyzerConfigSchema,
   generatorConfigSchema,
@@ -44,7 +46,7 @@ const REQUIRED_COMMANDS = [
 ] as const;
 const CUSTOM_RECEIVER_PROBES = [
   ['sweep', 'sweep ?'],
-  // TinySA_Firmware cmd_scan treats one argument as a repeat count, including
+  // Atom-Firmware cmd_scan treats one argument as a repeat count, including
   // `?`. Five arguments take the source-proved usage branch before any scan or
   // geometry mutation can occur.
   ['scan', 'scan ? ? ? ? ?'],
@@ -132,7 +134,8 @@ export class TinySaDeviceService {
       await this.#command('mode input');
       let readback = await this.#readAnalyzerReadback();
       let capabilities: DeviceCapabilities;
-      if (identity.firmwareQualification === 'custom-unqualified') {
+      if (identity.firmwareQualification === 'custom-unqualified'
+        || identity.firmwareQualification === 'custom-source-qualified-receive-only') {
         let probedCapabilities: DeviceCapabilities | undefined;
         let probeFailed = false;
         let probeFailure: unknown;
@@ -549,6 +552,9 @@ export class TinySaDeviceService {
     if (!enabled && this.#snapshot.connection === 'faulted' && this.#teardownRfOffAcknowledged) {
       return this.snapshot();
     }
+    if (enabled && !this.#snapshot.capabilities?.generatorFrequency) {
+      throw new TinySaDeviceError('unsupported', 'RF generator output is not advertised by this firmware', false);
+    }
     this.#ready();
     if (enabled && (this.#snapshot.mode !== 'generator' || !this.#snapshot.generator)) {
       throw new TinySaDeviceError('invalid-state', 'Generator mode must be configured before changing RF output', false);
@@ -607,6 +613,9 @@ export class TinySaDeviceService {
 
   async captureScreen(): Promise<ScreenFrame> {
     this.#assertNotStreaming('Device screen capture');
+    if (this.#snapshot.capabilities?.screenCapture !== true) {
+      throw new TinySaDeviceError('unsupported', 'Screen capture is not advertised by this firmware', false);
+    }
     const scheduler = this.#ready();
     this.#requireCapability('capture');
     try {
@@ -636,6 +645,9 @@ export class TinySaDeviceService {
   async touch(input: ScreenPoint): Promise<void> {
     this.#assertNotStreaming('Remote touch');
     const point = screenPointSchema.parse(input);
+    if (this.#snapshot.capabilities?.remoteTouch !== true) {
+      throw new TinySaDeviceError('unsupported', 'Remote touch is not advertised by this firmware', false);
+    }
     this.#requireCapability('touch');
     this.#rfOffAcknowledged = false;
     this.#teardownRfOffAcknowledged = false;
@@ -646,6 +658,9 @@ export class TinySaDeviceService {
   async releaseTouch(input?: ScreenPoint): Promise<void> {
     this.#assertNotStreaming('Remote touch release');
     const point = input === undefined ? undefined : screenPointSchema.parse(input);
+    if (this.#snapshot.capabilities?.remoteTouch !== true) {
+      throw new TinySaDeviceError('unsupported', 'Remote touch is not advertised by this firmware', false);
+    }
     this.#requireCapability('release');
     try { await this.#command(point ? `release ${point.x} ${point.y}` : 'release'); }
     catch (error) { throw this.#operationFailure(error, 'Remote touch release failed'); }
@@ -910,24 +925,17 @@ async function buildCapabilities(
 ): Promise<DeviceCapabilities> {
   const twin = identity.execution === 'firmware-digital-twin';
   const testDouble = identity.execution === 'protocol-test-double';
-  const sourceQualified = identity.firmwareQualification !== 'custom-unqualified';
-  const observed = sourceQualified
-    ? knownReceiverSurface(commands)
-    : await customReceiverSurface(commands, query);
-  const analyzerFrequency = sourceQualified
+  const sourceQualifiedCustomReceiver = identity.firmwareQualification === 'custom-source-qualified-receive-only';
+  const unqualifiedCustom = identity.firmwareQualification === 'custom-unqualified';
+  const reducedCustomReceiver = sourceQualifiedCustomReceiver || unqualifiedCustom;
+  const fullFirmwareProfile = !reducedCustomReceiver;
+  const observed = reducedCustomReceiver
+    ? await customReceiverSurface(commands, query)
+    : knownReceiverSurface(commands);
+  const analyzerFrequency = fullFirmwareProfile
     ? { min: ZS407_FIRMWARE_LIMITS.analyzerMinimumHz, max: ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz, unit: 'Hz' as const }
-    : intersectQuantizedRange(
-      {
-        min: Math.min(readback.startHz, readback.stopHz),
-        max: Math.max(readback.startHz, readback.stopHz),
-        unit: 'Hz',
-      },
-      ZS407_FIRMWARE_LIMITS.analyzerMinimumHz,
-      ZS407_FIRMWARE_LIMITS.analyzerHarmonicMaximumHz,
-      1,
-      'analyzer frequency',
-    );
-  const sweepPoints = sourceQualified
+    : customReceiveOnlyAnalyzerFrequency(identity, readback);
+  const sweepPoints = fullFirmwareProfile || sourceQualifiedCustomReceiver
     ? { min: ZS407_FIRMWARE_LIMITS.minimumSweepPoints, max: ZS407_FIRMWARE_LIMITS.maximumSweepPoints, step: 1, unit: 'points' as const }
     : intersectQuantizedRange(
       { min: readback.points, max: readback.points, unit: 'points' },
@@ -936,7 +944,7 @@ async function buildCapabilities(
       1,
       'sweep point count',
     );
-  const generatorAdvertised = sourceQualified
+  const generatorAdvertised = fullFirmwareProfile
     && ['mode', 'output', 'freq', 'level', 'modulation'].every((command) => commands.includes(command));
   return {
     profile: 'tinySA4-zs407',
@@ -951,9 +959,11 @@ async function buildCapabilities(
       ...(twin ? { bridgeContractVersion: 1 as const } : {}),
     },
     analyzerFrequency,
-    ...(sourceQualified ? {
+    ...(fullFirmwareProfile ? {
       analyzerNormalMaximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
       analyzerUltraTransitionHz: ZS407_FIRMWARE_LIMITS.analyzerUltraTransitionHz,
+    } : sourceQualifiedCustomReceiver ? {
+      analyzerNormalMaximumHz: ZS407_FIRMWARE_LIMITS.analyzerNormalMaximumHz,
     } : {}),
     ...(generatorAdvertised ? {
       generatorFrequency: { min: 1, max: ZS407_FIRMWARE_LIMITS.generatorMixerMaximumHz, unit: 'Hz' as const },
@@ -967,31 +977,70 @@ async function buildCapabilities(
     scalarReceiver: observed.scalarReceiver,
     maxSweepPoints: sweepPoints.max,
     screen: { width: 480, height: 320, format: 'rgb565le' },
-    // Command-name presence is not behavioral proof for an unqualified
-    // custom build. Capture and touch remain unavailable until a future safe,
-    // exact probe can establish their wire contract.
-    screenCapture: sourceQualified && commands.includes('capture'),
-    remoteTouch: sourceQualified && commands.includes('touch') && commands.includes('release'),
+    // The frozen custom source record qualifies only its receiver point
+    // behavior. It deliberately grants no generator, screen, touch, marker,
+    // trace-bank, Ultra-band, or other unrelated firmware authority.
+    screenCapture: fullFirmwareProfile && commands.includes('capture'),
+    remoteTouch: fullFirmwareProfile && commands.includes('touch') && commands.includes('release'),
     streaming: observed.scalarReceiver.sweptSpectrum,
     rawSweep: observed.scalarReceiver.acquisitionFormats.includes('raw'),
     rawSweepOffsetReadback: observed.rawSweepOffsetReadback,
-    ...(sourceQualified ? { markerCount: 8 as const, traceCount: 4 as const } : {}),
-    firmwareMarkers: sourceQualified && commands.includes('marker'),
+    ...(fullFirmwareProfile ? { markerCount: 8 as const, traceCount: 4 as const } : {}),
+    firmwareMarkers: fullFirmwareProfile && commands.includes('marker'),
     firmwareTraces: observed.firmwareTraceReadback,
     generatorReadback: false,
     modulation: generatorAdvertised ? ['off', 'am', 'fm'] : [],
     commands: [...commands],
-    evidence: twin ? 'firmware-executed-twin' : testDouble ? 'protocol-test-double' : 'device-observed',
+    evidence: twin
+      ? 'firmware-executed-twin'
+      : testDouble
+        ? 'protocol-test-double'
+        : 'device-observed',
     ...(identity.firmwareSourceCommit ? { firmwareSourceCommit: identity.firmwareSourceCommit } : {}),
     hostContractSourceCommit: FIRMWARE_SOURCE_COMMIT,
-    qualification: identity.firmwareQualification === 'custom-unqualified'
-      ? 'custom-firmware-unqualified'
-      : twin
-        ? 'executable-twin-observed'
-        : testDouble
-          ? 'protocol-test-only'
-          : 'device-observed-awaiting-rf-qualification',
+    qualification: sourceQualifiedCustomReceiver
+      ? 'custom-firmware-source-qualified-receive-only'
+      : unqualifiedCustom
+        ? 'custom-firmware-unqualified'
+        : twin
+          ? 'executable-twin-observed'
+          : testDouble
+            ? 'protocol-test-only'
+            : 'device-observed-awaiting-rf-qualification',
   };
+}
+
+function customReceiveOnlyAnalyzerFrequency(identity: DeviceIdentity, readback: AnalyzerReadback): NumericRange {
+  // Exact 0483:5740 plus strict version/info ZS407 identity establishes the
+  // hardware normal-input envelope, but says nothing about this custom build's
+  // Ultra/harmonic paths.  Keep those paths unavailable and treat every tune
+  // inside the normal envelope as tentative until configureAnalyzer rereads
+  // exact start/stop/point geometry.
+  if (identity.execution === 'physical'
+    && identity.usbIdentityVerified
+    && identity.port.usbMatch === 'exact-zs407-cdc'
+    && identity.port.vendorId?.toLowerCase() === TINYSA_USB_VENDOR_ID
+    && identity.port.productId?.toLowerCase() === TINYSA_USB_PRODUCT_ID) {
+    return {
+      min: ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS.minimumHz,
+      max: ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS.maximumHz,
+      step: 1,
+      unit: 'Hz',
+    };
+  }
+  // Defensive fallback for non-production/test-only callers: never broaden an
+  // unqualified endpoint without the exact physical USB evidence.
+  return intersectQuantizedRange(
+    {
+      min: Math.min(readback.startHz, readback.stopHz),
+      max: Math.max(readback.startHz, readback.stopHz),
+      unit: 'Hz',
+    },
+    ZS407_FIRMWARE_LIMITS.analyzerMinimumHz,
+    ZS407_CUSTOM_UNQUALIFIED_RECEIVE_ONLY_LIMITS.maximumHz,
+    1,
+    'analyzer frequency',
+  );
 }
 
 interface ObservedReceiverSurface {
@@ -1204,7 +1253,7 @@ function parseAdvertisedRange(
 }
 
 function isExactRangeReadback(command: string, line: string): boolean {
-  // TinySA_Firmware 53850c4 emits a current-value line after each of these
+  // Atom-Firmware 53850c4 emits a current-value line after each of these
   // usage declarations. Its uppercase `%F` formatter dispatches to ftoaS,
   // which inserts engineering prefixes. The advertised ZS407 ranges bound RBW
   // to no prefix or `k`, and sweep time to seconds or milliseconds.
@@ -1366,6 +1415,20 @@ function resolveFirmwareProvenance(
       firmwareReportedRevision: revision,
       firmwareSourceCommit,
       firmwareQualification: port.execution === 'protocol-test-double' ? 'protocol-test' : 'supported-oem',
+    };
+  }
+  const sourceQualifiedCustomReceiver = resolveSourceQualifiedZs407CustomReceiverFirmwareIdentity(
+    firmwareVersion,
+    revision,
+  );
+  if (sourceQualifiedCustomReceiver
+    && port.execution === 'physical'
+    && port.usbMatch === 'exact-zs407-cdc') {
+    return {
+      firmwareReportedRevision: revision,
+      firmwareSourceCommit: sourceQualifiedCustomReceiver.sourceCommit,
+      firmwareQualification: 'custom-source-qualified-receive-only',
+      firmwareWarning: sourceQualifiedCustomReceiver.warning,
     };
   }
   return {

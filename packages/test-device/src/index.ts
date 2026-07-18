@@ -19,6 +19,8 @@ export interface FakeOptions {
   infoResponse?: string;
   screenCaptureByteOrder?: 'big-endian' | 'little-endian';
   firmwareTraceIds?: readonly (1 | 2 | 3 | 4)[];
+  /** Initial sweep geometry reported at cold connection. */
+  initialSweepPoints?: number;
   /** Exact command names exposed by `help`; omitted names are not advertised. */
   helpCommands?: readonly string[];
   /** Exact command responses used by fail-closed protocol boundary tests. */
@@ -59,6 +61,7 @@ export class FakeTinySaTransport implements ByteTransport {
   #commandResponseIndexes = new Map<string, number>();
 
   constructor(private readonly options: FakeOptions = {}) {
+    this.#points = options.initialSweepPoints ?? 450;
     this.port = portCandidateSchema.parse({
       id: 'fake-zs407:SIM-407:0483:5740',
       path: 'fake://zs407',

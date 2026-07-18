@@ -16,15 +16,21 @@ import {
 
 const temporaryRoots: string[] = [];
 const GENERATOR_ARTIFACTS = [
-  'atomizer-bridge.js', 'canonical-timing.js', 'catalog.js', 'contracts.js', 'measurement-bridge.js',
-  'measurement-contract.js', 'measurement-service.js', 'source-provenance.js', 'waveforms.js',
+  'atomizer-bridge.js', 'bluetooth-iq.js', 'canonical-timing.js', 'catalog.js', 'complex-iq.js', 'contracts.js',
+  'geran-iq.js', 'measurement-bridge.js', 'measurement-contract.js', 'measurement-service.js', 'ofdm-iq.js',
+  'source-provenance.js', 'waveforms.js',
 ] as const;
 const FIXTURE_DESCRIPTORS = SIGNAL_LAB_PROFILE_IDS.map((id) => ({
   id,
   label: id.toUpperCase(),
-  family: id === 'cw' ? 'tone' : 'analog',
+  family: id === 'cw' ? 'tone'
+    : id === 'am' || id === 'fm' ? 'analog'
+      : id.startsWith('gsm') || id.startsWith('edge') ? 'geran'
+        : id.startsWith('lte') ? 'e-utra'
+          : id.startsWith('nr') ? 'nr'
+            : id.startsWith('wifi') ? 'wlan' : 'bluetooth',
   model: `${id}-model`,
-  qualification: 'visual',
+  qualification: id === 'cw' || id === 'am' || id === 'fm' ? 'visual' : 'standards-derived',
   centerHz: 100_000_000,
   occupiedBandwidthHz: id === 'cw' ? 1 : 20_000,
   recommendedSpanHz: id === 'cw' ? 2_000_000 : 500_000,
@@ -34,7 +40,9 @@ const FIXTURE_DESCRIPTORS = SIGNAL_LAB_PROFILE_IDS.map((id) => ({
     timing: 'continuous',
   },
   source: {
-    organization: 'TinySA SignalLab',
+    organization: id === 'cw' || id === 'am' || id === 'fm' ? 'TinySA SignalLab'
+      : id.startsWith('wifi') ? 'IEEE'
+        : id.startsWith('bluetooth') ? 'Bluetooth SIG' : '3GPP',
     references: [{
       specification: 'fixture', clause: 'fixture', revision: '1',
       url: 'https://example.test/signal-lab',
@@ -53,7 +61,7 @@ afterEach(async () => {
 describe('SignalLab instrument driver', () => {
   it('discovers an explicitly supplied packaged resource instead of a sibling development checkout', async () => {
     const fixture = await createBridgeFixture();
-    const signalLabRoot = resolve(fixture.atomizerRoot, '..', 'TinySA_SignalLab');
+    const signalLabRoot = resolve(fixture.atomizerRoot, '..', 'Atom-SignalLab');
     const packagedResourcesRoot = resolve(fixture.atomizerRoot, 'Atomizer.app', 'Contents', 'Resources');
     await mkdir(packagedResourcesRoot, { recursive: true });
     await cp(signalLabRoot, resolve(packagedResourcesRoot, 'signal-lab'), { recursive: true });
@@ -70,7 +78,7 @@ describe('SignalLab instrument driver', () => {
     });
   });
 
-  it('composes the high-level bridge without claiming USB, firmware, RF, screen, touch, diagnostics, or I/Q', async () => {
+  it('composes scalar and bounded I/Q acquisition without claiming USB, firmware, RF, screen, touch, or diagnostics', async () => {
     const fixture = await createBridgeFixture();
     const driver = new SignalLabInstrumentDriver({
       atomizerRepositoryRoot: fixture.atomizerRoot,
@@ -110,22 +118,41 @@ describe('SignalLab instrument driver', () => {
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
     });
     expect(session.capabilities.acquisitions.map((capability) => capability.kind)).toEqual([
-      'swept-spectrum', 'detected-power-timeseries',
+      'swept-spectrum', 'detected-power-timeseries', 'complex-iq',
     ]);
     expect(session.capabilities.features).toHaveLength(1);
     expect(session.capabilities.features[0]).toMatchObject({
       kind: 'signal-lab-profile-selection', selectedProfileId: 'cw',
+      channel: { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 },
+      iqProfileIds: [...SIGNAL_LAB_PROFILE_IDS],
     });
     if (session.capabilities.features[0]?.kind !== 'signal-lab-profile-selection') {
       throw new Error('fixture did not expose SignalLab profile selection');
     }
     expect(session.capabilities.features[0].profiles).toHaveLength(SIGNAL_LAB_PROFILE_IDS.length);
-    expect(session.capabilities.features[0].profiles.slice(0, 3)).toEqual([
+    expect(session.capabilities.features[0].profiles.slice(0, 3)).toMatchObject([
       { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 },
       { profileId: 'am', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 },
       { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 },
     ]);
-    expect(session.capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')).toBe(false);
+    expect(session.capabilities.features[0].profiles[0]).toMatchObject({
+      label: 'CW', family: 'tone', model: 'cw-model', qualification: 'visual',
+      occupiedBandwidthHz: 1,
+      projection: { allocation: 'carrier', modulation: 'unmodulated', timing: 'continuous' },
+      source: { organization: 'TinySA SignalLab' }, disclosure: 'Synthetic fixture only.',
+    });
+    expect(session.capabilities.features[0].profiles.find(({ profileId }) => profileId === 'lte-etm1.1')).toMatchObject({
+      family: 'e-utra', qualification: 'standards-derived', source: { organization: '3GPP' },
+    });
+    expect(session.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq')).toEqual({
+      kind: 'complex-iq',
+      centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 },
+      sampleRateHz: { min: 1_000_000, max: 245_760_000 },
+      bandwidthHz: { min: 1_000, max: 245_760_000 },
+      bandwidthMode: 'independent',
+      sampleCount: { min: 1, max: 65_536, step: 1 },
+      sampleFormat: 'cf32le',
+    });
     expect(session.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries')).toMatchObject({
       sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
       controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
@@ -175,7 +202,28 @@ describe('SignalLab instrument driver', () => {
     expect(session.provenance).toMatchObject({
       producerConfigurationEpoch: '20000000-0000-4000-8000-000000000002',
     });
+    expect(session.capabilities.features).toContainEqual(expect.objectContaining({
+      kind: 'signal-lab-profile-selection',
+      selectedProfileId: 'fm',
+      channel: { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 },
+    }));
     await expect(session.acquire()).rejects.toThrow(/not configured/);
+
+    const channel = { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5 };
+    await expect(session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'signal-lab-profile-selection', action: 'configure-channel', channel,
+    })).resolves.toEqual({
+      sessionId: session.sessionId,
+      kind: 'signal-lab-profile-selection', action: 'configure-channel', channel,
+      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000003',
+    });
+    expect(session.provenance).toMatchObject({
+      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000003',
+    });
+    expect(session.capabilities.features).toContainEqual(expect.objectContaining({
+      kind: 'signal-lab-profile-selection', selectedProfileId: 'fm', channel,
+    }));
 
     await session.configure({
       sessionId: session.sessionId,
@@ -186,7 +234,7 @@ describe('SignalLab instrument driver', () => {
     expect(detected).toMatchObject({
       schemaVersion: 1, kind: 'detected-power-timeseries', sessionId: session.sessionId,
       configurationRevision: 'configuration:detected', centerHz: 100_000_000,
-      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000002',
+      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000003',
       sampleIntervalSeconds: 0.0125, elapsedMilliseconds: 1,
       resolutionBandwidthHz: null, attenuationDb: null,
       qualification: 'synthetic-visual-projection', complete: true,
@@ -263,7 +311,7 @@ describe('SignalLab instrument driver', () => {
     await expect(session.disconnect()).resolves.toBeUndefined();
   });
 
-  it('honors admitted detected-power tuning, rejects IQ/RF operations, and acknowledges a defensive RF-off no-op', async () => {
+  it('honors detected-power and exact profile-dependent I/Q qualification while rejecting RF operations', async () => {
     const fixture = await createBridgeFixture();
     const driver = fixture.driver();
     const descriptor = (await driver.discover()).candidates[0]!;
@@ -280,10 +328,48 @@ describe('SignalLab instrument driver', () => {
       sessionId: session.sessionId,
       configurationRevision: 'configuration:iq',
       configuration: {
-        kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 1_000_000,
-        bandwidthHz: 500_000, sampleCount: 1_024, sampleFormat: 'cf32le',
+        kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+        bandwidthHz: 100_000, sampleCount: 4, sampleFormat: 'cf32le',
       },
-    })).rejects.toThrow(/does not provide complex I\/Q/);
+    })).resolves.toBeUndefined();
+    const iq = await session.acquire();
+    expect(iq).toMatchObject({
+      kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+      bandwidthHz: 100_000, sampleCount: 4, sampleFormat: 'cf32le',
+      qualification: 'analytic-complex-baseband', resolutionBandwidthHz: null, attenuationDb: null,
+      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000001', complete: true,
+    });
+    if (iq.kind !== 'complex-iq') throw new Error('Expected complex-I/Q measurement');
+    expect(iq.samples).toEqual(new Uint8Array(32));
+    await expect(session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:iq-unequal-bandwidth',
+      configuration: {
+        kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+        bandwidthHz: 3_000_000, sampleCount: 4, sampleFormat: 'cf32le',
+      },
+    })).rejects.toThrow(/bandwidth cannot exceed its sample rate/);
+    await session.executeFeature({
+      sessionId: session.sessionId,
+      kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'lte-etm1.1',
+    });
+    await expect(session.configure({
+      sessionId: session.sessionId,
+      configurationRevision: 'configuration:iq-standards-derived',
+      configuration: {
+        kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+        bandwidthHz: 2_000_000, sampleCount: 4, sampleFormat: 'cf32le',
+      },
+    })).resolves.toBeUndefined();
+    const standardsIq = await session.acquire();
+    expect(standardsIq).toMatchObject({
+      kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 2_000_000,
+      bandwidthHz: 2_000_000, sampleCount: 4, sampleFormat: 'cf32le',
+      qualification: 'standards-derived-complex-baseband',
+      producerConfigurationEpoch: '20000000-0000-4000-8000-000000000002', complete: true,
+    });
+    if (standardsIq.kind !== 'complex-iq') throw new Error('Expected standards-derived complex-I/Q measurement');
+    expect(standardsIq.samples).toEqual(new Uint8Array(32));
     await expect(session.executeFeature({
       sessionId: session.sessionId, kind: 'rf-generator', action: 'set-output', enabled: false,
     })).resolves.toEqual({
@@ -511,8 +597,8 @@ async function createBridgeFixture(behavior: FixtureBehavior = 'normal'): Promis
 }> {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'atomizer-signal-lab-driver-')));
   temporaryRoots.push(root);
-  const atomizerRoot = resolve(root, 'TinySA');
-  const signalLabRoot = resolve(root, 'TinySA_SignalLab');
+  const atomizerRoot = resolve(root, 'Atom-Atomizer');
+  const signalLabRoot = resolve(root, 'Atom-SignalLab');
   const bridgeRoot = resolve(signalLabRoot, 'dist', 'bridge');
   const executable = resolve(bridgeRoot, 'atomizer-bridge.js');
   const contractPath = resolve(signalLabRoot, 'contracts', 'signal-lab-measurement-bridge-v1.json');
@@ -574,6 +660,7 @@ const identity = {
 const capabilities = [
   { kind: 'swept-spectrum', minimumFrequencyHz: 1, maximumFrequencyHz: 17922600000, minimumPoints: 2, maximumPoints: 4096, frequencyUnit: 'Hz', powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
   { kind: 'detected-power-timeseries', minimumFrequencyHz: 1, maximumFrequencyHz: 17922600000, frequencyStepHz: 1, frequencyUnit: 'Hz', minimumPoints: 1, maximumPoints: 4096, minimumSamplePeriodSeconds: 0.000001, maximumSamplePeriodSeconds: 10, powerUnit: 'dBm', qualification: 'synthetic-visual-projection' },
+  { kind: 'complex-iq', minimumCenterFrequencyHz: 1, maximumCenterFrequencyHz: 17922600000, frequencyStepHz: 1, frequencyUnit: 'Hz', minimumSampleRateHz: 1000000, maximumSampleRateHz: 245760000, minimumBandwidthHz: 1000, maximumBandwidthHz: 245760000, bandwidthMode: 'independent', minimumSamples: 1, maximumSamples: 65536, sampleFormat: 'cf32le', encoding: 'base64', layout: 'interleaved-iq', byteOrder: 'little-endian', timingQualification: 'simulation-exact', qualification: 'profile-dependent-complex-baseband', profiles: ${JSON.stringify(SIGNAL_LAB_PROFILE_IDS)} },
 ];
 const continuationSource = process.env.ATOMIZER_SIGNAL_LAB_CONTINUATION_V1;
 const continuation = continuationSource
@@ -641,6 +728,18 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     sequence += 1;
     const { centerFrequencyHz, points, samplePeriodSeconds } = request.params;
     reply(request, { ...base(), kind: 'detected-power-timeseries', centerFrequencyHz, points, samplePeriodSeconds, powerDbm: Array(points).fill(-65) });
+  } else if (request.method === 'acquire_iq') {
+    sequence += 1;
+    const { centerHz, sampleRateHz, bandwidthHz, sampleCount, sampleFormat } = request.params;
+    const samples = Buffer.alloc(sampleCount * 8);
+    reply(request, {
+      ...base(), kind: 'complex-iq', centerHz, sampleRateHz, bandwidthHz, sampleFormat, sampleCount,
+      byteLength: samples.byteLength, encoding: 'base64', layout: 'interleaved-iq', byteOrder: 'little-endian',
+      samplesBase64: samples.toString('base64'), samplesSha256: sha256(samples),
+      timingQualification: 'simulation-exact', qualification: ['cw', 'am', 'fm'].includes(profile)
+        ? 'analytic-complex-baseband' : 'standards-derived-complex-baseband',
+      representation: 'normalized-complex-envelope', normalization: 'unit-peak', channelApplication: 'not-applied',
+    });
   } else if (request.method === 'shutdown') { reply(request, { kind: 'shutdown', closed: true }); setTimeout(() => process.exit(0), 5); }
 });
 `;

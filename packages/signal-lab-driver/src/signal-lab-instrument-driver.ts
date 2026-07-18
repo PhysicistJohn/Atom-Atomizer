@@ -52,12 +52,16 @@ export const SIGNAL_LAB_EXACT_SWEEP_SECONDS = 0.05 as const;
 const SIGNAL_LAB_CONTRACT_FILE = 'signal-lab-measurement-bridge-v1.json';
 const SIGNAL_LAB_GENERATOR_ARTIFACTS = Object.freeze([
   'atomizer-bridge.js',
+  'bluetooth-iq.js',
   'canonical-timing.js',
   'catalog.js',
+  'complex-iq.js',
   'contracts.js',
+  'geran-iq.js',
   'measurement-bridge.js',
   'measurement-contract.js',
   'measurement-service.js',
+  'ofdm-iq.js',
   'source-provenance.js',
   'waveforms.js',
 ] as const);
@@ -95,7 +99,8 @@ interface SignalLabBridgeRenewalContext {
 /**
  * Atomizer's high-level SignalLab adapter. It intentionally implements no
  * ByteTransport and advertises no USB, firmware, RF-generator, screen, touch,
- * diagnostics, or complex-I/Q capability.
+ * or diagnostics capability. Its sole feature capability carries the complete,
+ * already-admitted SignalLab catalog and replay-channel state.
  */
 export class SignalLabInstrumentDriver implements InstrumentDriver {
   readonly driverId = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
@@ -248,7 +253,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
   readonly sessionId: string;
   readonly driverId = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
   readonly candidate: InstrumentCandidate;
-  readonly capabilities: InstrumentCapabilities;
+  #capabilities: InstrumentCapabilities;
   #client: SignalLabBridgeClient;
   readonly #renewal: SignalLabBridgeRenewalContext;
   readonly #listeners = new Set<(event: InstrumentSessionEvent) => void>();
@@ -281,10 +286,21 @@ class SignalLabInstrumentSession implements InstrumentSession {
       if (!waveform) throw new Error(`SignalLab status omitted catalog evidence for profile ${profileId}`);
       return {
         profileId,
+        label: waveform.label,
+        family: waveform.family,
+        model: waveform.model,
+        qualification: waveform.qualification,
         centerFrequencyHz: waveform.centerHz,
+        occupiedBandwidthHz: waveform.occupiedBandwidthHz,
         recommendedSpanHz: waveform.recommendedSpanHz,
+        projection: waveform.projection,
+        source: waveform.source,
+        disclosure: waveform.disclosure,
+        ...(waveform.assetSha256 === undefined ? {} : { assetSha256: waveform.assetSha256 }),
       };
     });
+    const iqCapability = status.capabilities.find((capability) => capability.kind === 'complex-iq');
+    if (iqCapability?.kind !== 'complex-iq') throw new Error('SignalLab status omitted its admitted complex-I/Q capability');
     this.#provenance = instrumentSessionProvenanceSchema.parse({
       sourceKind: 'signal-lab',
       sourceId: candidate.sourceKind === 'signal-lab' ? candidate.signalLab.sourceId : '',
@@ -300,7 +316,7 @@ class SignalLabInstrumentSession implements InstrumentSession {
       generatorSha256: evidence.generatorSha256,
       claims: client.ready.identity.claims,
     });
-    this.capabilities = instrumentCapabilitiesSchema.parse({
+    this.#capabilities = instrumentCapabilitiesSchema.parse({
       schemaVersion: 1,
       acquisitions: [
         {
@@ -334,15 +350,37 @@ class SignalLabInstrumentSession implements InstrumentSession {
           powerUnit: 'dBm',
           timing: 'uniform',
         },
+        {
+          kind: 'complex-iq',
+          centerFrequencyHz: {
+            min: iqCapability.minimumCenterFrequencyHz,
+            max: iqCapability.maximumCenterFrequencyHz,
+            step: iqCapability.frequencyStepHz,
+          },
+          sampleRateHz: {
+            min: iqCapability.minimumSampleRateHz,
+            max: iqCapability.maximumSampleRateHz,
+          },
+          bandwidthHz: {
+            min: iqCapability.minimumBandwidthHz,
+            max: iqCapability.maximumBandwidthHz,
+          },
+          bandwidthMode: iqCapability.bandwidthMode,
+          sampleCount: { min: iqCapability.minimumSamples, max: iqCapability.maximumSamples, step: 1 },
+          sampleFormat: iqCapability.sampleFormat,
+        },
       ],
       features: [{
         kind: 'signal-lab-profile-selection',
         profiles: profileCapabilities,
         selectedProfileId: status.profile,
+        channel: status.channel,
+        iqProfileIds: iqCapability.profiles,
       }],
     });
   }
 
+  get capabilities(): InstrumentCapabilities { return this.#capabilities; }
   get provenance(): InstrumentSessionProvenance { return this.#provenance; }
 
   async configure(commandValue: InstrumentConfigurationCommand): Promise<void> {
@@ -350,20 +388,40 @@ class SignalLabInstrumentSession implements InstrumentSession {
     const command = parseInstrumentConfigurationCommand(commandValue);
     this.#requireSession(command.sessionId);
     const configuration = command.configuration;
-    if (configuration.kind === 'complex-iq') throw new Error('SignalLab does not provide complex I/Q');
-    if (configuration.controls.model !== 'synthetic-scalar'
-      || configuration.controls.timingQualification !== 'simulation-exact'
-      || configuration.sweepTimeSeconds !== SIGNAL_LAB_EXACT_SWEEP_SECONDS) {
-      throw new RangeError(`SignalLab admits only exact ${SIGNAL_LAB_EXACT_SWEEP_SECONDS}s synthetic scalar timing and no receiver controls`);
-    }
-    if (configuration.kind === 'swept-spectrum') {
-      requireInteger(configuration.startHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep start');
-      requireInteger(configuration.stopHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep stop');
-      if (configuration.stopHz <= configuration.startHz) throw new RangeError('SignalLab sweep stop must exceed start');
-      requireInteger(configuration.points, 2, MAX_SPECTRUM_POINTS, 'SignalLab sweep points');
+    if (configuration.kind === 'complex-iq') {
+      const iqCapability = this.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
+      const sourceState = this.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+      if (iqCapability?.kind !== 'complex-iq' || sourceState?.kind !== 'signal-lab-profile-selection') {
+        throw new Error('SignalLab complex-I/Q capability disappeared');
+      }
+      if (!sourceState.iqProfileIds?.includes(this.#status.profile)) {
+        throw new RangeError(`SignalLab profile ${this.#status.profile} has no admitted complex-I/Q generator`);
+      }
+      requireInteger(configuration.centerHz, iqCapability.centerFrequencyHz.min, iqCapability.centerFrequencyHz.max, 'SignalLab I/Q center');
+      requireInteger(configuration.sampleRateHz, iqCapability.sampleRateHz.min, iqCapability.sampleRateHz.max, 'SignalLab I/Q sample rate');
+      requireInteger(configuration.bandwidthHz, iqCapability.bandwidthHz.min, iqCapability.bandwidthHz.max, 'SignalLab I/Q bandwidth');
+      if (configuration.bandwidthHz > configuration.sampleRateHz) {
+        throw new RangeError('SignalLab complex-I/Q bandwidth cannot exceed sample rate');
+      }
+      requireInteger(configuration.sampleCount, iqCapability.sampleCount.min, iqCapability.sampleCount.max, 'SignalLab I/Q samples');
+      if (configuration.sampleFormat !== iqCapability.sampleFormat) {
+        throw new RangeError(`SignalLab I/Q sample format must be ${iqCapability.sampleFormat}`);
+      }
     } else {
-      requireInteger(configuration.centerHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab detected-power center');
-      requireInteger(configuration.sampleCount, 1, MAX_DETECTED_POWER_POINTS, 'SignalLab detected-power samples');
+      if (configuration.controls.model !== 'synthetic-scalar'
+        || configuration.controls.timingQualification !== 'simulation-exact'
+        || configuration.sweepTimeSeconds !== SIGNAL_LAB_EXACT_SWEEP_SECONDS) {
+        throw new RangeError(`SignalLab admits only exact ${SIGNAL_LAB_EXACT_SWEEP_SECONDS}s synthetic scalar timing and no receiver controls`);
+      }
+      if (configuration.kind === 'swept-spectrum') {
+        requireInteger(configuration.startHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep start');
+        requireInteger(configuration.stopHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab sweep stop');
+        if (configuration.stopHz <= configuration.startHz) throw new RangeError('SignalLab sweep stop must exceed start');
+        requireInteger(configuration.points, 2, MAX_SPECTRUM_POINTS, 'SignalLab sweep points');
+      } else {
+        requireInteger(configuration.centerHz, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ, 'SignalLab detected-power center');
+        requireInteger(configuration.sampleCount, 1, MAX_DETECTED_POWER_POINTS, 'SignalLab detected-power samples');
+      }
     }
     this.#configuration = Object.freeze({
       command: structuredClone(command),
@@ -383,7 +441,53 @@ class SignalLabInstrumentSession implements InstrumentSession {
     this.#emit({ type: 'status', sessionId: this.sessionId, status: 'busy' });
     try {
       const configuration = command.configuration;
-      if (configuration.kind === 'complex-iq') throw new Error('SignalLab does not provide complex I/Q');
+      if (configuration.kind === 'complex-iq') {
+        if (configuration.sampleFormat !== 'cf32le') {
+          throw this.#terminalProtocolFailure('SignalLab admitted an unsupported complex-I/Q sample format');
+        }
+        const source = await this.#client.acquireIq({
+          centerHz: configuration.centerHz,
+          sampleRateHz: configuration.sampleRateHz,
+          bandwidthHz: configuration.bandwidthHz,
+          sampleCount: configuration.sampleCount,
+          sampleFormat: configuration.sampleFormat,
+        });
+        this.#requireMeasurementEpoch(source.configurationRevision, binding.producerConfigurationEpoch);
+        if (source.centerHz !== configuration.centerHz
+          || source.sampleRateHz !== configuration.sampleRateHz
+          || source.bandwidthHz !== configuration.bandwidthHz
+          || source.sampleCount !== configuration.sampleCount
+          || source.sampleFormat !== configuration.sampleFormat
+          || source.samples.byteLength !== configuration.sampleCount * 8) {
+          throw this.#terminalProtocolFailure(
+            'SignalLab complex-I/Q result geometry does not match the admitted configuration',
+          );
+        }
+        this.#acceptSourceSequence(source.sequence);
+        const measurement = parseInstrumentMeasurement({
+          schemaVersion: 1,
+          measurementId: source.measurementId,
+          sessionId: this.sessionId,
+          configurationRevision: command.configurationRevision,
+          producerConfigurationEpoch: source.configurationRevision,
+          sequence: source.sequence,
+          capturedAt: source.capturedAt,
+          elapsedMilliseconds: source.elapsedSeconds * 1_000,
+          resolutionBandwidthHz: null,
+          attenuationDb: null,
+          qualification: source.qualification,
+          complete: true,
+          kind: 'complex-iq',
+          centerHz: source.centerHz,
+          sampleRateHz: source.sampleRateHz,
+          bandwidthHz: source.bandwidthHz,
+          sampleFormat: source.sampleFormat,
+          sampleCount: source.sampleCount,
+          samples: source.samples,
+        });
+        this.#emit({ type: 'status', sessionId: this.sessionId, status: 'ready' });
+        return measurement;
+      }
       if (configuration.kind === 'swept-spectrum') {
         const source = await this.#client.acquireSpectrum({
           startHz: configuration.startHz,
@@ -473,44 +577,85 @@ class SignalLabInstrumentSession implements InstrumentSession {
     this.#requireSession(command.sessionId);
     if (command.kind === 'signal-lab-profile-selection') {
       const capability = this.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
-      if (capability?.kind !== 'signal-lab-profile-selection'
-        || !capability.profiles.some((profile) => profile.profileId === command.profileId)) {
+      if (capability?.kind !== 'signal-lab-profile-selection') {
+        throw new Error('SignalLab source-state capability disappeared');
+      }
+      if (command.action === 'select-profile'
+        && !capability.profiles.some((profile) => profile.profileId === command.profileId)) {
         throw new RangeError(`SignalLab profile ${command.profileId} is not advertised`);
       }
+      if (command.action === 'configure-channel' && capability.channel === undefined) {
+        throw new Error('SignalLab channel configuration is not advertised');
+      }
       const previousEpoch = this.#status.configurationRevision;
-      // Selection mutates the producer before its response can be trusted. A
+      const previousProfile = this.#status.profile;
+      const previousChannel = this.#status.channel;
+      // Source-state mutation reaches the producer before its response can be trusted. A
       // prior acquisition binding is therefore invalid before dispatch.
       this.#configuration = undefined;
       try {
         await this.#renewBridgeIfRequired();
-        const status = await this.#client.selectProfile(command.profileId);
-        if (status.profile !== command.profileId) throw new Error('SignalLab did not acknowledge the selected profile');
+        const status = command.action === 'select-profile'
+          ? await this.#client.selectProfile(command.profileId)
+          : await this.#client.configureChannel(command.channel);
+        if (command.action === 'select-profile') {
+          if (status.profile !== command.profileId) throw new Error('SignalLab did not acknowledge the selected profile');
+          if (!isDeepStrictEqual(status.channel, previousChannel)) {
+            throw new Error('SignalLab profile mutation unexpectedly changed the replay channel');
+          }
+        } else {
+          if (!isDeepStrictEqual(status.channel, command.channel)) {
+            throw new Error('SignalLab did not acknowledge the configured replay channel');
+          }
+          if (status.profile !== previousProfile) {
+            throw new Error('SignalLab channel mutation unexpectedly changed the selected profile');
+          }
+        }
         if (status.configurationRevision === previousEpoch) {
-          throw new Error('SignalLab profile mutation did not advance the producer configuration epoch');
+          throw new Error('SignalLab source mutation did not advance the producer configuration epoch');
         }
         const catalogSha256 = sha256Hex(Buffer.from(JSON.stringify(status.catalog), 'utf8'));
         if (this.#provenance.sourceKind !== 'signal-lab'
           || catalogSha256 !== this.#provenance.catalogSha256) {
           throw new Error('SignalLab catalog changed after session admission');
         }
-        const profile = capability.profiles.find((candidate) => candidate.profileId === command.profileId);
+        const profile = capability.profiles.find((candidate) => candidate.profileId === status.profile);
         if (!profile
           || status.waveform.centerHz !== profile.centerFrequencyHz
           || status.waveform.recommendedSpanHz !== profile.recommendedSpanHz) {
           throw new Error('SignalLab selected profile geometry no longer matches admitted catalog evidence');
         }
-        this.#status = status;
-        this.#provenance = instrumentSessionProvenanceSchema.parse({
+        const capabilities = instrumentCapabilitiesSchema.parse({
+          ...this.#capabilities,
+          features: this.#capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
+            ? { ...feature, selectedProfileId: status.profile, channel: status.channel }
+            : feature),
+        });
+        const provenance = instrumentSessionProvenanceSchema.parse({
           ...this.#provenance,
           producerConfigurationEpoch: status.configurationRevision,
         });
-        return parseInstrumentFeatureResult({
-          sessionId: this.sessionId,
-          kind: 'signal-lab-profile-selection',
-          action: 'select-profile',
-          profileId: command.profileId,
-          producerConfigurationEpoch: status.configurationRevision,
-        });
+        // Publish one fully validated source-state transition without an await
+        // between these assignments; no observer can see an acknowledged
+        // status paired with stale capability or provenance state.
+        this.#status = status;
+        this.#capabilities = capabilities;
+        this.#provenance = provenance;
+        return command.action === 'select-profile'
+          ? parseInstrumentFeatureResult({
+              sessionId: this.sessionId,
+              kind: 'signal-lab-profile-selection',
+              action: 'select-profile',
+              profileId: command.profileId,
+              producerConfigurationEpoch: status.configurationRevision,
+            })
+          : parseInstrumentFeatureResult({
+              sessionId: this.sessionId,
+              kind: 'signal-lab-profile-selection',
+              action: 'configure-channel',
+              channel: command.channel,
+              producerConfigurationEpoch: status.configurationRevision,
+            });
       } catch (value) {
         const error = value instanceof Error ? value : new Error(String(value));
         this.acceptTerminalFailure(error);

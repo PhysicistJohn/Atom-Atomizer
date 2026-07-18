@@ -94,9 +94,18 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('startup surface contains only load_atom_tools');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Do not reflexively read topology or all application state');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty staged patch');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('preload both acquire_sweep and search_marker');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Preloading does not authorize or execute an acquisition');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Search the marker\'s assigned current complete host trace directly when it has data');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('emit acquisition before search');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('not a guessed or partial configure_marker replacement');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic sources carry only their declared exact timing and never receive invented RF controls');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('SignalLab is the factory startup default');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-source-qualified-receive-only means an exact embedded version maps to one frozen audited source commit');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('runtime serial identity does not attest the documented binary SHA-256');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('grants no generator, screen, touch, marker, Ultra-band, or RF-output authority');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('rfOutput=not-supported, never offer, configure, enable, or disable public RF output');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('rolling activity association conditional on admitted local looks');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('never one physical emission, emitter identity, or protocol identity');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
@@ -158,6 +167,8 @@ describe('Atom agent contracts',()=>{
     for(const binding of agentControlBindings)expect(tools.has(binding.preferredTool)).toBe(true);
     expect(agentComputerActionControlIds).toContain('classification.auto-select');
     expect(agentControlBinding('classification.auto-select').preferredTool).toBe('computer_action');
+    expect(agentControlBinding('classification.auto-select').guarantee)
+      .toContain('integrated excess power');
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
     expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
     expect(agentControlBinding('classification.envelope.trigger-level').preferredTool).toBe('configure_zero_span');
