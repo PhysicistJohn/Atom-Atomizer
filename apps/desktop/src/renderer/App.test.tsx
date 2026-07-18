@@ -3679,6 +3679,89 @@ describe('operator vertical slice', () => {
       .toBeTruthy();
   });
 
+  it('returns exact device-observed physical RBW and attenuation through both latest-sweep read tools without identity claims', async () => {
+    mockConnectedInstrument(physicalSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `physical-configuration-${++revisionSequence}`;
+      return {
+        sessionId: physicalSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      const configuration = activeConfiguration;
+      if (configuration.kind !== 'swept-spectrum') {
+        throw new Error(`Expected physical swept-spectrum configuration, received ${configuration.kind}`);
+      }
+      const frequencyHz = Array.from({ length: configuration.points }, (_value, index) =>
+        configuration.startHz
+          + index * ((configuration.stopHz - configuration.startHz)
+            / Math.max(1, configuration.points - 1)));
+      return {
+        schemaVersion: 1,
+        kind: 'swept-spectrum',
+        measurementId: 'physical-readback-sweep-1',
+        sessionId: physicalSession.sessionId,
+        configurationRevision,
+        sequence: ++measurementSequence,
+        capturedAt: '2026-07-10T00:00:01.000Z',
+        elapsedMilliseconds: 37,
+        resolutionBandwidthHz: 123_000,
+        attenuationDb: 7,
+        qualification: 'device-observed',
+        complete: true,
+        frequencyHz,
+        powerDbm: frequencyHz.map((_frequency, index) =>
+          index === Math.floor(frequencyHz.length / 2) ? -47 : -102),
+      };
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'physical-readback-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'physical-readback-load', name: 'load_atom_tools', arguments: '{"toolNames":["acquire_sweep","get_application_state","get_latest_sweep_summary"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'physical-readback-1', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'physical-readback-acquire', name: 'acquire_sweep', arguments: '{}' },
+        { callId: 'physical-readback-application', name: 'get_application_state', arguments: '{}' },
+        { callId: 'physical-readback-summary', name: 'get_latest_sweep_summary', arguments: '{}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'physical-readback-2', transport: 'realtime-websocket', text: 'Exact receiver readbacks reported.', toolCalls: [] });
+
+    render(<App/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Acquire once and report the exact RBW and attenuation readbacks.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+
+    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
+    const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
+    expect(outputs).toHaveLength(3);
+    const results = outputs.map(({ output }) => JSON.parse(output) as {
+      ok?: boolean;
+      output?: Record<string, unknown>;
+    });
+    expect(results.every(({ ok }) => ok), JSON.stringify(results)).toBe(true);
+    const applicationLatest = results[1]?.output?.latestSweep as Record<string, unknown> | undefined;
+    const summary = results[2]?.output;
+    const exactReadback = {
+      id: 'physical-readback-sweep-1',
+      source: 'instrument-driver-scalar',
+      actualRbwHz: 123_000,
+      resolutionBandwidthQualification: 'device-observed',
+      actualAttenuationDb: 7,
+      attenuationQualification: 'device-observed',
+    };
+    expect(applicationLatest).toEqual(expect.objectContaining(exactReadback));
+    expect(summary).toEqual(expect.objectContaining(exactReadback));
+    for (const readback of [applicationLatest, summary]) {
+      const serialized = JSON.stringify(readback).toLowerCase();
+      for (const forbidden of ['identity', 'protocol', 'emitter', 'operator', 'service']) {
+        expect(serialized).not.toContain(forbidden);
+      }
+    }
+  });
+
   it('shows frozen-source-qualified custom firmware as receive-only with no RF-output authority', async () => {
     vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
       schemaVersion: 1,

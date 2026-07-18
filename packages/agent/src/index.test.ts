@@ -107,6 +107,9 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('runtime serial identity does not attest the documented binary SHA-256');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('grants no generator, screen, touch, marker, Ultra-band, or RF-output authority');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('rfOutput=not-supported, never offer, configure, enable, or disable public RF output');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never derive them from staged or requested controls');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Physical receiver values must be device-observed');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('do not establish protocol, emitter, operator, or service identity');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('rolling activity association conditional on admitted local looks');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('never one physical emission, emitter identity, or protocol identity');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
@@ -116,6 +119,15 @@ describe('Atom agent contracts',()=>{
     expect(description).toContain('frequency-local detections');
     expect(description).toContain('2.4 GHz frequency-agile activity');
     expect(description).toContain('neither physical emissions nor common-process, simultaneity, emitter, or protocol identity');
+  });
+  it('documents exact qualified latest-sweep receiver readbacks without identity claims',()=>{
+    for(const name of ['get_application_state','get_latest_sweep_summary'] as const){
+      const description=agentToolDefinitions.find(tool=>tool.name===name)?.description??'';
+      expect(description).toContain('optional exact');
+      expect(description).toContain('paired with their qualifications');
+      expect(description).toContain('only as device-observed');
+      expect(description).toContain('do not establish protocol, emitter, operator, or service identity');
+    }
   });
   it('describes exact physical and qualified-agile classification selection without raw-member ambiguity',()=>{
     const description=agentToolDefinitions.find(tool=>tool.name==='select_classification_candidate')?.description??'';

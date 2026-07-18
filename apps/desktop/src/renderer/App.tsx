@@ -4211,6 +4211,39 @@ export function App({
     };
   }
 
+  function agentLatestSweepSummary(
+    currentSweep: Sweep,
+    metrics: ReturnType<typeof calculateSweepMetrics>,
+  ) {
+    const physical = 'kind' in currentSweep.identity
+      && currentSweep.identity.kind === 'instrument-session'
+      && currentSweep.identity.provenance.execution === 'physical';
+    if (physical
+      && (currentSweep.resolutionBandwidthQualification !== 'device-observed'
+        || currentSweep.attenuationQualification !== 'device-observed'
+        || currentSweep.actualAttenuationDb === null)) {
+      throw new Error('Physical latest-sweep receiver readback is not device-observed');
+    }
+    return {
+      id: currentSweep.id,
+      sequence: currentSweep.sequence,
+      capturedAt: currentSweep.capturedAt,
+      rangeHz: [currentSweep.actualStartHz, currentSweep.actualStopHz],
+      points: currentSweep.frequencyHz.length,
+      source: currentSweep.source,
+      elapsedMilliseconds: currentSweep.elapsedMilliseconds,
+      metrics,
+      ...(currentSweep.resolutionBandwidthQualification === undefined ? {} : {
+        actualRbwHz: currentSweep.actualRbwHz,
+        resolutionBandwidthQualification: currentSweep.resolutionBandwidthQualification,
+      }),
+      ...(currentSweep.attenuationQualification === undefined ? {} : {
+        actualAttenuationDb: currentSweep.actualAttenuationDb,
+        attenuationQualification: currentSweep.attenuationQualification,
+      }),
+    };
+  }
+
   function applicationContext(): string {
     const currentInstrument = instrumentRef.current;
     const currentWorkspace = workspaceRef.current;
@@ -4278,7 +4311,9 @@ export function App({
       generator: generatorRef.current,
       detectionConfig: detectionConfigRef.current,
       historyCount: currentHistory.length,
-      latestSweep: currentSweep && currentMetrics ? { id: currentSweep.id, sequence: currentSweep.sequence, capturedAt: currentSweep.capturedAt, rangeHz: [currentSweep.actualStartHz, currentSweep.actualStopHz], points: currentSweep.frequencyHz.length, source: currentSweep.source, elapsedMilliseconds: currentSweep.elapsedMilliseconds, metrics: currentMetrics } : null,
+      latestSweep: currentSweep && currentMetrics
+        ? agentLatestSweepSummary(currentSweep, currentMetrics)
+        : null,
       detections: agentDetectionResults(currentDetections),
       classifications: currentClassifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
       selectedClassificationId: agentSelectedClassificationId({
