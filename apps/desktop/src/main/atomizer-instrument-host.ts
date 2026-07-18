@@ -46,7 +46,6 @@ import { selectPreferredInstrument } from './startup-admission.js';
 
 const MAX_REMEMBERED_MEASUREMENTS = 8_192;
 const MAX_PENDING_HOST_OPERATIONS = 64;
-const CONTINUOUS_ACQUISITION_INTERVAL_MS = 100;
 
 export interface AtomizerInstrumentPreferencePort {
   load(): Promise<LoadedInstrumentPreference>;
@@ -55,13 +54,16 @@ export interface AtomizerInstrumentPreferencePort {
 
 export interface AtomizerInstrumentHostRuntime {
   now(): Date;
-  /** One backpressure slot between completed continuous acquisitions. */
-  yieldToEventLoop(): Promise<void>;
+  /** Monotonic host clock used only to avoid double-sleeping after acquisition. */
+  monotonicMilliseconds?(): number;
+  /** One interruptible, cooperative cadence slot between acquisitions. */
+  yieldToEventLoop(milliseconds?: number): Promise<void>;
 }
 
 const defaultRuntime: AtomizerInstrumentHostRuntime = Object.freeze({
   now: () => new Date(),
-  yieldToEventLoop: () => new Promise<void>((resolve) => setTimeout(resolve, CONTINUOUS_ACQUISITION_INTERVAL_MS)),
+  monotonicMilliseconds: () => performance.now(),
+  yieldToEventLoop: (milliseconds = 0) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
 });
 
 type ManagerPort = Pick<InstrumentManager,
@@ -82,6 +84,7 @@ type ManagerPort = Pick<InstrumentManager,
 interface StreamRun {
   stopRequested: boolean;
   externalFault?: string;
+  readonly targetPeriodMilliseconds: number;
   readonly done: Promise<void>;
   readonly stopSignal: Promise<void>;
   resolveDone(): void;
@@ -267,7 +270,21 @@ export class AtomizerInstrumentHost {
     let resolveStop!: () => void;
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
     const stopSignal = new Promise<void>((resolve) => { resolveStop = resolve; });
-    const run: StreamRun = { stopRequested: false, done, stopSignal, resolveDone, resolveStop };
+    const sweepTimeSeconds = session.configuration.configuration.sweepTimeSeconds;
+    const run: StreamRun = {
+      stopRequested: false,
+      // `auto` is receiver-owned timing: the blocking firmware acquisition is
+      // already its backpressure. Exact/manual numeric timing can pace a fast
+      // synthetic producer to the admitted period without adding a second full
+      // sleep after a physical acquisition.
+      targetPeriodMilliseconds: typeof sweepTimeSeconds === 'number' && Number.isFinite(sweepTimeSeconds)
+        ? sweepTimeSeconds * 1_000
+        : 0,
+      done,
+      stopSignal,
+      resolveDone,
+      resolveStop,
+    };
     this.#streamRun = run;
     this.#setStreaming({ status: 'running', startedAt: this.#timestamp() });
     queueMicrotask(() => { void this.#pump(run); });
@@ -384,11 +401,18 @@ export class AtomizerInstrumentHost {
     let failure: unknown;
     try {
       while (!run.stopRequested && this.#streamRun === run) {
+        const startedAt = this.#monotonicMilliseconds();
         await this.#serializeOpen(async () => {
           if (!run.stopRequested && this.#streamRun === run) await this.#acquireAndPublish();
         });
         if (!run.stopRequested && this.#streamRun === run) {
-          await Promise.race([this.runtime.yieldToEventLoop(), run.stopSignal]);
+          const elapsed = Math.max(0, this.#monotonicMilliseconds() - startedAt);
+          // Hardware/firmware acquisition normally consumes the requested
+          // period itself; SignalLab synthesis does not. Wait only the
+          // remainder, then always yield at least one event-loop turn via a
+          // zero-delay timer when the producer already exceeded its period.
+          const remaining = Math.max(0, run.targetPeriodMilliseconds - elapsed);
+          await Promise.race([this.runtime.yieldToEventLoop(remaining), run.stopSignal]);
         }
       }
     } catch (value) {
@@ -405,6 +429,12 @@ export class AtomizerInstrumentHost {
       }
       run.resolveDone();
     }
+  }
+
+  #monotonicMilliseconds(): number {
+    const value = this.runtime.monotonicMilliseconds?.() ?? performance.now();
+    if (!Number.isFinite(value)) throw new Error('Instrument host monotonic clock returned a non-finite value');
+    return value;
   }
 
   async #acquireAndPublish(): Promise<InstrumentMeasurement> {

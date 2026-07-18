@@ -9,7 +9,7 @@
     "build": "npm run build:main && vite build",
     "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron",
     "stage:signal-lab-resource": "node ../../tools/stage-signal-lab-packaged-resource.mjs",
-    "package:prepare": "npm --prefix ../../../TinySA_SignalLab run build:bridge && npm --prefix ../.. run build && npm run stage:signal-lab-resource",
+    "package:prepare": "npm --prefix ../../../Atom-SignalLab run build:bridge && npm --prefix ../.. run build && npm run stage:signal-lab-resource",
     "package:mac": "npm run package:prepare && electron-builder --mac dmg zip",
     "package:win": "npm run package:prepare && electron-builder --win nsis portable",
     "package:linux": "npm run package:prepare && electron-builder --linux AppImage",
@@ -26,7 +26,8 @@
     "lucide-react": "1.24.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@testing-library/react": "16.3.2",

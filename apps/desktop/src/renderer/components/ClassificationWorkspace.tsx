@@ -1,14 +1,17 @@
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, Database, Fingerprint, ScanSearch } from 'lucide-react';
 import {
   BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY,
+  classificationCaptureTargetRankEvidence,
   robustNoiseFloor,
+  type ClassificationCaptureTargetRankEvidence,
   type EnvelopeClassification,
 } from '@tinysa/analysis';
-import { observableClassDefinitions } from '../../../../../../AtomOS_Classifier/src/observable-classifier-model.js';
+import { observableClassDefinitions } from '../../../../../../Atom-Classifier/src/observable-classifier-model.js';
 import { zeroSpanConfigSchema, type DetectedSignal, type FirmwareTraceFrame, type FirmwareTraceId, type InstrumentAcquisitionCapability, type MarkerId, type MarkerReading, type SignalDetectionConfig, type SpectrumDisplayConfiguration, type Sweep, type TraceFrame, type TraceId, type WaveformClassification, type ZeroSpanCapture, type ZeroSpanConfig } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
 import {
   classificationSpectrumSelection,
+  compareClassificationCaptureTargetSignals,
   currentVisiblePhysicalClassificationRows,
   sanitizeVisibleClassificationEvidenceDetections,
   visibleClassificationTargetProjections,
@@ -46,12 +49,12 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
 }) {
   const safeDetections = sanitizeVisibleClassificationEvidenceDetections(detections, sweep);
   const activePhysicalRows = [...currentVisiblePhysicalClassificationRows(safeDetections)]
-    .sort((left, right) => right.prominenceDb - left.prominenceDb);
+    .sort(compareClassificationCaptureTargetSignals);
   const qualifyingCandidates = safeDetections
     .filter((item) => item.state === 'candidate'
       && item.missedSweeps === 0
       && item.associationMode !== 'frequency-agile-2g4-activity')
-    .sort((left, right) => right.prominenceDb - left.prominenceDb);
+    .sort(compareClassificationCaptureTargetSignals);
   const agileSummaries = safeDetections
     .filter((item) => item.state === 'active'
       && item.missedSweeps === 0
@@ -59,6 +62,10 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
     .sort((left, right) => (right.associationBayesianEvidence?.posteriorAgileDynamicsProbability ?? 0)
       - (left.associationBayesianEvidence?.posteriorAgileDynamicsProbability ?? 0));
   const captureTargetProjections = visibleClassificationTargetProjections(safeDetections, sweep);
+  const autoTargetProjection = captureTargetProjections[0];
+  const autoTargetRankEvidence = autoTargetProjection === undefined
+    ? undefined
+    : classificationCaptureTargetRankEvidence(autoTargetProjection.rawTarget);
   const targetableRepresentativeIds = new Set(captureTargetProjections
     .map((projection) => projection.projectedRepresentative.id));
   const spectrumSelection = classificationSpectrumSelection(
@@ -116,7 +123,7 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
     </section>
 
     <section className="candidate-panel">
-      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} disabled={captureTargetProjections.length === 0} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · strongest signal</button></div></div>
+      <div className="panel-header"><span>Evidence</span><div className="candidate-panel-actions"><span>{activePhysicalRows.length} active · {qualifyingCandidates.length} qualifying · {agileSummaries.length} agile</span><button type="button" className={`auto-target ${selectionOrigin === 'automatic' ? 'active' : ''}`} aria-pressed={selectionOrigin === 'automatic'} disabled={autoTargetProjection === undefined} onClick={() => onSelectedId(undefined)} data-agent-control="classification.auto-select"><ScanSearch size={12}/>Auto · most prominent</button></div></div>
       {currentEvidenceCount ? <div className="candidate-list" role="region" aria-label="Current detector and classification evidence">
         {activePhysicalRows.length > 0 && <div className="candidate-group-label"><span>ACTIVE PHYSICAL ROWS</span><em>CURRENT PHYSICAL</em></div>}
         {activePhysicalRows.map((detection, index) => {
@@ -124,9 +131,11 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
           const classificationState = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
           const groupResult = classification && classification.detectionId !== detection.id;
           const targetable = targetableRepresentativeIds.has(detection.id);
+          const rankEvidence = classificationCaptureTargetRankEvidence(detection);
+          const automaticTarget = autoTargetProjection?.projectedRepresentative.id === detection.id;
           const content = <>
             <span className="candidate-index">{String(index + 1).padStart(2, '0')}</span>
-            <span><strong>{formatFrequency(detection.peakHz)}</strong><small>ACTIVE · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)} · threshold {formatLevel(detection.thresholdDbm)} · prominence +{detection.prominenceDb.toFixed(1)} / +{detection.prominenceThresholdDb.toFixed(1)} dB</small><small>{detectorPosterior(detection)} · {detection.detectorId} · {detection.persistenceSweeps} sweep{detection.persistenceSweeps === 1 ? '' : 's'} · {detection.missedSweeps} missed</small></span>
+            <span><strong>{formatFrequency(detection.peakHz)}</strong><small>ACTIVE · {formatLevel(detection.peakDbm)} · {formatFrequency(detection.bandwidthHz)} · threshold {formatLevel(detection.thresholdDbm)} · prominence +{detection.prominenceDb.toFixed(1)} / +{detection.prominenceThresholdDb.toFixed(1)} dB</small><small>{integratedExcessLabel(rankEvidence)}{automaticTarget ? ' · AUTO TARGET' : ''} · {detectorPosterior(detection)} · {detection.detectorId} · {detection.persistenceSweeps} sweep{detection.persistenceSweeps === 1 ? '' : 's'} · {detection.missedSweeps} missed</small></span>
             <em className={classificationState}>{classification
               ? `${groupResult ? 'Group · ' : ''}${waveformLabel(classification.label)}`
               : targetable ? 'Classification pending' : 'Not a current visible target'}</em>
@@ -147,9 +156,10 @@ export function ClassificationWorkspace({ sweep, traces, firmwareTraces, visible
           const classificationState = classification?.label === 'unknown' ? 'unknown' : classification ? 'classified' : 'pending';
           const associationEvidence = detection.associationBayesianEvidence;
           const targetable = targetableRepresentativeIds.has(detection.id);
+          const automaticTarget = autoTargetProjection?.projectedRepresentative.id === detection.id;
           const content = <>
             <span className="candidate-index">A{String(index + 1).padStart(2, '0')}</span>
-            <span><strong>2.4 GHz activity association</strong><small>P_agile | positive looks {formatProbability(associationEvidence?.posteriorAgileDynamicsProbability)} · latest {detectorPosterior(detection)} · {associationEvidence?.positiveObservationCount ?? 0}/{associationEvidence?.opportunityCount ?? 0} positive/opportunity looks</small><small>{detection.associationMissedSweeps ?? 0} opportunities since positive · {detection.associationModelId ?? 'association model unavailable'} · not emitter identity</small></span>
+            <span><strong>2.4 GHz activity association</strong><small>P_agile | positive looks {formatProbability(associationEvidence?.posteriorAgileDynamicsProbability)} · latest {detectorPosterior(detection)} · {associationEvidence?.positiveObservationCount ?? 0}/{associationEvidence?.opportunityCount ?? 0} positive/opportunity looks</small><small>{automaticTarget ? `${integratedExcessLabel(autoTargetRankEvidence)} · AUTO TARGET · ` : ''}{detection.associationMissedSweeps ?? 0} opportunities since positive · {detection.associationModelId ?? 'association model unavailable'} · not emitter identity</small></span>
             <em className={classificationState}>{classification ? `Activity · ${waveformLabel(classification.label)}` : targetable ? 'Activity summary · targetable' : 'Activity summary'}</em>
           </>;
           return targetable
@@ -194,7 +204,7 @@ function CaptureEvidenceStrip({ configuration, capture, envelope, capability, ta
   const agileFixedTune = target?.associationMode === 'frequency-agile-2g4-activity';
   return <section className="classification-capture-strip" aria-label="Detected-power evidence status">
     <div className="capture-strip-state"><span className="capture-strip-icon"><Activity size={14}/></span><span><small>DETECTED POWER · NOT I/Q</small><strong>{capture ? `${capture.powerDbm.length} samples captured` : ready ? 'Ready to capture' : capability ? 'Select active evidence' : 'Capture unavailable'}</strong><em>{configuration.points} samples · {formatCaptureWindow(configuration.sweepTimeSeconds)} · {geometryQualification}</em></span></div>
-    <div><small>AUTO-TUNED TARGET</small><strong>{target ? formatFrequency(configuration.frequencyHz) : 'No active target'}</strong><em>{agileFixedTune ? `Fixed tune from latest physical member at ${formatFrequency(target.peakHz)}` : target ? `Follows ${formatFrequency(target.peakHz)} selected peak` : 'Auto selects the strongest current physical signal'}</em></div>
+    <div><small>CAPTURE TARGET</small><strong>{target ? formatFrequency(configuration.frequencyHz) : 'No active target'}</strong><em>{agileFixedTune ? `Fixed tune from latest physical member at ${formatFrequency(target.peakHz)}` : target ? `Centers capture on ${formatFrequency(target.peakHz)} selected evidence` : 'Auto selects prominent excess power across the visible spectrum'}</em></div>
     <div><small>ENVELOPE CHARACTER</small><strong>{envelope ? waveformLabel(envelope.label) : agileFixedTune ? 'Fixed-tune trace only' : 'No envelope evidence'}</strong><em>{agileFixedTune ? 'Display characterization · Bayesian classifier uses regional spectrum/history' : envelope ? `${Math.round(envelope.confidence * 100)}% · ${envelope.features.transitionCount} transitions` : capture ? 'Classification pending' : 'Optional classifier evidence'}</em></div>
     <div className="capture-strip-action"><button className="secondary" disabled={busy || !ready} onClick={onAcquire} data-agent-control="classification.capture-envelope">{capture ? 'Recapture envelope' : 'Capture envelope'}</button></div>
   </section>;
@@ -329,6 +339,14 @@ function ResultProvenance({ detection, result }: { detection: DetectedSignal | u
 
 function formatProbability(value: number | undefined): string {
   return Number.isFinite(value) ? `${(value! * 100).toFixed(2)}%` : 'unavailable';
+}
+
+function integratedExcessLabel(
+  evidence: ClassificationCaptureTargetRankEvidence | undefined,
+): string {
+  if (!evidence) return 'integrated excess unavailable';
+  const integratedExcessDbm = 10 * Math.log10(evidence.integratedExcessPowerMw);
+  return `integrated excess ${formatLevel(integratedExcessDbm)} · ${evidence.supportCellCount} cell${evidence.supportCellCount === 1 ? '' : 's'}`;
 }
 
 function detectorPosterior(detection: DetectedSignal): string {

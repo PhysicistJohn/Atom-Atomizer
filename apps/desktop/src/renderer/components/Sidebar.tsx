@@ -1,6 +1,6 @@
-import { Activity, BarChart3, Cpu, Layers3, Radio, ScanSearch } from 'lucide-react';
+import { Activity, BarChart3, Cpu, Layers3, LoaderCircle, Play, Radio, Repeat2, ScanSearch, StopCircle, Waves } from 'lucide-react';
 import type { MeasurementViewId } from '@tinysa/contracts';
-import type { WorkspaceId } from '../ui-contracts.js';
+import type { AcquisitionState, WorkspaceId } from '../ui-contracts.js';
 
 type VisibleMeasurementViewId = Exclude<MeasurementViewId, 'envelope-stft'>;
 
@@ -11,32 +11,78 @@ const measurementViews: readonly { id: VisibleMeasurementViewId; label: string; 
 ];
 
 const workspaces = [
+  { id: 'iq' as const, label: 'I/Q', icon: Waves },
   { id: 'classification' as const, label: 'Detect', icon: ScanSearch },
   { id: 'generator' as const, label: 'Generate', icon: Radio },
   { id: 'device' as const, label: 'Device', icon: Cpu },
 ];
 
-export function Sidebar({ active, measurementView, output, generationAvailable, onSelect, onMeasurementView }: {
+export function Sidebar({
+  active,
+  measurementView,
+  output,
+  generationAvailable,
+  iqAvailable = false,
+  connected,
+  acquisition,
+  continuous,
+  acquisitionMode,
+  acquisitionBusy,
+  acquisitionDisabled,
+  acquisitionDisabledReason,
+  onSelect,
+  onMeasurementView,
+  onRun,
+  onSingle,
+  onStop,
+}: {
   active: WorkspaceId;
   measurementView: MeasurementViewId;
   output: 'off'|'on'|'unknown';
   generationAvailable: boolean;
+  iqAvailable?: boolean;
+  connected: boolean;
+  acquisition: AcquisitionState;
+  continuous: boolean;
+  acquisitionMode?: 'spectrum' | 'complex-iq';
+  acquisitionBusy: boolean;
+  acquisitionDisabled: boolean;
+  acquisitionDisabledReason?: string;
   onSelect(id: WorkspaceId): void;
   onMeasurementView(id: VisibleMeasurementViewId): void;
+  onRun(): void;
+  onSingle(): void;
+  onStop(): void;
 }) {
-  return <aside className="sidebar"><nav aria-label="Primary navigation">
-    {measurementViews.map((item) => {
-      const Icon = item.icon;
-      const activeItem = active === 'spectrum' && measurementView === item.id;
-      return <button key={item.id} className={`nav-item ${activeItem ? 'active' : ''}`} onClick={() => onMeasurementView(item.id)} aria-current={activeItem ? 'page' : undefined} title={item.label} data-agent-control={`measurement.view.${item.id}`}><span className="nav-icon"><Icon size={19}/></span><span>{item.label}</span></button>;
-    })}
-    {workspaces.map((item) => {
-    const Icon = item.icon;
-    const disabled = item.id === 'generator' && !generationAvailable;
-    const activeItem = item.id === 'classification'
-      ? active === 'classification' || active === 'detection'
-      : active === item.id;
-    return <button key={item.id} className={`nav-item ${activeItem ? 'active' : ''}`} disabled={disabled} onClick={() => onSelect(item.id)} aria-current={activeItem ? 'page' : undefined} title={disabled ? 'Connected driver exposes no configurable signal source' : item.label} data-agent-control={`workspace.${item.id}`}><span className="nav-icon"><Icon size={19}/>{item.id === 'generator' && output !== 'off' && <i className={`rf-mini ${output}`}/>}</span><span>{item.label}</span></button>;
-    })}
-  </nav></aside>;
+  const acquiringSingle = !continuous && acquisition === 'acquiring';
+  const iqAcquisition = acquisitionMode === 'complex-iq';
+  const acquisitionStatus = continuous
+    ? acquisition === 'stopping' ? 'Stopping' : acquisition === 'retuning' ? 'Retuning' : acquisitionMode === 'complex-iq' ? 'Running I/Q' : 'Running spectrum'
+    : acquiringSingle ? 'Collecting' : acquisition === 'configuring' ? 'Configuring' : connected ? 'Ready' : 'Offline';
+  return <aside className="sidebar">
+    <nav aria-label="Primary navigation">
+      {measurementViews.map((item) => {
+        const Icon = item.icon;
+        const activeItem = active === 'spectrum' && measurementView === item.id;
+        return <button type="button" key={item.id} className={`nav-item ${activeItem ? 'active' : ''}`} onClick={() => onMeasurementView(item.id)} aria-current={activeItem ? 'page' : undefined} title={item.label} data-agent-control={`measurement.view.${item.id}`}><span className="nav-icon"><Icon size={19}/></span><span>{item.label}</span></button>;
+      })}
+      {workspaces.filter((item) => item.id !== 'iq' || iqAvailable).map((item) => {
+        const Icon = item.icon;
+        const disabled = item.id === 'generator' && !generationAvailable;
+        const activeItem = item.id === 'classification'
+          ? active === 'classification' || active === 'detection'
+          : active === item.id;
+        return <button type="button" key={item.id} className={`nav-item ${activeItem ? 'active' : ''}`} disabled={disabled} onClick={() => onSelect(item.id)} aria-current={activeItem ? 'page' : undefined} title={disabled ? 'Connected driver exposes no configurable signal source' : item.label} data-agent-control={`workspace.${item.id}`}><span className="nav-icon"><Icon size={19}/>{item.id === 'generator' && output !== 'off' && <i className={`rf-mini ${output}`}/>}</span><span>{item.label}</span></button>;
+      })}
+    </nav>
+    <section className={`sidebar-acquisition ${continuous || acquiringSingle ? 'active' : ''}`} aria-label="Acquisition controls" data-agent-exclusion={iqAcquisition ? 'human-iq-capture-boundary' : undefined}>
+      <div className="sidebar-acquisition-state" aria-live="polite"><i/><span>{acquisitionStatus}</span></div>
+      {continuous
+        ? <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.continuous.stop'} className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop bounded I/Q buffer acquisition after the in-flight buffer' : 'Stop continuous spectrum acquisition'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>
+        : <div className="sidebar-acquisition-buttons">
+          <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.continuous.start'} disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Run one-at-a-time bounded I/Q buffers' : 'Start continuous spectrum acquisition'} onClick={onRun}><Repeat2 size={13}/><span>Run</span></button>
+          <button type="button" data-agent-control={iqAcquisition ? undefined : 'acquisition.single'} disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Acquire one bounded I/Q buffer' : 'Acquire one spectrum sweep'} onClick={onSingle}>{acquisitionBusy ? <LoaderCircle className="spin" size={13}/> : <Play size={13} fill="currentColor"/>}<span>{acquiringSingle ? 'Acquiring…' : 'Single'}</span></button>
+        </div>}
+    </section>
+  </aside>;
 }

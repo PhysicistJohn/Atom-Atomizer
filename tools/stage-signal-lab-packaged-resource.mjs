@@ -17,7 +17,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const DEFAULT_SIGNAL_LAB_REPOSITORY_ROOT = resolve(repositoryRoot, '..', 'TinySA_SignalLab');
+export const DEFAULT_SIGNAL_LAB_REPOSITORY_ROOT = resolve(repositoryRoot, '..', 'Atom-SignalLab');
 export const DEFAULT_SIGNAL_LAB_PACKAGED_RESOURCE_ROOT = resolve(
   repositoryRoot,
   'apps',

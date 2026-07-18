@@ -1,7 +1,7 @@
 import type { AnalyzerConfig, AtomizerInstrumentState, GeneratorConfig, InstrumentCandidate, Sweep } from '@tinysa/contracts';
 
-export type WorkspaceId = 'spectrum' | 'detection' | 'classification' | 'generator' | 'device';
-export type AcquisitionState = 'idle' | 'configuring' | 'retuning' | 'acquiring' | 'streaming' | 'complete' | 'failed';
+export type WorkspaceId = 'spectrum' | 'detection' | 'classification' | 'iq' | 'generator' | 'device';
+export type AcquisitionState = 'idle' | 'configuring' | 'retuning' | 'acquiring' | 'streaming' | 'stopping' | 'complete' | 'failed';
 export type ConnectionPanelState = 'closed' | 'selecting' | 'connecting' | 'failed';
 export type InspectorSection = 'frequency' | 'acquisition' | 'detection' | 'model' | 'generator';
 export type GeneratorOutputState = 'off' | 'on' | 'unknown';

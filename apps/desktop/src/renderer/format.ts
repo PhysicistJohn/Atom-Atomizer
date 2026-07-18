@@ -5,6 +5,10 @@ export function formatFrequency(hz: number, precision = 3): string {
   if (absolute >= 1_000) return `${trim(hz / 1_000, precision)} kHz`;
   return `${trim(hz, 0)} Hz`;
 }
+/** Preserve every whole-Hz digit while retaining compact engineering units. */
+export function formatExactFrequency(hz: number): string {
+  return formatFrequency(hz, 9);
+}
 export function parseFrequency(text: string): number {
   const match = text.trim().match(/^([+-]?\d+(?:\.\d+)?)\s*(hz|khz|mhz|ghz)?$/i);
   if (!match) throw new Error('Enter a frequency such as 98 MHz');

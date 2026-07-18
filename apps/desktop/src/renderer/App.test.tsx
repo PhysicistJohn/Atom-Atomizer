@@ -3,8 +3,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
+  ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
   type AnalyzerConfig,
   type AtomizerInstrumentEvent,
+  type AtomizerInstrumentFeatureExecution,
   type AtomizerInstrumentState,
   type DetectedSignal,
   type InstrumentCandidate,
@@ -14,7 +17,7 @@ import {
   type Sweep,
   type WaveformClassification,
 } from '@tinysa/contracts';
-import { classificationRepresentatives, SignalTracker } from '@tinysa/analysis';
+import { classificationRepresentatives, extractObservableFeatures, SignalTracker, type WaveformEvidence } from '@tinysa/analysis';
 import {
   App,
   agentSelectedClassificationId,
@@ -32,7 +35,7 @@ import {
   suggestedAnalyzerRange,
   synthesizeSpectrum,
   waveformDescriptor,
-} from '../../../../../TinySA_SignalLab/src/waveforms.js';
+} from '../../../../../Atom-SignalLab/src/waveforms.js';
 
 const HASH = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -97,13 +100,81 @@ const physicalSession: InstrumentSessionSnapshot = {
   rfOutput: 'off',
   rfOutputQualification: 'command-acknowledged',
 };
+const sourceQualifiedFirmwareVersion = 'tinySA4_hw-v0.3-fft1024-g43eb0f1' as const;
+const sourceQualifiedFirmwareRecord = SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES[
+  sourceQualifiedFirmwareVersion
+];
+const sourceQualifiedPhysicalSession: InstrumentSessionSnapshot = {
+  ...physicalSession,
+  sessionId: 'physical-source-qualified-session-1',
+  provenance: {
+    sourceKind: 'serial-port', execution: 'physical', transport: 'usb-cdc-acm', qualification: 'device-observed',
+    verifiedAt: '2026-07-10T00:00:00.000Z',
+    serialPort: physicalCandidate.serialPort,
+    device: {
+      model: 'tinySA Ultra+ ZS407', hardwareVersion: 'V0.5.4 max2871',
+      firmwareVersion: sourceQualifiedFirmwareVersion,
+      firmwareReportedRevision: sourceQualifiedFirmwareRecord.reportedRevision,
+      firmwareSourceCommit: ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT,
+      firmwareQualification: 'custom-source-qualified-receive-only',
+      firmwareWarning: sourceQualifiedFirmwareRecord.warning,
+      usbIdentityVerified: true,
+    },
+  },
+  capabilities: {
+    schemaVersion: 1,
+    acquisitions: physicalSession.capabilities.acquisitions.map((capability) => capability.kind === 'swept-spectrum'
+      ? { ...capability, frequencyHz: { min: 0, max: 900_000_000, step: 1 }, points: { min: 20, max: 450, step: 1 } }
+      : capability.kind === 'detected-power-timeseries'
+        ? { ...capability, centerFrequencyHz: { min: 0, max: 900_000_000, step: 1 }, sampleCount: { min: 20, max: 450, step: 1 } }
+        : capability),
+    features: [],
+  },
+  rfOutput: 'not-supported',
+  rfOutputQualification: 'not-applicable',
+};
 const signalLabCandidate: InstrumentCandidate = { schemaVersion: 1, driverId: 'signal-lab', candidateId: 'signal-lab:local', displayName: 'SignalLab', sourceKind: 'signal-lab', signalLab: { sourceId: 'local' }, discoveryRevision: 'signal-discovery-1' };
+const signalLabProfiles = (['cw', 'fm'] as const).map((profileId) => {
+  const descriptor = waveformDescriptor(profileId);
+  return {
+    profileId,
+    label: descriptor.label,
+    family: descriptor.family,
+    model: descriptor.model,
+    qualification: descriptor.qualification,
+    centerFrequencyHz: descriptor.centerHz,
+    occupiedBandwidthHz: descriptor.occupiedBandwidthHz,
+    recommendedSpanHz: descriptor.recommendedSpanHz,
+    projection: descriptor.projection,
+    source: descriptor.source,
+    disclosure: descriptor.disclosure,
+    ...(descriptor.assetSha256 === undefined ? {} : { assetSha256: descriptor.assetSha256 }),
+  };
+});
 const signalLabSession: InstrumentSessionSnapshot = {
   sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
   provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1, contractSha256: HASH, catalogSha256: HASH, generatorSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
-  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }, { profileId: 'fm', centerFrequencyHz: 100_000_000, recommendedSpanHz: 500_000 }], selectedProfileId: 'cw' }] },
+  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: signalLabProfiles, selectedProfileId: 'cw', channel: DEFAULT_REPLAY_CHANNEL }] },
   rfOutput: 'not-supported',
   rfOutputQualification: 'not-applicable',
+};
+const testComplexIqCapability = {
+  kind: 'complex-iq' as const,
+  centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 },
+  sampleRateHz: { min: 2_000_000, max: 2_000_000, step: 1 },
+  bandwidthHz: { min: 1_000_000, max: 2_000_000, step: 1 },
+  sampleCount: { min: 2, max: 2, step: 1 },
+  sampleFormat: 'cf32le' as const,
+};
+const signalLabIqSession: InstrumentSessionSnapshot = {
+  ...signalLabSession,
+  capabilities: {
+    ...signalLabSession.capabilities,
+    acquisitions: [...signalLabSession.capabilities.acquisitions, testComplexIqCapability],
+    features: signalLabSession.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
+      ? { ...feature, iqProfileIds: signalLabProfiles.map(({ profileId }) => profileId) }
+      : feature),
+  },
 };
 const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 450, acquisitionFormat: 'raw', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
 function receiverSpectrumCapability() {
@@ -159,6 +230,65 @@ function detectedPowerMeasurement(config: Extract<InstrumentConfiguration, { kin
   return { schemaVersion: 1, kind: 'detected-power-timeseries', measurementId: 'zero-1', sessionId: ready.sessionId, configurationRevision, sequence: ++measurementSequence, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 50, resolutionBandwidthHz: 100_000, attenuationDb: 0, qualification: 'firmware-executed-twin', complete: true, centerHz: config.centerHz, sampleIntervalSeconds: config.sweepTimeSeconds / config.sampleCount, timingQualification: 'wall-clock-derived', powerDbm: Array(config.sampleCount).fill(-90) };
 }
 
+function complexIqMeasurement(
+  config: Extract<InstrumentConfiguration, { kind: 'complex-iq' }>,
+  revision: string,
+  id: string,
+  sessionId = signalLabIqSession.sessionId,
+): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> {
+  return {
+    schemaVersion: 1,
+    kind: 'complex-iq',
+    measurementId: id,
+    sessionId,
+    configurationRevision: revision,
+    producerConfigurationEpoch: 'producer-epoch:1',
+    sequence: ++measurementSequence,
+    capturedAt: '2026-07-10T00:00:01.000Z',
+    elapsedMilliseconds: 4,
+    resolutionBandwidthHz: null,
+    attenuationDb: null,
+    qualification: 'analytic-complex-baseband',
+    complete: true,
+    centerHz: config.centerHz,
+    sampleRateHz: config.sampleRateHz,
+    bandwidthHz: config.bandwidthHz,
+    sampleFormat: config.sampleFormat,
+    sampleCount: config.sampleCount,
+    samples: new Uint8Array(config.sampleCount * 8),
+  };
+}
+
+function signalLabStreamingMeasurement(
+  configuration: Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>,
+  id: string,
+  revision: string,
+  producerConfigurationEpoch: string,
+  peak: boolean,
+): Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }> {
+  const sequence = ++measurementSequence;
+  const frequencyHz = Array.from({ length: configuration.points }, (_value, index) =>
+    configuration.startHz
+      + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
+  return {
+    schemaVersion: 1,
+    kind: 'swept-spectrum',
+    measurementId: id,
+    sessionId: signalLabSession.sessionId,
+    configurationRevision: revision,
+    producerConfigurationEpoch,
+    sequence,
+    capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + sequence * 1_000).toISOString(),
+    elapsedMilliseconds: 50,
+    resolutionBandwidthHz: null,
+    attenuationDb: null,
+    qualification: 'synthetic-visual-projection',
+    complete: true,
+    frequencyHz,
+    powerDbm: frequencyHz.map((_frequency, index) => peak && index === Math.floor(frequencyHz.length / 2) ? -45 : -110),
+  };
+}
+
 function testClassification(
   detection: DetectedSignal,
   modelId: string,
@@ -179,6 +309,99 @@ function testClassification(
       peakDbm: detection.peakDbm,
       sweepIds: detection.sweepIds,
     },
+  };
+}
+
+/** Minimal but exact current-look authority for target-selection-only fixtures. */
+function rankedSelectionDetection(
+  id: string,
+  peakDbm: number,
+  overrides: Partial<DetectedSignal> = {},
+): DetectedSignal {
+  const peakHz = overrides.peakHz ?? 100;
+  const startHz = overrides.startHz ?? peakHz;
+  const stopHz = overrides.stopHz ?? peakHz;
+  const capturedAt = overrides.lastSeenAt ?? '2026-07-10T00:00:00.000Z';
+  const sourceSweepId = Array.isArray(overrides.sweepIds)
+    ? overrides.sweepIds.at(-1) ?? `rank-source-${id}`
+    : `rank-source-${id}`;
+  const sourceSweep = {
+    kind: 'spectrum',
+    id: sourceSweepId,
+    sequence: 1,
+    capturedAt,
+    frequencyHz: [peakHz - 1, peakHz, peakHz + 1],
+    powerDbm: [-100, peakDbm, -100],
+    actualStartHz: peakHz - 1.5,
+    actualStopHz: peakHz + 1.5,
+    actualRbwHz: 1,
+    complete: true,
+  } as unknown as Sweep;
+  const observation = {
+    sourceSweep,
+    startHz,
+    stopHz,
+    peakHz,
+    detectorId: 'selection-fixture-detector',
+    localBayesianEvidence: {} as DetectedSignal['bayesianEvidence'],
+  };
+  return {
+    id,
+    startHz,
+    stopHz,
+    peakHz,
+    peakDbm,
+    noiseFloorDbm: -100,
+    lastSeenAt: capturedAt,
+    sweepIds: [sourceSweepId],
+    detectorId: 'selection-fixture-detector',
+    state: 'active',
+    missedSweeps: 0,
+    associationMode: 'frequency-local',
+    classificationRegionObservation: observation,
+    localClassificationObservations: [observation],
+    ...overrides,
+  } as DetectedSignal;
+}
+
+/** Bind a fabricated tracker row to the exact visible source look it claims. */
+function rankedTrackerRow(
+  base: DetectedSignal,
+  sourceSweep: Sweep,
+  id: string,
+  peakDbm: number,
+): DetectedSignal {
+  const spacingHz = Math.max(1, sourceSweep.actualRbwHz);
+  const rankSourceSweep = {
+    ...sourceSweep,
+    frequencyHz: [base.peakHz - spacingHz, base.peakHz, base.peakHz + spacingHz],
+    powerDbm: [-100, peakDbm, -100],
+  };
+  const observation = {
+    sourceSweep: rankSourceSweep,
+    startHz: base.startHz,
+    stopHz: base.stopHz,
+    peakHz: base.peakHz,
+    detectorId: base.detectorId,
+    localBayesianEvidence: base.classificationRegionObservation?.localBayesianEvidence
+      ?? base.bayesianEvidence,
+  };
+  return {
+    ...base,
+    id,
+    peakDbm,
+    noiseFloorDbm: -100,
+    state: 'active',
+    missedSweeps: 0,
+    firstSeenAt: sourceSweep.capturedAt,
+    lastSeenAt: sourceSweep.capturedAt,
+    sweepIds: [sourceSweep.id],
+    associationMode: 'frequency-local',
+    classificationRegionStartHz: base.startHz,
+    classificationRegionStopHz: base.stopHz,
+    classificationRegionSweepIds: [sourceSweep.id],
+    classificationRegionObservation: observation,
+    localClassificationObservations: [observation],
   };
 }
 
@@ -314,6 +537,79 @@ function mockConnectedInstrument(session: InstrumentSessionSnapshot = ready): vo
   });
 }
 
+interface PendingIqBuffer {
+  readonly capture: ReturnType<typeof deferred<InstrumentMeasurement>>;
+  readonly configuration: Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
+  readonly revision: string;
+  readonly id: string;
+}
+
+function mockDeferredSignalLabIqBuffers(): PendingIqBuffer[] {
+  mockConnectedInstrument(signalLabIqSession);
+  const pending: PendingIqBuffer[] = [];
+  vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+    activeConfiguration = structuredClone(configuration);
+    configurationRevision = `configuration-${++revisionSequence}`;
+    return {
+      sessionId: signalLabIqSession.sessionId,
+      configurationRevision,
+      configuration,
+      configuredAt: '2026-07-10T00:00:00.000Z',
+    };
+  });
+  vi.mocked(window.atomizerInstrument.acquire).mockImplementation(() => {
+    if (activeConfiguration.kind !== 'complex-iq') {
+      return Promise.reject(new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`));
+    }
+    const capture = deferred<InstrumentMeasurement>();
+    pending.push({
+      capture,
+      configuration: structuredClone(activeConfiguration),
+      revision: configurationRevision,
+      id: `iq-buffer-${pending.length + 1}`,
+    });
+    return capture.promise;
+  });
+  return pending;
+}
+
+function emitInvalidatingFeatureExecution(
+  execution: AtomizerInstrumentFeatureExecution,
+  reason: Extract<AtomizerInstrumentEvent, { type: 'configuration-invalidated' }>['reason'],
+): void {
+  instrumentEventListener?.({ type: 'feature-result', ...execution });
+  instrumentEventListener?.({
+    type: 'configuration-invalidated',
+    sessionId: execution.session.sessionId,
+    reason,
+    session: execution.session,
+  });
+}
+
+function signalLabFeatureExecution(
+  request: Extract<Parameters<typeof window.atomizerInstrument.executeFeature>[0], { kind: 'signal-lab-profile-selection' }>,
+  session: InstrumentSessionSnapshot = signalLabSession,
+  producerConfigurationEpoch = 'producer-epoch:2',
+): AtomizerInstrumentFeatureExecution {
+  if (session.provenance.sourceKind !== 'signal-lab') throw new Error('SignalLab execution fixture requires SignalLab provenance');
+  const result = { sessionId: session.sessionId, ...request, producerConfigurationEpoch };
+  return {
+    result,
+    session: {
+      ...session,
+      provenance: { ...session.provenance, producerConfigurationEpoch },
+      capabilities: {
+        ...session.capabilities,
+        features: session.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
+          ? request.action === 'select-profile'
+            ? { ...feature, selectedProfileId: request.profileId }
+            : { ...feature, channel: request.channel }
+          : feature),
+      },
+    },
+  };
+}
+
 afterEach(() => { cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
@@ -357,7 +653,9 @@ beforeEach(() => {
       if (request.kind === 'rf-generator') {
         const result = { sessionId: ready.sessionId, ...request };
         const rfOutput = request.action === 'configure' ? 'off' as const : request.enabled ? 'on' as const : 'off' as const;
-        return { result, session: { ...ready, rfOutput, rfOutputQualification: 'firmware-executed-twin' as const } };
+        const execution = { result, session: { ...ready, rfOutput, rfOutputQualification: 'firmware-executed-twin' as const } };
+        if (request.action === 'configure') emitInvalidatingFeatureExecution(execution, 'instrument-mode-changed');
+        return execution;
       }
       if (request.kind === 'diagnostics') {
         const result = { sessionId: ready.sessionId, ...request, lines: ['ok'] };
@@ -373,11 +671,18 @@ beforeEach(() => {
           capabilities: {
             ...signalLabSession.capabilities,
             features: signalLabSession.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
-              ? { ...feature, selectedProfileId: request.profileId }
+              ? request.action === 'select-profile'
+                ? { ...feature, selectedProfileId: request.profileId }
+                : { ...feature, channel: request.channel }
               : feature),
           },
         };
-        return { result, session: profileSession };
+        const execution = { result, session: profileSession };
+        emitInvalidatingFeatureExecution(
+          execution,
+          request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed',
+        );
+        return execution;
       }
       return Promise.reject(new Error(`Feature ${request.kind} not mocked`));
     }),
@@ -480,6 +785,27 @@ describe('operator vertical slice', () => {
     expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce();
   });
 
+  it('creates and terminates exactly one lazy classifier runtime across StrictMode replay', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const classify = vi.fn(async (detection: DetectedSignal) => testClassification(detection, 'strict-worker-model'));
+    const dispose = vi.fn();
+    const runtimeFactory = vi.fn((): BayesianClassifierRuntime => ({
+      status: 'ready',
+      classifier: { modelId: 'strict-worker-model', classify, dispose },
+    }));
+
+    const view = render(<StrictMode><App classifierRuntimeFactory={runtimeFactory}/></StrictMode>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    expect(runtimeFactory).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+
+    view.unmount();
+    await act(async () => { await Promise.resolve(); });
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it('shows persisted pre-model capture geometry as compact status without restoring the removed envelope editor', async () => {
     localStorage.setItem('atomizer:v2:zero-span', JSON.stringify({
       frequencyHz: 433_920_000,
@@ -519,8 +845,8 @@ describe('operator vertical slice', () => {
   });
 
   it('re-evaluates an autonomous classification target when a stronger detection arrives', () => {
-    const weak = { id: 'weak', peakDbm: -60, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
-    const strong = { id: 'strong', peakDbm: -40, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+    const weak = rankedSelectionDetection('weak', -60);
+    const strong = rankedSelectionDetection('strong', -40);
 
     expect(resolveClassificationTargetSelection([weak])).toEqual({
       detectionId: 'weak',
@@ -644,8 +970,8 @@ describe('operator vertical slice', () => {
   });
 
   it('keeps an explicit classification target sticky while it remains selectable', () => {
-    const weak = { id: 'weak', peakDbm: -60, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
-    const strong = { id: 'strong', peakDbm: -40, state: 'active', missedSweeps: 0, associationMode: 'frequency-local' } as DetectedSignal;
+    const weak = rankedSelectionDetection('weak', -60);
+    const strong = rankedSelectionDetection('strong', -40);
 
     expect(resolveClassificationTargetSelection([weak, strong], weak.id)).toEqual({
       detectionId: 'weak',
@@ -655,16 +981,12 @@ describe('operator vertical slice', () => {
   });
 
   it('falls back to the autonomous target when tracker retention keeps a departed explicit row visible', () => {
-    const current = {
-      id: 'current',
-      peakDbm: -45,
+    const current = rankedSelectionDetection('current', -45, {
       associationMode: 'regular-spectral-component-activity',
       associationId: 'regular-1',
       associationMemberTrackIds: ['current'],
-      state: 'active',
-      missedSweeps: 0,
       associationMissedSweeps: 0,
-    } as unknown as DetectedSignal;
+    });
     const departed = {
       ...current,
       id: 'departed',
@@ -681,13 +1003,7 @@ describe('operator vertical slice', () => {
   });
 
   it('ignores stronger candidate, stale, released, and frequency-agile evidence rows for Auto', () => {
-    const current = {
-      id: 'current',
-      peakDbm: -55,
-      state: 'active',
-      missedSweeps: 0,
-      associationMode: 'frequency-local',
-    } as DetectedSignal;
+    const current = rankedSelectionDetection('current', -55);
     const nonCurrentRows = [
       { id: 'candidate', peakDbm: -10, state: 'candidate', missedSweeps: 0, associationMode: 'frequency-local' },
       { id: 'stale', peakDbm: -9, state: 'active', missedSweeps: 1, associationMode: 'frequency-local' },
@@ -804,11 +1120,12 @@ describe('operator vertical slice', () => {
     for (let look = 1; look <= 9; look++) {
       fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
       await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(look));
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Single$/i })).toBeTruthy());
     }
 
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
-    const auto = screen.getByRole('button', { name: /Auto · strongest signal/i });
+    const auto = screen.getByRole('button', { name: /Auto · most prominent/i });
     expect(auto.getAttribute('aria-pressed')).toBe('true');
     const captureEnvelope = screen.getByRole('button', { name: /Capture envelope/i });
     expect(captureEnvelope.hasAttribute('disabled')).toBe(false);
@@ -849,17 +1166,25 @@ describe('operator vertical slice', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(false);
     fireEvent.click(within(navigation).getByRole('button', { name: /Generate/i }));
-    expect(await screen.findByText(/Synthetic signal source/i)).toBeTruthy();
-    expect(screen.getByText(/No RF output/i)).toBeTruthy();
-    const profile = screen.getByRole('combobox', { name: /SignalLab profile/i });
+    expect(await screen.findByRole('navigation', { name: /Waveform families/i })).toBeTruthy();
+    const profile = screen.getByRole('button', { name: /^FM/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(profile.closest('[data-agent-control]')).toBeNull();
-    fireEvent.change(profile, { target: { value: 'fm' } });
+    fireEvent.click(profile);
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Rayleigh$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({
+      kind: 'signal-lab-profile-selection', action: 'configure-channel',
+      channel: { ...DEFAULT_REPLAY_CHANNEL, model: 'rayleigh' },
+    }));
     fireEvent.click(within(navigation).getByRole('button', { name: /Spectrum/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+    const selectedFm = signalLabProfiles.find(({ profileId }) => profileId === 'fm')!;
     const admitted = {
-      kind: 'swept-spectrum' as const, startHz: 99_750_000, stopHz: 100_250_000, points: 450, sweepTimeSeconds: 0.05,
+      kind: 'swept-spectrum' as const,
+      startHz: selectedFm.centerFrequencyHz - selectedFm.recommendedSpanHz / 2,
+      stopHz: selectedFm.centerFrequencyHz + selectedFm.recommendedSpanHz / 2,
+      points: 450, sweepTimeSeconds: 0.05,
       controls: { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const },
     };
     await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(admitted));
@@ -868,6 +1193,311 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({
       format: 'json', sweep: expect.objectContaining({ requested: admitted }),
     }));
+  });
+
+  it('routes sidebar Single to one bounded I/Q capture without a redundant panel action', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind !== 'complex-iq') throw new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`);
+      return complexIqMeasurement(activeConfiguration, configurationRevision, 'iq-single-1');
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
+
+    await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'complex-iq' })));
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    expect(await screen.findByText(/Capture iq-single-1/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+  });
+
+  it('runs one backpressured I/Q buffer at a time, stages live edits, and stops after the in-flight buffer', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    const pending: Array<{
+      readonly capture: ReturnType<typeof deferred<InstrumentMeasurement>>;
+      readonly configuration: Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
+      readonly revision: string;
+      readonly id: string;
+    }> = [];
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(() => {
+      if (activeConfiguration.kind !== 'complex-iq') return Promise.reject(new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`));
+      const capture = deferred<InstrumentMeasurement>();
+      pending.push({
+        capture,
+        configuration: structuredClone(activeConfiguration),
+        revision: configurationRevision,
+        id: `iq-buffer-${pending.length + 1}`,
+      });
+      return capture.promise;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
+
+    const editCenter = screen.getByLabelText('Edit Center frequency');
+    expect(editCenter.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(editCenter);
+    const editor = screen.getByRole('dialog', { name: /Center frequency numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Center frequency' }), { target: { value: '101' } });
+    fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
+
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[1]?.configuration.centerHz).toBe(101_000_000);
+    expect(document.body.textContent).not.toContain('iq-buffer-1');
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    expect(screen.getByRole('button', { name: /Stopping/i }).hasAttribute('disabled')).toBe(true);
+    await act(async () => {
+      const second = pending[1]!;
+      second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('iq-buffer-2');
+  });
+
+  it('pins a bounded I/Q Run across workspace navigation and reuses its stable configuration', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
+    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(1);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const second = pending[1]!;
+      second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+  });
+
+  it('does not retarget a spectrum Run when the operator enters the I/Q workspace', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return {
+        sessionId: signalLabIqSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
+  });
+
+  it('pauses bounded I/Q at buffer boundaries for SignalLab profile and channel changes, then resumes', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+    let featureSession = signalLabIqSession;
+    let producerEpoch = 1;
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
+      if (request.kind !== 'signal-lab-profile-selection') {
+        throw new Error(`Feature ${request.kind} not mocked`);
+      }
+      const execution = signalLabFeatureExecution(
+        request,
+        featureSession,
+        `producer-epoch:${++producerEpoch}`,
+      );
+      featureSession = execution.session;
+      emitInvalidatingFeatureExecution(
+        execution,
+        request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed',
+      );
+      return execution;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(pending[1]?.configuration.centerHz).toBe(waveformDescriptor('fm').centerHz);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Rayleigh$/i }));
+    expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      const second = pending[1]!;
+      second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
+    });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pending).toHaveLength(3));
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(3);
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const third = pending[2]!;
+      third.capture.resolve(complexIqMeasurement(third.configuration, third.revision, third.id));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+  });
+
+  it('admits Stop while an I/Q profile change owns the foreground transaction and never resumes', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+    const feature = deferred<AtomizerInstrumentFeatureExecution>();
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation((request) => {
+      if (request.kind !== 'signal-lab-profile-selection') {
+        return Promise.reject(new Error(`Feature ${request.kind} not mocked`));
+      }
+      return feature.promise;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    expect(screen.getByRole('button', { name: /Stopping/i })).toBeTruthy();
+
+    const execution = signalLabFeatureExecution(
+      { kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' },
+      signalLabIqSession,
+      'producer-epoch:2',
+    );
+    await act(async () => {
+      emitInvalidatingFeatureExecution(execution, 'source-profile-changed');
+      feature.resolve(execution);
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+  });
+
+  it('drops a late I/Q buffer after disconnect and does not retry acquisition', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'disconnected',
+        sessionId: signalLabIqSession.sessionId,
+        driverId: signalLabIqSession.driverId,
+      });
+    });
+    expect(await screen.findByText('No instrument')).toBeTruthy();
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, 'late-iq-buffer'));
+    });
+    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain('late-iq-buffer');
+  });
+
+  it('stops the bounded I/Q pump after one acquisition failure without retrying', async () => {
+    mockConnectedInstrument(signalLabIqSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return {
+        sessionId: signalLabIqSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockRejectedValue(new Error('I/Q transport failed'));
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+
+    expect(await screen.findByText(/Continuous I\/Q acquisition failed: I\/Q transport failed/i)).toBeTruthy();
+    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
   });
 
   it('presents a failed operator export without an unhandled rejection or renderer loss', async () => {
@@ -909,7 +1539,9 @@ describe('operator vertical slice', () => {
     expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     fireEvent.click(within(navigation).getByRole('button', { name: navigationName }));
-    const profile = await screen.findByRole('combobox', { name: /SignalLab profile/i });
+    const profile = activeWorkspace === 'generator'
+      ? await screen.findByRole('button', { name: /^CW carrier/i })
+      : await screen.findByRole('combobox', { name: /SignalLab profile/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(profile.closest('[data-agent-control]')).toBeNull();
 
@@ -1112,6 +1744,71 @@ describe('operator vertical slice', () => {
       .toBeTruthy();
   });
 
+  it('shows frozen-source-qualified custom firmware as receive-only with no RF-output authority', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      session: sourceQualifiedPhysicalSession,
+    });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValueOnce({
+      discoveryRevision: physicalCandidate.discoveryRevision,
+      discoveredAt: '2026-07-10T00:00:00.000Z',
+      candidates: [physicalCandidate],
+      failures: [],
+    });
+
+    render(<App/>);
+
+    const badge = await screen.findByText('CUSTOM FW · RECEIVE ONLY');
+    expect(badge.title).toBe(sourceQualifiedFirmwareRecord.warning);
+    expect(screen.queryByText(/^RF (?:ON|OFF|UNKNOWN)$/)).toBeNull();
+    expect(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /Device/i }));
+    expect(await screen.findByText('Custom firmware · source-qualified receive only')).toBeTruthy();
+    expect(screen.getByText(sourceQualifiedFirmwareRecord.warning)).toBeTruthy();
+    expect(screen.getByText(ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT.slice(0, 12))).toBeTruthy();
+    const featuresLabel = screen.getByText('Features');
+    expect(within(featuresLabel.parentElement!).getByText('None')).toBeTruthy();
+  });
+
+  it('returns frozen source mapping, unattested-binary warning, and absent RF authority to Atom state', async () => {
+    vi.mocked(window.atomizerInstrument.getState).mockResolvedValueOnce({
+      schemaVersion: 1,
+      startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' },
+      streaming: { status: 'stopped' },
+      connectionCleanup: { status: 'not-required' },
+      session: sourceQualifiedPhysicalSession,
+    });
+    vi.mocked(window.atomizerInstrument.discover).mockResolvedValueOnce({
+      discoveryRevision: physicalCandidate.discoveryRevision,
+      discoveredAt: '2026-07-10T00:00:00.000Z',
+      candidates: [physicalCandidate],
+      failures: [],
+    });
+    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
+    vi.mocked(window.atomAgent.agentTurn)
+      .mockResolvedValueOnce({ conversationId: 'source-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'source-load', name: 'load_atom_tools', arguments: '{"toolNames":["get_instrument_state"]}' }] })
+      .mockResolvedValueOnce({ conversationId: 'source-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'source-state', name: 'get_instrument_state', arguments: '{}' }] })
+      .mockResolvedValueOnce({ conversationId: 'source-2', transport: 'realtime-websocket', text: 'Receive-only source evidence reported.', toolCalls: [] });
+
+    render(<App/>);
+    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
+    fireEvent.change(composer, { target: { value: 'Report the custom firmware evidence and RF authority.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
+    expect(await screen.findByText('Receive-only source evidence reported.')).toBeTruthy();
+
+    const stateOutput = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '';
+    expect(stateOutput).toContain('custom-source-qualified-receive-only');
+    expect(stateOutput).toContain(ZS407_CUSTOM_RECEIVER_SOURCE_COMMIT);
+    expect(stateOutput).toContain(sourceQualifiedFirmwareRecord.warning);
+    expect(stateOutput).toContain('"rfOutput":"not-supported"');
+    expect(stateOutput).toContain('"features":[]');
+  });
+
   it('invalidates displayed evidence and marks RF state unknown when the active session faults', async () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
@@ -1307,11 +2004,15 @@ describe('operator vertical slice', () => {
     expect(container.querySelector('.atomic-mark')).toBeTruthy();
     expect(screen.queryByRole('tablist')).toBeNull();
     expect(navigation.textContent).not.toContain('Time / STFT');
+    const acquisitionRail = screen.getByRole('region', { name: 'Acquisition controls' });
+    expect(within(acquisitionRail).getByRole('button', { name: 'Run' })).toBeTruthy();
+    expect(within(acquisitionRail).getByRole('button', { name: 'Single' })).toBeTruthy();
     expect(within(navigation).getByRole('button', { name: /^Spectrum$/i }).getAttribute('aria-current')).toBe('page');
     const topViewBar = within(container.querySelector('.measurement-viewbar') as HTMLElement);
     for (const view of ['Spectrum', 'Waterfall', 'Channel']) {
       expect(topViewBar.queryByRole('button', { name: new RegExp(`^${view}$`, 'i') })).toBeNull();
     }
+    expect(topViewBar.queryByRole('button', { name: /^(?:Run|Single)$/i })).toBeNull();
     fireEvent.click(within(navigation).getByRole('button', { name: /^Waterfall$/i }));
     expect(await screen.findByLabelText(/Measured power by frequency and sweep time/i)).toBeTruthy();
     fireEvent.click(within(navigation).getByRole('button', { name: /^Channel$/i }));
@@ -1338,6 +2039,12 @@ describe('operator vertical slice', () => {
     expect(container.querySelector('.envelope-stft-view')).toBeNull();
     await waitFor(() => expect(container.querySelector('.atom-foot')?.textContent).toContain('HIGH'));
     expect(container.querySelector('.atom-foot')?.textContent).toContain('BALLAD');
+    for (const workspace of ['Generate', 'Device']) {
+      fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${workspace}$`, 'i') }));
+      expect(screen.getByRole('region', { name: 'Acquisition controls' })).toBe(acquisitionRail);
+      expect(within(acquisitionRail).getByRole('button', { name: 'Run' })).toBeTruthy();
+      expect(within(acquisitionRail).getByRole('button', { name: 'Single' })).toBeTruthy();
+    }
   });
 
   it('allows marker 1 and the entire marker bank to remain off', async () => {
@@ -1419,6 +2126,500 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
     expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'swept-spectrum', startHz: 2_400_000_000, stopHz: 2_500_000_000 }));
+  });
+
+  it('keeps navigation and controls live during Run and pause-configure-resumes a true conflict', async () => {
+    mockConnectedInstrument();
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('tinySA Ultra+ ZS407');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
+    for (const name of ['Spectrum', 'Waterfall', 'Channel', 'Detect', 'Generate', 'Device']) {
+      expect(within(navigation).getByRole('button', { name: new RegExp(`^${name}$`, 'i') }).hasAttribute('disabled')).toBe(false);
+    }
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    const apply = await screen.findByRole('button', { name: /Apply with output off/i });
+    expect(apply.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(apply);
+
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledBefore(vi.mocked(window.atomizerInstrument.executeFeature));
+    expect(vi.mocked(window.atomizerInstrument.executeFeature)).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'rf-generator', action: 'configure',
+    }));
+    expect(await screen.findByRole('button', { name: /^Stop$/i })).toBeTruthy();
+  });
+
+  it('waits for late invalidation events before reserving and resuming a SignalLab profile change', async () => {
+    mockConnectedInstrument(signalLabSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    let deliverLifecycle: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
+      if (request.kind !== 'signal-lab-profile-selection') throw new Error(`Unexpected feature ${request.kind}`);
+      const execution = signalLabFeatureExecution(request);
+      deliverLifecycle = () => emitInvalidatingFeatureExecution(
+        execution,
+        request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed',
+      );
+      return execution;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
+    await act(async () => { await Promise.resolve(); });
+
+    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(screen.getByText(/Pausing continuous acquisition/i)).toBeTruthy();
+    await act(async () => { deliverLifecycle?.(); });
+
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    expect(document.body.textContent).not.toContain('Revision-cache reservation was invalidated');
+    expect(screen.queryByText(/SignalLab profile selection failed/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+  });
+
+  it('fails closed on a mismatched invalidation receipt and clears the stale pause notice', async () => {
+    mockConnectedInstrument(signalLabSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    let deliverMismatch: (() => void) | undefined;
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
+      if (request.kind !== 'signal-lab-profile-selection') throw new Error(`Unexpected feature ${request.kind}`);
+      const execution = signalLabFeatureExecution(request);
+      deliverMismatch = () => {
+        instrumentEventListener?.({ type: 'feature-result', ...execution });
+        instrumentEventListener?.({
+          type: 'configuration-invalidated',
+          sessionId: execution.session.sessionId,
+          reason: 'source-channel-changed',
+          session: execution.session,
+        });
+      };
+      return execution;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
+    await act(async () => { deliverMismatch?.(); });
+
+    expect(await screen.findByText(/expected source-profile-changed/i)).toBeTruthy();
+    expect(screen.queryByText(/Pausing continuous acquisition/i)).toBeNull();
+    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
+  });
+
+  it('admits Stop during a paused profile transaction and never resumes after the stop intent', async () => {
+    mockConnectedInstrument(signalLabSession);
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
+    });
+    const feature = deferred<AtomizerInstrumentFeatureExecution>();
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation((request) => {
+      if (request.kind !== 'signal-lab-profile-selection') return Promise.reject(new Error(`Unexpected feature ${request.kind}`));
+      return feature.promise;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    expect(screen.getByRole('button', { name: /Stopping/i }).hasAttribute('disabled')).toBe(true);
+    const execution = signalLabFeatureExecution({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm' });
+    await act(async () => {
+      feature.resolve(execution);
+      await Promise.resolve();
+      emitInvalidatingFeatureExecution(execution, 'source-profile-changed');
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain('Revision-cache reservation was invalidated');
+  });
+
+  it('does not classify a hysteresis-only missed track and starts post-profile evidence with a clean history', async () => {
+    mockConnectedInstrument(signalLabSession);
+    persistOneLookDetector();
+    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
+      activeConfiguration = structuredClone(configuration);
+      configurationRevision = `configuration-${++revisionSequence}`;
+      return {
+        sessionId: signalLabSession.sessionId,
+        configurationRevision,
+        configuration,
+        configuredAt: '2026-07-10T00:00:00.000Z',
+      };
+    });
+    const classify = vi.fn(async (detection: DetectedSignal, evidence: WaveformEvidence) => {
+      // Exercise the production evidence integrity boundary. Before the
+      // current-observation gate, the missed row below reached this call and
+      // correctly failed as contradictory local-history/current-track state.
+      extractObservableFeatures(detection, evidence);
+      return testClassification(detection, `profile-era-${classify.mock.calls.length}`);
+    });
+
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
+    const cwConfiguration = structuredClone(activeConfiguration);
+    const cwRevision = configurationRevision;
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: signalLabStreamingMeasurement(
+          cwConfiguration,
+          'cw-current-look',
+          cwRevision,
+          'producer-epoch:1',
+          true,
+        ),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: signalLabStreamingMeasurement(
+          cwConfiguration,
+          'cw-missed-look',
+          cwRevision,
+          'producer-epoch:1',
+          false,
+        ),
+      });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 5));
+    });
+    expect(classify).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain('contradicts the current track state');
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected resumed SignalLab spectrum configuration');
+    const fmConfiguration = structuredClone(activeConfiguration);
+    const fmRevision = configurationRevision;
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: signalLabStreamingMeasurement(
+          fmConfiguration,
+          'fm-current-look',
+          fmRevision,
+          'producer-epoch:2',
+          true,
+        ),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    const postProfileEvidence = classify.mock.calls[1]?.[1] as WaveformEvidence;
+    expect(postProfileEvidence.sweeps.map(({ id }) => id)).toEqual(['fm-current-look']);
+    expect(document.body.textContent).not.toContain('Bayesian classification unavailable');
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+  });
+
+  it('ingests every streaming sweep while bounding Bayesian work to active plus latest', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const first = deferred<WaveformClassification>();
+    let firstDetection: DetectedSignal | undefined;
+    const classify = vi.fn((detection: DetectedSignal, _evidence: WaveformEvidence) => {
+      if (!firstDetection) {
+        firstDetection = detection;
+        return first.promise;
+      }
+      return Promise.resolve(testClassification(detection, 'latest-stream-evidence-model'));
+    });
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(configuredAnalyzer, 'stream-evidence-1', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      for (let index = 2; index <= 21; index++) {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(configuredAnalyzer, `stream-evidence-${index}`, revision),
+        });
+      }
+    });
+    expect(screen.getByText('21 / 50')).toBeTruthy();
+    expect(classify).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+
+    await act(async () => {
+      first.resolve(testClassification(firstDetection!, 'stale-stream-evidence-model'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+    const latestEvidence = classify.mock.calls[1]?.[1] as { sweeps: readonly Sweep[] };
+    expect(latestEvidence.sweeps[0]?.id).toBe('stream-evidence-21');
+    fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+      .getByRole('button', { name: /^Detect$/i }));
+    await waitFor(() => expect(document.body.textContent).toContain('latest-stream-evidence-model'));
+    expect(document.body.textContent).not.toContain('stale-stream-evidence-model');
+    expect(classify).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes the newest completed classification without starvation under sustained faster sweeps', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const pending: Array<ReturnType<typeof deferred<WaveformClassification>>> = [];
+    const classify = vi.fn((_detection: DetectedSignal) => {
+      const next = deferred<WaveformClassification>();
+      pending.push(next);
+      return next.promise;
+    });
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    const revision = configurationRevision;
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(configuredAnalyzer, 'steady-stream-1', revision),
+      });
+    });
+    await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+
+    for (let look = 1; look <= 5; look++) {
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(configuredAnalyzer, `steady-stream-${look + 1}`, revision),
+        });
+        const detection = classify.mock.calls[look - 1]?.[0];
+        pending[look - 1]?.resolve(testClassification(detection!, `steady-complete-${look}`));
+        await Promise.resolve();
+      });
+      fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+        .getByRole('button', { name: /^Detect$/i }));
+      await waitFor(() => expect(document.body.textContent).toContain(`steady-complete-${look}`));
+      if (look < 5) await waitFor(() => expect(classify).toHaveBeenCalledTimes(look + 1));
+    }
+
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+  });
+
+  it('never publishes late work for a target replaced by explicit selection or Auto fallback', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const first = deferred<WaveformClassification>();
+    const classify = vi.fn((detection: DetectedSignal) => detection.id === 'strong' && classify.mock.calls.length === 1
+      ? first.promise
+      : Promise.resolve(testClassification(detection, `selected-${detection.id}-model`)));
+    let trackerLook = 0;
+    const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
+      trackerLook++;
+      const base = candidates[0];
+      if (!base) return [];
+      const row = (id: string, peakDbm: number): DetectedSignal => ({
+        ...rankedTrackerRow(base, sourceSweep, id, peakDbm),
+        persistenceSweeps: trackerLook,
+      });
+      const strong = row('strong', -30);
+      return trackerLook >= 3 ? [strong] : [row('weak', -60), strong];
+    });
+
+    try {
+      render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+      await screen.findByText('tinySA Ultra+ ZS407');
+      fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+      await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+      const revision = configurationRevision;
+
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-1', revision),
+        });
+      });
+      await waitFor(() => expect(classify).toHaveBeenCalledOnce());
+      expect(classify.mock.calls[0]?.[0].id).toBe('strong');
+
+      fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+        .getByRole('button', { name: /^Detect$/i }));
+      const weakButton = document.querySelector<HTMLButtonElement>(
+        '[data-agent-control="classification.candidate.weak.select"]',
+      );
+      expect(weakButton).not.toBeNull();
+      fireEvent.click(weakButton!);
+      await act(async () => {
+        first.resolve(testClassification(classify.mock.calls[0]![0], 'late-strong-model'));
+        await Promise.resolve();
+      });
+      expect(document.body.textContent).not.toContain('late-strong-model');
+
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-2', revision),
+        });
+      });
+      await waitFor(() => expect(classify).toHaveBeenCalledTimes(2));
+      expect(classify.mock.calls[1]?.[0].id).toBe('weak');
+      await waitFor(() => expect(document.body.textContent).toContain('selected-weak-model'));
+
+      await act(async () => {
+        instrumentEventListener?.({
+          type: 'measurement',
+          measurement: acquiredMeasurement(configuredAnalyzer, 'target-look-3', revision),
+        });
+      });
+      await waitFor(() => expect(classify).toHaveBeenCalledTimes(3));
+      expect(classify.mock.calls[2]?.[0].id).toBe('strong');
+      await waitFor(() => expect(document.body.textContent).toContain('selected-strong-model'));
+      expect(screen.getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed'))
+        .toBe('true');
+    } finally {
+      trackerUpdate.mockRestore();
+    }
+  });
+
+  it('reclassifies only the receipt-bound selected representative after detected-power capture', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const classify = vi.fn(async (detection: DetectedSignal, _evidence: WaveformEvidence) =>
+      testClassification(detection, `capture-${detection.id}-model`));
+    const replayTracker = new SignalTracker({
+      threshold: { strategy: 'absolute', levelDbm: -80 },
+      minimumBandwidthHz: 0,
+      minimumProminenceDb: 6,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    });
+    const originalUpdate = SignalTracker.prototype.update;
+    const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
+      const rows = originalUpdate.call(replayTracker, sourceSweep, candidates);
+      const base = rows.find((row) => row.state === 'active');
+      if (!base) return rows;
+      return Array.from({ length: 12 }, (_value, index) => ({
+        ...base,
+        id: `capture-fragment-${String(index + 1).padStart(2, '0')}`,
+      }));
+    });
+    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        const measurement = acquiredMeasurement(configuredAnalyzer, `capture-fanout-sweep-${measurementSequence + 1}`);
+        return {
+          ...measurement,
+          capturedAt: new Date(Date.parse('2026-07-10T00:00:00.000Z') + measurement.sequence * 1_000).toISOString(),
+        };
+      }
+      if (activeConfiguration.kind === 'detected-power-timeseries') {
+        return detectedPowerMeasurement(activeConfiguration);
+      }
+      return Promise.reject(new Error('I/Q not mocked'));
+    });
+
+    try {
+      render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+      await screen.findByText('tinySA Ultra+ ZS407');
+      const single = screen.getByRole('button', { name: /^Single$/i });
+      for (let look = 1; look <= 8; look++) {
+        fireEvent.click(single);
+        await waitFor(() => expect(classify).toHaveBeenCalledTimes(look));
+        await waitFor(() => expect(single.hasAttribute('disabled')).toBe(false));
+      }
+      expect(classify.mock.calls.every(([_detection, evidence]) =>
+        (evidence as WaveformEvidence).sweeps.length <= 8)).toBe(true);
+      const selectedBeforeCaptureId = classify.mock.calls[7]?.[0].id;
+      expect(selectedBeforeCaptureId).toMatch(/^capture-fragment-/);
+
+      fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i }))
+        .getByRole('button', { name: /^Detect$/i }));
+      await waitFor(() => expect(screen.getByRole('button', { name: /Capture envelope/i }).hasAttribute('disabled')).toBe(false));
+      const envelopeButton = screen.getByRole('button', { name: /Capture envelope/i });
+      fireEvent.click(envelopeButton);
+
+      await waitFor(() => expect(
+        window.atomizerInstrument.acquire,
+        screen.queryByRole('alert')?.textContent ?? 'no application alert',
+      ).toHaveBeenCalledTimes(9));
+      await waitFor(() => expect(screen.getByRole('button', { name: /Recapture envelope/i })).toBeTruthy());
+      await waitFor(() => {
+        const alert = screen.queryByRole('alert');
+        if (alert) throw new Error(alert.textContent ?? 'Detected-power capture failed');
+        expect(classify).toHaveBeenCalledTimes(9);
+      });
+      expect(classify.mock.calls[8]?.[0].id).toBe(selectedBeforeCaptureId);
+      const evidence = classify.mock.calls[8]?.[1] as WaveformEvidence;
+      expect(evidence.sweeps).toHaveLength(8);
+      expect(evidence.zeroSpan).toBeDefined();
+      await waitFor(() => expect(document.body.textContent).toContain(`capture-${selectedBeforeCaptureId}-model`));
+    } finally {
+      trackerUpdate.mockRestore();
+    }
+  });
+
+  it('keeps continuous acquisition running when optional Bayesian inference rejects', async () => {
+    mockConnectedInstrument();
+    persistOneLookDetector();
+    const classify = vi.fn(async () => { throw new Error('worker model admission failed'); });
+    render(<App classifierRuntimeFactory={() => readyClassifierRuntime(classify)}/>);
+    await screen.findByText('tinySA Ultra+ ZS407');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    vi.mocked(window.atomizerInstrument.stopStreaming).mockClear();
+
+    await act(async () => {
+      instrumentEventListener?.({
+        type: 'measurement',
+        measurement: acquiredMeasurement(configuredAnalyzer, 'classification-rejection', configurationRevision),
+      });
+    });
+
+    expect(await screen.findByText(/Bayesian classification unavailable: worker model admission failed/i)).toBeTruthy();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
   });
 
   it('does not let an old-generation analysis failure stop the replacement retuned stream', async () => {
@@ -1514,10 +2715,14 @@ describe('operator vertical slice', () => {
       if (request.kind !== 'rf-generator') return Promise.reject(new Error(`Unexpected feature ${request.kind}`));
       if (request.action === 'configure') {
         return new Promise((resolve) => {
-          releaseConfiguration = () => resolve({
+          releaseConfiguration = () => {
+            const execution = {
             result: { ...request, sessionId: ready.sessionId },
             session: { ...ready, rfOutput: 'off', rfOutputQualification: 'firmware-executed-twin' },
-          });
+            } satisfies AtomizerInstrumentFeatureExecution;
+            emitInvalidatingFeatureExecution(execution, 'instrument-mode-changed');
+            resolve(execution);
+          };
         });
       }
       return Promise.resolve({
@@ -1559,7 +2764,9 @@ describe('operator vertical slice', () => {
       .mockResolvedValue({ status: 'running', startedAt: '2026-07-10T00:00:01.000Z' });
     vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
       if (request.kind !== 'touch') throw new Error(`Unexpected feature ${request.kind}`);
-      return { result: { ...request, sessionId: ready.sessionId, accepted: true }, session: ready };
+      const execution = { result: { ...request, sessionId: ready.sessionId, accepted: true as const }, session: ready };
+      emitInvalidatingFeatureExecution(execution, 'instrument-mode-changed');
+      return execution;
     });
 
     const { container } = render(<App/>);
@@ -1926,15 +3133,7 @@ describe('operator vertical slice', () => {
     const trackerUpdate = vi.spyOn(SignalTracker.prototype, 'update').mockImplementation((sourceSweep, candidates) => {
       const base = candidates[0];
       if (!base) throw new Error('Expected the stress fixture sweep to produce one detector candidate');
-      const physical = {
-        ...base,
-        id: 'physical-row',
-        state: 'active' as const,
-        missedSweeps: 0,
-        associationMode: 'frequency-local' as const,
-        peakDbm: -45,
-        sweepIds: [sourceSweep.id],
-      } satisfies DetectedSignal;
+      const physical = rankedTrackerRow(base, sourceSweep, 'physical-row', -45);
       const stale = {
         ...physical,
         id: 'stale-row',

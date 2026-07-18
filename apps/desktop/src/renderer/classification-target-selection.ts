@@ -5,7 +5,10 @@ import {
 } from '@tinysa/analysis';
 import type { DetectedSignal, Sweep } from '@tinysa/contracts';
 
-export { currentVisiblePhysicalClassificationRows } from '@tinysa/analysis';
+export {
+  compareClassificationCaptureTargetSignals,
+  currentVisiblePhysicalClassificationRows,
+} from '@tinysa/analysis';
 
 export interface ClassificationTargetSelection {
   /** Evidence representative selected for classification and display. */
@@ -100,7 +103,9 @@ export function visibleClassificationTargetProjections(
   sweep: Sweep | undefined,
 ): readonly ClassificationCaptureTargetProjection[] {
   if (!sweep) return [];
-  return safeClassificationCaptureTargetProjections(detections).filter((projection) =>
+  const currentVisibleDetections = detections.filter((detection) =>
+    detectionIsFromVisibleSweep(detection, sweep));
+  return safeClassificationCaptureTargetProjections(currentVisibleDetections).filter((projection) =>
     detectionIsFromVisibleSweep(projection.rawTarget, sweep)
     && detectionIsFromVisibleSweep(projection.projectedRepresentative, sweep));
 }

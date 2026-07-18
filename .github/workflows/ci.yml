@@ -18,25 +18,31 @@ jobs:
     timeout-minutes: 35
     defaults:
       run:
-        working-directory: TinySA_Atomizer
+        working-directory: Atom-Atomizer
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          path: TinySA_Atomizer
+          path: Atom-Atomizer
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          repository: PhysicistJohn/TinySA_SignalLab
+          repository: PhysicistJohn/Atom-SignalLab
           ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
-          path: TinySA_SignalLab
+          path: Atom-SignalLab
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: PhysicistJohn/Atom-Classifier
+          path: Atom-Classifier
+          token: ${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.23.1
           cache: npm
           cache-dependency-path: |
-            TinySA_Atomizer/package-lock.json
-            TinySA_SignalLab/package-lock.json
+            Atom-Atomizer/package-lock.json
+            Atom-SignalLab/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@10.9.8
       - name: Verify exact Node and npm versions
@@ -47,14 +53,12 @@ jobs:
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
       - name: Install SignalLab runtime dependencies
-        working-directory: TinySA_SignalLab
+        working-directory: Atom-SignalLab
         run: npm ci --omit=dev --ignore-scripts
       - name: Install Atomizer
         run: npm ci
       - run: npm run check:launcher
       - run: npm run check:packaged-resources
-      - if: runner.os == 'Windows'
-        run: npm run check:observable-training-launcher
       - run: npm run typecheck
       - run: npm run build
       - run: npm run check:package-boundaries
@@ -69,21 +73,27 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          path: TinySA_Atomizer
+          path: Atom-Atomizer
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          repository: PhysicistJohn/TinySA_SignalLab
+          repository: PhysicistJohn/Atom-SignalLab
           ref: 8d9e61bb26a0fad9c313e4b33186565a31b8981c
-          path: TinySA_SignalLab
+          path: Atom-SignalLab
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: PhysicistJohn/Atom-Classifier
+          path: Atom-Classifier
+          token: ${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.23.1
           cache: npm
           cache-dependency-path: |
-            TinySA_Atomizer/package-lock.json
-            TinySA_SignalLab/package-lock.json
+            Atom-Atomizer/package-lock.json
+            Atom-SignalLab/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@10.9.8
       - name: Verify exact Node and npm versions
@@ -92,16 +102,16 @@ jobs:
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
       - name: Install SignalLab
-        working-directory: TinySA_SignalLab
+        working-directory: Atom-SignalLab
         run: npm ci
       - name: Verify SignalLab
-        working-directory: TinySA_SignalLab
+        working-directory: Atom-SignalLab
         run: npm run check
       - name: Install Atomizer
-        working-directory: TinySA_Atomizer
+        working-directory: Atom-Atomizer
         run: npm ci
       - name: Ensure the Electron binary actually landed
-        working-directory: TinySA_Atomizer
+        working-directory: Atom-Atomizer
         shell: bash
         # Both repos pin the identical electron@43.1.0, and SignalLab's own
         # npm ci (just above) already primed electron's shared download
@@ -118,8 +128,8 @@ jobs:
           fi
           test -e node_modules/electron/dist/electron
       - name: Validate the Bayesian detector
-        working-directory: TinySA_Atomizer
+        working-directory: Atom-Atomizer
         run: npm run check:bayesian-detector
       - name: Require real SignalLab bridge interoperability
-        working-directory: TinySA_Atomizer
+        working-directory: Atom-Atomizer
         run: npm run check

@@ -11,8 +11,12 @@ export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, o
 }) {
   const session = instrument.session;
   const connecting = !session && instrument.startup.status === 'not-started';
-  const customFirmware = session?.provenance.sourceKind === 'serial-port'
-    && session.provenance.device.firmwareQualification === 'custom-unqualified';
+  const customFirmwareQualification = session?.provenance.sourceKind === 'serial-port'
+    ? session.provenance.device.firmwareQualification
+    : undefined;
+  const customFirmware = customFirmwareQualification === 'custom-unqualified'
+    || customFirmwareQualification === 'custom-source-qualified-receive-only';
+  const sourceQualifiedReceiveOnly = customFirmwareQualification === 'custom-source-qualified-receive-only';
   const synthetic = session?.provenance.sourceKind === 'signal-lab';
   const twin = session?.provenance.sourceKind === 'tinysa-firmware-twin';
   const labels = sessionLabels(session);
@@ -22,7 +26,7 @@ export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, o
     <div className="topbar-actions">
       {synthetic && <span className="environment-badge">SIGNALLAB SIMULATION</span>}
       {twin && <span className="environment-badge">FIRMWARE TWIN</span>}
-      {customFirmware && <span className="environment-badge custom-firmware" title={session.provenance.sourceKind === 'serial-port' ? session.provenance.device.firmwareWarning : undefined}>CUSTOM FW · UNQUALIFIED</span>}
+      {customFirmware && <span className="environment-badge custom-firmware" title={session?.provenance.sourceKind === 'serial-port' ? session.provenance.device.firmwareWarning : undefined}>{sourceQualifiedReceiveOnly ? 'CUSTOM FW · RECEIVE ONLY' : 'CUSTOM FW · UNQUALIFIED'}</span>}
       {rfStatus && <span className={`top-rf-state ${rfStatus.state}`} title={rfStatus.title} aria-label={rfStatus.ariaLabel}>
         <span>RF {rfStatus.state.toUpperCase()}</span><small>{rfStatus.qualification}</small>
       </span>}

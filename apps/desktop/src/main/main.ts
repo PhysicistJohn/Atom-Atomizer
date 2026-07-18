@@ -41,7 +41,7 @@ const privateEnvironment = selectPrivateEnvironmentCandidates(process.env.TINYSA
 await loadPrivateEnvironmentFromCandidates(privateEnvironment.candidates, {
   explicitFirstCandidate: privateEnvironment.explicitFirstCandidate,
 });
-const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../TinySA_Firmware'));
+const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../Atom-Firmware'));
 const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() || resolve(here, '../../../..'));
 const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));
 const device = new TinySaDeviceService(transport);
@@ -114,10 +114,15 @@ async function createWindow(): Promise<void> {
   const developmentUrl = selectDevelopmentServerUrl(process.env.VITE_DEV_SERVER_URL, app.isPackaged);
   const trust = developmentUrl ? developmentRendererTrust(developmentUrl) : productionRendererTrust(rendererPath);
   const workArea = screen.getPrimaryDisplay().workAreaSize;
-  const startupWidth = Math.min(1920, workArea.width);
-  const startupHeight = Math.min(1100, workArea.height);
+  // Exact no-scroll content floor: Device + Atom needs
+  // 104 + 36 + 438 + 420 + 14 + 520 = 1532 CSS px, while the embedded
+  // SignalLab dense profile needs 72 + 22 + 709 + 18 = 821 CSS px.
+  const startupWidth = Math.min(1532, workArea.width);
+  const startupHeight = Math.min(821, workArea.height);
   const win = new BrowserWindow({
-    width: startupWidth, height: startupHeight, minWidth: Math.min(1440, startupWidth), minHeight: Math.min(800, startupHeight), backgroundColor: '#070b0b',
+    width: startupWidth, height: startupHeight,
+    minWidth: Math.min(1532, startupWidth), minHeight: Math.min(821, startupHeight),
+    useContentSize: true, backgroundColor: '#070b0b',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 20 } } : {}),
     webPreferences: {
       preload: join(here, 'preload.cjs'),

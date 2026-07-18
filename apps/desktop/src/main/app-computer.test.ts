@@ -14,7 +14,10 @@ function fakeWindow(input: {
   const normalized = {
     getSize: vi.fn().mockReturnValue(normalizedSize),
     toJPEG: vi.fn().mockReturnValue(input.jpeg ?? Buffer.from('image')),
-    toBitmap: vi.fn().mockReturnValue(input.bitmap ?? Buffer.alloc(normalizedSize.width * normalizedSize.height * 4)),
+    // Keep the native-image allocation lazy. Unsafe geometry is supposed to
+    // be rejected before capture, so constructing that fixture must not try
+    // to allocate the very buffer the production guard prevents.
+    toBitmap: vi.fn(() => input.bitmap ?? Buffer.alloc(normalizedSize.width * normalizedSize.height * 4)),
   };
   const image = {
     isEmpty: vi.fn().mockReturnValue(input.empty ?? false),

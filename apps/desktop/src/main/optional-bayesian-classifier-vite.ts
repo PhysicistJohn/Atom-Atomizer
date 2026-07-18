@@ -6,15 +6,15 @@ const PROVIDER_PATH = fileURLToPath(new URL(
   import.meta.url,
 ));
 const CLASSIFIER_PATH = fileURLToPath(new URL(
-  '../../../../../AtomOS_Classifier/src/signal-lab-classifier.ts',
+  '../../../../../Atom-Classifier/src/signal-lab-classifier.ts',
   import.meta.url,
 ));
 const MODEL_PATH = fileURLToPath(new URL(
-  '../../../../../AtomOS_Classifier/src/models/bayesian-observable.generated.ts',
+  '../../../../../Atom-Classifier/src/models/bayesian-observable.generated.ts',
   import.meta.url,
 ));
 const MANIFEST_PATH = fileURLToPath(new URL(
-  '../../../../../AtomOS_Classifier/src/models/bayesian-observable.manifest.generated.ts',
+  '../../../../../Atom-Classifier/src/models/bayesian-observable.manifest.generated.ts',
   import.meta.url,
 ));
 
@@ -61,12 +61,18 @@ export function optionalBayesianClassifierProviderSource(
       'export function createBundledBayesianClassifier() {',
       "  throw new Error('Bayesian classifier model assets are not bundled');",
       '}',
+      'export function createBundledBayesianClassificationWorker() {',
+      "  throw new Error('Bayesian classifier worker assets are not bundled');",
+      '}',
     ].join('\n');
   }
   return [
     `import { SignalLabBayesianClassifier } from ${JSON.stringify(classifierPath)};`,
     'export function createBundledBayesianClassifier() {',
     '  return new SignalLabBayesianClassifier();',
+    '}',
+    'export function createBundledBayesianClassificationWorker() {',
+    "  return new Worker(new URL('./bayesian-classifier-worker.ts', import.meta.url), { type: 'module', name: 'atomizer-bayesian-classifier' });",
     '}',
   ].join('\n');
 }

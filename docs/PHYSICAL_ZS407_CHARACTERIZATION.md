@@ -9,7 +9,7 @@ This record separates facts observed on the delivered unit from source-derived l
 Firmware-update references below describe the accepted 2026-07-11 physical
 transaction performed by the former embedded updater. Beginning with Atomizer
 application contract 6 and device API v3, active firmware installation is
-absent from this repository and owned exclusively by `../TinySA_Flasher`.
+absent from this repository and owned exclusively by `../Atom-Flasher`.
 
 ## Admitted unit
 
@@ -26,12 +26,14 @@ absent from this repository and owned exclusively by `../TinySA_Flasher`.
 | Verified OEM firmware after guarded update | `tinySA4_v1.4-224-gc979386` |
 | Resolved OEM source | `c97938697b6c7485e7cab50bca9af76996b7d671` |
 | Current observed firmware | `tinySA4_hw-v0.3-fft1024-g43eb0f1` |
-| Current qualification | `custom-unqualified`; source unresolved, warning visible |
+| Frozen custom source | `43eb0f193c8619cb7ca23726e3062973c65ae958` |
+| Documented custom binary SHA-256 | `6f284a24c4b4ab178da13af97e102e1a624618c9a67e8418b19bbc153e6f0174` (not attested by serial runtime) |
+| Current qualification | `custom-source-qualified-receive-only`; warning visible, not OEM/hardware-RF/metrology qualified |
 | OEM build time | `Dec 17 2025 - 10:50:40` |
 | MCU/platform | STM32F303xC, ARMv7E-M Cortex-M4F |
 | Shell commands observed | 79 on the custom build; all required Atomizer commands present |
 
-The OEM source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before its reported build time. Atomizer admits that observation through a closed exact-version/revision/full-commit registry. A decorated known suffix or any syntactically valid unknown revision is not assigned the host or OEM commit: it may be admitted only as `custom-unqualified` after the same exact ZS407 identity, required-command, framing and output-off gates, with an explicit warning. This shell identity is reported evidence, not binary attestation: without a separately bound Flasher artifact receipt, an uncommitted/custom build could emit the same version string.
+The OEM source commit timestamp is 2025-12-17 10:50:06 +01:00, 34 seconds before its reported build time. Atomizer admits that observation through a closed exact-version/revision/full-commit registry. A separate closed receiver-source record maps only the exact clean current custom version to the frozen `43eb0f1` full commit and its source-proved 20–450 point clamp. A decorated known suffix or any other syntactically valid revision is not assigned that source record or an OEM commit: it may be admitted only as `custom-unqualified` after the same exact ZS407 identity, required-command, framing and output-off gates, with an explicit warning. Shell identity remains reported evidence, not binary attestation: the runtime does not prove the documented custom binary hash, and an uncommitted/custom build could emit the same version string.
 
 The shipped `version` hardware line does not contain `ZS407`. The exact product
 line appears in `info`. Physical identity therefore requires all of: exact USB
@@ -44,10 +46,22 @@ command catalog. Source qualification is separate from identity evidence.
 After the OEM update, the unit was observed running
 `tinySA4_hw-v0.3-fft1024-g43eb0f1`. Atomizer verified the exact USB/model
 identity, 79-command required surface, prompt/framing behavior, and output-off
-terminal state, then admitted it as `custom-unqualified`. It deliberately did
-not populate `firmwareSourceCommit` and disabled the pinned OEM updater for that
-session. This proves protocol admission only; it is not RF, FFT-path, timing, or
-metrology qualification of the custom firmware.
+terminal state. An immutable source audit now binds only that exact embedded
+version to commit `43eb0f193c8619cb7ca23726e3062973c65ae958` and proves the
+20–450 `set_sweep_points` clamp, so Atomizer admits it as
+`custom-source-qualified-receive-only`. The documented binary hash remains
+unattested by the serial protocol, and the pinned OEM updater remains disabled
+for that session. This proves a narrow source behavior plus protocol admission;
+it is not RF, FFT-path, timing, OEM, or metrology qualification.
+
+For operational receive testing, that exact physical USB/model identity admits
+only the ZS407 normal input envelope, 0–900 MHz. This permits receive-only FM
+and 758–768 MHz Band 14 retuning without treating the 88–108 MHz span observed
+at connection as a permanent capability boundary. It does not qualify the
+custom firmware source, the Ultra/harmonic receive paths, or any RF-output,
+screen, touch, or marker behavior. Each new span is preceded by acknowledged
+`output off` and `mode input` and becomes usable only after exact geometry
+readback; a mismatch leaves the analyzer unconfigured.
 
 ## Receive-only transaction evidence
 

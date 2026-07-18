@@ -19,6 +19,21 @@ describe('Detect responsive layout contract', () => {
       expect(rule).not.toMatch(/position:\s*sticky/);
     }
   });
+
+  it('keeps the I/Q plots and persistent acquisition rail bounded without scroll containers', () => {
+    const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
+    const iqPlotGridRules = rulesFor(css, '.iq-plot-grid');
+    const sidebarRules = rulesFor(css, '.sidebar');
+    const acquisitionRailRules = rulesFor(css, '.sidebar-acquisition');
+
+    expect(iqPlotGridRules.length).toBeGreaterThanOrEqual(2);
+    expect(iqPlotGridRules[0]).toMatch(/overflow:\s*hidden/);
+    for (const rule of iqPlotGridRules) expect(rule).not.toMatch(/overflow(?:-x|-y)?:\s*(?:auto|scroll)/);
+
+    expect(sidebarRules[0]).toMatch(/min-height:\s*0/);
+    expect(acquisitionRailRules[0]).toMatch(/flex:\s*0\s+0\s+auto/);
+    for (const rule of acquisitionRailRules) expect(rule).not.toMatch(/position:\s*(?:absolute|fixed)|overflow(?:-x|-y)?:\s*(?:auto|scroll)/);
+  });
 });
 
 function rulesFor(css: string, selector: string): string[] {

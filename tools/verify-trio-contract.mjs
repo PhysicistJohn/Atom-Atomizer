@@ -7,8 +7,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const parent = resolve(root, '..');
 const copies = [
   resolve(root, 'contracts/trio-composition-v4.json'),
-  resolve(parent, 'TinySA_Firmware/contracts/trio-composition-v4.json'),
-  resolve(parent, 'TinySA_SignalLab/contracts/trio-composition-v4.json'),
+  resolve(parent, 'Atom-Firmware/contracts/trio-composition-v4.json'),
+  resolve(parent, 'Atom-SignalLab/contracts/trio-composition-v4.json'),
 ];
 const bytes = await Promise.all(copies.map((path) => readFile(path)));
 for (let index = 1; index < bytes.length; index++) {
@@ -66,6 +66,8 @@ const measurementEdge = trio.edges.find((edge) => edgeKey(edge) === 'signalLab->
 assertEqual(measurementEdge?.transport, 'versioned-ndjson-subprocess', 'SignalLab measurement transport');
 assertEqual(measurementEdge?.contract, 'contracts/signal-lab-measurement-bridge-v1.json', 'SignalLab measurement contract path');
 for (const requiredGuarantee of [
+  'SignalLab produces high-level swept-spectrum and detected-power measurements qualified synthetic-visual-projection plus bounded complex-I/Q measurements for all 34 closed profiles; CW, AM, and FM are qualified analytic-complex-baseband while standards-labelled profiles are qualified standards-derived-complex-baseband and explicitly are not protocol-decodable or conformance vectors',
+  'SignalLab claims usbEmulated false, firmwareExecuted false, and rfEmitted false and exposes no USB, firmware, serial, screen, touch, or RF-generator identity; complex-I/Q is a simulation-native analytic sample capability rather than hardware identity',
   'selected profile is visible only in status and capability state and is never copied into measurement or classifier evidence',
   'every SignalLab session, profile result, and measurement is bound to the exact current opaque producer configuration epoch; stale, missing, unchanged-after-mutation, or mismatched epochs fault the session',
   'requests and lines are bounded, execution is serial, every accepted request settles once, and neither party retries or falls back',
@@ -81,7 +83,7 @@ if (!physicalEdge?.assumptions?.includes(requiredZeroReadbackAssumption)) {
   throw new Error('Physical composition no longer requires zero offset readback');
 }
 if (!trio.safetyInvariants.some((invariant) => invariant.includes('Complex-IQ v1 is a bounded single-buffer acquisition of at most 64 MiB'))) {
-  throw new Error('The future NeptuneSDR boundary does not state the bounded single-buffer I/Q semantics');
+  throw new Error('The generic bounded single-buffer I/Q semantics are missing');
 }
 for (const requiredInvariant of [
   "One acquisition is one atomic measurement transaction: a driver's event and return must be deeply equal when both exist, exactly one validated result is projected, and a conflicting, repeated, novel, stale, or out-of-band measurement faults the session.",
@@ -93,7 +95,7 @@ for (const requiredInvariant of [
 }
 
 const externalFlasher = trio.externalUtilities?.flasher;
-assertEqual(externalFlasher?.repository, 'TinySA_Flasher', 'external flasher repository');
+assertEqual(externalFlasher?.repository, 'Atom-Flasher', 'external flasher repository');
 assertEqual(externalFlasher?.owner, 'firmware-update-control-plane', 'external flasher owner');
 assertEqual(externalFlasher?.runtimeParty, false, 'external flasher runtime-party boundary');
 assertEqual(externalFlasher?.applicationContract, 'contracts/flasher-application-v2.json', 'active Flasher application contract path');
@@ -109,13 +111,13 @@ assertEqual(externalFlasher?.independence, 'no-runtime-build-or-source-dependenc
 if (!Array.isArray(externalFlasher?.exclusiveOwnership)
   || !externalFlasher.exclusiveOwnership.includes('irreversible-write-authority-and-durable-journaling')
   || !externalFlasher.exclusiveOwnership.includes('custom-firmware-manifest-admission-and-content-addressed-local-import')) {
-  throw new Error('TinySA_Flasher exclusive OEM/custom firmware-update ownership is incomplete');
+  throw new Error('Atom-Flasher exclusive OEM/custom firmware-update ownership is incomplete');
 }
 if (trio.edges.some((edge) => edge.producer === 'flasher' || edge.consumer === 'flasher')) {
-  throw new Error('TinySA_Flasher must remain outside runtime trio edges');
+  throw new Error('Atom-Flasher must remain outside runtime trio edges');
 }
 
-const flasherContractsRoot = resolve(parent, 'TinySA_Flasher/contracts');
+const flasherContractsRoot = resolve(parent, 'Atom-Flasher/contracts');
 const flasherV1Path = safeResolve(flasherContractsRoot, externalFlasher.frozenLegacyApplicationContract.replace(/^contracts\//, ''));
 const flasherV2Path = safeResolve(flasherContractsRoot, externalFlasher.applicationContract.replace(/^contracts\//, ''));
 const [flasherV1Bytes, flasherV2Bytes] = await Promise.all([readFile(flasherV1Path), readFile(flasherV2Path)]);
@@ -153,7 +155,7 @@ for (const application of [flasherV1, flasherV2]) {
   }
 }
 
-const twin = await readJson(resolve(parent, 'TinySA_Firmware/digital-twin/contracts/atomizer-twin-v1.json'));
+const twin = await readJson(resolve(parent, 'Atom-Firmware/digital-twin/contracts/atomizer-twin-v1.json'));
 assertEqual(twin.constVersion, trio.parties.firmware.bridgeContractVersion, 'bridge version composition');
 assertEqual(twin.backend, 'renode-executable-twin', 'bridge backend');
 assertEqual(twin.invariants.firmwareRelease, trio.parties.firmware.firmwareRelease, 'firmware release composition');
@@ -183,7 +185,7 @@ const instrumentContractSource = await readFile(resolve(root, 'packages/contract
 const instrumentApiSource = await readFile(resolve(root, 'packages/contracts/src/atomizer-instrument-api.ts'), 'utf8');
 requireSource(instrumentContractSource, 'export const INSTRUMENT_CONTRACT_VERSION = 1 as const', 'instrument contract version');
 requireSource(instrumentContractSource, 'export const MAX_COMPLEX_IQ_BYTES_V1 = 64 * 1024 * 1024', 'complex-I/Q v1 byte ceiling');
-requireSource(instrumentContractSource, "z.literal('complex-iq')", 'future complex-IQ acquisition variant');
+requireSource(instrumentContractSource, "z.literal('complex-iq')", 'complex-I/Q acquisition variant');
 requireSource(instrumentContractSource, "z.literal('signal-lab')", 'SignalLab source provenance');
 requireSource(instrumentApiSource, 'export const ATOMIZER_INSTRUMENT_API_VERSION = 1 as const', 'instrument IPC API version');
 
@@ -204,7 +206,7 @@ for (const forbidden of ['window.tinySA', "'tinysa:", '"tinysa:']) {
   if (registrySource.includes(forbidden) || preloadSource.includes(forbidden)) throw new Error(`Legacy Electron device boundary remains: ${forbidden}`);
 }
 
-const signalLabContractPath = resolve(parent, 'TinySA_SignalLab/contracts/signal-lab-measurement-bridge-v1.json');
+const signalLabContractPath = resolve(parent, 'Atom-SignalLab/contracts/signal-lab-measurement-bridge-v1.json');
 const signalLabContractBytes = await readFile(signalLabContractPath);
 const signalLabContract = JSON.parse(signalLabContractBytes.toString('utf8'));
 assertEqual(signalLabContract.contractId, 'tinysa-signal-lab-atomizer-measurement', 'SignalLab bridge contractId');
@@ -217,13 +219,33 @@ assertEqual(
   'required-safe-integer-center-hz-returned-exactly-and-receiver-filtered-at-that-tune',
   'SignalLab detected-power tuning guarantee',
 );
+assertEqual(
+  signalLabContract.semantics?.scalarMeasurementQualification,
+  'synthetic-visual-projection-not-a-conformance-vector',
+  'SignalLab scalar qualification semantics',
+);
+assertEqual(
+  signalLabContract.semantics?.complexIqMeasurementQualification,
+  'profile-dependent-analytic-laboratory-or-standards-derived-engineering-not-a-conformance-vector',
+  'SignalLab I/Q qualification semantics',
+);
+assertEqual(
+  signalLabContract.semantics?.complexIqAvailability,
+  'all-closed-catalog-profiles-with-standards-labelled-results-explicitly-non-conformance',
+  'SignalLab I/Q profile availability',
+);
+assertEqual(
+  signalLabContract.semantics?.complexIqUndersampling,
+  'wideband-standards-engineering-profiles-may-be-deterministically-aliased-below-their-catalogued-occupied-support',
+  'SignalLab I/Q undersampling semantics',
+);
 assertEqual(signalLabContract.semantics?.retry, 'none', 'SignalLab retry policy');
-const measurementSource = await readFile(resolve(parent, 'TinySA_SignalLab/src/measurement-contract.ts'), 'utf8');
+const measurementSource = await readFile(resolve(parent, 'Atom-SignalLab/src/measurement-contract.ts'), 'utf8');
 requireSource(measurementSource, 'export const ATOMIZER_MEASUREMENT_CONTRACT_VERSION = 1 as const', 'SignalLab measurement source contract version');
 requireSource(measurementSource, "status: z.literal('active')", 'SignalLab active contract status');
 requireSource(measurementSource, 'centerFrequencyHz: z.number().safe().int()', 'SignalLab required safe-integer detected-power tune');
 requireSource(measurementSource, 'frequencyStepHz: z.literal(MEASUREMENT_FREQUENCY_STEP_HZ)', 'SignalLab advertised detected-power tuning lattice');
-const stimulusSource = await readFile(resolve(parent, 'TinySA_SignalLab/src/contracts.ts'), 'utf8');
+const stimulusSource = await readFile(resolve(parent, 'Atom-SignalLab/src/contracts.ts'), 'utf8');
 requireSource(stimulusSource, 'export const SIGNAL_LAB_CONTRACT_VERSION = 1', 'SignalLab stimulus source contract version');
 requireSource(stimulusSource, 'SignalLabStimulusIntent', 'reserved SignalLab stimulus intent');
 

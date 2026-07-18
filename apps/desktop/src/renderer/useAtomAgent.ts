@@ -12,7 +12,16 @@ import { RealtimeResponseLifecycle, buildRealtimeToolContinuation, type Realtime
 
 const ATOM_MICROPHONE_CONSTRAINTS: MediaTrackConstraints = { echoCancellation:true,noiseSuppression:true,autoGainControl:true };
 const ACTIVE_VOICE_OWNER_KEY = Symbol.for('atomizer.active-realtime-voice-owner');
+const VOICE_MODULE_GENERATION = Symbol('Atom Realtime module generation');
+export const ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS = 15_000;
 const voiceRuntime = globalThis as typeof globalThis & Record<symbol, unknown>;
+
+interface ActiveVoiceLease {
+  readonly owner: symbol;
+  readonly moduleGeneration: symbol;
+  readonly mounted: () => boolean;
+  readonly stop: () => void;
+}
 
 export interface AtomAgentHost {
   applicationContext(): string;
@@ -35,7 +44,7 @@ export function useAtomAgent(host: AtomAgentHost) {
   const [microphoneMuted,setMicrophoneMuted]=useState(true);const [speakerMuted,setSpeakerMuted]=useState(false);
   const [approval,setApproval]=useState<AgentApprovalRequest>();
   const [usage,setUsage]=useState<AtomRealtimeUsage>();const [rateLimits,setRateLimits]=useState<readonly AtomRealtimeRateLimit[]>();
-  const mounted=useRef(true); const pendingApproval=useRef<PendingApproval|undefined>(undefined); const pc=useRef<RTCPeerConnection|undefined>(undefined); const dc=useRef<RTCDataChannel|undefined>(undefined); const media=useRef<MediaStream|undefined>(undefined); const remoteAudio=useRef<HTMLAudioElement|undefined>(undefined); const remoteAudioTrackIds=useRef(new Set<string>()); const voiceVerificationTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined); const voiceSessionVerified=useRef(false); const voiceStarting=useRef(false); const voiceSessionGeneration=useRef(0); const voiceOperationGeneration=useRef(0); const voiceResponseOperationGeneration=useRef<number|undefined>(undefined); const voiceContinuationOwner=useRef<AgentOperationOwner|undefined>(undefined); const voiceOwner=useRef(Symbol('Atom Realtime voice owner')); const microphoneMutedRef=useRef(true); const speakerMutedRef=useRef(false); const autoVoiceAttempted=useRef(false); const assistantDraft=useRef(''); const assistantStreamId=useRef<string|undefined>(undefined); const userDraft=useRef(''); const userStreamId=useRef<string|undefined>(undefined); const textConversation=useRef<string|undefined>(undefined); const textInFlight=useRef(false); const textOperationToken=useRef<symbol|undefined>(undefined); const textCallIds=useRef(new RealtimeCallIdLedger()); const voiceToolCount=useRef(0); const voiceCallIds=useRef(new RealtimeCallIdLedger()); const voiceLoadedToolNames=useRef<readonly AgentToolName[]>([]); const voiceResponseLifecycle=useRef(new RealtimeResponseLifecycle());
+  const mounted=useRef(true); const pendingApproval=useRef<PendingApproval|undefined>(undefined); const pc=useRef<RTCPeerConnection|undefined>(undefined); const dc=useRef<RTCDataChannel|undefined>(undefined); const media=useRef<MediaStream|undefined>(undefined); const remoteAudio=useRef<HTMLAudioElement|undefined>(undefined); const remoteAudioTrackIds=useRef(new Set<string>()); const voiceStartupTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined); const voiceVerificationTimeout=useRef<ReturnType<typeof setTimeout>|undefined>(undefined); const voiceSessionVerified=useRef(false); const voiceStarting=useRef(false); const voiceSessionGeneration=useRef(0); const voiceOperationGeneration=useRef(0); const voiceResponseOperationGeneration=useRef<number|undefined>(undefined); const voiceContinuationOwner=useRef<AgentOperationOwner|undefined>(undefined); const voiceOwner=useRef(Symbol('Atom Realtime voice owner')); const microphoneMutedRef=useRef(true); const speakerMutedRef=useRef(false); const autoVoiceAttempted=useRef(false); const assistantDraft=useRef(''); const assistantStreamId=useRef<string|undefined>(undefined); const userDraft=useRef(''); const userStreamId=useRef<string|undefined>(undefined); const textConversation=useRef<string|undefined>(undefined); const textInFlight=useRef(false); const textOperationToken=useRef<symbol|undefined>(undefined); const textCallIds=useRef(new RealtimeCallIdLedger()); const voiceToolCount=useRef(0); const voiceCallIds=useRef(new RealtimeCallIdLedger()); const voiceLoadedToolNames=useRef<readonly AgentToolName[]>([]); const voiceResponseLifecycle=useRef(new RealtimeResponseLifecycle());
 
   const append=useCallback((role:AgentMessage['role'],text:string,statusValue:AgentMessage['status']='complete')=>{if(!mounted.current)return;const bounded=boundAtomUiMessageText(text);setMessages(current=>retainRecentAtomMessages([...current,{id:crypto.randomUUID(),role,text:bounded,createdAt:new Date().toISOString(),status:statusValue}]));},[]);
   useEffect(()=>{
@@ -93,7 +102,8 @@ export function useAtomAgent(host: AtomAgentHost) {
   }
 
   const sendText=useCallback(async(prompt:string)=>{
-    const text=prompt.trim();if(!text||textInFlight.current||voiceStarting.current||pc.current)return;
+    const text=prompt.trim();if(!text||textInFlight.current)return;
+    if(voiceStarting.current||pc.current)stopVoice();
     const token=Symbol('Atom text operation');const owner:AgentOperationOwner={kind:'text',token};textInFlight.current=true;textOperationToken.current=token;
     if(!textConversation.current)textCallIds.current.reset();
     append('user',text);setState('thinking');
@@ -133,17 +143,25 @@ export function useAtomAgent(host: AtomAgentHost) {
   },[append,status]);
 
   const startVoice=useCallback(async()=>{
-    if(textInFlight.current||voiceStarting.current)return;
-    if(pc.current){stopVoice();return;}
+    if(textInFlight.current)return;
+    if(voiceStarting.current||pc.current){stopVoice();return;}
     voiceStarting.current=true;
     const generation=voiceSessionGeneration.current+1;voiceSessionGeneration.current=generation;voiceOperationGeneration.current=0;
     setState('connecting');
     try{
-      const activeOwner=voiceRuntime[ACTIVE_VOICE_OWNER_KEY];
-      if(activeOwner&&activeOwner!==voiceOwner.current)throw new Error('A second Atom Realtime voice session attempted to start in this renderer');
-      voiceRuntime[ACTIVE_VOICE_OWNER_KEY]=voiceOwner.current;
+      const activeLease=readActiveVoiceLease();
+      if(activeLease&&activeLease.owner!==voiceOwner.current){
+        if(activeLease.moduleGeneration!==VOICE_MODULE_GENERATION||!activeLease.mounted())activeLease.stop();
+        else throw new Error('A second Atom Realtime voice session attempted to start in this renderer');
+      }
+      voiceRuntime[ACTIVE_VOICE_OWNER_KEY]={owner:voiceOwner.current,moduleGeneration:VOICE_MODULE_GENERATION,mounted:()=>mounted.current,stop:()=>stopVoice(undefined,undefined,false)} satisfies ActiveVoiceLease;
       voiceToolCount.current=0;voiceCallIds.current.reset();voiceLoadedToolNames.current=[];
       const realtimeConnection=new RTCPeerConnection();pc.current=realtimeConnection;remoteAudioTrackIds.current.clear();
+      voiceStartupTimeout.current=setTimeout(()=>{
+        if(!voiceSessionIsActive(generation,realtimeConnection))return;
+        append('system',`Realtime voice startup did not complete within ${ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS/1_000} seconds`,'failed');
+        stopVoice('error',generation);
+      },ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS);
       const audio=document.createElement('audio');audio.autoplay=true;audio.muted=speakerMutedRef.current;remoteAudio.current=audio;realtimeConnection.ontrack=event=>{if(!voiceSessionIsActive(generation,realtimeConnection))return;const remoteStream=event.streams[0];if(event.track.kind!=='audio'||!remoteStream){append('system','Realtime voice response did not include exactly one audio stream','failed');stopVoice('error',generation);return;}remoteAudioTrackIds.current.add(event.track.id);if(remoteAudioTrackIds.current.size!==1){append('system','Realtime voice returned more than one remote audio track','failed');stopVoice('error',generation);return;}const current=audio.srcObject as MediaStream|null;if(current&&current.id!==remoteStream.id){append('system','Realtime voice returned more than one remote audio stream','failed');stopVoice('error',generation);return;}if(!current){audio.srcObject=remoteStream;console.info('[Atom Realtime] single remote audio playback path attached',{streamId:remoteStream.id,trackId:event.track.id});}};
       const stream=await navigator.mediaDevices.getUserMedia({audio:ATOM_MICROPHONE_CONSTRAINTS});
       if(!voiceSessionIsActive(generation,realtimeConnection)){for(const capturedTrack of stream.getTracks())capturedTrack.stop();return;}media.current=stream;
@@ -181,6 +199,7 @@ export function useAtomAgent(host: AtomAgentHost) {
     if(event.type==='session.updated'){
       const verification=verifyAtomRealtimeVoiceSession(event.session);emitRealtimeSessionCheck('session.updated',verification,'enforced');
       if(!verification.ok){const paths=verification.checks.filter(check=>!check.matches).map(check=>check.path);append('system',`Realtime session configuration mismatch: ${paths.slice(0,5).join(', ')}${paths.length>5?` and ${paths.length-5} more`:''}`,'failed');stopVoice('error',sessionGeneration);return;}
+      if(voiceStartupTimeout.current)clearTimeout(voiceStartupTimeout.current);voiceStartupTimeout.current=undefined;
       if(voiceVerificationTimeout.current)clearTimeout(voiceVerificationTimeout.current);voiceVerificationTimeout.current=undefined;
       const track=media.current?.getAudioTracks()[0];if(!track){append('system','Microphone track disappeared before Realtime configuration completed','failed');stopVoice('error',sessionGeneration);return;}voiceSessionVerified.current=true;track.enabled=!microphoneMutedRef.current;setState('listening');return;
     }
@@ -256,9 +275,10 @@ export function useAtomAgent(host: AtomAgentHost) {
   function upsertStreamingMessage(role:'assistant'|'user',idRef:{current:string|undefined},text:string){if(!text||!mounted.current)return;const bounded=boundAtomUiMessageText(text);const id=idRef.current??crypto.randomUUID();if(!idRef.current){idRef.current=id;setMessages(current=>retainRecentAtomMessages([...current,{id,role,text:bounded,createdAt:new Date().toISOString(),status:'streaming'}]));}else setMessages(current=>retainRecentAtomMessages(current.map(message=>message.id===id?{...message,text:bounded,status:'streaming'}:message)));}
   function finalizeStreamingMessage(role:'assistant'|'user',idRef:{current:string|undefined},text:string){const bounded=boundAtomUiMessageText(text);const id=idRef.current;if(id&&mounted.current)setMessages(current=>retainRecentAtomMessages(current.map(message=>message.id===id?{...message,text:bounded||message.text,status:'complete'}:message)));else if(bounded)append(role,bounded);idRef.current=undefined;}
   function applyTurnTelemetry(turn:{usage?:AtomRealtimeUsage;rateLimits?:readonly AtomRealtimeRateLimit[]}){if(turn.usage)setUsage(turn.usage);if(turn.rateLimits)setRateLimits(turn.rateLimits);}
-  function stopVoice(finalState?:AgentConnectionState,expectedGeneration?:number,updateState=true){if(expectedGeneration!==undefined&&voiceSessionGeneration.current!==expectedGeneration)return;const endingGeneration=voiceSessionGeneration.current;voiceSessionGeneration.current++;voiceOperationGeneration.current++;voiceResponseOperationGeneration.current=undefined;voiceContinuationOwner.current=undefined;cancelPendingApproval(owner=>owner.kind==='voice'&&owner.sessionGeneration===endingGeneration);if(voiceVerificationTimeout.current)clearTimeout(voiceVerificationTimeout.current);voiceVerificationTimeout.current=undefined;voiceSessionVerified.current=false;voiceStarting.current=false;if(voiceRuntime[ACTIVE_VOICE_OWNER_KEY]===voiceOwner.current)delete voiceRuntime[ACTIVE_VOICE_OWNER_KEY];for(const track of media.current?.getTracks()??[])track.stop();media.current=undefined;const audio=remoteAudio.current;remoteAudio.current=undefined;if(audio){audio.pause();audio.srcObject=null;}remoteAudioTrackIds.current.clear();const channel=dc.current;dc.current=undefined;if(channel){channel.onopen=null;channel.onclose=null;channel.onerror=null;channel.onmessage=null;channel.close();}const connection=pc.current;pc.current=undefined;if(connection){connection.ontrack=null;connection.onconnectionstatechange=null;connection.close();}finalizeStreamingMessage('assistant',assistantStreamId,assistantDraft.current);finalizeStreamingMessage('user',userStreamId,userDraft.current);assistantDraft.current='';userDraft.current='';voiceToolCount.current=0;voiceCallIds.current.reset();voiceLoadedToolNames.current=[];voiceResponseLifecycle.current.reset();if(updateState&&mounted.current)setState(current=>finalState??(current==='unconfigured'?'unconfigured':'idle'));}
+  function stopVoice(finalState?:AgentConnectionState,expectedGeneration?:number,updateState=true){if(expectedGeneration!==undefined&&voiceSessionGeneration.current!==expectedGeneration)return;const endingGeneration=voiceSessionGeneration.current;voiceSessionGeneration.current++;voiceOperationGeneration.current++;voiceResponseOperationGeneration.current=undefined;voiceContinuationOwner.current=undefined;cancelPendingApproval(owner=>owner.kind==='voice'&&owner.sessionGeneration===endingGeneration);if(voiceStartupTimeout.current)clearTimeout(voiceStartupTimeout.current);voiceStartupTimeout.current=undefined;if(voiceVerificationTimeout.current)clearTimeout(voiceVerificationTimeout.current);voiceVerificationTimeout.current=undefined;voiceSessionVerified.current=false;voiceStarting.current=false;if(readActiveVoiceLease()?.owner===voiceOwner.current)delete voiceRuntime[ACTIVE_VOICE_OWNER_KEY];for(const track of media.current?.getTracks()??[])track.stop();media.current=undefined;const audio=remoteAudio.current;remoteAudio.current=undefined;if(audio){audio.pause();audio.srcObject=null;}remoteAudioTrackIds.current.clear();const channel=dc.current;dc.current=undefined;if(channel){channel.onopen=null;channel.onclose=null;channel.onerror=null;channel.onmessage=null;channel.close();}const connection=pc.current;pc.current=undefined;if(connection){connection.ontrack=null;connection.onconnectionstatechange=null;connection.close();}finalizeStreamingMessage('assistant',assistantStreamId,assistantDraft.current);finalizeStreamingMessage('user',userStreamId,userDraft.current);assistantDraft.current='';userDraft.current='';voiceToolCount.current=0;voiceCallIds.current.reset();voiceLoadedToolNames.current=[];voiceResponseLifecycle.current.reset();if(updateState&&mounted.current)setState(current=>finalState??(current==='unconfigured'?'unconfigured':'idle'));}
   return {status,state,messages,approval,microphoneMuted,speakerMuted,usage,rateLimits,sendText,startVoice,stopVoice,setMicrophoneMute,setSpeakerMute,resolveApproval};
 }
+function readActiveVoiceLease():ActiveVoiceLease|undefined{const value=voiceRuntime[ACTIVE_VOICE_OWNER_KEY];if(!value||typeof value!=='object')return undefined;const candidate=value as Partial<ActiveVoiceLease>;return typeof candidate.owner==='symbol'&&typeof candidate.moduleGeneration==='symbol'&&typeof candidate.mounted==='function'&&typeof candidate.stop==='function'?candidate as ActiveVoiceLease:undefined;}
 function isScreenshot(value:unknown):value is {kind:'atomizer-screenshot';screenshotId:string;imageDataUrl:string;width:number;height:number;capturedAt:string;focusedTarget:string}{return Boolean(value&&typeof value==='object'&&(value as {kind?:unknown}).kind==='atomizer-screenshot');}
 function activeExecution(context:string):string|undefined{try{const value=JSON.parse(context) as {topology?:{instrument?:{execution?:unknown}|null}};return typeof value.topology?.instrument?.execution==='string'?value.topology.instrument.execution:undefined;}catch(error){throw new Error(`Atom application context is malformed: ${error instanceof Error?error.message:String(error)}`);}}
 

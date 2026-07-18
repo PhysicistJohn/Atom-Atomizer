@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAtomRealtimeVoiceSessionConfig } from '@tinysa/agent';
 import {
@@ -8,12 +9,13 @@ import {
   ATOM_UI_MESSAGE_CHARACTER_LIMIT,
   ATOM_UI_MESSAGE_LIMIT,
 } from './atom-agent-retention.js';
-import { useAtomAgent } from './useAtomAgent.js';
+import { ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS, useAtomAgent } from './useAtomAgent.js';
 
 const originalMediaDevicesDescriptor = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if(originalMediaDevicesDescriptor)Object.defineProperty(navigator, 'mediaDevices', originalMediaDevicesDescriptor);
@@ -169,6 +171,19 @@ describe('useAtomAgent long-session retention', () => {
 describe('useAtomAgent voice-session ownership', () => {
   beforeEach(() => installVoiceFakes());
 
+  it('owns exactly one peer across React StrictMode effect replay and releases it on unmount', async () => {
+    const { unmount } = renderHook(
+      () => useAtomAgent({ applicationContext: () => '{}', execute: vi.fn() }),
+      { wrapper: StrictMode },
+    );
+    await waitFor(() => expect(FakePeerConnection.instances).toHaveLength(1));
+    await waitFor(() => expect(window.atomAgent.createRealtimeCall).toHaveBeenCalledOnce());
+
+    unmount();
+
+    expect(FakePeerConnection.instances[0]?.closed).toBe(true);
+  });
+
   it('rejects response events until the exact voice session is verified', async () => {
     const execute = vi.fn();
     const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute }));
@@ -206,6 +221,41 @@ describe('useAtomAgent voice-session ownership', () => {
     expect(staleStream.track.readyState).toBe('ended');
     expect(replacementStream.track.readyState).toBe('live');
     expect(FakePeerConnection.instances[1]?.closed).toBe(false);
+  });
+
+  it('lets a text request preempt a hanging automatic voice startup without losing the prompt', async () => {
+    const lateCapture = deferred<MediaStream>();
+    const staleStream = new FakeMediaStream();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockReset().mockReturnValue(lateCapture.promise);
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute: vi.fn() }));
+    await waitFor(() => expect(result.current.state).toBe('connecting'));
+
+    await act(async () => { await result.current.sendText('Inspect the session safely.'); });
+
+    expect(window.atomAgent.agentTurn).toHaveBeenCalledOnce();
+    expect(result.current.messages.some((message) => message.role === 'user' && message.text === 'Inspect the session safely.')).toBe(true);
+    expect(result.current.messages.some((message) => message.role === 'assistant' && message.text === 'answer 1')).toBe(true);
+    expect(FakePeerConnection.instances[0]?.closed).toBe(true);
+    expect(result.current.state).toBe('idle');
+
+    lateCapture.resolve(staleStream as unknown as MediaStream);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(staleStream.track.readyState).toBe('ended');
+    expect(window.atomAgent.createRealtimeCall).not.toHaveBeenCalled();
+  });
+
+  it('bounds voice startup even when microphone capture never settles', async () => {
+    vi.useFakeTimers();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockReset().mockReturnValue(new Promise<MediaStream>(() => undefined));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute: vi.fn() }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(result.current.state).toBe('connecting');
+
+    await act(async () => { vi.advanceTimersByTime(ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS); await Promise.resolve(); });
+
+    expect(result.current.state).toBe('error');
+    expect(result.current.messages.some((message) => message.role === 'system' && message.text.includes('startup did not complete'))).toBe(true);
+    expect(FakePeerConnection.instances[0]?.closed).toBe(true);
   });
 
   it('fences a late tool completion from a stopped session and a replacement session', async () => {
@@ -277,14 +327,16 @@ describe('useAtomAgent voice-session ownership', () => {
     expect(FakePeerConnection.instances.at(-1)?.closed).toBe(false);
   });
 
-  it('excludes text turns while voice owns the renderer', async () => {
+  it('lets an explicit text request replace an active voice session', async () => {
     const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute: vi.fn() }));
     await activeVoiceChannel();
 
-    await act(async () => { await result.current.sendText('Do not overlap voice.'); });
+    await act(async () => { await result.current.sendText('Switch to text.'); });
 
-    expect(window.atomAgent.agentTurn).not.toHaveBeenCalled();
-    expect(result.current.messages.some((message) => message.text === 'Do not overlap voice.')).toBe(false);
+    expect(window.atomAgent.agentTurn).toHaveBeenCalledOnce();
+    expect(result.current.messages.some((message) => message.text === 'Switch to text.')).toBe(true);
+    expect(FakePeerConnection.instances[0]?.closed).toBe(true);
+    expect(result.current.state).toBe('idle');
   });
 
   it('fails the active voice session before retaining an oversized streaming draft', async () => {

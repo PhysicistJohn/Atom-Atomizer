@@ -11,7 +11,7 @@ Custom-probe reference source: `53850c4aa4f8947e4a7ab3ebef553dad1f8e770d`
 Target: tinySA Ultra+ ZS407 (`hwid` 103)
 
 This contract is derived from the pinned firmware source in the sibling
-`TinySA_Firmware` checkout. It replaces guessed serial behavior in the desktop
+`Atom-Firmware` checkout. It replaces guessed serial behavior in the desktop
 application. Firmware source is authoritative for framing and command behavior;
 the physical unit remains authoritative for timing, calibration, RF accuracy and
 the exact shipped version.
@@ -90,10 +90,11 @@ the derived receiver capability. Advertising required `zero` command presence
 does not itself authorize raw acquisition: the exact safe `zero ?` probe and
 `scanraw` surface must still prove usable offset readback. Generator, screen,
 remote-panel, firmware trace, and marker features are also optional.
-Source-qualified firmware receives only
-the optional features whose commands are advertised. An unqualified custom build
-receives only behavior established by the exact safe probes below; if the result
-cannot form a complete acquisition, the generic instrument connection is rejected.
+The supported OEM/twin profiles receive only the optional features whose
+commands are advertised. A reduced custom receiver receives only behavior
+established by the exact safe probes below plus any narrowly registered source
+proof; if the result cannot form a complete acquisition, the generic instrument
+connection is rejected.
 
 ## Custom-firmware capability probes
 
@@ -102,6 +103,37 @@ identity remains `custom-unqualified`. Command names in `help` are not behaviora
 proof, so Atomizer sends the following closed, read-only probe set and parses the
 whole response. Extra, missing, duplicated, or prose-contaminated lines do not
 partially match.
+
+The exact `0483:5740` USB identity and strict ZS407 product identity admit a
+host-bounded **receive-only** tuning envelope of 0–900 MHz: the normal ZS407
+input path only. The connected startup span is state, not a capability limit.
+Custom firmware receives no Ultra/harmonic range, generator range, screen,
+touch, or marker capability from that hardware identity. Each requested tune
+inside the envelope remains tentative until the adapter has sent acknowledged
+`output off`, restored `mode input`, applied the complete analyzer transaction,
+and reread the exact requested start, stop, and point count. A rejection,
+different readback, or safety-command failure invalidates the configuration and
+leaves no acquisition binding.
+
+One exact custom receiver identity is separately registered:
+`tinySA4_hw-v0.3-fft1024-g43eb0f1` maps to frozen source commit
+`43eb0f193c8619cb7ca23726e3062973c65ae958`. Audited source proves
+`set_sweep_points` clamps to 20–450, so the
+`custom-source-qualified-receive-only` projection may request that full point
+range even when cold readback is 101. The serial shell does not attest the
+documented binary SHA-256
+`6f284a24c4b4ab178da13af97e102e1a624618c9a67e8418b19bbc153e6f0174`;
+the warning remains visible and this is not OEM, hardware/RF, or metrology
+qualification. Generator, screen, touch, marker, firmware-trace-bank, and
+Ultra/harmonic authority remain absent. A decorated, dirty, alternate, or
+short-hash-only identity falls back to `custom-unqualified`.
+
+The extension point for another frozen custom build is the closed receiver
+source registry in `packages/contracts/src/firmware-provenance.ts`. A reviewed
+entry must bind the exact clean embedded version, full immutable source commit,
+documented artifact SHA-256, and narrowly audited capability projection.
+Runtime code never inspects `../Atom-Firmware`, a branch, or dirty `HEAD` to
+grant trust.
 
 | Surface | Probe | Exact source shape used for admission |
 | --- | --- | --- |
@@ -151,8 +183,10 @@ Atomizer accepts a physical session only with exact `0483:5740` USB,
 The closed shell-identity registry maps exactly
 `tinySA4_v1.4-217-gc5dd31f` to the shipped full commit and exactly
 `tinySA4_v1.4-224-gc979386` to the pinned OEM/host full commit; only those full
-version/revision/commit tuples receive source-qualified provenance and pinned
-ZS407 capability defaults. A decorated or alternate version carrying either
+version/revision/commit tuples receive supported-OEM provenance and pinned
+ZS407 capability defaults. The separate exact custom receiver record above
+receives only its frozen-source 20–450 point proof and never inherits the OEM
+profile. A decorated or alternate version carrying any
 known Git suffix is not equivalent and is warning-admitted as
 `custom-unqualified`, just like any other unknown syntactically valid revision,
 only when its safe probes establish a usable receiver surface. It receives no source
@@ -171,6 +205,8 @@ identification loudly.
 | Capability | Contract |
 | --- | ---: |
 | normal analyzer ceiling | 900 MHz |
+| custom-unqualified physical receive-only envelope | 0–900 MHz; exact ZS407 USB/model only, exact per-retune readback required |
+| exact `43eb0f1` custom receiver points | 20–450; frozen source proof only, serial binary unattested, exact per-retune readback required |
 | Ultra transition (`6.3 GHz + 1.0701 GHz`) | 7.3701 GHz |
 | default third-harmonic command ceiling | 17.9226 GHz |
 | analyzer points | 20–450 (host-safe subset) |
@@ -360,10 +396,14 @@ retried.
 - `FW-PROTO-016`: remote press/release cannot interleave with continuous acquisition; resume occurs only after successful release and analyzer re-verification.
 - `FW-PROTO-017`: D1–D4 overlay visibility is host-only, explicit, and cannot issue a firmware trace mutation.
 - `FW-PROTO-018`: custom capability discovery accepts the complete multiline
-  replies from TinySA_Firmware `53850c4`, including the literal `usage:` prefixes
+  replies from Atom-Firmware `53850c4`, including the literal `usage:` prefixes
   and state lines, while rejecting partial/prose-contaminated variants.
 - `FW-PROTO-019`: custom text-scan discovery uses only
   `scan ? ? ? ? ?`; `scan ?` is never sent and cannot trigger an acquisition.
+- `FW-PROTO-021`: exact clean `tinySA4_hw-v0.3-fft1024-g43eb0f1` receives only
+  the frozen-source 20–450 point proof after the same safe probes and restoration;
+  cold 101-point state may retune FM/Band 14 to exact 449/450-point readback,
+  while decorated identities and any prohibited feature remain fail-closed.
 - `FW-PROTO-020`: every admitted physical firmware surface advertises `zero` as
   part of the composition-required command set; omission fails before session
   admission, while malformed `zero ?` evidence still withholds raw acquisition.

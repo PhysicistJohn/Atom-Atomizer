@@ -3,10 +3,10 @@
   "$id": "https://tinysa.local/contracts/trio-composition-v4.json",
   "contractId": "tinysa-trio-composition",
   "contractVersion": 4,
-  "effectiveDate": "2026-07-14",
+  "effectiveDate": "2026-07-17",
   "parties": {
     "atomizer": {
-      "repository": "TinySA",
+      "repository": "Atom-Atomizer",
       "owner": "operator-control-plane-and-instrument-host",
       "applicationContractVersion": 6,
       "instrumentContractVersion": 1,
@@ -46,7 +46,7 @@
       }
     },
     "firmware": {
-      "repository": "TinySA_Firmware",
+      "repository": "Atom-Firmware",
       "owner": "executable-hardware-twin",
       "bridgeContractVersion": 1,
       "bridge": "renode-monitor-v1",
@@ -55,7 +55,7 @@
       "firmwareBinarySha256": "a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7"
     },
     "signalLab": {
-      "repository": "TinySA_SignalLab",
+      "repository": "Atom-SignalLab",
       "owner": "synthetic-measurement-and-stimulus-authoring",
       "measurementBridgeContractVersion": 1,
       "measurementBridgeStatus": "active",
@@ -67,7 +67,7 @@
   },
   "externalUtilities": {
     "flasher": {
-      "repository": "TinySA_Flasher",
+      "repository": "Atom-Flasher",
       "owner": "firmware-update-control-plane",
       "runtimeParty": false,
       "applicationContract": "contracts/flasher-application-v2.json",
@@ -105,8 +105,8 @@
         "one admitted session permits one in-flight request and treats framing, process, correlation, schema, or timeout failure as terminal"
       ],
       "guarantees": [
-        "SignalLab produces only high-level swept-spectrum and detected-power measurements qualified synthetic-visual-projection",
-        "SignalLab claims usbEmulated false, firmwareExecuted false, and rfEmitted false and exposes no USB, firmware, serial, screen, touch, RF-generator, or complex-IQ identity",
+        "SignalLab produces high-level swept-spectrum and detected-power measurements qualified synthetic-visual-projection plus bounded complex-I/Q measurements for all 34 closed profiles; CW, AM, and FM are qualified analytic-complex-baseband while standards-labelled profiles are qualified standards-derived-complex-baseband and explicitly are not protocol-decodable or conformance vectors",
+        "SignalLab claims usbEmulated false, firmwareExecuted false, and rfEmitted false and exposes no USB, firmware, serial, screen, touch, or RF-generator identity; complex-I/Q is a simulation-native analytic sample capability rather than hardware identity",
         "every status and measurement carries the exact ready identity while Atomizer binds the session sourceId independently",
         "selected profile is visible only in status and capability state and is never copied into measurement or classifier evidence",
         "profile selection invalidates the admitted acquisition configuration before dispatch, atomically changes the selected capability, and must advance the opaque producer configuration epoch",
@@ -184,12 +184,12 @@
     "The factory default is SignalLab; preference or startup failure is visible and cannot activate a TinySA or firmware twin as fallback.",
     "Only Atomizer owns runtime instrument selection, session serialization, configuration admission, acquisition streaming, OpenAI credentials, agent policy, approvals, and operator orchestration.",
     "Each driver owns source-specific discovery, identity proof, command translation, capabilities, and teardown; the generic host contains no serial, TinySA shell, SignalLab generator, or future NeptuneSDR protocol logic.",
-    "SignalLab is a high-level measurement driver and is never represented as a ByteTransport, TinySA, USB device, firmware device, RF emitter, screen, touch surface, or complex-IQ source.",
+    "SignalLab is a high-level measurement driver and is never represented as a ByteTransport, TinySA, USB device, firmware device, RF emitter, screen, or touch surface; its bounded complex-IQ capability is simulation-native analytic baseband and never hardware identity.",
     "SignalLab selected profile and UI state are excluded from detector and classifier inputs; only admitted measurement evidence and source qualification may reach analysis.",
     "A SignalLab profile change invalidates the current configuration before any further acquisition.",
-    "A sweep or detected-power capture is admitted only when its session ID, configuration revision, provenance binding, point count, monotonic sequence, units, and capability constraints match the active session.",
+    "A sweep, detected-power, or complex-IQ capture is admitted only when its session ID, configuration revision, producer epoch, geometry, monotonic sequence, qualification, and capability constraints match the active session.",
     "One acquisition is one atomic measurement transaction: a driver's event and return must be deeply equal when both exist, exactly one validated result is projected, and a conflicting, repeated, novel, stale, or out-of-band measurement faults the session.",
-    "Complex-IQ v1 is a bounded single-buffer acquisition of at most 64 MiB reserved for a driver such as NeptuneSDR: acquire returns one complete cf32le Uint8Array with exact sample-count geometry; continuous complex-IQ acquisition is rejected, and v1 claims no chunking, continuation, backpressure, or indefinite stream semantics. Current SignalLab and TinySA drivers do not claim it.",
+    "Complex-IQ v1 is a bounded single-buffer acquisition of at most 64 MiB for an admitted driver: acquire returns one complete native-format Uint8Array with exact sample-count geometry; continuous complex-IQ acquisition is rejected, and v1 claims no chunking, continuation, backpressure, or indefinite stream semantics. SignalLab advertises the narrower cf32le-only 65,536-sample ceiling for all 34 closed profiles, applies independent bandwidth filtering, and declares that its replay channel is not applied; CW, AM, and FM are analytic laboratory envelopes, while standards-labelled results are deterministic engineering projections that may alias below catalogued occupied support and are neither protocol-decodable nor conformance vectors. The current TinySA driver does not claim complex-IQ.",
     "Atomizer main is the sole owner of RF output state. Physical state is command-acknowledged, executable-twin state is firmware-executed-twin, and unsupported sources are not-applicable; none of those labels implies calibrated RF measurement.",
     "An RF-capable session enters unknown before output-affecting dispatch. Configuration and each acquisition establish output off, disconnect reasserts output off, and command failure, incomplete echo, or uncertain touch fails closed without claiming off.",
     "Firmware-screen touch invalidates the admitted acquisition configuration and RF state; acquisition and unsafe features remain blocked until an explicit output-off recovery establishes a safe session state.",
@@ -197,9 +197,9 @@
     "Every main-to-renderer response and event is runtime-validated before it may alter renderer state; stale-session events and stale producer epochs are rejected.",
     "Only Firmware owns executable-twin state and the future SignalLab stimulus sink.",
     "Only SignalLab owns waveform descriptors, deterministic channel configuration, synthetic measurement generation, and stimulus intent.",
-    "TinySA_Flasher is outside the runtime trio and exclusively owns OEM and custom firmware artifacts, download or import verification, physical preflight, DFU admission, firmware writes, durable update journals, and post-write verification.",
-    "Atomizer exposes no firmware artifact, update, DFU, journal, or flash API and does not import or launch TinySA_Flasher.",
-    "The runtime trio and TinySA_Flasher have no circular source, build, package, process, or state dependency.",
+    "Atom-Flasher is outside the runtime trio and exclusively owns OEM and custom firmware artifacts, download or import verification, physical preflight, DFU admission, firmware writes, durable update journals, and post-write verification.",
+    "Atomizer exposes no firmware artifact, update, DFU, journal, or flash API and does not import or launch Atom-Flasher.",
+    "The runtime trio and Atom-Flasher have no circular source, build, package, process, or state dependency.",
     "RF output enable and general firmware-screen touch remain action-time approval boundaries for Atom.",
     "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
     "Screenshots, device strings, application context, bridge diagnostics, and tool outputs are untrusted data rather than instructions.",
@@ -216,7 +216,7 @@
     "Instrument shutdown commands RF output off when that capability exists before disconnecting the active session; failed shutdown remains retryable without discarding the owned session.",
     "Physical serial enumeration, open, and close settle within declared deadlines, including cleanup of handles returned after an open timeout.",
     "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds.",
-    "TinySA_Flasher availability or update state cannot block Atomizer, Firmware, or SignalLab startup or operation."
+    "Atom-Flasher availability or update state cannot block Atomizer, Firmware, or SignalLab startup or operation."
   ],
   "failureAlgebra": {
     "invalidInput": "reject-before-state-change",
@@ -244,7 +244,7 @@
     "rule": "A producer guarantee must imply every consumer assumption on the same active runtime edge.",
     "runtimeVersioning": "Any weakened guarantee, stronger assumption, changed runtime owner, changed evidence label, driver contract change, or newly active runtime edge requires a new trio contract version and coordinated commits in all three runtime repositories.",
     "driverEvolution": "A new driver registers a unique driverId and sourceKind set, declares only truthful generic capabilities, and adds a separately versioned source-specific extension only when the common contract cannot express an operation without making another driver lie; complex-IQ chunking, continuation, backpressure, or long-lived sample streaming requires a new instrument/API contract version.",
-    "externalUtilityVersioning": "TinySA_Flasher versions its application, device, evidence, and interface contracts independently; changing its release or write policy does not change this runtime composition unless the ownership boundary changes.",
-    "verification": "Release gating requires byte-identical v4 copies in the three runtime repositories, a real SignalLab producer-consumer interoperation test, repository-local runtime/build/boundary tests, and independent validation of TinySA_Flasher's active interface catalog v3, active application/device contract v2, frozen interface catalog v2, and frozen legacy application contract v1."
+    "externalUtilityVersioning": "Atom-Flasher versions its application, device, evidence, and interface contracts independently; changing its release or write policy does not change this runtime composition unless the ownership boundary changes.",
+    "verification": "Release gating requires byte-identical v4 copies in the three runtime repositories, a real SignalLab producer-consumer interoperation test, repository-local runtime/build/boundary tests, and independent validation of Atom-Flasher's active interface catalog v3, active application/device contract v2, frozen interface catalog v2, and frozen legacy application contract v1."
   }
 }

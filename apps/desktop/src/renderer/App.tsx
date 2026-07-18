@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import { CircleAlert, Download, LoaderCircle, Play, Repeat2, StopCircle } from 'lucide-react';
+import { CircleAlert, Download } from 'lucide-react';
 import {
   atomizerInstrumentEventSchema,
   atomizerInstrumentFeatureExecutionSchema,
@@ -9,6 +9,7 @@ import {
   analyzerConfigPatchSchema,
   analyzerConfigSchema,
   channelMeasurementConfigurationSchema,
+  complexIqConfigurationSchema,
   envelopeStftConfigurationSchema,
   generatorConfigSchema,
   instrumentConfigurationStateSchema,
@@ -28,6 +29,7 @@ import {
   type AnalyzerConfig,
   type AnalyzerConfigPatch,
   type AtomizerInstrumentEvent,
+  type AtomizerInstrumentFeatureExecution,
   type AtomizerInstrumentPreferenceSelection,
   type AtomizerInstrumentState,
   type ChannelMeasurementConfiguration,
@@ -55,6 +57,7 @@ import {
   type MarkerSearchConfiguration,
   type MeasurementViewId,
   type SignalDetectionConfig,
+  type SignalLabChannelState,
   type SpectrumDisplayConfiguration,
   type Sweep,
   type TraceBankConfiguration,
@@ -75,7 +78,6 @@ import {
   TraceAccumulator,
   autoScaleSpectrum,
   calculateSweepMetrics,
-  classificationRepresentatives,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
   createDetectedPowerCaptureReceipt,
@@ -86,6 +88,7 @@ import {
   readMarkers,
   searchMarker,
   type EnvelopeClassification,
+  type WaveformEvidence,
 } from '@tinysa/analysis';
 import {
   ATOM_AGENT_MODEL,
@@ -105,6 +108,7 @@ import { ClassificationWorkspace } from './components/ClassificationWorkspace.js
 import { ConnectionDialog } from './components/ConnectionDialog.js';
 import { DeviceWorkspace } from './components/DeviceWorkspace.js';
 import { GeneratorWorkspace } from './components/GeneratorWorkspace.js';
+import { IqWorkspace } from './components/IqWorkspace.js';
 import { MeasurementWorkspace } from './components/MeasurementWorkspace.js';
 import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -126,6 +130,10 @@ import {
   sanitizeClassificationEvidenceDetections,
   visibleClassificationTargetProjections,
 } from './classification-target-selection.js';
+import {
+  exactClassificationEvidenceSweeps,
+  selectVisibleClassificationRepresentative,
+} from './classification-work-admission.js';
 export {
   resolveClassificationTargetSelection,
   resolveVisibleClassificationTargetSelection,
@@ -149,6 +157,14 @@ import {
   createBayesianClassifierRuntime,
   type BayesianClassifierRuntime,
 } from './bayesian-classifier-runtime.js';
+import {
+  DEFAULT_COMPLEX_IQ_CONFIGURATION,
+  complexIqConfigurationFor,
+  reconcileComplexIqConfiguration,
+  sameComplexIqConfiguration,
+  type ComplexIqConfiguration,
+  type ComplexIqMeasurement,
+} from './complex-iq.js';
 
 const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
@@ -181,13 +197,24 @@ const HISTORY_LIMIT = 128;
 // One immutable configuration per retained sweep, plus bounded room for the
 // active mode, zero-span evidence, retune overlap, and admitted async work.
 const CONFIGURATION_REVISION_LIMIT = HISTORY_LIMIT + 32;
+const INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS = 2_000;
+const CONTINUOUS_IQ_TRANSACTION = 'continuous-complex-iq-buffer';
 type RendererConfigurationRevision =
   | { readonly kind: 'swept-spectrum'; readonly admitted: SweptSpectrumConfiguration }
-  | { readonly kind: 'detected-power-timeseries'; readonly admitted: DetectedPowerTimeseriesConfiguration };
+  | { readonly kind: 'detected-power-timeseries'; readonly admitted: DetectedPowerTimeseriesConfiguration }
+  | { readonly kind: 'complex-iq'; readonly admitted: ComplexIqConfiguration };
 interface ContinuousStreamOwnership {
   readonly generation: number;
   readonly sessionId: string;
   readonly configurationRevision: string;
+}
+type ContinuousAcquisitionMode = 'spectrum' | 'complex-iq';
+interface ContinuousIqConfigurationOwnership {
+  readonly sessionId: string;
+  readonly stagedRevision: number;
+  readonly configuration: ComplexIqConfiguration;
+  readonly configured: InstrumentConfigurationState;
+  readonly lease: RevisionCacheLease<RendererConfigurationRevision>;
 }
 interface ContinuousMeasurementWork {
   readonly ownership: ContinuousStreamOwnership;
@@ -197,6 +224,41 @@ interface ContinuousMeasurementWork {
 interface ContinuousMeasurementStopRequest {
   readonly ownership: ContinuousStreamOwnership;
   readonly message: string;
+}
+interface OperatorContinuousStopRequest {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason: unknown) => void;
+}
+interface ClassificationWork {
+  readonly sequence: number;
+  readonly ownership?: ContinuousStreamOwnership;
+  readonly requests: readonly {
+    readonly detection: DetectedSignal;
+    readonly evidence: WaveformEvidence;
+  }[];
+}
+type InvalidatingFeatureRequest =
+  | Extract<InstrumentFeatureRequest, { kind: 'signal-lab-profile-selection' }>
+  | Extract<InstrumentFeatureRequest, { kind: 'touch' }>
+  | Extract<InstrumentFeatureRequest, { kind: 'rf-generator'; action: 'configure' }>;
+type FeatureResultEvent = Extract<AtomizerInstrumentEvent, { type: 'feature-result' }>;
+type ConfigurationInvalidatedEvent = Extract<AtomizerInstrumentEvent, { type: 'configuration-invalidated' }>;
+interface InvalidatingFeatureReceipt {
+  readonly request: InvalidatingFeatureRequest;
+  readonly sessionId: string;
+  readonly reason: ConfigurationInvalidatedEvent['reason'];
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (reason: unknown) => void;
+  readonly timeout: number;
+  execution?: AtomizerInstrumentFeatureExecution;
+  featureResult?: FeatureResultEvent;
+  invalidation?: ConfigurationInvalidatedEvent;
+  settled: boolean;
+}
+interface RecordedSweep {
+  readonly classification?: ClassificationWork;
 }
 const DEFAULT_TRACES: TraceBankConfiguration = traceBankConfigurationSchema.parse([
   { id: 1, mode: 'clear-write', averageCount: 8 },
@@ -256,10 +318,16 @@ function useControllerState<T>(
 export interface AppProps {
   /** Dependency seam for evidence-lifecycle tests; production uses the admitted bundled runtime. */
   readonly classifierRuntimeFactory?: () => BayesianClassifierRuntime;
+  /** Optional launch workspace for browser deep links; desktop keeps the spectrum default. */
+  readonly initialWorkspace?: WorkspaceId;
+  /** Browser launch surfaces can start focused without opening the Atom agent panel. */
+  readonly initialAgentOpen?: boolean;
 }
 
 export function App({
   classifierRuntimeFactory = createBayesianClassifierRuntime,
+  initialWorkspace = 'spectrum',
+  initialAgentOpen = true,
 }: AppProps = {}) {
   const renderMutationRevision = useRef(0);
   const committedRenderRevision = useRef(0);
@@ -267,9 +335,9 @@ export function App({
   const rendererMounted = useRef(true);
   const markRenderMutation = useCallback(() => { renderMutationRevision.current++; }, []);
 
-  const [workspace, setWorkspace, workspaceRef] = useControllerState<WorkspaceId>('spectrum', markRenderMutation);
+  const [workspace, setWorkspace, workspaceRef] = useControllerState<WorkspaceId>(initialWorkspace, markRenderMutation);
   const [measurementView, setMeasurementView, measurementViewRef] = useControllerState<MeasurementViewId>(() => loadStored('measurement-view', visibleMeasurementView, 'spectrum'), markRenderMutation);
-  const [agentOpen, setAgentOpen] = useControllerState(true, markRenderMutation);
+  const [agentOpen, setAgentOpen] = useControllerState(initialAgentOpen, markRenderMutation);
   const [instrument, setInstrument, instrumentRef] = useControllerState<AtomizerInstrumentState>(INITIAL_INSTRUMENT_STATE, markRenderMutation);
   const [candidates, setCandidates, candidatesRef] = useControllerState<InstrumentCandidate[]>([], markRenderMutation);
   const [discoveryFailures, setDiscoveryFailures, discoveryFailuresRef] = useControllerState<InstrumentDiscoveryFailure[]>([], markRenderMutation);
@@ -278,6 +346,7 @@ export function App({
   const [connectionBusy, setConnectionBusy] = useControllerState(false, markRenderMutation);
   const [analyzer, setAnalyzer, analyzerRef] = useControllerState<AnalyzerConfig>(() => loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER), markRenderMutation);
   const [generator, setGenerator, generatorRef] = useControllerState<GeneratorConfig>(() => loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR), markRenderMutation);
+  const [iqConfiguration, setIqConfiguration, iqConfigurationRef] = useControllerState<ComplexIqConfiguration>(() => loadStored('complex-iq', complexIqConfigurationSchema.parse, DEFAULT_COMPLEX_IQ_CONFIGURATION), markRenderMutation);
   const [detectionConfig, setDetectionConfig, detectionConfigRef] = useControllerState<SignalDetectionConfig>(() => loadStored('detector', parseStoredDetection, DEFAULT_DETECTION), markRenderMutation);
   const [zeroConfig, setZeroConfig, zeroConfigRef] = useControllerState<ZeroSpanConfig>(() => loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN), markRenderMutation);
   const [traceConfiguration, setTraceConfiguration, traceConfigurationRef] = useControllerState<TraceBankConfiguration>(() => loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES), markRenderMutation);
@@ -310,14 +379,17 @@ export function App({
   const [envelope, setEnvelope, envelopeRef] = useControllerState<EnvelopeClassification | undefined>(undefined, markRenderMutation);
   const [diagnostics, setDiagnostics, diagnosticsRef] = useControllerState<readonly string[]>([], markRenderMutation);
   const [screenFrame, setScreenFrame, screenFrameRef] = useControllerState<InstrumentScreenFrame | undefined>(undefined, markRenderMutation);
+  const [iqCapture, setIqCapture] = useControllerState<ComplexIqMeasurement | undefined>(undefined, markRenderMutation);
   const [selectedProfile, setSelectedProfile, selectedProfileRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
+  const [selectedSignalLabChannel, setSelectedSignalLabChannel, selectedSignalLabChannelRef] = useControllerState<SignalLabChannelState | undefined>(undefined, markRenderMutation);
   const [acquisition, setAcquisition, acquisitionRef] = useControllerState<AcquisitionState>('idle', markRenderMutation);
   const [continuous, setContinuous, continuousRef] = useControllerState(false, markRenderMutation);
+  const [continuousMode, setContinuousMode, continuousModeRef] = useControllerState<ContinuousAcquisitionMode>('spectrum', markRenderMutation);
   const [instrumentTransactionActive, setInstrumentTransactionActive] = useControllerState(false, markRenderMutation);
   const [remoteGestureActive, setRemoteGestureActive] = useControllerState(false, markRenderMutation);
   const [error, setError, errorRef] = useControllerState<string | undefined>(undefined, markRenderMutation);
   const [notice, setNotice] = useControllerState<string | undefined>(undefined, markRenderMutation);
-  const [classifierRuntime] = useState(classifierRuntimeFactory);
+  const [classifierAvailability, setClassifierAvailability] = useState<'ready' | 'unavailable'>('ready');
 
   const detector = useRef(new SignalDetector(detectionConfig));
   const tracker = useRef(new SignalTracker(detectionConfig));
@@ -334,11 +406,23 @@ export function App({
   const continuousRequested = useRef(false);
   const continuousStreamGeneration = useRef(0);
   const continuousStreamOwnership = useRef<ContinuousStreamOwnership | undefined>(undefined);
-  const continuousMeasurementTask = useRef<Promise<void> | undefined>(undefined);
-  const pendingContinuousMeasurement = useRef<ContinuousMeasurementWork | undefined>(undefined);
+  const continuousIqTask = useRef<Promise<void> | undefined>(undefined);
+  const continuousIqGeneration = useRef(0);
+  const continuousIqBufferTask = useRef<Promise<unknown> | undefined>(undefined);
+  const continuousIqPauseDepth = useRef(0);
+  const continuousIqResumeWaiters = useRef(new Set<() => void>());
+  const continuousIqConfigurationOwnership = useRef<ContinuousIqConfigurationOwnership | undefined>(undefined);
+  const iqConfigurationRevision = useRef(0);
+  const classificationTask = useRef<Promise<void> | undefined>(undefined);
+  const pendingClassificationWork = useRef<ClassificationWork | undefined>(undefined);
+  const lastPublishedClassificationSequence = useRef(0);
+  const classifierRuntime = useRef<BayesianClassifierRuntime | undefined>(undefined);
+  const pendingInvalidatingFeatureReceipt = useRef<InvalidatingFeatureReceipt | undefined>(undefined);
   const continuousMeasurementStopRequest = useRef<ContinuousMeasurementStopRequest | undefined>(undefined);
   const continuousMeasurementStopTask = useRef<Promise<void> | undefined>(undefined);
   const failedContinuousMeasurementStopGeneration = useRef<number | undefined>(undefined);
+  const operatorContinuousStopRequest = useRef<OperatorContinuousStopRequest | undefined>(undefined);
+  const operatorContinuousStopTask = useRef<Promise<void> | undefined>(undefined);
   const analyzerRetuneTask = useRef<Promise<void> | undefined>(undefined);
   const instrumentTransactionOwner = useRef<string | undefined>(undefined);
   const remoteGestureTask = useRef<Promise<void> | undefined>(undefined);
@@ -351,8 +435,17 @@ export function App({
   const generatorOutput = generatorOutputState(session);
   const connected = session !== undefined;
   const transportBusy = false;
-  const operationBusy = acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring' || acquisition === 'streaming';
-  const busy = connectionBusy || transportBusy || operationBusy || instrumentTransactionActive;
+  // Streaming is background collection, not a global UI lock. Conflicting
+  // transport/configuration operations own the explicit transaction gate and
+  // pause/configure/resume the stream; host-derived controls and navigation
+  // remain live throughout collection.
+  const backgroundIqBufferActive = continuous
+    && continuousMode === 'complex-iq'
+    && instrumentTransactionOwner.current === 'continuous-complex-iq-buffer';
+  const operationBusy = acquisition === 'configuring' || acquisition === 'retuning' || acquisition === 'acquiring' || acquisition === 'stopping';
+  const busy = connectionBusy || transportBusy
+    || (operationBusy && !backgroundIqBufferActive)
+    || (instrumentTransactionActive && !backgroundIqBufferActive);
   // A running stream may be paused for one admitted remote tap. Every other
   // compound operation, and the tap itself, closes touch admission.
   const touchBusy = connectionBusy || transportBusy || instrumentTransactionActive || remoteGestureActive
@@ -360,8 +453,13 @@ export function App({
   const simulated = session !== undefined && session.provenance.execution !== 'physical';
   const spectrumCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
   const detectedPowerCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
+  const iqCapability = session?.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
   const generatorCapability = session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
   const signalLabProfileCapability = session?.capabilities.features.find((capability) => capability.kind === 'signal-lab-profile-selection');
+  const iqCaptureUnavailableReason = signalLabProfileCapability?.iqProfileIds !== undefined
+    && (selectedProfile === undefined || !signalLabProfileCapability.iqProfileIds.includes(selectedProfile))
+    ? 'The selected SignalLab profile is not present in the source\'s admitted I/Q registry.'
+    : undefined;
   const metrics = useMemo(() => sweep ? calculateSweepMetrics(sweep) : undefined, [sweep]);
   const markerReadings = useMemo(
     () => readMarkers(markers, traceFrames, detections),
@@ -406,18 +504,34 @@ export function App({
   }
 
   useEffect(() => {
+    if (!classifierRuntime.current) {
+      const runtime = classifierRuntimeFactory();
+      classifierRuntime.current = runtime;
+      setClassifierAvailability(runtime.status);
+    }
     const unsubscribe = window.atomizerInstrument.subscribe(handleInstrumentEvent);
     const generation = ++initializationGeneration.current;
     void initialize(generation);
     return () => {
       initializationGeneration.current++;
-      if (continuousRequested.current) {
+      pendingClassificationWork.current = undefined;
+      if (continuousRequested.current && continuousStreamOwnership.current) {
         void stopInstrumentStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
         });
       }
       continuousRequested.current = false;
+      rejectInvalidatingFeatureReceipt(new Error('Atomizer renderer unmounted before the invalidating feature lifecycle settled'));
       unsubscribe();
+      // React StrictMode immediately remounts effects on the same component
+      // instance. Defer disposal one microtask so that replay can restore the
+      // mounted flag; a real unmount still terminates the model worker.
+      queueMicrotask(() => {
+        if (!rendererMounted.current) {
+          classifierRuntime.current?.classifier.dispose?.();
+          classifierRuntime.current = undefined;
+        }
+      });
     };
   }, []);
   useEffect(() => saveStored('analyzer', analyzer), [analyzer]);
@@ -425,6 +539,7 @@ export function App({
     setChannelConfiguration((current) => fitChannelConfigurationToSpan(current, analyzer.startHz, analyzer.stopHz));
   }, [analyzer.startHz, analyzer.stopHz]);
   useEffect(() => saveStored('generator', generator), [generator]);
+  useEffect(() => saveStored('complex-iq', iqConfiguration), [iqConfiguration]);
   useEffect(() => saveStored('detector', detectionConfig), [detectionConfig]);
   useEffect(() => saveStored('zero-span', zeroConfig), [zeroConfig]);
   useEffect(() => saveStored('traces', traceConfiguration), [traceConfiguration]);
@@ -448,6 +563,9 @@ export function App({
   useEffect(() => {
     if (session && !generatorCapability && !signalLabProfileCapability && workspace === 'generator') setWorkspace('spectrum');
   }, [session, generatorCapability, signalLabProfileCapability, workspace]);
+  useEffect(() => {
+    if (session && !iqCapability && workspace === 'iq') setWorkspace('spectrum');
+  }, [session, iqCapability, workspace]);
   useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(undefined), 4_000);
@@ -504,6 +622,7 @@ export function App({
       if (instrumentRef.current.session?.sessionId === event.sessionId) {
         invalidateAcquiredEvidence(true);
         acceptInstrumentState({ ...instrumentRef.current, session: event.session }, true);
+        observeInvalidatingFeatureLifecycle(event);
       }
     }
     else if (event.type === 'session-state') {
@@ -515,6 +634,9 @@ export function App({
     else if (event.type === 'disconnected') {
       if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
       clearContinuousStreamOwnership();
+      continuousRequested.current = false;
+      wakeContinuousIqAdmissionWaiters();
+      setContinuous(false);
       acceptInstrumentState({ ...instrumentRef.current, session: undefined, streaming: { status: 'stopped' } });
       invalidateAcquiredEvidence();
     }
@@ -523,10 +645,17 @@ export function App({
     else if (event.type === 'streaming') {
       acceptInstrumentState({ ...instrumentRef.current, streaming: event.streaming });
       if (event.streaming.status === 'stopped') {
-        clearContinuousStreamOwnership();
-        setAcquisition((current) => current === 'failed' ? current : 'complete');
+        // Invoke acknowledgements own renderer stream generations. A stopped
+        // event can cross the stop invoke response after a pause/resume has
+        // already begun; it must never clear a replacement generation.
+        if (!continuousRequested.current && !continuousStreamOwnership.current) {
+          setAcquisition((current) => current === 'failed' || current === 'stopping' ? current : 'complete');
+        }
       } else if (event.streaming.status === 'faulted') {
         clearContinuousStreamOwnership();
+        continuousRequested.current = false;
+        wakeContinuousIqAdmissionWaiters();
+        setContinuous(false);
         setAcquisition('failed');
         invalidateAcquiredEvidence();
         setError(event.streaming.message);
@@ -539,6 +668,7 @@ export function App({
       if (instrumentRef.current.session?.sessionId !== event.session.sessionId) return;
       acceptInstrumentState({ ...instrumentRef.current, session: event.session }, event.result.kind === 'signal-lab-profile-selection');
       acceptFeatureResult(event.result);
+      observeInvalidatingFeatureLifecycle(event);
     }
     else if (event.type === 'measurement' && continuousRequested.current) {
       const currentSession = instrumentRef.current.session;
@@ -549,6 +679,9 @@ export function App({
     else if (event.type === 'status') {
       if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
       if (event.status === 'faulted') {
+        continuousRequested.current = false;
+        wakeContinuousIqAdmissionWaiters();
+        setContinuous(false);
         setAcquisition('failed');
         invalidateAcquiredEvidence(true);
         setError(event.message ?? 'The active instrument session faulted');
@@ -557,6 +690,9 @@ export function App({
     else if (event.type === 'error') {
       if (instrumentRef.current.session?.sessionId !== event.sessionId) return;
       if (!event.error.recoverable) {
+        continuousRequested.current = false;
+        wakeContinuousIqAdmissionWaiters();
+        setContinuous(false);
         setAcquisition('failed');
         invalidateAcquiredEvidence(true);
       }
@@ -565,38 +701,14 @@ export function App({
   }
 
   function admitContinuousMeasurement(work: ContinuousMeasurementWork): void {
-    // One active analysis plus one replaceable latest sample is the complete
-    // renderer-side streaming budget. The main host acquires serially, but
-    // classification can be slower than acquisition and must never turn an
-    // event burst into an unbounded set of retained Promise continuations.
-    if (continuousMeasurementTask.current) {
-      pendingContinuousMeasurement.current = work;
-      return;
-    }
-    const task = processContinuousMeasurements(work);
-    continuousMeasurementTask.current = task;
-    void task.then(
-      () => finishContinuousMeasurementTask(task),
-      (value) => {
-        if (isCurrentContinuousWork(work)) {
-          setAcquisition('failed');
-          setError(`Continuous measurement processing failed: ${errorMessage(value)}`);
-        }
-        finishContinuousMeasurementTask(task);
-      },
-    );
+    // IPC events already arrive serially on the renderer event loop. Perform
+    // the bounded projection/detection/tracking ingest synchronously for every
+    // sweep so history evidence is never silently replaced by a slower
+    // classifier. Only derived Bayesian projections use a latest-wins lane.
+    processContinuousMeasurement(work);
   }
 
-  async function processContinuousMeasurements(initial: ContinuousMeasurementWork): Promise<void> {
-    let work: ContinuousMeasurementWork | undefined = initial;
-    while (work) {
-      await processContinuousMeasurement(work);
-      work = pendingContinuousMeasurement.current;
-      pendingContinuousMeasurement.current = undefined;
-    }
-  }
-
-  async function processContinuousMeasurement(work: ContinuousMeasurementWork): Promise<void> {
+  function processContinuousMeasurement(work: ContinuousMeasurementWork): void {
     if (!isCurrentContinuousWork(work)) return;
     try {
       const { measurement, ownership } = work;
@@ -608,11 +720,13 @@ export function App({
         throw new Error(`Continuous measurement ${measurement.measurementId} referenced ${measurement.configurationRevision}; active stream owns ${ownership.configurationRevision}`);
       }
       const projected = projectSpectrumMeasurement(measurement, work.session, requested);
-      await recordSweep(
+      const recorded = recordSweepEvidence(
         projected,
         measurement.configurationRevision,
-        () => isCurrentContinuousWork(work),
+        ownership,
       );
+      if (!recorded) throw new Error(`Sweep ${projected.id} was acquired for a superseded analyzer configuration`);
+      if (recorded.classification) admitClassificationWork(recorded.classification);
     } catch (value) {
       if (!isCurrentContinuousWork(work)) return;
       const message = `Sweep analysis failed: ${errorMessage(value)}`;
@@ -622,20 +736,97 @@ export function App({
     }
   }
 
-  function finishContinuousMeasurementTask(task: Promise<void>): void {
-    if (continuousMeasurementTask.current !== task) return;
-    continuousMeasurementTask.current = undefined;
-    const pending = pendingContinuousMeasurement.current;
-    pendingContinuousMeasurement.current = undefined;
-    if (pending) admitContinuousMeasurement(pending);
+  function admitClassificationWork(work: ClassificationWork): void {
+    if (work.requests.length === 0) return;
+    // One active (or scheduled) inference plus one replaceable newest work
+    // item is the complete queue. Every underlying sweep has already entered
+    // history/tracking; superseding only avoids publishing obsolete derived
+    // results and prevents unbounded Promise/worker-message growth.
+    if (classificationTask.current) {
+      pendingClassificationWork.current = work;
+      return;
+    }
+    const task = processClassificationWorkAfterPaint(work);
+    classificationTask.current = task;
+    void task.finally(() => finishClassificationTask(task));
+  }
+
+  async function processClassificationWorkAfterPaint(work: ClassificationWork): Promise<void> {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    if (!classificationWorkLifecycleIsCurrent(work)) return;
+    try {
+      const results = await Promise.all(work.requests.map(({ detection, evidence }) =>
+        requireClassifierRuntime().classifier.classify(detection, evidence)));
+      publishClassificationResults(work, results);
+    } catch (value) {
+      // The spectrum/detection evidence remains valid when the optional model
+      // worker is unavailable or rejects an observation. Keep acquisition
+      // running, clear the stale projection, and make the capability-local
+      // failure visible.
+      if (classificationWorkLifecycleIsCurrent(work)) {
+        setClassifications([]);
+        setError(`Bayesian classification unavailable: ${errorMessage(value)}`);
+      }
+    }
+  }
+
+  function finishClassificationTask(task: Promise<void>): void {
+    if (classificationTask.current !== task) return;
+    classificationTask.current = undefined;
+    const pending = pendingClassificationWork.current;
+    pendingClassificationWork.current = undefined;
+    if (pending) admitClassificationWork(pending);
+  }
+
+  function classificationWorkIsCurrent(work: ClassificationWork): boolean {
+    return classificationWorkLifecycleIsCurrent(work)
+      && (work.ownership !== undefined || work.sequence === analysisSequence.current);
+  }
+
+  function classificationWorkLifecycleIsCurrent(work: ClassificationWork): boolean {
+    if (!rendererMounted.current) return false;
+    return work.ownership ? isCurrentContinuousOwnership(work.ownership) : true;
+  }
+
+  function publishClassificationResults(
+    work: ClassificationWork,
+    results: readonly WaveformClassification[],
+  ): void {
+    if (!classificationWorkLifecycleIsCurrent(work)) return;
+    if (!work.ownership) {
+      if (work.sequence === analysisSequence.current) setClassifications(results);
+      return;
+    }
+    if (work.sequence <= lastPublishedClassificationSequence.current) return;
+    const currentId = currentSelectedClassificationRepresentative()?.id;
+    const requestIds = new Set(work.requests.map(({ detection }) => detection.id));
+    const admitted = results.filter((result) =>
+      requestIds.has(result.detectionId) && result.detectionId === currentId);
+    if (admitted.length === 0) return;
+    lastPublishedClassificationSequence.current = work.sequence;
+    setClassifications(admitted);
+  }
+
+  function currentSelectedClassificationRepresentative(): DetectedSignal | undefined {
+    const visibleSweep = sweepRef.current;
+    if (!visibleSweep) return undefined;
+    return selectVisibleClassificationRepresentative(
+      detectionsRef.current,
+      visibleSweep,
+      explicitClassificationIdRef.current,
+    )?.detection;
+  }
+
+  function isCurrentContinuousOwnership(ownership: ContinuousStreamOwnership): boolean {
+    const current = continuousStreamOwnership.current;
+    return current === ownership
+      && current.generation === ownership.generation
+      && instrumentRef.current.session?.sessionId === ownership.sessionId
+      && continuousRequested.current;
   }
 
   function isCurrentContinuousWork(work: ContinuousMeasurementWork): boolean {
-    const ownership = continuousStreamOwnership.current;
-    return ownership === work.ownership
-      && ownership.generation === work.ownership.generation
-      && instrumentRef.current.session?.sessionId === work.ownership.sessionId
-      && continuousRequested.current;
+    return isCurrentContinuousOwnership(work.ownership);
   }
 
   function requestContinuousMeasurementStop(ownership: ContinuousStreamOwnership, message: string): void {
@@ -652,7 +843,11 @@ export function App({
     continuousMeasurementStopRequest.current = undefined;
     const task = runInstrumentTransaction('stop-invalid-continuous-measurement', async () => {
       if (continuousStreamOwnership.current !== request.ownership) return;
-      try { await stopStreamingAndReleaseConfiguration(request.ownership); }
+      continuousRequested.current = false;
+      try {
+        await stopStreamingAndReleaseConfiguration(request.ownership);
+        setContinuous(false);
+      }
       catch (value) {
         failedContinuousMeasurementStopGeneration.current = request.ownership.generation;
         setError(`${request.message}. Stream stop also failed: ${errorMessage(value)}`);
@@ -732,6 +927,7 @@ export function App({
     try {
       await window.atomizerInstrument.disconnect();
       continuousRequested.current = false;
+      wakeContinuousIqAdmissionWaiters();
       setContinuous(false);
       acceptInstrumentState({
         ...instrumentRef.current,
@@ -756,6 +952,12 @@ export function App({
     const active = instrumentRef.current.session;
     if (!active) throw new Error('Connect an instrument source before running this operation');
     return active;
+  }
+
+  function requireClassifierRuntime(): BayesianClassifierRuntime {
+    const runtime = classifierRuntime.current;
+    if (!runtime) throw new Error('Bayesian classifier runtime has not completed renderer mount admission');
+    return runtime;
   }
 
   function currentGeneratorOutput(): GeneratorOutputState {
@@ -788,33 +990,152 @@ export function App({
     else if (result.kind === 'signal-lab-profile-selection') {
       invalidateAcquiredEvidence(true);
       const active = instrumentRef.current.session;
-      if (active) initializeSessionSelection(active, result.profileId);
+      if (result.action === 'select-profile') {
+        if (active) initializeSessionSelection(active, result.profileId, selectedSignalLabChannelRef.current);
+      } else {
+        setSelectedSignalLabChannel(result.channel);
+      }
     }
   }
 
   async function executeInstrumentFeature(request: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
-    const execution = await executeInstrumentFeatureBoundary(request);
-    const currentSessionId = instrumentRef.current.session?.sessionId;
-    if (!currentSessionId || execution.session.sessionId !== currentSessionId) {
-      throw new Error('Instrument feature acknowledgement is stale for the active session');
+    const receipt = beginInvalidatingFeatureReceipt(request);
+    try {
+      const execution = await executeInstrumentFeatureBoundary(request);
+      const currentSessionId = instrumentRef.current.session?.sessionId;
+      if (!currentSessionId || execution.session.sessionId !== currentSessionId) {
+        throw new Error('Instrument feature acknowledgement is stale for the active session');
+      }
+      if (receipt) {
+        receipt.execution = execution;
+        reconcileInvalidatingFeatureReceipt(receipt);
+        await receipt.promise;
+        if (instrumentRef.current.session?.sessionId !== execution.session.sessionId) {
+          throw new Error('Instrument feature lifecycle receipt was superseded before renderer admission');
+        }
+        // Both manager events have already crossed the renderer boundary and
+        // synchronously applied their lifecycle invalidation. Only now may a
+        // caller reserve/configure the replacement acquisition revision.
+        return execution.result;
+      }
+      acceptInstrumentState(
+        { ...instrumentRef.current, session: execution.session },
+        execution.result.kind === 'signal-lab-profile-selection',
+      );
+      acceptFeatureResult(execution.result);
+      return execution.result;
+    } catch (value) {
+      if (receipt && !receipt.settled) rejectInvalidatingFeatureReceipt(value, receipt);
+      throw value;
     }
-    acceptInstrumentState(
-      { ...instrumentRef.current, session: execution.session },
-      execution.result.kind === 'signal-lab-profile-selection',
-    );
-    if (request.kind === 'signal-lab-profile-selection'
-      || request.kind === 'touch'
-      || (request.kind === 'rf-generator' && request.action === 'configure')) {
-      invalidateAcquiredEvidence(true);
-    }
-    acceptFeatureResult(execution.result);
-    return execution.result;
   }
 
-  function initializeSessionSelection(next: InstrumentSessionSnapshot, selectedProfileId?: string): void {
+  function beginInvalidatingFeatureReceipt(request: InstrumentFeatureRequest): InvalidatingFeatureReceipt | undefined {
+    if (!isInvalidatingFeatureRequest(request)) return undefined;
+    const reason = invalidatingFeatureReason(request);
+    if (!reason) throw new Error('Invalidating feature request has no lifecycle invalidation reason');
+    if (pendingInvalidatingFeatureReceipt.current) {
+      throw new Error('Another invalidating feature lifecycle receipt is already pending');
+    }
+    const sessionId = requireConnected().sessionId;
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    let receipt!: InvalidatingFeatureReceipt;
+    const timeout = window.setTimeout(() => {
+      rejectInvalidatingFeatureReceipt(new Error(
+        `Instrument feature lifecycle did not deliver a matching feature-result and ${reason} invalidation within ${INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS} ms`,
+      ), receipt);
+    }, INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS);
+    receipt = {
+      request,
+      sessionId,
+      reason,
+      promise,
+      resolve,
+      reject,
+      timeout,
+      settled: false,
+    };
+    // The event path can reject before the invoke path reaches `await`.
+    // Retain the original Promise for the caller while suppressing a transient
+    // unhandled-rejection report from that legitimate ordering.
+    void promise.catch(() => undefined);
+    pendingInvalidatingFeatureReceipt.current = receipt;
+    return receipt;
+  }
+
+  function observeInvalidatingFeatureLifecycle(event: FeatureResultEvent | ConfigurationInvalidatedEvent): void {
+    const receipt = pendingInvalidatingFeatureReceipt.current;
+    if (!receipt || receipt.settled) return;
+    const eventSessionId = event.type === 'feature-result'
+      ? event.session.sessionId
+      : event.sessionId;
+    // Ignore a stale prior-session delivery. Active-session mismatches below
+    // are fail-closed because the transaction gate permits only one such
+    // mutation at a time.
+    if (eventSessionId !== receipt.sessionId) return;
+    if (event.type === 'feature-result') {
+      if (!featureResultAcknowledgesRequest(event.result, receipt.request)) {
+        rejectInvalidatingFeatureReceipt(new Error(
+          `Invalidating feature lifecycle returned ${event.result.kind}/${event.result.action} for a different request`,
+        ), receipt);
+        return;
+      }
+      if (receipt.featureResult) {
+        rejectInvalidatingFeatureReceipt(new Error('Invalidating feature lifecycle delivered a duplicate feature-result receipt'), receipt);
+        return;
+      }
+      receipt.featureResult = event;
+    } else {
+      if (event.reason !== receipt.reason) {
+        rejectInvalidatingFeatureReceipt(new Error(
+          `Invalidating feature lifecycle delivered ${event.reason}; expected ${receipt.reason}`,
+        ), receipt);
+        return;
+      }
+      if (receipt.invalidation) {
+        rejectInvalidatingFeatureReceipt(new Error('Invalidating feature lifecycle delivered a duplicate configuration-invalidated receipt'), receipt);
+        return;
+      }
+      receipt.invalidation = event;
+    }
+    reconcileInvalidatingFeatureReceipt(receipt);
+  }
+
+  function reconcileInvalidatingFeatureReceipt(receipt: InvalidatingFeatureReceipt): void {
+    if (receipt.settled || !receipt.execution || !receipt.featureResult || !receipt.invalidation) return;
+    const execution = receipt.execution;
+    if (!sameStructuredValue(receipt.featureResult.result, execution.result)
+      || !sameStructuredValue(receipt.featureResult.session, execution.session)
+      || !sameStructuredValue(receipt.invalidation.session, execution.session)) {
+      rejectInvalidatingFeatureReceipt(new Error(
+        'Instrument feature invoke acknowledgement did not match its ordered lifecycle event receipts',
+      ), receipt);
+      return;
+    }
+    receipt.settled = true;
+    window.clearTimeout(receipt.timeout);
+    if (pendingInvalidatingFeatureReceipt.current === receipt) pendingInvalidatingFeatureReceipt.current = undefined;
+    receipt.resolve();
+  }
+
+  function rejectInvalidatingFeatureReceipt(reason: unknown, expected = pendingInvalidatingFeatureReceipt.current): void {
+    if (!expected || expected.settled) return;
+    expected.settled = true;
+    window.clearTimeout(expected.timeout);
+    if (pendingInvalidatingFeatureReceipt.current === expected) pendingInvalidatingFeatureReceipt.current = undefined;
+    expected.reject(reason);
+  }
+
+  function initializeSessionSelection(next: InstrumentSessionSnapshot, selectedProfileId?: string, selectedChannel?: SignalLabChannelState): void {
     const profileCapability = next.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
     const profileId = selectedProfileId ?? profileCapability?.selectedProfileId;
     setSelectedProfile(profileId);
+    setSelectedSignalLabChannel(selectedChannel ?? profileCapability?.channel);
     const selectedProfileEntry = profileCapability?.profiles.find((profile) => profile.profileId === profileId);
     const detectedPower = next.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
     if (selectedProfileEntry) updateZeroSpanConfiguration((current) => {
@@ -856,14 +1177,43 @@ export function App({
         setAnalyzer(reconciled);
       }
     }
+    const iq = next.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
+    if (iq?.kind === 'complex-iq') {
+      const staged = selectedProfileEntry
+        ? { ...iqConfigurationRef.current, centerHz: selectedProfileEntry.centerFrequencyHz }
+        : iqConfigurationRef.current;
+      const reconciled = reconcileComplexIqConfiguration(iq, staged);
+      if (!sameComplexIqConfiguration(reconciled, iqConfigurationRef.current)) {
+        iqConfigurationRevision.current++;
+        setIqConfiguration(reconciled);
+      }
+    } else {
+      setIqCapture(undefined);
+    }
   }
 
   async function selectSignalLabProfile(profileId: string): Promise<void> {
     try {
-      const result = await runInstrumentTransaction('select-signal-lab-profile', () => executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }));
-      acceptFeatureResult(result);
+      await runInstrumentTransaction('select-signal-lab-profile', () => runWithContinuousPaused(
+        'SignalLab profile selection',
+        () => executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }),
+      ));
       setNotice(`SignalLab profile selected: ${profileId}`);
     } catch (value) { setError(`SignalLab profile selection failed: ${errorMessage(value)}`); }
+  }
+
+  async function configureSignalLabChannel(channel: SignalLabChannelState): Promise<void> {
+    try {
+      await runInstrumentTransaction('configure-signal-lab-channel', () => runWithContinuousPaused(
+        'SignalLab channel configuration',
+        () => executeInstrumentFeature({
+          kind: 'signal-lab-profile-selection',
+          action: 'configure-channel',
+          channel,
+        }),
+      ));
+      setNotice(`SignalLab channel configured: ${channel.model.toUpperCase()}`);
+    } catch (value) { setError(`SignalLab channel configuration failed: ${errorMessage(value)}`); }
   }
 
   async function makeSelectedDefault(): Promise<void> {
@@ -907,11 +1257,12 @@ export function App({
 
   function requireConfiguration(revision: string, kind: 'swept-spectrum', context: string): SweptSpectrumConfiguration;
   function requireConfiguration(revision: string, kind: 'detected-power-timeseries', context: string): DetectedPowerTimeseriesConfiguration;
+  function requireConfiguration(revision: string, kind: 'complex-iq', context: string): ComplexIqConfiguration;
   function requireConfiguration(
     revision: string,
     kind: RendererConfigurationRevision['kind'],
     context: string,
-  ): SweptSpectrumConfiguration | DetectedPowerTimeseriesConfiguration {
+  ): SweptSpectrumConfiguration | DetectedPowerTimeseriesConfiguration | ComplexIqConfiguration {
     const retained = configurationRevisions.current.read(revision);
     if (!retained) throw new Error(`${context} referenced unknown configuration ${revision}`);
     if (retained.kind !== kind) throw new Error(`${context} referenced ${retained.kind} configuration ${revision}, expected ${kind}`);
@@ -949,14 +1300,12 @@ export function App({
   function clearContinuousStreamOwnership(expected?: ContinuousStreamOwnership): void {
     if (expected && continuousStreamOwnership.current !== expected) return;
     continuousStreamOwnership.current = undefined;
-    pendingContinuousMeasurement.current = undefined;
+    if (!expected || pendingClassificationWork.current?.ownership === expected) pendingClassificationWork.current = undefined;
     if (!expected || continuousMeasurementStopRequest.current?.ownership === expected) {
       continuousMeasurementStopRequest.current = undefined;
     }
     failedContinuousMeasurementStopGeneration.current = undefined;
     releaseStreamingConfiguration();
-    continuousRequested.current = false;
-    setContinuous(false);
   }
 
   async function stopStreamingAndReleaseConfiguration(expected?: ContinuousStreamOwnership): Promise<void> {
@@ -984,8 +1333,6 @@ export function App({
     };
     continuousStreamOwnership.current = ownership;
     failedContinuousMeasurementStopGeneration.current = undefined;
-    continuousRequested.current = true;
-    setContinuous(true);
     try {
       await startInstrumentStreaming();
       if (instrumentRef.current.session?.sessionId !== sessionId || continuousStreamOwnership.current !== ownership) {
@@ -1005,18 +1352,192 @@ export function App({
   }
 
   async function runInstrumentTransaction<T>(name: string, operation: () => Promise<T>): Promise<T> {
-    const active = instrumentTransactionOwner.current;
-    if (active) throw new Error(`Instrument operation ${active} is already active; ${name} was not admitted`);
-    instrumentTransactionOwner.current = name;
-    setInstrumentTransactionActive(true);
-    try { return await operation(); }
-    finally {
-      if (instrumentTransactionOwner.current === name) {
-        instrumentTransactionOwner.current = undefined;
-        setInstrumentTransactionActive(false);
-        drainContinuousMeasurementStop();
+    const pauseIq = name !== CONTINUOUS_IQ_TRANSACTION
+      && continuousRequested.current
+      && continuousModeRef.current === 'complex-iq';
+    if (pauseIq) continuousIqPauseDepth.current++;
+    try {
+      const active = instrumentTransactionOwner.current;
+      if (active === CONTINUOUS_IQ_TRANSACTION && pauseIq) {
+        const buffer = continuousIqBufferTask.current;
+        if (!buffer) throw new Error('Continuous I/Q transaction has no owned bounded buffer task');
+        try { await buffer; } catch { /* The pump reports its own capability-local failure. */ }
       }
+      const admittedAfterPause = instrumentTransactionOwner.current;
+      if (admittedAfterPause) {
+        throw new Error(`Instrument operation ${admittedAfterPause} is already active; ${name} was not admitted`);
+      }
+      instrumentTransactionOwner.current = name;
+      setInstrumentTransactionActive(true);
+      try { return await operation(); }
+      finally {
+        if (instrumentTransactionOwner.current === name) {
+          instrumentTransactionOwner.current = undefined;
+          setInstrumentTransactionActive(false);
+          drainContinuousMeasurementStop();
+          drainOperatorContinuousStop();
+        }
+      }
+    } finally {
+      if (pauseIq) releaseContinuousIqPause();
     }
+  }
+
+  function releaseContinuousIqPause(): void {
+    if (continuousIqPauseDepth.current < 1) return;
+    continuousIqPauseDepth.current--;
+    if (continuousIqPauseDepth.current !== 0) return;
+    for (const resume of continuousIqResumeWaiters.current) resume();
+    continuousIqResumeWaiters.current.clear();
+  }
+
+  async function waitForContinuousIqAdmission(): Promise<boolean> {
+    while (continuousRequested.current
+      && continuousModeRef.current === 'complex-iq'
+      && continuousIqPauseDepth.current > 0) {
+      await new Promise<void>((resolve) => continuousIqResumeWaiters.current.add(resolve));
+    }
+    return continuousRequested.current && continuousModeRef.current === 'complex-iq';
+  }
+
+  function wakeContinuousIqAdmissionWaiters(): void {
+    for (const resume of continuousIqResumeWaiters.current) resume();
+    continuousIqResumeWaiters.current.clear();
+  }
+
+  async function runWithContinuousPaused<T>(
+    label: string,
+    operation: () => Promise<T>,
+    shouldResume: (result: T) => boolean = () => true,
+  ): Promise<T> {
+    const ownership = continuousStreamOwnership.current;
+    if (!ownership
+      && continuousRequested.current
+      && continuousModeRef.current === 'complex-iq') {
+      return runWithContinuousIqPaused(label, operation, shouldResume);
+    }
+    if (!continuousRequested.current || !ownership) return operation();
+    try {
+      const sessionId = ownership.sessionId;
+      setAcquisition('retuning');
+      setNotice(`Pausing continuous acquisition for ${label}…`);
+      await stopStreamingAndReleaseConfiguration(ownership);
+      const before = requireConnected();
+      if (before.sessionId !== sessionId || before.fault) {
+        throw new Error(`${label} was invalidated with instrument session ${sessionId}`);
+      }
+
+      const result = await operation();
+      const after = requireConnected();
+      if (after.sessionId !== sessionId || after.fault) {
+        throw new Error(`${label} completed for a superseded instrument session ${sessionId}`);
+      }
+      if (!continuousRequested.current) {
+        completeContinuousStop(`Continuous acquisition stopped after ${label}`);
+        return result;
+      }
+      // Resume is admitted only after the conflicting operation and all of its
+      // renderer-side acknowledgement checks succeed. RF-on intentionally
+      // leaves collection stopped because acquisition is not safe in that state.
+      if (!shouldResume(result)) {
+        setAcquisition('complete');
+        setNotice(`Continuous acquisition stopped after ${label}`);
+        return result;
+      }
+      if (currentGeneratorOutput() !== 'off') {
+        throw new Error(`Continuous acquisition cannot resume after ${label} while RF output is ${currentGeneratorOutput()}`);
+      }
+      const resumed = await resumeContinuousAfterConflict(sessionId, label);
+      if (!resumed) completeContinuousStop(`Continuous acquisition stopped after ${label}`);
+      return result;
+    } catch (value) {
+      continuousRequested.current = false;
+      if (!continuousStreamOwnership.current) setContinuous(false);
+      setAcquisition('failed');
+      setNotice(undefined);
+      setError(`${label} failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
+  async function runWithContinuousIqPaused<T>(
+    label: string,
+    operation: () => Promise<T>,
+    shouldResume: (result: T) => boolean,
+  ): Promise<T> {
+    const sessionId = requireConnected().sessionId;
+    const generation = continuousIqGeneration.current;
+    try {
+      setAcquisition('retuning');
+      setNotice(`Pausing bounded I/Q acquisition for ${label}…`);
+      const result = await operation();
+      const after = requireConnected();
+      if (after.sessionId !== sessionId || after.fault) {
+        throw new Error(`${label} completed for a superseded instrument session ${sessionId}`);
+      }
+      if (!continuousRequested.current || generation !== continuousIqGeneration.current) {
+        completeContinuousStop(`Continuous I/Q acquisition stopped after ${label}`);
+        return result;
+      }
+      if (!shouldResume(result)) {
+        completeContinuousStop(`Continuous I/Q acquisition stopped after ${label}`);
+        return result;
+      }
+      if (currentGeneratorOutput() !== 'off') {
+        throw new Error(`Continuous I/Q acquisition cannot resume after ${label} while RF output is ${currentGeneratorOutput()}`);
+      }
+      requireContinuousIqResumeAdmission(after);
+      setAcquisition('streaming');
+      setNotice(`Continuous I/Q acquisition resumed after ${label}`);
+      return result;
+    } catch (value) {
+      continuousRequested.current = false;
+      wakeContinuousIqAdmissionWaiters();
+      releaseContinuousIqConfiguration();
+      setContinuous(false);
+      setAcquisition('failed');
+      setNotice(undefined);
+      setError(`${label} failed: ${errorMessage(value)}`);
+      throw value;
+    }
+  }
+
+  function requireContinuousIqResumeAdmission(session: InstrumentSessionSnapshot): void {
+    const iq = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (iq?.kind !== 'complex-iq') throw new Error('The active session no longer advertises complex-I/Q acquisition');
+    const profile = session.capabilities.features.find((candidate) => candidate.kind === 'signal-lab-profile-selection');
+    if (profile?.kind === 'signal-lab-profile-selection'
+      && profile.iqProfileIds !== undefined
+      && !profile.iqProfileIds.includes(profile.selectedProfileId)) {
+      throw new Error(`SignalLab profile ${profile.selectedProfileId} is not admitted for complex-I/Q acquisition`);
+    }
+  }
+
+  async function resumeContinuousAfterConflict(sessionId: string, label: string): Promise<boolean> {
+    setAcquisition('retuning');
+    while (true) {
+      if (!continuousRequested.current) return false;
+      const active = requireConnected();
+      if (active.sessionId !== sessionId || active.fault) {
+        throw new Error(`Continuous acquisition resume was invalidated with instrument session ${sessionId}`);
+      }
+      const targetRevision = analyzerRevision.current;
+      const configured = await configureAnalyzer(analyzerRef.current, 'retuning');
+      if (!continuousRequested.current) return false;
+      if (configured.sessionId !== sessionId || targetRevision !== analyzerRevision.current) continue;
+      await startStreamingWithConfiguration(configured.configurationRevision);
+      if (!continuousRequested.current) {
+        await stopStreamingAndReleaseConfiguration();
+        return false;
+      }
+      if (instrumentRef.current.session?.sessionId === sessionId
+        && targetRevision === analyzerRevision.current
+        && continuousStreamOwnership.current?.configurationRevision === configured.configurationRevision) break;
+      await stopStreamingAndReleaseConfiguration();
+    }
+    setAcquisition('streaming');
+    setNotice(`Continuous acquisition resumed after ${label}`);
+    return true;
   }
 
   function stageAnalyzerPatch(input: AnalyzerConfigPatch): { configuration: AnalyzerConfig; changed: boolean } {
@@ -1047,8 +1568,10 @@ export function App({
     historyConfigurationRevisions.current = [];
     if (clearInstrumentConfigurations) {
       releaseStreamingConfiguration();
+      releaseContinuousIqConfiguration();
       zeroCaptureConfigurationRevision.current = undefined;
       configurationRevisions.current.clear();
+      setIqCapture(undefined);
     }
     traceAccumulator.current.reset();
     tracker.current.reset();
@@ -1075,7 +1598,13 @@ export function App({
   function stageClassificationCandidate(detectionId: string | undefined): number | undefined {
     const changed = detectionId !== stagedClassificationTargetIdRef.current;
     stagedClassificationTargetIdRef.current = detectionId;
-    if (changed) clearClassificationCapture();
+    if (changed) {
+      clearClassificationCapture();
+      // Classifier output is owned by the selected target, not merely by a
+      // still-visible detection ID. Never show or republish the prior target's
+      // result while the next selected-target evidence revision is pending.
+      setClassifications([]);
+    }
     if (!detectionId) return undefined;
     const detection = detectionsRef.current.find((candidate) => candidate.id === detectionId);
     const capability = instrumentRef.current.session?.capabilities.acquisitions
@@ -1147,10 +1676,23 @@ export function App({
       setNotice('Retuning continuous acquisition…');
       await stopStreamingAndReleaseConfiguration();
       while (true) {
+        if (!continuousRequested.current) {
+          completeContinuousStop();
+          return;
+        }
         const targetRevision = analyzerRevision.current;
         const configured = await configureAnalyzer(analyzerRef.current, 'retuning');
+        if (!continuousRequested.current) {
+          completeContinuousStop();
+          return;
+        }
         if (targetRevision !== analyzerRevision.current) continue;
         await startStreamingWithConfiguration(configured.configurationRevision);
+        if (!continuousRequested.current) {
+          await stopStreamingAndReleaseConfiguration();
+          completeContinuousStop();
+          return;
+        }
         if (targetRevision === analyzerRevision.current) break;
         await stopStreamingAndReleaseConfiguration();
       }
@@ -1179,18 +1721,18 @@ export function App({
     }
   }
 
-  async function recordSweep(
+  function recordSweepEvidence(
     next: Sweep,
     configurationRevision: string,
-    stillCurrent: () => boolean = () => true,
-  ): Promise<boolean> {
+    ownership?: ContinuousStreamOwnership,
+  ): RecordedSweep | undefined {
     const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
     const currentAdmitted = capability?.kind === 'swept-spectrum'
       ? sweptSpectrumConfigurationFor(capability, analyzerRef.current)
       : undefined;
     if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
       console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: analyzerRef.current });
-      return false;
+      return undefined;
     }
     const sequence = ++analysisSequence.current;
     const nextHistory = [next, ...historyRef.current].slice(0, HISTORY_LIMIT);
@@ -1211,16 +1753,18 @@ export function App({
       });
     }
     setDetections(tracked);
-    // Detection IDs intentionally persist across tracker updates, so a result
-    // from the preceding sweep can otherwise look current while this sweep is
-    // being classified (or remain indefinitely if classification rejects).
-    // Publish no classifier projection until it is bound to this evidence
-    // revision.
-    setClassifications([]);
-    let currentSignals = classificationRepresentatives(
-      tracked.filter((item) => item.state === 'active'),
-      zeroCaptureReceiptRef.current?.selection.projectedRepresentativeId
-        ?? zeroCaptureRef.current?.targetDetectionId,
+    const selectedRepresentative = selectVisibleClassificationRepresentative(
+      tracked,
+      next,
+      explicitClassificationIdRef.current,
+    );
+    let selectedSignal = selectedRepresentative?.detection;
+    // Establish selected-target ownership before even a synchronous test
+    // classifier can complete. The render effect is an eventual UI mirror;
+    // it must never arrive later and erase a result for the target this exact
+    // evidence revision already admitted.
+    stageClassificationCandidate(
+      selectedRepresentative?.selection.rawTargetId ?? selectedSignal?.id,
     );
     const cachedCapture = zeroCaptureRef.current;
     const cachedReceipt = zeroCaptureReceiptRef.current;
@@ -1228,7 +1772,7 @@ export function App({
     if (cachedCapture) {
       const projectedDetectionId = cachedReceipt?.selection.projectedRepresentativeId
         ?? cachedCapture.targetDetectionId;
-      const target = currentSignals.find((item) => item.id === projectedDetectionId);
+      const target = selectedSignal?.id === projectedDetectionId ? selectedSignal : undefined;
       const currentSweepIds = target ? classificationWindowSweepIds(target, nextHistory) : [];
       if (!cachedReceipt
         || !target
@@ -1237,16 +1781,63 @@ export function App({
         || currentSweepIds.length !== cachedSweepIds.length
         || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
         clearClassificationCapture();
-        currentSignals = classificationRepresentatives(tracked.filter((item) => item.state === 'active'));
+        selectedSignal = selectVisibleClassificationRepresentative(
+          tracked,
+          next,
+          explicitClassificationIdRef.current,
+        )?.detection;
       }
     }
-    const results = await Promise.all(currentSignals.map((item) =>
-      classifierRuntime.classifier.classify(
-        item,
-        classificationEvidenceForDetection(item, nextHistory),
-      )));
-    if (sequence === analysisSequence.current && stillCurrent()) setClassifications(results);
-    return true;
+    const currentSignals = selectedSignal ? [selectedSignal] : [];
+    const currentSignalIds = new Set(currentSignals.map(({ id }) => id));
+    if (ownership) {
+      // A continuous producer can advance while one selected-signal worker
+      // request is in flight. Retain only that current target's completed
+      // projection; the newest completed work replaces it monotonically.
+      const retained = classificationsRef.current.filter(({ detectionId }) => currentSignalIds.has(detectionId));
+      if (retained.length !== classificationsRef.current.length) setClassifications(retained);
+    } else {
+      // Single/capture operations retain the exact evidence-revision contract:
+      // no preceding result is shown while the new revision is unresolved.
+      setClassifications([]);
+    }
+    const requests = currentSignals.flatMap((detection) => {
+      const evidenceSweeps = exactClassificationEvidenceSweeps(detection, nextHistory);
+      if (!evidenceSweeps) {
+        console.warn('[Classification] selected target omitted exact external sweep provenance', {
+          sweepId: next.id,
+          detectionId: detection.id,
+        });
+        return [];
+      }
+      return [{
+        detection,
+        evidence: classificationEvidenceForDetection(detection, evidenceSweeps),
+      }];
+    });
+    return {
+      ...(requests.length > 0 ? { classification: { sequence, ...(ownership ? { ownership } : {}), requests } } : {}),
+    };
+  }
+
+  async function classifyRecordedSweep(recorded: RecordedSweep): Promise<void> {
+    const work = recorded.classification;
+    if (!work || work.requests.length === 0) return;
+    // Yield once so React can commit the newly ingested trace before even a
+    // test/non-worker classifier begins. Production inference runs in the
+    // module worker and therefore remains off the renderer thread.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    if (!classificationWorkIsCurrent(work)) return;
+    try {
+      const results = await Promise.all(work.requests.map(({ detection, evidence }) =>
+        requireClassifierRuntime().classifier.classify(detection, evidence)));
+      if (classificationWorkIsCurrent(work)) setClassifications(results);
+    } catch (value) {
+      if (classificationWorkIsCurrent(work)) {
+        setClassifications([]);
+        setError(errorMessage(value));
+      }
+    }
   }
 
   function acquire(): Promise<Sweep> { return runInstrumentTransaction('acquire-spectrum', () => acquireOwned()); }
@@ -1269,7 +1860,9 @@ export function App({
         const active = requireConnected();
         const requested = requireConfiguration(measurement.configurationRevision, 'swept-spectrum', `Measurement ${measurement.measurementId}`);
         const next = projectSpectrumMeasurement(measurement, active, requested);
-        if (!await recordSweep(next, measurement.configurationRevision)) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
+        const recorded = recordSweepEvidence(next, measurement.configurationRevision);
+        if (!recorded) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
+        await classifyRecordedSweep(recorded);
         setAcquisition('complete');
         return next;
       } finally {
@@ -1282,41 +1875,346 @@ export function App({
     }
   }
 
-  async function acquireFromUi(): Promise<void> { try { await acquire(); } catch { /* Visible in the workspace alert. */ } }
+  async function acquireFromUi(): Promise<void> {
+    try {
+      if (acquisitionModeForWorkspace(workspaceRef.current, continuousModeRef.current) === 'complex-iq') {
+        await acquireIq();
+      } else {
+        await acquire();
+      }
+    } catch { /* The owned acquisition path presents its boundary failure. */ }
+  }
 
-  function startContinuous(): Promise<void> { return runInstrumentTransaction('start-continuous-acquisition', () => startContinuousOwned()); }
+  function stageIqConfiguration(input: ComplexIqConfiguration): void {
+    try {
+      const capability = instrumentRef.current.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+      const next = capability?.kind === 'complex-iq'
+        ? reconcileComplexIqConfiguration(capability, input)
+        : complexIqConfigurationSchema.parse(input);
+      if (sameComplexIqConfiguration(next, iqConfigurationRef.current)) return;
+      iqConfigurationRevision.current++;
+      setIqConfiguration(next);
+      setError(undefined);
+    } catch (value) {
+      setError(`I/Q configuration failed: ${errorMessage(value)}`);
+    }
+  }
+
+  function acquireIq(): Promise<ComplexIqMeasurement> {
+    return runInstrumentTransaction('acquire-complex-iq', () => runWithContinuousPaused(
+      'complex I/Q capture',
+      () => acquireIqOwned(),
+    ));
+  }
+
+  async function acquireIqOwned(options: {
+    readonly configuration?: ComplexIqConfiguration;
+    readonly publish?: () => boolean;
+  } = {}): Promise<ComplexIqMeasurement> {
+    const activeSession = requireConnected();
+    const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') throw new Error('Active instrument does not advertise complex-I/Q acquisition');
+    const requested = complexIqConfigurationFor(
+      capability,
+      options.configuration ?? iqConfigurationRef.current,
+    );
+    setError(undefined);
+    setAcquisition('configuring');
+    const configured = await configureIqOwned(requested, false);
+    const configurationLease = leaseConfiguration(configured.configurationRevision, 'complex-iq');
+    setAcquisition('acquiring');
+    try {
+      const measurement = await acquireConfiguredIq(configured, options.publish);
+      setAcquisition('complete');
+      return measurement;
+    } catch (value) {
+      setAcquisition('failed');
+      setError(errorMessage(value));
+      throw value;
+    } finally {
+      configurationLease.release();
+    }
+  }
+
+  async function configureIqOwned(
+    requested: ComplexIqConfiguration,
+    background: boolean,
+  ): Promise<InstrumentConfigurationState> {
+    const sessionId = requireConnected().sessionId;
+    const reservation = configurationRevisions.current.reserve();
+    try {
+      const configured = await configureInstrument(requested);
+      if (configured.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+        throw new Error(`Complex-I/Q configuration response was invalidated with instrument session ${sessionId}`);
+      }
+      if (configured.configuration.kind !== 'complex-iq'
+        || !sameComplexIqConfiguration(configured.configuration, requested)) {
+        throw new Error('Instrument host returned a different complex-I/Q configuration than it admitted');
+      }
+      reservation.commit(configured.configurationRevision, { kind: 'complex-iq', admitted: configured.configuration });
+      configurationRevisions.current.setActive(configured.configurationRevision);
+      acceptConfiguration(configured);
+      return configured;
+    } catch (value) {
+      reservation.release();
+      if (!background) {
+        setAcquisition('failed');
+        setError(errorMessage(value));
+      }
+      throw value;
+    }
+  }
+
+  async function acquireConfiguredIq(
+    configured: InstrumentConfigurationState,
+    publish?: () => boolean,
+  ): Promise<ComplexIqMeasurement> {
+    const sessionId = configured.sessionId;
+    try {
+      const measurement = await acquireInstrument();
+      if (measurement.kind !== 'complex-iq') throw new Error(`Expected complex-iq measurement, received ${measurement.kind}`);
+      if (measurement.sessionId !== sessionId || instrumentRef.current.session?.sessionId !== sessionId) {
+        throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+      }
+      if (measurement.configurationRevision !== configured.configurationRevision) {
+        throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configured.configurationRevision}`);
+      }
+      const admitted = requireConfiguration(measurement.configurationRevision, 'complex-iq', `Measurement ${measurement.measurementId}`);
+      if (measurement.centerHz !== admitted.centerHz
+        || measurement.sampleRateHz !== admitted.sampleRateHz
+        || measurement.bandwidthHz !== admitted.bandwidthHz
+        || measurement.sampleCount !== admitted.sampleCount
+        || measurement.sampleFormat !== admitted.sampleFormat) {
+        throw new Error(`Measurement ${measurement.measurementId} geometry differs from its admitted complex-I/Q configuration`);
+      }
+      if (!publish || publish()) setIqCapture(measurement);
+      return measurement;
+    } catch (value) { throw value; }
+  }
+
+  function startContinuous(): Promise<void> {
+    const mode = acquisitionModeForWorkspace(workspaceRef.current, continuousModeRef.current);
+    return mode === 'complex-iq'
+      ? startContinuousIq()
+      : runInstrumentTransaction('start-continuous-acquisition', () => startContinuousOwned());
+  }
+
+  function startContinuousIq(): Promise<void> {
+    if (continuousRequested.current || continuousRef.current) {
+      return Promise.reject(new Error('Continuous acquisition is already running'));
+    }
+    const active = requireConnected();
+    const capability = active.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') {
+      return Promise.reject(new Error('Active instrument does not advertise complex-I/Q acquisition'));
+    }
+    complexIqConfigurationFor(capability, iqConfigurationRef.current);
+    continuousRequested.current = true;
+    continuousIqGeneration.current++;
+    setContinuous(true);
+    setContinuousMode('complex-iq');
+    setAcquisition('streaming');
+    setError(undefined);
+    setNotice('Continuous bounded I/Q capture started');
+    const task = runContinuousIqLoop();
+    continuousIqTask.current = task;
+    void task.then(
+      () => finishContinuousIqLoop(task),
+      (value) => finishContinuousIqLoop(task, value),
+    );
+    return Promise.resolve();
+  }
+
+  async function runContinuousIqLoop(): Promise<void> {
+    while (continuousRequested.current && continuousModeRef.current === 'complex-iq') {
+      if (!await waitForContinuousIqAdmission()) break;
+      const bufferTask = runInstrumentTransaction(CONTINUOUS_IQ_TRANSACTION, async () => {
+        const ownership = await ensureContinuousIqConfiguration();
+        return acquireConfiguredIq(ownership.configured, () =>
+          continuousIqConfigurationOwnership.current === ownership
+          && iqConfigurationRevision.current === ownership.stagedRevision
+          && sameComplexIqConfiguration(iqConfigurationRef.current, ownership.configuration));
+      });
+      continuousIqBufferTask.current = bufferTask;
+      try { await bufferTask; }
+      finally {
+        if (continuousIqBufferTask.current === bufferTask) continuousIqBufferTask.current = undefined;
+      }
+      if (!continuousRequested.current || continuousModeRef.current !== 'complex-iq') break;
+      // Yield to pointer/keyboard/paint work between bounded driver buffers.
+      // There is never more than one configure+acquire transaction in flight.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+    releaseContinuousIqConfiguration();
+  }
+
+  async function ensureContinuousIqConfiguration(): Promise<ContinuousIqConfigurationOwnership> {
+    const session = requireConnected();
+    const stagedRevision = iqConfigurationRevision.current;
+    const configuration = structuredClone(iqConfigurationRef.current);
+    const existing = continuousIqConfigurationOwnership.current;
+    if (existing
+      && existing.sessionId === session.sessionId
+      && existing.stagedRevision === stagedRevision
+      && sameComplexIqConfiguration(existing.configuration, configuration)
+      && configurationRevisions.current.has(existing.configured.configurationRevision)) {
+      return existing;
+    }
+    releaseContinuousIqConfiguration();
+    const capability = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') throw new Error('Active instrument does not advertise complex-I/Q acquisition');
+    const requested = complexIqConfigurationFor(capability, configuration);
+    const configured = await configureIqOwned(requested, true);
+    const lease = leaseConfiguration(configured.configurationRevision, 'complex-iq');
+    const ownership: ContinuousIqConfigurationOwnership = {
+      sessionId: session.sessionId,
+      stagedRevision,
+      configuration: requested,
+      configured,
+      lease,
+    };
+    continuousIqConfigurationOwnership.current = ownership;
+    return ownership;
+  }
+
+  function releaseContinuousIqConfiguration(): void {
+    const ownership = continuousIqConfigurationOwnership.current;
+    continuousIqConfigurationOwnership.current = undefined;
+    ownership?.lease.release();
+  }
+
+  function finishContinuousIqLoop(task: Promise<void>, failure?: unknown): void {
+    if (continuousIqTask.current !== task) return;
+    continuousIqTask.current = undefined;
+    releaseContinuousIqConfiguration();
+    if (failure === undefined || !continuousRequested.current) return;
+    continuousRequested.current = false;
+    setContinuous(false);
+    setAcquisition('failed');
+    setNotice(undefined);
+    setError(`Continuous I/Q acquisition failed: ${errorMessage(failure)}`);
+  }
 
   async function startContinuousOwned(): Promise<void> {
-    if (continuousRequested.current) throw new Error('Continuous acquisition is already running');
+    if (continuousRequested.current || continuousRef.current) throw new Error('Continuous acquisition is already running');
+    continuousRequested.current = true;
+    setContinuous(true);
+    setContinuousMode('spectrum');
     try {
       while (true) {
         const targetRevision = analyzerRevision.current;
         const configured = await configureAnalyzer(analyzerRef.current);
+        if (!continuousRequested.current) {
+          completeContinuousStop();
+          return;
+        }
         if (targetRevision !== analyzerRevision.current) continue;
         setAcquisition('streaming');
         await startStreamingWithConfiguration(configured.configurationRevision);
+        if (!continuousRequested.current) {
+          await stopStreamingAndReleaseConfiguration();
+          completeContinuousStop();
+          return;
+        }
         if (targetRevision === analyzerRevision.current) break;
         await stopStreamingAndReleaseConfiguration();
+        if (!continuousRequested.current) {
+          completeContinuousStop();
+          return;
+        }
       }
     } catch (value) {
       setAcquisition('failed');
+      if (!continuousStreamOwnership.current) {
+        continuousRequested.current = false;
+        setContinuous(false);
+      }
       setError(errorMessage(value));
       throw value;
     }
   }
 
-  function stopContinuous(): Promise<void> { return runInstrumentTransaction('stop-continuous-acquisition', () => stopContinuousOwned()); }
+  function stopContinuous(): Promise<void> {
+    const existing = operatorContinuousStopRequest.current;
+    if (existing) return existing.promise;
+    if (!continuousRef.current && !continuousStreamOwnership.current && !continuousRequested.current) {
+      return Promise.reject(new Error('Continuous acquisition is not running'));
+    }
+    // This intent flag is deliberately outside the transaction gate. Stop is
+    // admitted even while a pause/configure/resume transaction owns the
+    // instrument; every continuation observes it before starting another
+    // host acquisition.
+    continuousRequested.current = false;
+    wakeContinuousIqAdmissionWaiters();
+    setAcquisition('stopping');
+    setNotice('Stopping continuous acquisition…');
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const request = { promise, resolve, reject };
+    operatorContinuousStopRequest.current = request;
+    void promise.catch(() => undefined);
+    drainOperatorContinuousStop();
+    return promise;
+  }
 
-  async function stopContinuousOwned(): Promise<void> {
-    if (!continuousRequested.current) throw new Error('Continuous acquisition is not running');
-    await stopStreamingAndReleaseConfiguration();
+  function drainOperatorContinuousStop(): void {
+    const request = operatorContinuousStopRequest.current;
+    if (!request || operatorContinuousStopTask.current || instrumentTransactionOwner.current) return;
+    if (!continuousStreamOwnership.current) {
+      completeContinuousStop();
+      operatorContinuousStopRequest.current = undefined;
+      request.resolve();
+      return;
+    }
+    const task = runInstrumentTransaction('stop-continuous-acquisition', async () => {
+      await stopStreamingAndReleaseConfiguration();
+      completeContinuousStop();
+    });
+    operatorContinuousStopTask.current = task;
+    void task.then(
+      () => finishOperatorContinuousStop(task),
+      (value) => finishOperatorContinuousStop(task, value),
+    );
+  }
+
+  function finishOperatorContinuousStop(task: Promise<void>, failure?: unknown): void {
+    if (operatorContinuousStopTask.current !== task) return;
+    operatorContinuousStopTask.current = undefined;
+    const request = operatorContinuousStopRequest.current;
+    if (!request) return;
+    operatorContinuousStopRequest.current = undefined;
+    if (failure === undefined) {
+      request.resolve();
+      return;
+    }
+    setAcquisition('failed');
+    setNotice(undefined);
+    setError(`Continuous acquisition stop failed: ${errorMessage(failure)}`);
+    request.reject(failure);
+  }
+
+  function completeContinuousStop(message = 'Continuous acquisition stopped'): void {
+    continuousRequested.current = false;
+    wakeContinuousIqAdmissionWaiters();
+    releaseContinuousIqConfiguration();
+    setContinuous(false);
     setAcquisition('complete');
+    setNotice(message);
   }
 
   async function startContinuousFromUi(): Promise<void> { try { await startContinuous(); } catch { /* Visible in the workspace alert. */ } }
   async function stopContinuousFromUi(): Promise<void> { try { await stopContinuous(); } catch (value) { setError(errorMessage(value)); } }
 
-  function acquireZeroSpan(): Promise<ZeroSpanCapture> { return runInstrumentTransaction('acquire-detected-power', () => acquireZeroSpanOwned()); }
+  function acquireZeroSpan(): Promise<ZeroSpanCapture> {
+    return runInstrumentTransaction('acquire-detected-power', () => runWithContinuousPaused(
+      'detected-power capture',
+      () => acquireZeroSpanOwned(),
+    ));
+  }
 
   async function acquireZeroSpanOwned(): Promise<ZeroSpanCapture> {
     const activeSession = requireConnected();
@@ -1457,18 +2355,26 @@ export function App({
           throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
         }
         const sequence = ++analysisSequence.current;
-        const active = classificationRepresentatives(
-          preCaptureSignals.filter((item) => item.state === 'active'),
-          admittedTarget?.detection.id,
-        );
         zeroCaptureSpectrumSweepIdsRef.current = captureReceipt
           ? preCaptureSweepIds
           : undefined;
-        const results = await Promise.all(active.map((item) =>
-          classifierRuntime.classifier.classify(
-            item,
-            classificationEvidenceForDetection(item, preCaptureHistory),
-          )));
+        const selected = admittedTarget?.detection;
+        const evidenceSweeps = selected
+          ? exactClassificationEvidenceSweeps(selected, preCaptureHistory)
+          : undefined;
+        if (captureReceipt
+          && selected?.id !== captureReceipt.selection.projectedRepresentativeId) {
+          throw new Error('Detected-power receipt no longer owns the selected classification representative');
+        }
+        if (selected && !evidenceSweeps) {
+          throw new Error(`Selected classification target ${selected.id} omitted exact external sweep provenance`);
+        }
+        const results = selected && evidenceSweeps
+          ? [await requireClassifierRuntime().classifier.classify(
+            selected,
+            classificationEvidenceForDetection(selected, evidenceSweeps),
+          )]
+          : [];
         if (sequence === analysisSequence.current) setClassifications(results);
         setAcquisition('complete');
         return capture;
@@ -1485,7 +2391,10 @@ export function App({
   async function acquireZeroSpanFromUi(): Promise<void> { try { await acquireZeroSpan(); } catch { /* Visible in the workspace alert. */ } }
 
   function configureGeneratorWith(config: GeneratorConfig) {
-    return runInstrumentTransaction('configure-rf-generator', () => configureGeneratorOwned(config));
+    return runInstrumentTransaction('configure-rf-generator', () => runWithContinuousPaused(
+      'generator configuration',
+      () => configureGeneratorOwned(config),
+    ));
   }
 
   async function configureGeneratorOwned(config: GeneratorConfig) {
@@ -1519,7 +2428,11 @@ export function App({
   async function configureGeneratorFromUi(): Promise<void> { try { await configureGeneratorWith(generatorRef.current); } catch { /* Visible in the workspace alert. */ } }
 
   function setOutput(enabled: boolean) {
-    return runInstrumentTransaction(enabled ? 'enable-rf-output' : 'disable-rf-output', () => setOutputOwned(enabled));
+    return runInstrumentTransaction(enabled ? 'enable-rf-output' : 'disable-rf-output', () => runWithContinuousPaused(
+      enabled ? 'RF output enable' : 'RF output disable',
+      () => setOutputOwned(enabled),
+      () => !enabled,
+    ));
   }
 
   async function setOutputOwned(enabled: boolean) {
@@ -1648,19 +2561,31 @@ export function App({
       }
       requireRemoteGestureSession(sessionId);
       await executeInstrumentFeature({ kind: 'touch', action: 'tap', x: point.x, y: point.y });
-      if (resume) {
+      if (resume && continuousRequested.current) {
         while (true) {
+          if (!continuousRequested.current) break;
           requireRemoteGestureSession(sessionId);
           const targetRevision = analyzerRevision.current;
           const configured = await configureAnalyzer(analyzerRef.current, 'retuning');
+          if (!continuousRequested.current) break;
           if (targetRevision !== analyzerRevision.current) continue;
           requireRemoteGestureSession(sessionId);
           await startStreamingWithConfiguration(configured.configurationRevision);
+          if (!continuousRequested.current) {
+            await stopStreamingAndReleaseConfiguration();
+            break;
+          }
           if (targetRevision === analyzerRevision.current) break;
           await stopStreamingAndReleaseConfiguration();
         }
-        setAcquisition('streaming');
-        setNotice('Continuous acquisition resumed after remote screen tap');
+        if (continuousRequested.current) {
+          setAcquisition('streaming');
+          setNotice('Continuous acquisition resumed after remote screen tap');
+        } else {
+          completeContinuousStop('Continuous acquisition stopped after remote screen tap');
+        }
+      } else if (resume) {
+        completeContinuousStop('Continuous acquisition stopped after remote screen tap');
       }
     } catch (value) {
       setAcquisition('failed');
@@ -2343,28 +3268,54 @@ export function App({
   }
 
   const agent = useAtomAgent({ applicationContext, execute: executeAgentTool });
-  const acquisitionActions = (continuous || (workspace !== 'generator' && workspace !== 'device')) ? <div className="acquisition-actions">
-    {sweep && workspace !== 'generator' && workspace !== 'device' && <>
+  const contextualAcquisitionMode = acquisitionModeForWorkspace(workspace, continuousMode);
+  const acquisitionDisabledReason = !connected
+    ? `Connect an instrument source to acquire ${contextualAcquisitionMode === 'complex-iq' ? 'complex-I/Q' : 'spectrum'} data`
+    : contextualAcquisitionMode === 'complex-iq' && iqCapability === undefined
+      ? 'The connected instrument does not advertise complex-I/Q acquisition'
+      : contextualAcquisitionMode === 'complex-iq' && iqCaptureUnavailableReason
+        ? iqCaptureUnavailableReason
+        : contextualAcquisitionMode === 'spectrum' && spectrumCapability === undefined
+          ? 'The connected instrument does not advertise swept-spectrum acquisition'
+      : generatorOutput !== 'off'
+        ? generatorOutput === 'on'
+          ? 'Disable RF output before acquiring spectrum data'
+          : 'RF output state must be known off before acquiring spectrum data'
+        : busy
+          ? 'Another instrument operation is active'
+          : undefined;
+  const measurementActions = sweep ? <div className="measurement-actions">
       <button data-agent-control="export.csv" className="secondary compact icon-only" aria-label="Export CSV" title="Export CSV" onClick={() => void exportLatestFromUi('csv')}><Download size={14}/><span>CSV</span></button>
       <button data-agent-control="export.json" className="secondary compact icon-only" aria-label="Export JSON" title="Export JSON" onClick={() => void exportLatestFromUi('json')}><span>{'{ }'}</span></button>
-    </>}
-    {continuous
-      ? <button data-agent-control="acquisition.continuous.stop" className="secondary compact stop-acquisition" onClick={() => void stopContinuousFromUi()}><StopCircle size={14}/>Stop</button>
-      : <>
-        <button data-agent-control="acquisition.continuous.start" className="secondary compact" disabled={!connected || busy} onClick={() => void startContinuousFromUi()}><Repeat2 size={14}/>Run</button>
-        <button data-agent-control="acquisition.single" className="primary compact" disabled={!connected || busy} onClick={() => void acquireFromUi()}>{busy ? <LoaderCircle className="spin" size={14}/> : <Play size={14} fill="currentColor"/>}{acquisition === 'acquiring' ? 'Acquiring…' : 'Single'}</button>
-      </>}
   </div> : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
     <TopBar instrument={instrument} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => setConnectionOpen(true)} onAgent={() => setAgentOpen((value) => !value)}/>
-    <Sidebar active={workspace} measurementView={measurementView} output={generatorOutput} generationAvailable={generatorCapability !== undefined || signalLabProfileCapability !== undefined} onSelect={changeWorkspace} onMeasurementView={changeMeasurementView}/>
+    <Sidebar
+      active={workspace}
+      measurementView={measurementView}
+      output={generatorOutput}
+      generationAvailable={generatorCapability !== undefined || signalLabProfileCapability !== undefined}
+      iqAvailable={iqCapability !== undefined}
+      connected={connected}
+      acquisition={acquisition}
+      continuous={continuous}
+      acquisitionMode={continuous ? continuousMode : contextualAcquisitionMode}
+      acquisitionBusy={busy}
+      acquisitionDisabled={acquisitionDisabledReason !== undefined}
+      acquisitionDisabledReason={acquisitionDisabledReason}
+      onSelect={changeWorkspace}
+      onMeasurementView={changeMeasurementView}
+      onRun={() => void startContinuousFromUi()}
+      onSingle={() => void acquireFromUi()}
+      onStop={() => void stopContinuousFromUi()}
+    />
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' || workspace === 'detection' ? 'classification-workspace' : ''}`}>
-      {workspace !== 'spectrum' && acquisitionActions && <div className="workspace-command-row">{acquisitionActions}</div>}
+      {(workspace === 'classification' || workspace === 'detection') && measurementActions && <div className="workspace-command-row">{measurementActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => setError(undefined)}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button data-agent-control="notice.dismiss" onClick={() => setNotice(undefined)}>Dismiss</button></div>}
       {workspace === 'spectrum' && <MeasurementWorkspace
-        acquisitionActions={acquisitionActions}
+        measurementActions={measurementActions}
         view={measurementView}
         analyzer={analyzer} spectrumCapability={spectrumCapability} busy={busy} streaming={continuous} onAnalyzer={(configuration) => void updateAnalyzerFromUi(configuration)}
         sweep={sweep} history={history} detections={detections} acquisition={acquisition}
@@ -2382,7 +3333,7 @@ export function App({
         activeTraceId={activeTraceId} markers={markerReadings} activeMarkerId={activeMarkerId}
         display={displayConfiguration} onMarkerPlace={placeActiveMarker}
         detections={detections} classifications={classifications}
-        modelAvailability={classifierRuntime.status}
+        modelAvailability={classifierAvailability}
         selectedId={zeroCaptureReceiptRef.current?.selection.projectedRepresentativeId
           ?? selectedClassificationId}
         selectionOrigin={classificationTargetSelection.origin}
@@ -2392,12 +3343,21 @@ export function App({
         capability={detectedPowerCapability} busy={!connected || busy}
         onAcquireZero={() => void acquireZeroSpanFromUi()}
       />}
+      {workspace === 'iq' && <IqWorkspace
+        configuration={iqConfiguration}
+        capability={iqCapability}
+        capture={iqCapture}
+        busy={!connected || busy}
+        captureUnavailableReason={iqCaptureUnavailableReason}
+        onChange={stageIqConfiguration}
+      />}
       {workspace === 'generator' && <GeneratorWorkspace
         config={generator} capability={generatorCapability}
-        signalLabProfiles={signalLabProfileCapability} selectedSignalLabProfile={selectedProfile}
+        signalLabProfiles={signalLabProfileCapability} selectedSignalLabProfile={selectedProfile} selectedSignalLabChannel={selectedSignalLabChannel}
         output={generatorOutput} busy={busy} onChange={setGenerator}
         onApply={() => void configureGeneratorFromUi()} onOutput={(enabled) => void setOutputFromUi(enabled)}
         onSignalLabProfile={(profileId) => void selectSignalLabProfile(profileId)}
+        onSignalLabChannel={(channel) => void configureSignalLabChannel(channel)}
       />}
       {workspace === 'device' && <DeviceWorkspace session={session} diagnostics={diagnostics} frame={screenFrame} busy={busy} touchBusy={touchBusy} selectedProfile={selectedProfile} onProfile={(profileId) => void selectSignalLabProfile(profileId)} onRefresh={() => void refreshDiagnosticsFromUi()} onCapture={() => void captureScreenFromUi()} onTap={tapScreen}/>}
     </section>
@@ -2521,9 +3481,13 @@ function connectionNotice(session: InstrumentSessionSnapshot): string {
   const provenance = session.provenance;
   if (provenance.sourceKind === 'signal-lab') return `${session.candidate.displayName} connected as a synthetic measurement source; USB, firmware execution, and RF emission are not claimed`;
   if (provenance.sourceKind === 'tinysa-firmware-twin') return `${provenance.device.model} executable firmware twin connected through ${provenance.bridge}`;
-  return provenance.device.firmwareQualification === 'custom-unqualified'
-    ? `${provenance.device.model} connected with custom, source-unqualified firmware`
-    : `${provenance.device.model} connected and identified`;
+  if (provenance.device.firmwareQualification === 'custom-unqualified') {
+    return `${provenance.device.model} connected with custom, source-unqualified firmware`;
+  }
+  if (provenance.device.firmwareQualification === 'custom-source-qualified-receive-only') {
+    return `${provenance.device.model} connected with frozen-source-qualified custom receive-only firmware`;
+  }
+  return `${provenance.device.model} connected and identified`;
 }
 function parseMarkerBank(value: unknown): readonly MarkerConfiguration[] {
   if (!Array.isArray(value) || value.length !== 8) throw new Error('Marker bank must contain exactly eight markers');
@@ -2657,6 +3621,60 @@ function sameOptionalStringArray(
     : right !== undefined
       && left.length === right.length
       && left.every((value, index) => value === right[index]);
+}
+
+function acquisitionModeForWorkspace(
+  workspace: WorkspaceId,
+  fallback: ContinuousAcquisitionMode,
+): ContinuousAcquisitionMode {
+  if (workspace === 'iq') return 'complex-iq';
+  if (workspace === 'spectrum' || workspace === 'classification' || workspace === 'detection') return 'spectrum';
+  return fallback;
+}
+
+function invalidatingFeatureReason(
+  request: InstrumentFeatureRequest,
+): ConfigurationInvalidatedEvent['reason'] | undefined {
+  if (request.kind === 'signal-lab-profile-selection') {
+    return request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed';
+  }
+  if (request.kind === 'touch'
+    || (request.kind === 'rf-generator' && request.action === 'configure')) {
+    return 'instrument-mode-changed';
+  }
+  return undefined;
+}
+
+function isInvalidatingFeatureRequest(request: InstrumentFeatureRequest): request is InvalidatingFeatureRequest {
+  return request.kind === 'signal-lab-profile-selection'
+    || request.kind === 'touch'
+    || (request.kind === 'rf-generator' && request.action === 'configure');
+}
+
+function featureResultAcknowledgesRequest(
+  result: InstrumentFeatureResult,
+  request: InvalidatingFeatureRequest,
+): boolean {
+  if (result.sessionId.trim().length === 0
+    || result.kind !== request.kind
+    || result.action !== request.action) return false;
+  const resultRecord = result as unknown as Record<string, unknown>;
+  return Object.entries(request).every(([key, value]) => sameStructuredValue(resultRecord[key], value));
+}
+
+function sameStructuredValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalStructuredValue(left)) === JSON.stringify(canonicalStructuredValue(right));
+}
+
+function canonicalStructuredValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return [...value];
+  if (Array.isArray(value)) return value.map(canonicalStructuredValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, canonicalStructuredValue(nested)]));
+  }
+  return value;
 }
 
 function requireComputerActionResult<T extends { ok: boolean; action: string; target?: string; reason?: string }>(result: T): T {

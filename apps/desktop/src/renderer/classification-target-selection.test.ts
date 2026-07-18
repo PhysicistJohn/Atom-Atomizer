@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { SignalDetector, SignalTracker, type ClassificationCaptureTargetProjection } from '@tinysa/analysis';
+import {
+  CLASSIFICATION_CAPTURE_TARGET_SELECTION_POLICY_ID,
+  classificationCaptureTargetRankEvidence,
+  SignalDetector,
+  SignalTracker,
+  type ClassificationCaptureTargetProjection,
+} from '@tinysa/analysis';
 import type { DetectedSignal, DeviceIdentity, SignalDetectionConfig, Sweep } from '@tinysa/contracts';
 import {
   classificationSpectrumSelection,
@@ -21,17 +27,40 @@ function physicalDetection(
   peakHz: number,
   overrides: Partial<DetectedSignal> = {},
 ): DetectedSignal {
+  const sourceSweep = {
+    ...visibleSweep,
+    complete: true,
+    actualStartHz: peakHz - 2.5,
+    actualStopHz: peakHz + 2.5,
+    actualRbwHz: 1,
+    frequencyHz: [peakHz - 2, peakHz - 1, peakHz, peakHz + 1, peakHz + 2],
+    powerDbm: [-100, -100, peakDbm, -100, -100],
+  } as Sweep;
+  const observation = {
+    sourceSweep,
+    startHz: peakHz - 1,
+    stopHz: peakHz + 1,
+    peakHz,
+    detectorId: 'fixture-detector',
+    localBayesianEvidence: {} as DetectedSignal['bayesianEvidence'],
+  };
   return {
     id,
     startHz: peakHz - 1,
     stopHz: peakHz + 1,
     peakHz,
     peakDbm,
+    prominenceDb: 20,
+    bandwidthHz: 2,
+    noiseFloorDbm: -100,
     lastSeenAt: visibleSweep.capturedAt,
     sweepIds: [visibleSweep.id],
     state: 'active',
     missedSweeps: 0,
     associationMode: 'frequency-local',
+    detectorId: 'fixture-detector',
+    classificationRegionObservation: observation,
+    localClassificationObservations: [observation],
     ...overrides,
   } as DetectedSignal;
 }
@@ -49,7 +78,7 @@ describe('visible classification target selection', () => {
     });
   });
 
-  it('ranks the complete visible sweep by physical peak power and breaks exact ties stably', () => {
+  it('ranks the complete visible sweep by v4 evidence and breaks exact ties stably', () => {
     const left = physicalDetection('left', -55, 110);
     const right = physicalDetection('right', -35, 190);
     const staleButStronger = physicalDetection('stale', -5, 160, {
@@ -75,6 +104,41 @@ describe('visible classification target selection', () => {
     )).toEqual({ detectionId: tieA.id, origin: 'automatic' });
   });
 
+  it('commits the live-shaped prominent integrated signal even when a narrow signal has the higher peak', () => {
+    const sweep = adversarialProminenceSweep();
+    const config = {
+      threshold: { strategy: 'absolute', levelDbm: -90 },
+      minimumBandwidthHz: 0,
+      minimumProminenceDb: 6,
+      minimumConsecutiveSweeps: 1,
+      releaseAfterMissedSweeps: 2,
+    } satisfies SignalDetectionConfig;
+    const detector = new SignalDetector(config);
+    const tracker = new SignalTracker(config);
+    const tracks = tracker.update(sweep, detector.analyze(sweep));
+    const narrow = tracks.find((track) => track.qualityFlags.includes('single-bin'))!;
+    const wide = tracks.find((track) => track.id !== narrow.id)!;
+
+    expect(CLASSIFICATION_CAPTURE_TARGET_SELECTION_POLICY_ID)
+      .toBe('preferred-then-current-source-sweep-integrated-excess-power-physical-or-qualified-agile-member-target-v4');
+    expect(narrow.peakDbm).toBeGreaterThan(wide.peakDbm);
+    expect(classificationCaptureTargetRankEvidence(wide)!.integratedExcessPowerMw)
+      .toBeGreaterThan(classificationCaptureTargetRankEvidence(narrow)!.integratedExcessPowerMw);
+    expect(visibleClassificationTargetProjections(tracks, sweep)[0]?.rawTarget.id)
+      .toBe(wide.id);
+
+    expect(resolveVisibleClassificationTargetSelection(tracks, sweep)).toEqual({
+      detectionId: wide.id,
+      origin: 'automatic',
+    });
+    // Human selection remains an explicit override of automatic ranking.
+    expect(resolveVisibleClassificationTargetSelection(tracks, sweep, narrow.id)).toEqual({
+      detectionId: narrow.id,
+      origin: 'explicit',
+      explicitDetectionId: narrow.id,
+    });
+  });
+
   it('keeps an explicit current target but falls back when that row is stale', () => {
     const weak = physicalDetection('weak', -60, 120);
     const strong = physicalDetection('strong', -30, 180);
@@ -94,6 +158,31 @@ describe('visible classification target selection', () => {
       visibleSweep,
       staleWeak.id,
     )).toEqual({ detectionId: strong.id, origin: 'automatic' });
+  });
+
+  it('fails the complete visible rank closed when any eligible row lacks exact source evidence', () => {
+    const valid = physicalDetection('valid-rank-row', -45, 130);
+    const mismatched = physicalDetection('mismatched-rank-row', -20, 170);
+    const sourceSweep = mismatched.localClassificationObservations!.at(-1)!.sourceSweep;
+    const mismatchedObservation = {
+      ...mismatched.localClassificationObservations!.at(-1)!,
+      sourceSweep: { ...sourceSweep, id: 'substituted-source-sweep' },
+    };
+    const invalidEligibleRow: DetectedSignal = {
+      ...mismatched,
+      classificationRegionObservation: mismatchedObservation,
+      localClassificationObservations: [mismatchedObservation],
+    };
+
+    expect(resolveVisibleClassificationTargetSelection(
+      [valid, invalidEligibleRow],
+      visibleSweep,
+    )).toEqual({ origin: 'automatic' });
+    expect(resolveVisibleClassificationTargetSelection(
+      [valid, invalidEligibleRow],
+      visibleSweep,
+      valid.id,
+    )).toEqual({ origin: 'automatic' });
   });
 
   it('highlights the raw current member while retaining an agile evidence representative', () => {
@@ -229,6 +318,57 @@ function agileSweep(sequence: number, activeFrequencyHz: number): Sweep {
     frequencyHz,
     powerDbm: frequencyHz.map((frequency) =>
       Math.abs(frequency - activeFrequencyHz) <= 300_000 ? -45 : -110),
+    requested: {
+      kind: 'swept-spectrum',
+      startHz,
+      stopHz,
+      points,
+      sweepTimeSeconds: 0.05,
+      controls: {
+        schemaVersion: 1,
+        model: 'receiver',
+        acquisitionFormat: 'text',
+        resolutionBandwidthKhz: 'auto',
+        attenuationDb: 'auto',
+        detector: 'sample',
+        spurRejection: 'auto',
+        lowNoiseAmplifier: 'off',
+        avoidSpurs: 'auto',
+        trigger: { mode: 'auto' },
+      },
+    },
+    actualStartHz: startHz,
+    actualStopHz: stopHz,
+    actualRbwHz: (stopHz - startHz) / (points - 1),
+    actualAttenuationDb: 0,
+    source: 'scan-text',
+    complete: true,
+    identity: agileIdentity,
+  };
+}
+
+function adversarialProminenceSweep(): Sweep {
+  const points = 401;
+  const startHz = 80_000_000;
+  const stopHz = 120_000_000;
+  const frequencyHz = Array.from(
+    { length: points },
+    (_, index) => startHz + (stopHz - startHz) * index / (points - 1),
+  );
+  return {
+    kind: 'spectrum',
+    id: 'visible-prominence-adversary',
+    sequence: 1,
+    capturedAt: '2026-07-17T01:00:00.000Z',
+    elapsedMilliseconds: 50,
+    frequencyHz,
+    powerDbm: frequencyHz.map((_frequency, index) => {
+      if (index === 60) return -25;
+      if (index >= 180 && index <= 379) {
+        return index === 280 ? -45 : -46;
+      }
+      return -110;
+    }),
     requested: {
       kind: 'swept-spectrum',
       startHz,

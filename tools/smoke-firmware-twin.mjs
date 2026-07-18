@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const firmwareRoot = resolve(root, '../TinySA_Firmware');
+const firmwareRoot = resolve(root, '../Atom-Firmware');
 const activeTrioContract = 'trio-composition-v4.json';
 const manifest = JSON.parse(await readFile(resolve(root, 'contracts', activeTrioContract), 'utf8'));
 if (manifest.contractVersion !== 4

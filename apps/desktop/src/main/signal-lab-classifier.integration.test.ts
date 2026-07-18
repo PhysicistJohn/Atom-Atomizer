@@ -14,9 +14,9 @@ import {
   SignalTracker,
   type WaveformEvidence,
 } from '@tinysa/analysis';
-import { observableRepresentativeIsInClassDomain } from '../../../../../AtomOS_Classifier/src/observable-hypothesis-domain.js';
-import type { ObservableLeafClass } from '../../../../../AtomOS_Classifier/src/observable-classifier-model.js';
-import { SignalLabBayesianClassifier } from '../../../../../AtomOS_Classifier/src/signal-lab-classifier.js';
+import { observableRepresentativeIsInClassDomain } from '../../../../../Atom-Classifier/src/observable-hypothesis-domain.js';
+import type { ObservableLeafClass } from '../../../../../Atom-Classifier/src/observable-classifier-model.js';
+import { SignalLabBayesianClassifier } from '../../../../../Atom-Classifier/src/signal-lab-classifier.js';
 import { projectDetectedPowerTuneHz } from '@tinysa/contracts';
 import type {
   DetectedSignal,
@@ -90,7 +90,7 @@ const CANONIZED_PROFILE_GATES: readonly CanonizedProfileGate[] = [
 ];
 
 const atomizerRepositoryRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
-const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'TinySA_SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
+const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'Atom-SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
 const signalLabIntegrationRequired = process.env.SIGNAL_LAB_INTEGRATION_REQUIRED === '1';
 const profileFilter = process.env.SIGNAL_LAB_CLASSIFIER_PROFILE?.trim();
 
@@ -389,7 +389,7 @@ describe('SignalLab live observable-classification release gates', () => {
                 ).toBe(projectedEnvelope.id);
                 expect(envelopeObservation.views).toEqual(['scalar-spectrum', 'detected-power-envelope']);
                 expect(envelopeObservation.detectedPowerAcquisitionQualification)
-                  .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+                  .toBe('receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5');
                 expect(envelopeObservation.values['envelope.logTransitionRateHz']).toBeTypeOf('number');
               }
               const envelopeResult = await classifier.classify(detection, qualifiedEvidence);
@@ -439,6 +439,54 @@ describe('SignalLab live observable-classification release gates', () => {
       }
     },
     600_000,
+  );
+
+  it.skipIf(!existsSync(shippedBridge))(
+    'keeps the live LTE E-TM3.1 equivalence-class probability inside the worker boundary',
+    async () => {
+      const host = createLiveSignalLabHost();
+      const gate = profile('lte-etm3.1', 'lte-fdd-like', [
+        'observable:cellular-ofdm-ambiguous',
+      ]);
+      try {
+        const { profileCapability } = await connectLiveSignalLabHost(host);
+        const geometry = await selectProfileGeometry(host, gate, profileCapability.profiles);
+        const spectrumConfiguration = syntheticSpectrumConfiguration(
+          geometry.centerFrequencyHz,
+          geometry.recommendedSpanHz,
+        );
+        await host.configure(spectrumConfiguration);
+        const detector = new SignalDetector(DETECTION_CONFIG);
+        const tracker = new SignalTracker(DETECTION_CONFIG);
+        const classifier = new SignalLabBayesianClassifier();
+        let history: readonly Sweep[] = [];
+        let classified = 0;
+
+        for (let opportunity = 0; opportunity < gate.opportunities; opportunity++) {
+          const measurement = await host.acquire();
+          if (measurement.kind !== 'swept-spectrum') {
+            throw new Error(`Expected swept-spectrum measurement for ${gate.profileId}`);
+          }
+          const sweep = projectLiveSpectrum(host, measurement, spectrumConfiguration, gate);
+          history = [sweep, ...history].slice(0, HISTORY_LIMIT);
+          const representatives = classificationRepresentatives(
+            tracker.update(sweep, detector.analyze(sweep)).filter((item) => item.state === 'active'),
+          );
+          for (const detection of representatives) {
+            if (!runtimeRepresentativeIsReady(detection)) continue;
+            const result = await classifier.classify(detection, { sweeps: history });
+            assertProbabilityContract(result);
+            expect(result.label).toBe('observable:cellular-ofdm-ambiguous');
+            classified++;
+          }
+        }
+
+        expect(classified).toBeGreaterThan(0);
+      } finally {
+        await host.shutdown();
+      }
+    },
+    120_000,
   );
 });
 
@@ -629,6 +677,7 @@ function assertSpectrumOnlyResult(
     | 'zero-span-acquisition-policy-unqualified'
     | 'frequency-agile-fixed-tune-envelope-censored',
 ): void {
+  assertProbabilityContract(result);
   expect(result.qualification).toBe('bayesian-observable-equivalence');
   expect(result.evidence.views).toEqual(['scalar-spectrum']);
   expect(result.evidence.limitations).toContain(expectedLimitation);
@@ -642,16 +691,38 @@ function assertEnvelopeResult(
   captureId: string,
   gate: CanonizedProfileGate,
 ): void {
+  assertProbabilityContract(result);
   expect(result.qualification).toBe('bayesian-observable-equivalence');
   expect(result.evidence.views).toEqual(['scalar-spectrum', 'detected-power-envelope']);
   expect(result.evidence.zeroSpanCaptureId).toBe(captureId);
   expect(result.evidence.detectedPowerAcquisitionQualification)
-    .toBe('receipt-verified-provenance-bound-first-runtime-admitted-strongest-current-physical-or-agile-member-single-capture-v4');
+    .toBe('receipt-verified-provenance-bound-runtime-admitted-physical-capture-v5');
   expect(result.evidence.limitations).toContain('zero-span-rbw-unavailable');
   expect(result.evidence.limitations).not.toEqual(expect.arrayContaining([
     'zero-span-missing', 'zero-span-provenance-mismatch', 'zero-span-tune-mismatch', 'zero-span-geometry-out-of-domain',
   ]));
   assertNoClassificationLabels(result.evidence, gate);
+}
+
+function assertProbabilityContract(result: WaveformClassification): void {
+  expect(Number.isFinite(result.confidence)).toBe(true);
+  expect(result.confidence).toBeGreaterThanOrEqual(0);
+  expect(result.confidence).toBeLessThanOrEqual(1);
+  for (const candidate of result.candidates) {
+    expect(Number.isFinite(candidate.confidence)).toBe(true);
+    expect(candidate.confidence).toBeGreaterThanOrEqual(0);
+    expect(candidate.confidence).toBeLessThanOrEqual(1);
+  }
+  if (result.decisionSupport) {
+    expect(Number.isFinite(result.decisionSupport.value)).toBe(true);
+    expect(result.decisionSupport.value).toBeGreaterThanOrEqual(0);
+    expect(result.decisionSupport.value).toBeLessThanOrEqual(1);
+    if (result.decisionSupport.threshold !== undefined) {
+      expect(Number.isFinite(result.decisionSupport.threshold)).toBe(true);
+      expect(result.decisionSupport.threshold).toBeGreaterThanOrEqual(0);
+      expect(result.decisionSupport.threshold).toBeLessThanOrEqual(1);
+    }
+  }
 }
 
 function classificationSourceSweepIds(detection: DetectedSignal): readonly string[] {

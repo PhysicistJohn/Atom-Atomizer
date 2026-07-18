@@ -1,6 +1,6 @@
 {
   "contractVersion": 3,
   "instrumentPolicy": "signal-lab-default-no-fallback",
-  "signalLabRepository": "../TinySA_SignalLab",
+  "signalLabRepository": "../Atom-SignalLab",
   "port": 5173
 }

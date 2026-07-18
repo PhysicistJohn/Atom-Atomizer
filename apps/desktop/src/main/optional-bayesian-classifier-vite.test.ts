@@ -12,6 +12,7 @@ describe('optional Bayesian classifier Vite boundary', () => {
     expect(source).toContain('Bayesian classifier model assets are not bundled');
     expect(source).not.toContain('/classifier.ts');
     expect(source).not.toContain('SignalLabBayesianClassifier');
+    expect(source).not.toContain('new Worker');
   });
 
   it('imports the classifier only when the complete generated pair is present', () => {
@@ -19,6 +20,7 @@ describe('optional Bayesian classifier Vite boundary', () => {
 
     expect(source).toContain("from \"/classifier.ts\"");
     expect(source).toContain('new SignalLabBayesianClassifier()');
+    expect(source).toContain("new Worker(new URL('./bayesian-classifier-worker.ts', import.meta.url)");
   });
 
   it('keeps the provider model-free when one member of the generated pair is missing', () => {

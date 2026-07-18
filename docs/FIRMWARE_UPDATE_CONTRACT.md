@@ -1,13 +1,13 @@
 # ZS407 firmware update contract
 
-Status: historical Atomizer record; active implementation owned by `../TinySA_Flasher`
+Status: historical Atomizer record; active implementation owned by `../Atom-Flasher`
 Version: 1.2.0
 Updated: 2026-07-17
 
 Beginning with Atomizer application contract 6 and device API v3, TinySA contains
 no firmware download, preflight, DFU detection, or flash implementation and no
 Atom tool or renderer control for those operations. The standalone sibling
-application `../TinySA_Flasher` is their exclusive owner. References to Atomizer
+application `../Atom-Flasher` is their exclusive owner. References to Atomizer
 below describe the accepted pre-extraction implementation and preserved physical
 transaction evidence; they are not a current Atomizer capability or API contract.
 
@@ -27,7 +27,7 @@ starting Flasher and finish or safely exit Flasher before reconnecting; there is
 no current automatic cross-application lease or handoff protocol.
 
 For owner-built firmware, Flasher's native manifest picker starts in the sibling
-`../TinySA_Firmware` checkout when it exists and remembers another directory
+`../Atom-Firmware` checkout when it exists and remembers another directory
 only after a selected manifest passes normal admission. The picker default is
 not artifact evidence and creates no Atomizer runtime dependency.
 
@@ -60,6 +60,7 @@ write-started + interruption -> failed / indeterminate-completion / do-not-flash
 write-complete + verification failure -> failed / do-not-flash-again
 target already installed -> up-to-date
 custom-unqualified installed -> custom-firmware / updater disabled
+custom-source-qualified-receive-only installed -> custom-firmware / updater disabled
 ```
 
 Every operation settles once. Network and DFU failures do not retry automatically. Reconnection polling after a successful write is verification of the one completed transaction, not another write attempt.
@@ -71,10 +72,13 @@ Beginning with preflight, every safety-relevant transition is atomically journal
 After one exact physical ZS407 is admitted, Atomizer compares the reported source revision with the pinned target. An older supported revision opens the updater and downloads/verifies the artifact. Automatic behavior stops at `verified`.
 
 A valid but unregistered revision remains admitted as `custom-unqualified` for
-instrument use, but the OEM updater enters `custom-firmware` state with an
-explicit warning and all download/prepare/flash actions disabled. Atomizer does
-not guess whether an OEM image is an upgrade, downgrade, or compatible
-replacement for owner-built firmware.
+instrument use. The exact frozen-source receiver record may instead be admitted
+as `custom-source-qualified-receive-only`, but that narrow source proof is not
+installation authority or artifact attestation. In both cases the historical
+OEM updater enters `custom-firmware` state with an explicit warning and all
+download/prepare/flash actions disabled. Atomizer does not guess whether an OEM
+image is an upgrade, downgrade, or compatible replacement for owner-built
+firmware.
 
 Atomizer never automatically:
 

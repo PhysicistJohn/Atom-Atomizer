@@ -202,6 +202,13 @@ Atom receives typed tools for `get_measurement_state`, `configure_marker`,
 visual controls. Screenshot/computer operation remains available for UI
 inspection but is not a substitute for the typed measurement tools.
 
+For a peak-placement request Atom preloads `search_marker` together with the
+bounded `acquire_sweep` recovery dependency. Preloading does not acquire. Atom
+searches the assigned current complete host trace directly; only a no-data
+result or an explicit request for fresh evidence admits acquisition, which must
+complete before the search. It never invents a partial `configure_marker`
+replacement for peak placement.
+
 The active marker measurement card occupies a dedicated structural row between
 the spectrum header and plot canvas. It is never absolutely positioned over or
 inside the SVG trace plane. The live trace, marker stem, and unfilled two-edge
@@ -245,7 +252,7 @@ not clipped or stretched on non-square plots.
 
 ## References
 
-- Pinned firmware: sibling `TinySA_Firmware`, commit
+- Pinned firmware: sibling `Atom-Firmware`, commit
   `c97938697b6c7485e7cab50bca9af76996b7d671`, `main.c` marker/trace commands.
 - Keysight trace types:
   https://helpfiles.keysight.com/csg/FFProgrammingHelpWebHelp/TRACe_SPECtrum_1_2_3_4_TYPE.htm

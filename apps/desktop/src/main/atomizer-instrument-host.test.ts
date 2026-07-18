@@ -247,6 +247,32 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(manager.acquireCalls).toBe(1);
   });
 
+  it('paces a fast producer to its admitted sweep period without double-sleeping a slow producer', async () => {
+    for (const [elapsedMilliseconds, expectedWaitMilliseconds] of [[12, 38], [75, 0]] as const) {
+      const manager = new FakeManager();
+      manager.session = sessionFixture(configurationFixture());
+      const cadence = deferred<void>();
+      const waits: number[] = [];
+      const clock = [100, 100 + elapsedMilliseconds];
+      const host = new AtomizerInstrumentHost(manager, new FakePreferences(), {
+        now: () => new Date(NOW),
+        monotonicMilliseconds: () => clock.shift() ?? 100 + elapsedMilliseconds,
+        yieldToEventLoop: (milliseconds = 0) => {
+          waits.push(milliseconds);
+          return cadence.promise;
+        },
+      });
+
+      await host.startStreaming();
+      await until(() => waits.length === 1);
+      await host.stopStreaming();
+
+      expect(waits).toEqual([expectedWaitMilliseconds]);
+      expect(manager.acquireCalls).toBe(1);
+      cadence.resolve();
+    }
+  });
+
   it('turns a start requested while an in-flight stop drains into a genuinely new stream run', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
@@ -763,9 +789,16 @@ class FakeManager {
     }
     if (request.kind !== 'signal-lab-profile-selection') throw new Error('unsupported fixture feature');
     if (this.session.provenance.sourceKind !== 'signal-lab') throw new Error('fixture session is not SignalLab');
-    const result = { ...request, sessionId: this.session.sessionId, producerConfigurationEpoch: `producer-epoch:${request.profileId}` };
+    const epochSuffix = request.action === 'select-profile' ? request.profileId : `channel-${request.channel.seed}`;
+    const result: InstrumentFeatureResult = {
+      ...request,
+      sessionId: this.session.sessionId,
+      producerConfigurationEpoch: `producer-epoch:${epochSuffix}`,
+    };
     const features = this.session.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
-      ? { ...feature, selectedProfileId: request.profileId }
+      ? request.action === 'select-profile'
+        ? { ...feature, selectedProfileId: request.profileId }
+        : { ...feature, channel: request.channel }
       : feature);
     const { configuration: _configuration, ...withoutConfiguration } = this.session;
     this.session = {

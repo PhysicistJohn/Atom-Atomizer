@@ -51,6 +51,22 @@ function sweepAcross(startHz: number, stopHz: number): Sweep {
   };
 }
 
+const detectionSourceSweep = {
+  ...sweep,
+  frequencyHz: [0, 20, 30, 40, 100],
+  powerDbm: [-100, -90, -40, -90, -100],
+} satisfies Sweep;
+
+const detectionBayesianEvidence = {
+  modelId: 'fixture', posteriorScope: 'track-state', priorSignalProbability: 0.01, posteriorSignalProbability: 0.999,
+  logBayesFactor: 40, effectiveIndependentBins: 3, effectiveReferenceCells: 12, noiseShape: 1,
+  posteriorPredictiveNullProbability: 1e-9, targetPosteriorPredictiveNullProbability: 0.001,
+  targetSweepFalseAlarmProbability: 0.001, multiplicityAdjustedTests: 1,
+  testedRegionStartHz: 20, testedRegionStopHz: 40,
+  qualification: 'ideal-exponential-not-physically-calibrated',
+  noiseSigmaDb: 1.5, observedMeanShiftDb: 50, looks: 3,
+} as const;
+
 const detection = {
   id: 'signal-1',
   startHz: 20,
@@ -76,15 +92,23 @@ const detection = {
     minimumConsecutiveSweeps: 2,
     releaseAfterMissedSweeps: 2,
   },
-  bayesianEvidence: {
-    modelId: 'fixture', posteriorScope: 'track-state', priorSignalProbability: 0.01, posteriorSignalProbability: 0.999,
-    logBayesFactor: 40, effectiveIndependentBins: 3, effectiveReferenceCells: 12, noiseShape: 1,
-    posteriorPredictiveNullProbability: 1e-9, targetPosteriorPredictiveNullProbability: 0.001,
-    targetSweepFalseAlarmProbability: 0.001, multiplicityAdjustedTests: 1,
-    testedRegionStartHz: 99_000_000, testedRegionStopHz: 101_000_000,
-    qualification: 'ideal-exponential-not-physically-calibrated',
-    noiseSigmaDb: 1.5, observedMeanShiftDb: 50, looks: 3,
+  bayesianEvidence: detectionBayesianEvidence,
+  classificationRegionObservation: {
+    sourceSweep: detectionSourceSweep,
+    startHz: 20,
+    stopHz: 40,
+    peakHz: 30,
+    detectorId: 'robust-prominence-v1',
+    localBayesianEvidence: detectionBayesianEvidence,
   },
+  localClassificationObservations: [{
+    sourceSweep: detectionSourceSweep,
+    startHz: 20,
+    stopHz: 40,
+    peakHz: 30,
+    detectorId: 'robust-prominence-v1',
+    localBayesianEvidence: detectionBayesianEvidence,
+  }],
   qualityFlags: [],
 } satisfies DetectedSignal;
 
@@ -132,6 +156,7 @@ describe('analysis visual contracts', () => {
     expect(within(view.container).getByText('3 dB BANDWIDTH')).toBeTruthy();
     expect(within(view.container).getByText('Resolution-limited')).toBeTruthy();
     expect(within(view.container).getByText(/RBW\/grid 25 Hz/i)).toBeTruthy();
+    expect(within(view.container).getByLabelText(/3 dB bandwidth resolution-limited; response [\d.]+ Hz; RBW\/grid 25 Hz/i)).toBeTruthy();
     expect(within(view.container).getByText('OCCUPIED BANDWIDTH · 99%')).toBeTruthy();
     expect(view.container.querySelector('.three-db-window')).not.toBeNull();
   });
@@ -162,12 +187,52 @@ describe('analysis visual contracts', () => {
     expect(onSelectedId).not.toHaveBeenCalled();
   });
 
-  it('shows the merged spectrum and resumes strongest-current automatic targeting on demand', () => {
+  it('shows the merged spectrum and resumes most-prominent automatic targeting on demand', () => {
     const onSelectedId = vi.fn();
-    const stronger = { ...detection, id: 'signal-2', startHz: 60, stopHz: 80, peakHz: 70, peakDbm: -30 } satisfies DetectedSignal;
+    const adversarialSweep = {
+      ...sweep,
+      powerDbm: [-100, -25, -28, -28, -28],
+    } satisfies Sweep;
+    const currentObservation = (candidate: DetectedSignal) => ({
+      sourceSweep: adversarialSweep,
+      startHz: candidate.startHz,
+      stopHz: candidate.stopHz,
+      peakHz: candidate.peakHz,
+      detectorId: candidate.detectorId,
+      localBayesianEvidence: candidate.bayesianEvidence,
+    });
+    const narrow = {
+      ...detection,
+      id: 'signal-narrow-higher-peak',
+      startHz: 25,
+      stopHz: 25,
+      peakHz: 25,
+      peakDbm: -25,
+      bandwidthHz: 0,
+      qualityFlags: ['single-bin'],
+    } satisfies DetectedSignal;
+    const wideBase = {
+      ...detection,
+      id: 'signal-wide-prominent-power',
+      startHz: 50,
+      stopHz: 100,
+      peakHz: 75,
+      peakDbm: -28,
+      bandwidthHz: 50,
+    } satisfies DetectedSignal;
+    const visibleNarrow = {
+      ...narrow,
+      classificationRegionObservation: currentObservation(narrow),
+      localClassificationObservations: [currentObservation(narrow)],
+    } satisfies DetectedSignal;
+    const visibleWide = {
+      ...wideBase,
+      classificationRegionObservation: currentObservation(wideBase),
+      localClassificationObservations: [currentObservation(wideBase)],
+    } satisfies DetectedSignal;
     const props = {
-      sweep,
-      detections: [detection, stronger],
+      sweep: adversarialSweep,
+      detections: [visibleNarrow, visibleWide],
       classifications: [],
       onSelectedId,
       zeroConfig,
@@ -176,23 +241,27 @@ describe('analysis visual contracts', () => {
     };
     const view = render(<ClassificationWorkspace
       {...props}
-      selectedId={detection.id}
+      selectedId={visibleNarrow.id}
       selectionOrigin="explicit"
     />);
 
     expect(within(view.container).getByLabelText('Measured power by frequency')).toBeTruthy();
-    const auto = within(view.container).getByRole('button', { name: /Auto · strongest signal/i });
+    const auto = within(view.container).getByRole('button', { name: /Auto · most prominent/i });
     expect(auto.getAttribute('aria-pressed')).toBe('false');
     expect(view.container.querySelector('.detection-band.selected')).not.toBeNull();
+    expect(view.container.querySelector('.candidate-row')?.getAttribute('data-agent-control'))
+      .toBe(`classification.candidate.${visibleWide.id}.select`);
+    expect(view.container.textContent).toContain('integrated excess');
+    expect(view.container.textContent).toContain('AUTO TARGET');
     fireEvent.click(auto);
     expect(onSelectedId).toHaveBeenCalledWith(undefined);
 
     view.rerender(<ClassificationWorkspace
       {...props}
-      selectedId={stronger.id}
+      selectedId={visibleWide.id}
       selectionOrigin="automatic"
     />);
-    expect(within(view.container).getByRole('button', { name: /Auto · strongest signal/i }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(view.container).getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('true');
     expect(view.container.querySelectorAll('.detection-band.selected')).toHaveLength(1);
   });
 
@@ -211,7 +280,7 @@ describe('analysis visual contracts', () => {
     />);
 
     expect(within(view.container).getByRole('button', {
-      name: /Auto · strongest signal/i,
+      name: /Auto · most prominent/i,
     }).hasAttribute('disabled')).toBe(true);
 
     view.rerender(<ClassificationWorkspace
@@ -220,7 +289,7 @@ describe('analysis visual contracts', () => {
       {...props}
     />);
     expect(within(view.container).getByRole('button', {
-      name: /Auto · strongest signal/i,
+      name: /Auto · most prominent/i,
     }).hasAttribute('disabled')).toBe(true);
   });
 
@@ -246,7 +315,7 @@ describe('analysis visual contracts', () => {
     expect(view.container.querySelectorAll('.candidate-row')).toHaveLength(1);
     expect(view.container.textContent).not.toContain('signal-malformed');
     expect(within(view.container).getByRole('button', {
-      name: /Auto · strongest signal/i,
+      name: /Auto · most prominent/i,
     }).hasAttribute('disabled')).toBe(false);
   });
 
@@ -422,7 +491,7 @@ describe('analysis visual contracts', () => {
     expect(view.container.textContent).toContain('robust-prominence-v1 · 3 sweeps · 0 missed');
     expect(view.container.textContent).toContain('1/2 promotion looks · 0 missed');
     expect(view.container.textContent).not.toContain('2 missed');
-    fireEvent.click(within(view.container).getByRole('button', { name: /Auto · strongest signal/i }));
+    fireEvent.click(within(view.container).getByRole('button', { name: /Auto · most prominent/i }));
     expect(onSelectedId).toHaveBeenCalledWith(undefined);
   });
 

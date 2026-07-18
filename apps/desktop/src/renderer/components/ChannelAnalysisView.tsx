@@ -110,8 +110,8 @@ function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
   return <div className="channel-results">
     <div className="channel-primary-result"><small>CHANNEL POWER</small><strong>{formatLevel(result.carrier.powerDbm)}</strong><span>{result.carrier.powerSpectralDensityDbmHz.toFixed(1)} dBm/Hz · {result.carrier.binsUsed} bins</span></div>
     {threeDecibelBandwidth.status === 'unavailable'
-      ? <div className="channel-primary-result three-db"><small>3 dB BANDWIDTH</small><strong>Unavailable</strong><span>{formatThreeDecibelUnavailableReason(threeDecibelBandwidth.reason)}</span></div>
-      : <div className="channel-primary-result three-db"><small>3 dB BANDWIDTH</small><strong>{threeDecibelBandwidth.status === 'resolution-limited' ? 'Resolution-limited' : formatFrequency(threeDecibelBandwidth.bandwidthHz)}</strong><span>{threeDecibelBandwidth.status === 'resolution-limited' ? `Response ${formatFrequency(threeDecibelBandwidth.bandwidthHz)} · RBW/grid ${formatFrequency(threeDecibelBandwidth.resolutionScaleHz)}` : `${formatFrequency(threeDecibelBandwidth.startHz)} — ${formatFrequency(threeDecibelBandwidth.stopHz)} · interpolated`}</span></div>}
+      ? <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>Unavailable</strong><span>{formatThreeDecibelUnavailableReason(threeDecibelBandwidth.reason)}</span></div>
+      : <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>{threeDecibelBandwidth.status === 'resolution-limited' ? 'Resolution-limited' : formatFrequency(threeDecibelBandwidth.bandwidthHz)}</strong><span>{threeDecibelBandwidth.status === 'resolution-limited' ? `Response ${formatFrequency(threeDecibelBandwidth.bandwidthHz)} · RBW/grid ${formatFrequency(threeDecibelBandwidth.resolutionScaleHz)}` : `${formatFrequency(threeDecibelBandwidth.startHz)} — ${formatFrequency(threeDecibelBandwidth.stopHz)} · interpolated`}</span></div>}
     <div className="channel-primary-result obw"><small>OCCUPIED BANDWIDTH · {result.occupiedBandwidth.percent}%</small><strong>{formatFrequency(result.occupiedBandwidth.bandwidthHz)}</strong><span>{formatFrequency(result.occupiedBandwidth.startHz)} — {formatFrequency(result.occupiedBandwidth.stopHz)}</span></div>
     <div className="acp-results"><small>LOWER ACP</small><div>{lower.map((entry) => <span key={`l${entry.order}`}><em>L{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
     <div className="acp-results"><small>UPPER ACP</small><div>{upper.map((entry) => <span key={`u${entry.order}`}><em>U{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
@@ -130,6 +130,16 @@ function formatThreeDecibelUnavailableReason(reason: Extract<ChannelMeasurementR
     'crossing-outside-window': 'Half-power response extends outside the main channel',
     'nonmonotone-half-power-response': 'Resolved half-power islands are not one bounded response',
   })[reason];
+}
+
+function threeDecibelAccessibilityLabel(result: ChannelMeasurementResult['threeDecibelBandwidth']): string {
+  if (result.status === 'unavailable') {
+    return `3 dB bandwidth unavailable: ${formatThreeDecibelUnavailableReason(result.reason)}`;
+  }
+  if (result.status === 'resolution-limited') {
+    return `3 dB bandwidth resolution-limited; response ${formatFrequency(result.bandwidthHz)}; RBW/grid ${formatFrequency(result.resolutionScaleHz)}`;
+  }
+  return `3 dB bandwidth ${formatFrequency(result.bandwidthHz)}; ${formatFrequency(result.startHz)} to ${formatFrequency(result.stopHz)}; interpolated`;
 }
 
 function evaluate(sweep: Sweep | undefined, configuration: ChannelMeasurementConfiguration): { result?: ChannelMeasurementResult; error?: string } {

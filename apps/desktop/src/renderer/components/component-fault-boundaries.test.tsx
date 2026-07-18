@@ -73,8 +73,27 @@ describe('renderer component fault boundaries', () => {
   it('keeps a stale SignalLab profile explicit and permits recovery to an advertised profile', () => {
     const capability = {
       kind: 'signal-lab-profile-selection',
-      profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
+      profiles: [{
+        profileId: 'cw',
+        label: 'Continuous wave replay',
+        family: 'tone',
+        model: 'Analytic carrier',
+        qualification: 'visual',
+        centerFrequencyHz: 100_000_000,
+        occupiedBandwidthHz: 1,
+        recommendedSpanHz: 2_000_000,
+        projection: { allocation: 'carrier', modulation: 'unmodulated', timing: 'continuous' },
+        source: {
+          organization: 'TinySA SignalLab',
+          references: [{
+            specification: 'SignalLab analytic scalar model', clause: 'CW projection', revision: '1',
+            url: 'https://github.com/physicistjohn/Atom-SignalLab/blob/main/src/waveforms.ts',
+          }],
+        },
+        disclosure: 'Analytic visualization only.',
+      }],
       selectedProfileId: 'cw',
+      channel: { model: 'awgn', noiseFloorDbm: -108, seed: 1234, fadingRateHz: 2 },
     } satisfies Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
     const onProfile = vi.fn();
     const view = render(<GeneratorWorkspace
@@ -89,11 +108,11 @@ describe('renderer component fault boundaries', () => {
       onSignalLabProfile={onProfile}
     />);
 
-    const profile = screen.getByRole('combobox', { name: 'SignalLab profile' }) as HTMLSelectElement;
-    expect(profile.value).toBe('retired-profile');
-    expect(profile.getAttribute('aria-invalid')).toBe('true');
-    expect(view.container.querySelector('.select-parameter.invalid')?.textContent).toContain('retired-profile · unavailable');
-    fireEvent.change(profile, { target: { value: 'cw' } });
+    expect(view.getByRole('alert').textContent).toContain('retired-profile is not admitted; showing cw');
+    const profile = screen.getByRole('button', { name: /Continuous wave/i });
+    expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
+    expect(view.container.querySelector('[data-agent-control]')).toBeNull();
+    fireEvent.click(profile);
     expect(onProfile).toHaveBeenCalledWith('cw');
   });
 

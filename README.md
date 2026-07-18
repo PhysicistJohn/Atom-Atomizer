@@ -6,19 +6,19 @@ The live system is deliberately split into four independently versioned reposito
 
 | Repository | Sole owner | Current edge |
 |---|---|---|
-| `TinySA` | Operator app, instrument host, normal CDC analyzer/generator sessions outside firmware-update sessions, measurement analysis, Atom policy and approvals | Hosts the active SignalLab and `tinysa-zs407` drivers |
-| `TinySA_Firmware` | Pinned executable Renode twin and bridge | Selectable through the `tinysa-zs407` driver |
-| `TinySA_SignalLab` | High-level synthetic measurement producer, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned NDJSON measurement edge to Atomizer; Firmware stimulus sink remains reserved |
-| `TinySA_Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Active interface catalog v3 retaining active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 frozen; no Atomizer runtime edge |
+| `Atom-Atomizer` | Operator app, instrument host, normal CDC analyzer/generator sessions outside firmware-update sessions, measurement analysis, Atom policy and approvals | Hosts the active SignalLab and `tinysa-zs407` drivers |
+| `Atom-Firmware` | Pinned executable Renode twin and bridge | Selectable through the `tinysa-zs407` driver |
+| `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic complex-I/Q producer for all 34 closed profiles, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned NDJSON measurement edge to Atomizer; Firmware stimulus sink remains reserved |
+| `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Active interface catalog v3 retaining active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 frozen; no Atomizer runtime edge |
 
-The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../TinySA_Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
+The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
 USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while TinySA Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
 
 Composition v4 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
 
 For owner-built firmware, TinySA Flasher's native manifest picker starts in the
-sibling `../TinySA_Firmware` checkout when that directory exists. It remembers a
+sibling `../Atom-Firmware` checkout when that directory exists. It remembers a
 different picker directory only after the selected manifest passes Flasher's
 normal admission. That convenience grants no authority to the source checkout,
 does not attest an image, and creates no Atomizer runtime dependency or edge.
@@ -29,9 +29,9 @@ Requirements:
 
 - Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
   the package contract and CI).
-- `../TinySA_SignalLab`, whose separately built measurement bridge is the factory-default instrument source and whose corpus is pinned by the Bayesian observable-class model.
-- The sibling Firmware repository at `../TinySA_Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
-- `../TinySA_Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
+- `../Atom-SignalLab`, whose separately built measurement bridge is the factory-default instrument source and whose corpus is pinned by the Bayesian observable-class model.
+- The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
+- `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
 
 ```bash
 npm install
@@ -45,7 +45,7 @@ Startup follows one closed admission rule across the static driver registry:
 2. Load the owner-only version-1 preference. Every new write persists the exact `{driverId,candidateKind,candidateId}` tuple. With no preference file, select the exact canonical `signal-lab:default` candidate as the explicit factory default; legacy v1 broad records remain readable but fail on ambiguity.
 3. Match the persisted exact tuple, or the unique candidate allowed by a legacy broad record. A stale exact candidate ID, no match, or ambiguity fails visibly and never selects another candidate.
 4. Connect only that candidate. Discovery, bridge, identity, malformed-firmware, required-command, or twin boot/evidence failure is terminal for the admission attempt and never falls through to another source.
-5. An operator may explicitly make SignalLab, a physical ZS407, or the executable twin the new default after the active session is safely disconnected. A syntactically valid unknown physical revision is admitted only as `custom-unqualified`, with persistent warning and no invented source provenance.
+5. An operator may explicitly make SignalLab, a physical ZS407, or the executable twin the new default after the active session is safely disconnected. A syntactically valid unknown physical revision is admitted only as `custom-unqualified`, with persistent warning and no invented source provenance. The exact frozen `tinySA4_hw-v0.3-fft1024-g43eb0f1` identity has a distinct `custom-source-qualified-receive-only` record that proves only its 20–450 point source behavior; its warning says the serial runtime does not attest the documented binary hash.
 
 The executable twin boots the pinned `lab-v0.2.0-protocol` firmware in Renode. Its sweeps, LCD framebuffer, touch behavior, and generator state come from executable firmware. Its transport is `renode-monitor-bridge`; USB transactions are explicitly not modeled.
 
@@ -70,14 +70,14 @@ producer can evolve without inheriting another source's transport assumptions.
 SignalLab is a separate application and Git repository. Atomizer builds and launches its version-1 high-level measurement bridge for the `signal-lab` driver:
 
 ```bash
-npm --prefix ../TinySA_SignalLab install
-npm --prefix ../TinySA_SignalLab run build:bridge
-npm --prefix ../TinySA_SignalLab run dev
+npm --prefix ../Atom-SignalLab install
+npm --prefix ../Atom-SignalLab run build:bridge
+npm --prefix ../Atom-SignalLab run dev
 ```
 
 `npm run package:mac` first rebuilds that bridge, builds Atomizer, and stages a
 self-contained `signal-lab` Electron resource root containing the active v1
-contract, all nine generator-hashed JavaScript artifacts, its ESM package
+contract, every generator-hashed JavaScript artifact, its ESM package
 boundary, and SignalLab's exact pinned Zod runtime. Electron Builder copies that
 root to `process.resourcesPath/signal-lab`, which is the only packaged location
 the factory-default driver admits. The pre-signing `afterPack` hook re-hashes
@@ -99,17 +99,37 @@ subslot/slot timing, or SBFD spectral partition; a disclosure alone does not
 make an unimplemented standard model selectable.
 Atomizer's generated Bayesian model pins that corpus at build time. The active
 NDJSON bridge supplies swept-spectrum and detected-power observations qualified
-`synthetic-visual-projection`; it claims no USB emulation, firmware execution,
-RF emission, generator, display, touch, or complex-I/Q capability. Its selected
-profile is visible only as source status and capability state and is never copied
-into measurement or classifier evidence. Detected-power requests carry one
+`synthetic-visual-projection` plus bounded deterministic `cf32le` complex-I/Q
+for all 34 closed profiles. CW, AM, and FM captures preserve the producer's
+`analytic-complex-baseband` qualification; the other 31 preserve
+`standards-derived-complex-baseband` rather than inheriting the scalar
+projection label. The I/Q method returns at most 65,536 complete samples and
+independently accepts bandwidth from 1 kHz through the requested sample rate.
+SignalLab applies the same deterministic causal one-pole low-pass to I and Q;
+the requested bandwidth is its two-sided steady-state -3 dB span, with edges at
+`±bandwidthHz / 2` about center. It explicitly does not apply the replay channel.
+Standards-labelled results are engineering envelopes, not packet-decodable or
+conformance vectors; framework-generated, independently validated assets remain
+future work. Requests below a wideband profile's catalogued occupied support
+produce a disclosed deterministic discrete-time alias projection rather than
+an alias-free reconstruction of the full channel. SignalLab claims no USB emulation, firmware execution,
+RF emission, generator, display, or touch capability. Its selected profile is
+visible only as source status and capability state and is never copied into any
+measurement or classifier evidence. Detected-power requests carry one
 required safe-integer center frequency; SignalLab returns that exact tune and
 receiver-filters its source model there. Atomizer admits the same measurement
 and provenance boundaries used by every other driver, and a bridge failure never
-falls back to a TinySA or the Firmware twin. SignalLab has no runtime stimulus
-connection to the twin. That separate future edge is a versioned
-`SignalLabStimulusIntent -> Firmware stimulus sink`; Firmware must own the sink,
-and activation requires a coordinated trio-contract revision.
+falls back to a TinySA or the Firmware twin.
+
+When SignalLab is the active source, Generate embeds the reusable SignalLab
+Studio rather than presenting the physical RF-generator surface. Its six family
+tabs are Lab, GSM, LTE, 5G NR, Wi-Fi, and Bluetooth; profile and AWGN/Rayleigh
+channel changes still execute through the admitted SignalLab feature boundary.
+Those source-truth controls are explicitly human-only in the embedded surface.
+SignalLab has no runtime stimulus connection to the twin. That separate future
+edge is a versioned `SignalLabStimulusIntent -> Firmware stimulus sink`;
+Firmware must own the sink, and activation requires a coordinated trio-contract
+revision.
 
 ## Atom
 
@@ -139,7 +159,7 @@ Both AI paths use exactly `gpt-realtime-2.1`:
 
 Both response paths use the identical closed registry of 50 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
-Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one startup connection attempt with the microphone muted; microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
+Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one 15-second-bounded startup connection attempt with the microphone muted; it remains cancellable while connecting, and an explicit typed request cleanly preempts voice rather than disappearing. Microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
 
 Every sent Realtime session setting is recursively compared with the API’s `session.updated` echo. Sent values, returned values, mismatches, and server-only defaults are emitted to the console. A mismatch or acknowledgement timeout terminates the session.
 
@@ -155,7 +175,7 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
 - App screenshots are treated as untrusted image data.
 - Coordinate actions are confined to the Atomizer window and fail closed on high-impact DOM targets.
 - RF-output enable and general firmware-screen touch require immediate human approval.
-- Firmware installation has no Atomizer tool or UI executor; the standalone `TinySA_Flasher` owns that physical workflow.
+- Firmware installation has no Atomizer tool or UI executor; the standalone `Atom-Flasher` owns that physical workflow.
 - Tool loops are bounded to eight operations.
 - Unknown tools and malformed arguments return explicit failed tool evidence for one bounded schema-grounded correction. Missing evidence, duplicate Realtime calls, unavailable conversations, and session-protocol failure stop visibly without retry or reroute.
 
@@ -166,7 +186,9 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
 - Selectable physical ZS407 and executable-twin candidates through the `tinysa-zs407` driver, with qualified shipped/OEM provenance and warning-only custom-firmware admission.
 - Analyzer configuration, readback, single/continuous spectrum acquisition, live pause-verify-resume retuning, raw/text transfers, and zero span.
 - Device-observed `scanraw` offset readback and provenance-preserving Q5 decoding.
-- One sidebar group contains exactly Spectrum, Waterfall, Channel, Detect, Generate, and Device. Channel provides power/PSD/ACP/ACLR/OBW, Spectrum has no second top view-tab bar, and detected-envelope STFT remains a typed non-rendered analysis/Agent capability.
+- One sidebar group contains the six core routes Spectrum, Waterfall, Channel, Detect, Generate, and Device, plus I/Q only when the active driver advertises complex samples. A persistent sidebar acquisition rail exposes the one global swept-data Run/Single/Stop state from every route; CSV/JSON remain contextual measurement utilities. Channel provides power/PSD/ACP/ACLR/OBW, Spectrum has no second top view-tab bar, and detected-envelope STFT remains a typed non-rendered analysis/Agent capability.
+- SignalLab selection turns Generate into the embedded six-family SignalLab Studio with driver-owned profile/channel mutation and no RF-output implication.
+- The capability-gated I/Q workspace configures a driver-neutral complete capture, validates exact format-dependent byte geometry, and renders bounded time-domain I/Q and constellation previews with shared 0.5×–8× zoom and one-click Fit controls, without a symbol-decision claim or a scrolling plot container.
 - The spectrum trace is a live React projection of the current validated sweep and trace state. SVG is only the in-DOM drawing primitive for the current polylines, grid, marker stems, and brackets; it is not a static image or pre-rendered chart asset.
 - Four host traces (`H1..H4`): Clear/Write, Max Hold, Min Hold, linear-power Average, View, explicit Off, and reset; enabled firmware traces are separately read as provenance-bearing `D1..D4` frames and overlaid only when explicitly enabled.
 - Eight markers, all off by default: independently off/on, fixed/peak tracking, trace assignment, peak/min/next search, delta, and dBm/Hz. Narrow or resolution-limited responses stay on the sampled peak and expose local 3 dB width only when both crossings are bounded; otherwise width is unavailable. A qualified bounded broad component instead centers on its noise-subtracted power centroid and reports a separate component-local 99% OBW.
@@ -211,20 +233,23 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.
 - Sandboxed Electron renderer, allow-listed preload IPC, app-scoped computer harness, and exact-model Atom gateway.
-- Firmware identity and custom-firmware provenance remain visible, but installation is deliberately absent and delegated exclusively to the standalone `TinySA_Flasher`.
+- Firmware identity and custom-firmware provenance remain visible, but installation is deliberately absent and delegated exclusively to the standalone `Atom-Flasher`.
 
 ## Safety and evidence boundary
 
 Generator configuration and physical output do not have dependable firmware readback. They remain labeled `commanded`; uncertain transport loss makes RF state `unknown`. Software is not a hardware interlock.
 
-The delivered physical ZS407 has passed initial receive-only text/raw sweep, diagnostics, exact LCD-byte validation, and one guarded update to the pinned `c979386` OEM firmware with post-reboot identity verification. It was subsequently observed running custom revision `43eb0f1`, which Atomizer admitted with exact USB/command/output-off checks and explicit `custom-unqualified` provenance. This is not RF calibration or complete Gate B qualification; timing matrices, destructive update-fault cases, cable-loss cases, touch, high-frequency behavior, generator behavior, and metrology remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
+The delivered physical ZS407 has passed initial receive-only text/raw sweep, diagnostics, exact LCD-byte validation, and one guarded update to the pinned `c979386` OEM firmware with post-reboot identity verification. It was subsequently observed running exact custom version `tinySA4_hw-v0.3-fft1024-g43eb0f1`; Atomizer maps that clean identity to frozen source commit `43eb0f193c8619cb7ca23726e3062973c65ae958` and admits only its source-proved 20–450 point behavior as `custom-source-qualified-receive-only`. The serial runtime does not attest the documented binary hash, and decorated/alternate builds remain `custom-unqualified`. Exact physical ZS407 identity permits receive-only retuning across the bounded 0–900 MHz normal input path, with `output off`, `mode input`, and exact geometry readback required for every configuration and output-off reasserted before each public acquisition; custom Ultra/harmonic, generator, screen, touch, and marker capabilities remain withheld. This is not OEM status, RF calibration, or complete Gate B qualification; timing matrices, destructive update-fault cases, cable-loss cases, touch, high-frequency behavior, generator behavior, and metrology remain open. See [the characterization record](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md).
 
-Zero span is detected power versus time, not I/Q. The non-rendered Envelope STFT analysis and Bayesian
+Zero span is detected power versus time, not I/Q. The separate I/Q workspace
+does not feed the scalar classifier or retroactively add phase evidence to a
+zero-span capture. The non-rendered Envelope STFT analysis and Bayesian
 observable classification cannot establish phase, EVM, symbols, coding, or
 protocol identity. The current 450-point/50 ms physical zero-span request is
 `wall-clock-derived`, not timing calibrated, so cadence-rate features are
-excluded. Standards-derived SignalLab scenarios are scalar instrument
-projections, not conformance waveforms.
+excluded. Standards-derived SignalLab classifier scenarios are scalar instrument
+projections, not conformance waveforms. The separate live standards-labelled I/Q
+buffers are engineering envelopes and do not enter that classifier.
 
 Production inference does not use missing-dimension marginalization: v8 selects one exact evidence view, requires its complete finite feature set with no extras, and evaluates only the independently fitted spectrum-only, envelope-untimed, or envelope-timed likelihood population. Its likelihood architecture preserves equal source-scenario mass while decomposing exactly the five canonized `csma-bursts` sources into three deterministic activity modes with empirical within-source weights and one shared pooled covariance; the remaining sources retain one component.
 
@@ -408,7 +433,7 @@ Repository-local verification:
 
 ```bash
 npm run check
-npm --prefix ../TinySA_SignalLab run check
+npm --prefix ../Atom-SignalLab run check
 ```
 
 Cross-repository contract and executable-twin verification:
@@ -426,7 +451,7 @@ npm run release:trio
 
 `check:trio-contract` requires byte-identical v4 manifests and reconciles
 Atomizer, Firmware bridge, SignalLab, and external Flasher ownership/contract
-versions. TinySA_Flasher's active interface catalog v3 retains the active
+versions. Atom-Flasher's active interface catalog v3 retains the active
 application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and
 legacy application contract v1 are frozen. The trio does not pin an
 independently versioned Flasher firmware release.
@@ -522,13 +547,14 @@ verifies generator output returns off.
 - `packages/agent`: exact Realtime configuration, closed tool/control topology, schemas, policies, approvals, and session verification.
 - `contracts`: cross-repository composition manifest.
 
-NeptuneSDR is not implemented or registered. The transport-neutral runtime
-removes the TinySA dependency from its future driver lifecycle; it does not make
-source registration open-ended. First-class support still requires a distinct
-source/provenance variant, renderer and export paths
-that do not assume scalar/TinySA-shaped staging, and a versioned complex-I/Q
-streaming contract with chunking, backpressure, cancellation, and bounded
-retention. A complete single-buffer I/Q shape alone is not streaming support.
+NeptuneSDR is not implemented or registered. Atomizer now has a driver-neutral,
+bounded complete-buffer complex-I/Q contract and renderer; this does not make
+source registration open-ended or imply Neptune support. First-class hardware
+support still requires a distinct source/provenance variant and driver,
+truthful device limits and sample-format/scaling evidence, and acceptance tests.
+Continuous acquisition additionally requires a later streaming contract with
+chunking, backpressure, cancellation, overrun behavior, and bounded retention.
+A complete single-buffer I/Q shape alone is not streaming support.
 
 ## macOS live development app
 

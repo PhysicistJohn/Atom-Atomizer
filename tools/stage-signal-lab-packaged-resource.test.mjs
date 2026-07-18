@@ -234,7 +234,7 @@ for (const electronPlatformName of ['win32', 'linux']) {
 async function createFixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'atomizer-packaged-signal-lab-')));
   temporaryRoots.push(root);
-  const sourceRoot = resolve(root, 'TinySA_SignalLab');
+  const sourceRoot = resolve(root, 'Atom-SignalLab');
   const destinationRoot = resolve(root, 'Atomizer', 'dist', 'packaged-resources', 'signal-lab');
   const contractFile = 'signal-lab-measurement-bridge-v1.json';
   const contract = {

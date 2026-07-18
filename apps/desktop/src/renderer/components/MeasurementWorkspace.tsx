@@ -36,7 +36,7 @@ import { WaterfallView } from './WaterfallView.js';
 type Overlay = 'setup' | 'controls';
 
 export interface MeasurementWorkspaceProps {
-  acquisitionActions: ReactNode;
+  measurementActions?: ReactNode;
   view: MeasurementViewId;
   analyzer: AnalyzerConfig;
   spectrumCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
@@ -88,7 +88,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   return <section className="measurement-workspace">
     <header className="measurement-viewbar">
       <div className="measurement-view-utilities" role="toolbar" aria-label="Measurement utilities">
-        <div className="stage-acquisition-actions">{props.acquisitionActions}</div>
+        {props.measurementActions && <div className="stage-measurement-actions">{props.measurementActions}</div>}
         <div className="measurement-view-actions">
           <button className={overlay === 'setup' ? 'active' : ''} onClick={() => toggleOverlay('setup')} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>Sweep setup</span></button>
           <button className={overlay === 'controls' ? 'active' : ''} onClick={() => toggleOverlay('controls')} data-agent-control="measurement.controls"><Crosshair size={14}/><span>Traces & markers</span></button>

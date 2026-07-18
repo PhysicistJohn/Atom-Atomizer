@@ -65,8 +65,8 @@ Spectrum, Waterfall, and Channel select one shared fixed-height
 
 Only the active visible view is rendered. Spectrum metrics occupy a fixed footer inside
 the stage. No Spectrum workflow requires body or workspace scrolling. The
-default Electron window is 1920 × 1100 CSS px, clamped to the primary display's
-work area; minimum size is 1280 × 800 where the display permits it. Atom's open
+default Electron content window is 1532 × 821 CSS px, clamped to the primary display's
+work area; this is also the no-scroll minimum where the display permits it. Atom's open
 rail remains reserved at the reference width.
 
 The visible plots are live state projections, not pre-rendered graphics.

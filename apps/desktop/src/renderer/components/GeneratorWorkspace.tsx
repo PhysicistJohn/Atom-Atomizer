@@ -1,29 +1,34 @@
-import { AlertTriangle, FlaskConical, Gauge, Power, Radio, ShieldCheck, Waves } from 'lucide-react';
-import type { GeneratorConfig, InstrumentFeatureCapability } from '@tinysa/contracts';
+import { AlertTriangle, Gauge, Power, Radio, ShieldCheck, Waves } from 'lucide-react';
+import type { GeneratorConfig, InstrumentFeatureCapability, SignalLabChannelState } from '@tinysa/contracts';
 import type { GeneratorOutputState } from '../ui-contracts.js';
 import { formatFrequency } from '../format.js';
+import { projectSignalLabStudioStatus, SignalLabStudio } from '../signal-lab-studio.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
 
 type RfGeneratorCapability = Extract<InstrumentFeatureCapability, { kind: 'rf-generator' }>;
 type SignalLabProfileCapability = Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
 
-export function GeneratorWorkspace({ config, capability, signalLabProfiles, selectedSignalLabProfile, output, busy, onChange, onApply, onOutput, onSignalLabProfile }: {
+export function GeneratorWorkspace({ config, capability, signalLabProfiles, selectedSignalLabProfile, selectedSignalLabChannel, output, busy, onChange, onApply, onOutput, onSignalLabProfile, onSignalLabChannel }: {
   config: GeneratorConfig;
   capability?: RfGeneratorCapability;
   signalLabProfiles?: SignalLabProfileCapability;
   selectedSignalLabProfile?: string;
+  selectedSignalLabChannel?: SignalLabChannelState;
   output: GeneratorOutputState;
   busy: boolean;
   onChange(config: GeneratorConfig): void;
   onApply(): void;
   onOutput(enabled: boolean): void;
   onSignalLabProfile(profileId: string): void;
+  onSignalLabChannel?(channel: SignalLabChannelState): void;
 }) {
   if (signalLabProfiles) return <SignalLabGenerationWorkspace
     capability={signalLabProfiles}
     selectedProfile={selectedSignalLabProfile}
+    selectedChannel={selectedSignalLabChannel}
     busy={busy}
     onProfile={onSignalLabProfile}
+    onChannel={onSignalLabChannel}
   />;
 
   const on = output === 'on';
@@ -82,46 +87,27 @@ export function GeneratorWorkspace({ config, capability, signalLabProfiles, sele
   </div>;
 }
 
-function SignalLabGenerationWorkspace({ capability, selectedProfile, busy, onProfile }: {
+function SignalLabGenerationWorkspace({ capability, selectedProfile, selectedChannel, busy, onProfile, onChannel }: {
   capability: SignalLabProfileCapability;
   selectedProfile?: string;
+  selectedChannel?: SignalLabChannelState;
   busy: boolean;
   onProfile(profileId: string): void;
+  onChannel?(channel: SignalLabChannelState): void;
 }) {
-  const activeProfileId = selectedProfile ?? capability.selectedProfileId;
-  const activeProfile = capability.profiles.find((profile) => profile.profileId === activeProfileId);
-  return <div className="generator-layout signal-lab-generation-layout">
-    <section className="rf-stage signal-lab-stage">
-      <div className="rf-halo"><FlaskConical size={36}/><span/><span/><span/></div>
-      <span className="rf-state-label">Synthetic signal source</span>
-      <h2>{activeProfileId.toUpperCase()}</h2>
-      <p>SignalLab generates scalar simulated measurements. It does not command an RF output or claim emitted energy.</p>
-      <span className="synthetic-source-state">ACTIVE · NO RF OUTPUT</span>
-    </section>
-
-    <section className="generator-controls">
-      <div className="panel-header"><div><Waves size={14}/>SignalLab waveform</div><span>SIMULATED · HUMAN SELECTED</span></div>
-      <div className="generator-form parameter-stack" data-agent-exclusion="human-signal-profile-boundary">
-        <SelectParameter
-          label="SignalLab profile"
-          value={activeProfileId}
-          options={capability.profiles.map(({ profileId, centerFrequencyHz }) => ({
-            value: profileId,
-            label: `${profileId} · ${(centerFrequencyHz / 1e6).toFixed(3)} MHz`,
-          }))}
-          disabled={busy}
-          onValue={(value) => onProfile(String(value))}
-        />
-        <div className="signal-lab-profile-facts">
-          <span><small>Center</small><strong>{activeProfile ? formatFrequency(activeProfile.centerFrequencyHz) : '—'}</strong></span>
-          <span><small>Recommended span</small><strong>{activeProfile ? formatFrequency(activeProfile.recommendedSpanHz) : '—'}</strong></span>
-        </div>
-        <div className="channel-contract-note"><FlaskConical size={14}/><p>Changing profile invalidates prior evidence and recenters the analyzer on the selected scenario.</p></div>
-      </div>
-    </section>
-
-    <section className="safety-panel"><div><ShieldCheck size={18}/><strong>Simulation boundary</strong></div><ul><li><AlertTriangle size={13}/>No USB device identity is claimed.</li><li><AlertTriangle size={13}/>No RF energy is emitted.</li></ul></section>
-  </div>;
+  const projection = projectSignalLabStudioStatus(capability, selectedProfile, selectedChannel);
+  return <SignalLabStudio
+    embedded
+    status={projection.status}
+    sourceState={projection.status ? 'selected' : 'error'}
+    sessionState={projection.status ? (busy ? 'streaming' : 'ready') : 'error'}
+    error={projection.error}
+    disabled={busy || projection.status === undefined}
+    channelDisabled={onChannel === undefined}
+    agentControlPolicy="human-only"
+    onSelectProfile={onProfile}
+    onConfigureChannel={(channel) => onChannel?.(channel)}
+  />;
 }
 
 function within(value: number, range: { min: number; max: number }): boolean { return value >= range.min && value <= range.max; }

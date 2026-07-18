@@ -7,3 +7,8 @@ import type { BayesianClassificationEngine } from './bayesian-classifier-runtime
 export function createBundledBayesianClassifier(): BayesianClassificationEngine {
   throw new Error('Bayesian classifier model assets are not bundled');
 }
+
+/** Vite replaces this only when the complete generated model pair exists. */
+export function createBundledBayesianClassificationWorker(): Worker {
+  throw new Error('Bayesian classifier worker assets are not bundled');
+}
