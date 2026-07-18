@@ -26,6 +26,7 @@ const {
   normalizeRendererLoadFailure,
   rendererGoneDiagnostic,
   rendererProcessMetricSnapshot,
+  routeRendererConsoleMessage,
 } = require('./renderer-diagnostics.cjs');
 const roots = [];
 
@@ -79,6 +80,68 @@ describe('bounded renderer diagnostics', () => {
     const bounded = normalizeRendererConsoleMessage({}, 1, 'x'.repeat(MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS + 50), 1, 'source');
     assert.ok(bounded.message.length < MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS + 100);
     assert.match(bounded.message, /50 characters truncated/);
+  });
+
+  test('promotes only a fixed-shape SignalLab admitted-session record', () => {
+    const hash = 'a'.repeat(64);
+    const message = `[ATOMIZER-SIGNAL-LAB-SESSION] ${JSON.stringify({
+      schemaVersion: 1,
+      event: 'admitted',
+      sessionId: '12345678-1234-4abc-8def-123456789abc',
+      driverId: 'signal-lab',
+      candidate: { serialNumber: 'must-not-be-logged' },
+      provenance: {
+        sourceKind: 'signal-lab',
+        sourceId: 'local',
+        execution: 'signal-lab-simulation',
+        transport: 'signal-lab-measurement-bridge',
+        qualification: 'synthetic-visual-projection',
+        contractId: 'tinysa-signal-lab-atomizer-measurement',
+        contractVersion: 1,
+        contractSha256: hash,
+        catalogSha256: hash,
+        generatorSha256: hash,
+        claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+        serialPort: { path: '/dev/private' },
+      },
+    })}`;
+    const routed = routeRendererConsoleMessage({
+      level: 'info', message, lineNumber: 1, sourceId: 'vite://renderer/App.tsx',
+    });
+
+    assert.equal(routed.level, 'ATOMIZER-SIGNAL-LAB-SESSION');
+    assert.deepEqual(JSON.parse(routed.value), {
+      schemaVersion: 1,
+      event: 'admitted',
+      sessionId: '12345678-1234-4abc-8def-123456789abc',
+      driverId: 'signal-lab',
+      provenance: {
+        sourceKind: 'signal-lab',
+        sourceId: 'local',
+        execution: 'signal-lab-simulation',
+        transport: 'signal-lab-measurement-bridge',
+        qualification: 'synthetic-visual-projection',
+        contractId: 'tinysa-signal-lab-atomizer-measurement',
+        contractVersion: 1,
+        contractSha256: hash,
+        catalogSha256: hash,
+        generatorSha256: hash,
+        claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+      },
+    });
+    assert.doesNotMatch(routed.value, /serial|private|candidate/i);
+  });
+
+  test('keeps malformed or physically claiming admission messages in bounded renderer diagnostics', () => {
+    const routed = routeRendererConsoleMessage({
+      level: 'info',
+      message: '[ATOMIZER-SIGNAL-LAB-SESSION] {"schemaVersion":1,"claims":{"rfEmitted":true}}',
+      lineNumber: 1,
+      sourceId: 'vite://renderer/App.tsx',
+    });
+
+    assert.equal(routed.level, 'RENDERER');
+    assert.match(routed.value.message, /^\[ATOMIZER-SIGNAL-LAB-SESSION\]/);
   });
 
   test('bounds renderer load failures and strips URL credentials, query, and fragment data', () => {

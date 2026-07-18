@@ -1141,6 +1141,8 @@ describe('operator vertical slice', () => {
   });
 
   it('renders an already-started SignalLab default without fabricating hardware identity and can select its profile', async () => {
+    const admissionLog = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    try {
     vi.mocked(window.atomizerInstrument.getState).mockResolvedValue({ schemaVersion: 1, startup: { status: 'connected', connectedAt: '2026-07-10T00:00:00.000Z' }, streaming: { status: 'stopped' }, connectionCleanup: { status: 'not-required' }, preference: { source: 'factory-default', preference: { schemaVersion: 1, driverId: 'signal-lab', candidateKind: 'signal-lab', updatedAt: '2026-07-10T00:00:00.000Z' } }, session: signalLabSession });
     vi.mocked(window.atomizerInstrument.discover).mockResolvedValue({ discoveryRevision: 'signal-discovery-1', discoveredAt: '2026-07-10T00:00:00.000Z', candidates: [signalLabCandidate], failures: [] });
     vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
@@ -1162,6 +1164,32 @@ describe('operator vertical slice', () => {
     });
     render(<App/>);
     expect(await screen.findByText('SIGNALLAB SIMULATION')).toBeTruthy();
+    const admissionMessage = admissionLog.mock.calls
+      .map(([message]) => message)
+      .find((message): message is string => typeof message === 'string'
+        && message.startsWith('[ATOMIZER-SIGNAL-LAB-SESSION] '));
+    expect(admissionMessage).toBeTruthy();
+    const admission = JSON.parse(admissionMessage!.slice('[ATOMIZER-SIGNAL-LAB-SESSION] '.length));
+    expect(admission).toEqual({
+      schemaVersion: 1,
+      event: 'admitted',
+      sessionId: signalLabSession.sessionId,
+      driverId: 'signal-lab',
+      provenance: {
+        sourceKind: 'signal-lab',
+        sourceId: 'local',
+        execution: 'signal-lab-simulation',
+        transport: 'signal-lab-measurement-bridge',
+        qualification: 'synthetic-visual-projection',
+        contractId: 'tinysa-signal-lab-atomizer-measurement',
+        contractVersion: 1,
+        contractSha256: HASH,
+        catalogSha256: HASH,
+        generatorSha256: HASH,
+        claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+      },
+    });
+    expect(admissionMessage).not.toMatch(/capabilities|candidate|device|serial/i);
     expect(screen.getByRole('button', { name: /SignalLab.*Synthetic measurement bridge/i })).toBeTruthy();
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(false);
@@ -1193,6 +1221,9 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({
       format: 'json', sweep: expect.objectContaining({ requested: admitted }),
     }));
+    } finally {
+      admissionLog.mockRestore();
+    }
   });
 
   it('routes sidebar Single to one bounded I/Q capture without a redundant panel action', async () => {
@@ -3169,12 +3200,16 @@ describe('operator vertical slice', () => {
         { callId: 'target-truth-acquire', name: 'acquire_sweep', arguments: '{}' },
         { callId: 'target-truth-agile', name: 'select_classification_candidate', arguments: '{"detectionId":"agile-row"}' },
         { callId: 'target-truth-after-agile', name: 'get_application_state', arguments: '{}' },
-        { callId: 'target-truth-stale', name: 'select_classification_candidate', arguments: '{"detectionId":"stale-row"}' },
-        { callId: 'target-truth-after-stale', name: 'get_application_state', arguments: '{}' },
-        { callId: 'target-truth-physical', name: 'select_classification_candidate', arguments: '{"detectionId":"physical-row"}' },
-        { callId: 'target-truth-after-physical', name: 'get_application_state', arguments: '{}' },
       ] })
-      .mockResolvedValueOnce({ conversationId: 'target-truth-2', transport: 'realtime-websocket', text: 'Exact target staged.', toolCalls: [] });
+      .mockResolvedValueOnce({ conversationId: 'target-truth-2', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'target-truth-state-after-agile', name: 'get_application_state', arguments: '{}' },
+        { callId: 'target-truth-stale', name: 'select_classification_candidate', arguments: '{"detectionId":"stale-row"}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'target-truth-3', transport: 'realtime-websocket', text: '', toolCalls: [
+        { callId: 'target-truth-state-after-stale', name: 'get_application_state', arguments: '{}' },
+        { callId: 'target-truth-physical', name: 'select_classification_candidate', arguments: '{"detectionId":"physical-row"}' },
+      ] })
+      .mockResolvedValueOnce({ conversationId: 'target-truth-4', transport: 'realtime-websocket', text: 'Exact target staged.', toolCalls: [] });
 
     try {
       render(<App/>);
@@ -3183,26 +3218,35 @@ describe('operator vertical slice', () => {
       fireEvent.change(composer, { target: { value: 'Reject nonphysical target IDs and select the physical row.' } });
       fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
 
-      await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
-      const outputs = vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs ?? [];
-      const results = outputs.map(({ output }) => JSON.parse(output) as {
+      await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(5));
+      type TargetTruthResult = {
         ok?: boolean;
         error?: string;
+        skipped?: boolean;
+        skipReason?: string;
+        failedCallId?: string;
         output?: {
           detectionId?: string;
           selected?: boolean;
           stagedDetectedPowerCenterHz?: number;
           scalarConfiguration?: { staged?: { detectedPower?: { centerHz?: number } } };
         };
+      };
+      const outputsByCallId = new Map<string, TargetTruthResult>(vi.mocked(window.atomAgent.agentTurn).mock.calls
+        .slice(2, 5)
+        .flatMap(([request]) => request.toolOutputs ?? [])
+        .map(({ callId, output }): [string, TargetTruthResult] => [callId, JSON.parse(output) as TargetTruthResult]));
+      expect(outputsByCallId.get('target-truth-agile')).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
+      expect(outputsByCallId.get('target-truth-after-agile')).toMatchObject({
+        ok: false, skipped: true, skipReason: 'failed-prior', failedCallId: 'target-truth-agile',
       });
-      expect(results[2]).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
-      expect(results[4]).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
-      const afterAgile = results[3]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
-      const afterStale = results[5]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
+      expect(outputsByCallId.get('target-truth-stale')).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact current physical or qualified agile-representative classification target/) });
+      const afterAgile = outputsByCallId.get('target-truth-state-after-agile')?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
+      const afterStale = outputsByCallId.get('target-truth-state-after-stale')?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz;
       expect(afterStale).toBe(afterAgile);
       expect(afterAgile).not.toBe(agilePeakHz);
       expect(afterStale).not.toBe(stalePeakHz);
-      expect(results[6]).toMatchObject({
+      expect(outputsByCallId.get('target-truth-physical')).toMatchObject({
         ok: true,
         output: {
           detectionId: 'physical-row',
@@ -3210,8 +3254,6 @@ describe('operator vertical slice', () => {
           stagedDetectedPowerCenterHz: expect.any(Number),
         },
       });
-      expect(results[7]?.output?.scalarConfiguration?.staged?.detectedPower?.centerHz)
-        .toBe(results[6]?.output?.stagedDetectedPowerCenterHz);
     } finally {
       trackerUpdate.mockRestore();
     }
@@ -3313,7 +3355,7 @@ describe('operator vertical slice', () => {
     expect(state).toMatchObject({ ok: true, output: { generator: { frequencyHz: 123_000_000 } } });
   });
 
-  it('preserves selected tune and repeated zero-span patches while pre-admission capture fails closed', async () => {
+  it('preserves selected tune and repeated zero-span patches while pre-admission capture blocks dependent STFT work', async () => {
     mockConnectedInstrument();
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
@@ -3344,10 +3386,11 @@ describe('operator vertical slice', () => {
       ok: false,
       error: expect.stringMatching(/not available on an exact runtime-admitted eight-sweep window/i),
     });
-    expect(results[6]?.ok).toBe(true);
+    expect(results[6]).toMatchObject({
+      ok: false, skipped: true, skipReason: 'failed-prior', failedCallId: 'zero-sync-capture',
+    });
     expect(results[7]).toMatchObject({
-      ok: false,
-      error: expect.stringMatching(/acquire a complete zero-span capture/i),
+      ok: false, skipped: true, skipReason: 'failed-prior', failedCallId: 'zero-sync-capture',
     });
     const detectedPowerConfiguration = vi.mocked(window.atomizerInstrument.configure).mock.calls
       .map(([configuration]) => configuration)

@@ -12,10 +12,10 @@ const { appendBoundedLogSync } = require('./bounded-log.cjs');
 const { requirePrivateEnvironmentFile } = require('./private-environment-file.cjs');
 const {
   boundedErrorMessage,
-  normalizeRendererConsoleMessage,
   normalizeRendererLoadFailure,
   rendererGoneDiagnostic,
   rendererProcessMetricSnapshot,
+  routeRendererConsoleMessage,
 } = require('./renderer-diagnostics.cjs');
 
 const APP_NAME = 'Atomizer Dev';
@@ -89,7 +89,10 @@ function attachRendererDiagnostics(contents) {
     }
   };
 
-  contents.on('console-message', (...args) => log('RENDERER', normalizeRendererConsoleMessage(...args)));
+  contents.on('console-message', (...args) => {
+    const routed = routeRendererConsoleMessage(...args);
+    log(routed.level, routed.value);
+  });
   contents.on('did-finish-load', () => sampleMemory('did-finish-load'));
   contents.on('did-fail-load', (_loadEvent, code, description, url, isMainFrame) => log('RENDERER-LOAD', normalizeRendererLoadFailure(code, description, url, isMainFrame)));
   contents.on('render-process-gone', (_goneEvent, details) => {

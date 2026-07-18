@@ -966,6 +966,32 @@ export function App({
 
   function acceptInstrumentState(next: AtomizerInstrumentState, initializeSelection = false): void {
     const previousSessionId = instrumentRef.current.session?.sessionId;
+    const admittedSession = next.session;
+    const admittedProvenance = admittedSession?.provenance;
+    if (admittedSession
+      && admittedSession.sessionId !== previousSessionId
+      && admittedProvenance?.sourceKind === 'signal-lab') {
+      const provenance = admittedProvenance;
+      console.info(`[ATOMIZER-SIGNAL-LAB-SESSION] ${JSON.stringify({
+        schemaVersion: 1,
+        event: 'admitted',
+        sessionId: admittedSession.sessionId,
+        driverId: admittedSession.driverId,
+        provenance: {
+          sourceKind: provenance.sourceKind,
+          sourceId: provenance.sourceId,
+          execution: provenance.execution,
+          transport: provenance.transport,
+          qualification: provenance.qualification,
+          contractId: provenance.contractId,
+          contractVersion: provenance.contractVersion,
+          contractSha256: provenance.contractSha256,
+          catalogSha256: provenance.catalogSha256,
+          generatorSha256: provenance.generatorSha256,
+          claims: provenance.claims,
+        },
+      })}`);
+    }
     if (next.session?.sessionId !== previousSessionId) invalidateAcquiredEvidence(true);
     setInstrument(next);
     if (next.session && (initializeSelection || next.session.sessionId !== previousSessionId)) initializeSessionSelection(next.session);

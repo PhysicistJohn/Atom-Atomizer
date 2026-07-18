@@ -4,6 +4,8 @@ const MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS = 4_096;
 const MAX_RENDERER_SOURCE_CHARACTERS = 1_024;
 const MAX_RENDERER_LOAD_DESCRIPTION_CHARACTERS = 1_024;
 const MAX_RENDERER_LOAD_URL_CHARACTERS = 2_048;
+const SIGNAL_LAB_SESSION_CONSOLE_PREFIX = '[ATOMIZER-SIGNAL-LAB-SESSION] ';
+const SIGNAL_LAB_SESSION_LOG_LEVEL = 'ATOMIZER-SIGNAL-LAB-SESSION';
 
 function normalizeRendererConsoleMessage(details, legacyLevel, legacyMessage, legacyLine, legacySourceId) {
   const modern = details && typeof details === 'object' && typeof details.message === 'string';
@@ -16,6 +18,85 @@ function normalizeRendererConsoleMessage(details, legacyLevel, legacyMessage, le
     message: boundConsoleMessage(rawMessage),
     line: finiteInteger(rawLine),
     sourceId: boundSourceId(rawSourceId),
+  });
+}
+
+/**
+ * Promote only a validated, redacted SignalLab admission record into its own
+ * one-line launcher log record. Every other renderer message retains the
+ * ordinary bounded diagnostic shape.
+ */
+function routeRendererConsoleMessage(details, legacyLevel, legacyMessage, legacyLine, legacySourceId) {
+  const normalized = normalizeRendererConsoleMessage(
+    details,
+    legacyLevel,
+    legacyMessage,
+    legacyLine,
+    legacySourceId,
+  );
+  const fallback = Object.freeze({ level: 'RENDERER', value: normalized });
+  if (normalized.level !== 'info'
+    || !normalized.message.startsWith(SIGNAL_LAB_SESSION_CONSOLE_PREFIX)) return fallback;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(normalized.message.slice(SIGNAL_LAB_SESSION_CONSOLE_PREFIX.length));
+  } catch {
+    return fallback;
+  }
+  const admission = normalizeSignalLabSessionAdmission(parsed);
+  return admission === undefined
+    ? fallback
+    : Object.freeze({ level: SIGNAL_LAB_SESSION_LOG_LEVEL, value: JSON.stringify(admission) });
+}
+
+function normalizeSignalLabSessionAdmission(value) {
+  const provenance = value?.provenance;
+  const claims = provenance?.claims;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || value.schemaVersion !== 1
+    || value.event !== 'admitted'
+    || value.driverId !== 'signal-lab'
+    || !isUuid(value.sessionId)
+    || provenance?.sourceKind !== 'signal-lab'
+    || !isBoundedNonEmptyString(provenance.sourceId, 256)
+    || provenance.execution !== 'signal-lab-simulation'
+    || provenance.transport !== 'signal-lab-measurement-bridge'
+    || provenance.qualification !== 'synthetic-visual-projection'
+    || provenance.contractId !== 'tinysa-signal-lab-atomizer-measurement'
+    || provenance.contractVersion !== 1
+    || !isSha256(provenance.contractSha256)
+    || !isSha256(provenance.catalogSha256)
+    || !isSha256(provenance.generatorSha256)
+    || claims?.usbEmulated !== false
+    || claims?.firmwareExecuted !== false
+    || claims?.rfEmitted !== false) return undefined;
+
+  // Rebuild from a fixed allow-list so renderer data outside this evidence
+  // contract (candidate, device, serial details, capabilities, etc.) cannot be
+  // promoted into the admitted-session log record.
+  return Object.freeze({
+    schemaVersion: 1,
+    event: 'admitted',
+    sessionId: value.sessionId,
+    driverId: 'signal-lab',
+    provenance: Object.freeze({
+      sourceKind: 'signal-lab',
+      sourceId: provenance.sourceId,
+      execution: 'signal-lab-simulation',
+      transport: 'signal-lab-measurement-bridge',
+      qualification: 'synthetic-visual-projection',
+      contractId: 'tinysa-signal-lab-atomizer-measurement',
+      contractVersion: 1,
+      contractSha256: provenance.contractSha256,
+      catalogSha256: provenance.catalogSha256,
+      generatorSha256: provenance.generatorSha256,
+      claims: Object.freeze({
+        usbEmulated: false,
+        firmwareExecuted: false,
+        rfEmitted: false,
+      }),
+    }),
   });
 }
 
@@ -106,6 +187,19 @@ function finiteInteger(value) {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
+function isUuid(value) {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isSha256(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function isBoundedNonEmptyString(value, maximumCharacters) {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximumCharacters && /\S/u.test(value);
+}
+
 module.exports = {
   MAX_RENDERER_CONSOLE_MESSAGE_CHARACTERS,
   MAX_RENDERER_LOAD_DESCRIPTION_CHARACTERS,
@@ -115,4 +209,5 @@ module.exports = {
   normalizeRendererLoadFailure,
   rendererGoneDiagnostic,
   rendererProcessMetricSnapshot,
+  routeRendererConsoleMessage,
 };
