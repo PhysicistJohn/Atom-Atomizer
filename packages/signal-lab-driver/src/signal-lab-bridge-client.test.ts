@@ -272,7 +272,7 @@ describe('SignalLab bridge client', () => {
       expect(failures).toHaveLength(1);
       await expect(client.close()).rejects.toThrow(/result geometry does not match the admitted request/);
     }
-  });
+  }, 30_000); // 5 sequential process launches; Windows process spawn/teardown overhead adds up past the 5s default.
 
   it('makes any selected-waveform metadata or optional asset-hash drift terminal', async () => {
     for (const mode of ['waveform-metadata-drift', 'waveform-asset-hash-drift'] as const) {
@@ -365,7 +365,7 @@ describe('SignalLab bridge client', () => {
     await expect(timed.status()).rejects.toThrow(/timed out; the request was not retried/);
     await expect(timed.status()).rejects.toThrow(/timed out; the request was not retried/);
     await expect(timed.close()).rejects.toThrow(/timed out/);
-  });
+  }, 15_000); // 2 sequential process launches plus in-flight waits; Windows process spawn/teardown overhead adds up past the 5s default.
 
   it('treats an unexpected child exit as a permanent session failure', async () => {
     const fixture = await createFixture('exit-after-ready');
