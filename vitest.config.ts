@@ -4,6 +4,13 @@ import { createOptionalBayesianClassifierVitePlugin } from './apps/desktop/src/m
 
 export default defineConfig({
   plugins: [createOptionalBayesianClassifierVitePlugin()],
+  server: {
+    fs: {
+      // The browser edition bundles sibling-repo SignalLab sources, including
+      // the ?raw measurement-contract document, from ../Atom-SignalLab.
+      allow: [fileURLToPath(new URL('..', import.meta.url))],
+    },
+  },
   resolve: {
     dedupe: ['react', 'react-dom', 'lucide-react'],
     alias: {

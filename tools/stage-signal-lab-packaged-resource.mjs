@@ -28,12 +28,17 @@ export const DEFAULT_SIGNAL_LAB_PACKAGED_RESOURCE_ROOT = resolve(
 );
 export const SIGNAL_LAB_PACKAGED_GENERATOR_ARTIFACTS = Object.freeze([
   'atomizer-bridge.js',
+  'bluetooth-iq.js',
   'canonical-timing.js',
   'catalog.js',
+  'complex-iq.js',
   'contracts.js',
+  'geran-iq.js',
   'measurement-bridge.js',
   'measurement-contract.js',
   'measurement-service.js',
+  'ofdm-iq.js',
+  'platform-bytes.js',
   'source-provenance.js',
   'waveforms.js',
 ]);

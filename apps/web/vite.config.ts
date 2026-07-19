@@ -12,6 +12,13 @@ export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin');
   return {
     resolve: { dedupe: ['react', 'react-dom', 'lucide-react'] },
+    server: {
+      fs: {
+        // The browser edition bundles sibling-repo SignalLab sources, including
+        // the ?raw measurement-contract document, from ../../../Atom-SignalLab.
+        allow: [new URL('../../..', import.meta.url).pathname],
+      },
+    },
     plugins: [
       vinext(),
       sites(),

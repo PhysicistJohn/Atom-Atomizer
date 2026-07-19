@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
+import { structuralEqual } from './structural-equal.js';
 import {
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
@@ -69,7 +68,7 @@ export interface InstrumentManagerRuntime {
 
 const defaultRuntime: InstrumentManagerRuntime = Object.freeze({
   now: () => new Date(),
-  opaqueId: (scope: 'discovery' | 'configuration') => `${scope}:${randomUUID()}`,
+  opaqueId: (scope: 'discovery' | 'configuration') => `${scope}:${crypto.randomUUID()}`,
 });
 
 interface ActiveSession {
@@ -266,7 +265,7 @@ export class InstrumentManager {
     if (!this.#latestDiscoveryRevision
       || candidate.discoveryRevision !== this.#latestDiscoveryRevision
       || !current
-      || !isDeepStrictEqual(current, candidate)) {
+      || !structuralEqual(current, candidate)) {
       throw new InstrumentManagerError('stale-candidate', 'Instrument candidate is stale or was not produced by the latest completed discovery');
     }
     // Dispatch an immutable clone of the retained evidence, not the caller's
@@ -571,7 +570,7 @@ export class InstrumentManager {
           receiveOnlySafetyBefore,
           'pre-acquisition',
         );
-        if (!isDeepStrictEqual(measurement.receiveOnlySafetyReceipt, receiveOnlySafetyAfter.currentReceipt)) {
+        if (!structuralEqual(measurement.receiveOnlySafetyReceipt, receiveOnlySafetyAfter.currentReceipt)) {
           throw new InstrumentManagerError(
             'driver-contract',
             'Measurement receive-only safety receipt does not match the current post-acquisition driver receipt',
@@ -679,7 +678,7 @@ export class InstrumentManager {
         if (!observed) {
           throw new InstrumentManagerError('driver-contract', 'Driver withdrew receive-only safety state during a feature operation');
         }
-        if (!isDeepStrictEqual(observed, receiveOnlySafetyBefore)) {
+        if (!structuralEqual(observed, receiveOnlySafetyBefore)) {
           if (request.kind !== 'touch') {
             throw new InstrumentManagerError('driver-contract', 'Driver advanced receive-only safety state for an unrelated feature');
           }
@@ -1213,7 +1212,7 @@ function advanceReceiveOnlySafety(
   if (!current) {
     throw new InstrumentManagerError('driver-contract', 'Driver withdrew receive-only safety state during an active physical session');
   }
-  if (!isDeepStrictEqual(current.connectionReceipt, previous.connectionReceipt)) {
+  if (!structuralEqual(current.connectionReceipt, previous.connectionReceipt)) {
     throw new InstrumentManagerError('driver-contract', 'Driver rewrote its receive-only connection receipt');
   }
   if (current.currentReceipt.sessionId !== active.session.sessionId) {
@@ -1338,12 +1337,12 @@ function assertFeatureResult(
   }
   if (request.kind === 'rf-generator' && request.action === 'configure') {
     if (result.kind !== 'rf-generator' || result.action !== 'configure'
-      || !isDeepStrictEqual(result, { ...request, sessionId: active.session.sessionId })) {
+      || !structuralEqual(result, { ...request, sessionId: active.session.sessionId })) {
       throw new InstrumentManagerError('driver-contract', 'RF generator configuration result does not match the request');
     }
   } else if (request.kind === 'rf-generator') {
     if (result.kind !== 'rf-generator' || result.action !== 'set-output'
-      || !isDeepStrictEqual(result, { ...request, sessionId: active.session.sessionId })) {
+      || !structuralEqual(result, { ...request, sessionId: active.session.sessionId })) {
       throw new InstrumentManagerError('driver-contract', 'RF generator output result does not match the request');
     }
   } else if (request.kind === 'screen') {
@@ -1370,7 +1369,7 @@ function assertFeatureResult(
     }
   } else if (result.kind !== 'signal-lab-profile-selection'
     || result.action !== 'configure-channel'
-    || !isDeepStrictEqual(result.channel, request.channel)) {
+    || !structuralEqual(result.channel, request.channel)) {
     throw new InstrumentManagerError('driver-contract', 'SignalLab channel result does not match the request');
   }
 }

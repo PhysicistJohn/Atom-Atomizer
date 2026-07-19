@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isDeepStrictEqual } from 'node:util';
+import { structuralEqual } from './structural-equal.js';
 import {
   MAX_INSTRUMENT_SOURCE_KINDS_V1,
   instrumentCandidateDescriptorSchema,
@@ -155,7 +155,7 @@ export function validateInstrumentSession(
   let sessionCandidate: InstrumentCandidate;
   try { sessionCandidate = instrumentCandidateSchema.parse(session.candidate); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session with an invalid candidate`, { cause: error }); }
-  if (!isDeepStrictEqual(sessionCandidate, candidate)) {
+  if (!structuralEqual(sessionCandidate, candidate)) {
     throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session for a different candidate`);
   }
   try { instrumentOpaqueIdSchema.parse(session.sessionId); }
@@ -255,7 +255,7 @@ function assertProvenanceBinding(
   switch (candidate.sourceKind) {
     case 'serial-port': {
       if (provenance.sourceKind !== 'serial-port') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
-      if (!isDeepStrictEqual(candidate.serialPort, provenance.serialPort)) {
+      if (!structuralEqual(candidate.serialPort, provenance.serialPort)) {
         throw new InstrumentDriverContractError(`Driver ${driverId} session serial provenance does not match the admitted endpoint`);
       }
       break;

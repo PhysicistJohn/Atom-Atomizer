@@ -62,6 +62,7 @@ const SIGNAL_LAB_GENERATOR_ARTIFACTS = Object.freeze([
   'measurement-contract.js',
   'measurement-service.js',
   'ofdm-iq.js',
+  'platform-bytes.js',
   'source-provenance.js',
   'waveforms.js',
 ] as const);
