@@ -35,7 +35,13 @@ function assertFile(path, label) {
 }
 
 function replacePlistValue(plist, key, value) {
-  run(plistBuddy, ['-c', `Set :${key} "${value}"`, plist]);
+  try {
+    run(plistBuddy, ['-c', `Set :${key} "${value}"`, plist]);
+  } catch {
+    // PlistBuddy's Set requires the key to already exist; Electron's stock
+    // helper bundles are minimal and omit most of these, so fall back to Add.
+    run(plistBuddy, ['-c', `Add :${key} string "${value}"`, plist]);
+  }
 }
 
 function generateIcon(resources) {
@@ -141,6 +147,31 @@ function installApplication() {
     run(plistBuddy, ['-c', 'Delete :ElectronAsarIntegrity', plist]);
   } catch {
     throw new Error('The ElectronAsarIntegrity key was missing from the source runtime; its packaging contract changed');
+  }
+  // Electron's renderer sandbox runs media-capture requests (getUserMedia) out
+  // of the "Electron Helper (Renderer)" process, not the main app bundle, so
+  // that's the identity macOS TCC evaluates for microphone access -- not
+  // BUNDLE_ID. Left with Electron's stock, un-personalized values
+  // (com.github.Electron.helper, no NSMicrophoneUsageDescription), every dev
+  // build shares one generic identity with every other unmodified Electron
+  // app on the machine, and TCC has no usage string to show if it ever needs
+  // to prompt for this process specifically.
+  const frameworksDirectory = join(destination, 'Contents', 'Frameworks');
+  for (const entry of readdirSync(frameworksDirectory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.endsWith('.app')) continue;
+    const helperPlist = join(frameworksDirectory, entry.name, 'Contents', 'Info.plist');
+    if (!existsSync(helperPlist)) continue;
+    const suffix = entry.name
+      .replace(/\.app$/, '')
+      .replace(/^Electron Helper\s*/, '')
+      .replace(/[()]/g, '')
+      .trim()
+      .toLowerCase();
+    replacePlistValue(helperPlist, 'CFBundleIdentifier', suffix ? `${BUNDLE_ID}.helper.${suffix}` : `${BUNDLE_ID}.helper`);
+    replacePlistValue(helperPlist, 'CFBundleDisplayName', `${APP_NAME} Helper`);
+    replacePlistValue(helperPlist, 'CFBundleName', `${APP_NAME} Helper`);
+    replacePlistValue(helperPlist, 'NSMicrophoneUsageDescription', 'Atomizer uses the microphone for native voice interaction with Atom.');
+    replacePlistValue(helperPlist, 'NSCameraUsageDescription', 'This app needs access to the camera');
   }
 
   run('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', destination]);
