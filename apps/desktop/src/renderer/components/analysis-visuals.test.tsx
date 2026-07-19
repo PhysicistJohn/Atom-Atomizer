@@ -6,6 +6,7 @@ import { ChannelAnalysisView } from './ChannelAnalysisView.js';
 import { ClassificationWorkspace, classificationCaptureGeometryMenu, selectClassificationCaptureGeometry, waveformLabel } from './ClassificationWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
+import { detectionCenterStrokes, flushPlotFrame, installRecordingCanvas } from './canvas-test-recorder.js';
 
 const sweep = {
   kind: 'spectrum',
@@ -188,7 +189,7 @@ describe('analysis visual contracts', () => {
     expect(onSelectedId).not.toHaveBeenCalled();
   });
 
-  it('shows the merged spectrum and resumes most-prominent automatic targeting on demand', () => {
+  it('shows the merged spectrum and resumes most-prominent automatic targeting on demand', async () => {
     const onSelectedId = vi.fn();
     const adversarialSweep = {
       ...sweep,
@@ -240,18 +241,22 @@ describe('analysis visual contracts', () => {
       busy: false,
       onAcquireZero: vi.fn(),
     };
+    const recorder = installRecordingCanvas();
     const view = render(<ClassificationWorkspace
       {...props}
       selectedId={visibleNarrow.id}
       selectionOrigin="explicit"
     />);
+    await flushPlotFrame();
 
-    expect(within(view.container).getByLabelText('Measured power by frequency')).toBeTruthy();
+    const plotCanvas = within(view.container).getByLabelText('Measured power by frequency') as HTMLCanvasElement;
+    expect(plotCanvas).toBeTruthy();
     const auto = within(view.container).getByRole('button', { name: /Auto · most prominent/i });
     expect(auto.getAttribute('aria-pressed')).toBe('false');
     expect(auto.getAttribute('aria-description')).toContain('DEV RANK POPULATION');
     expect(auto.getAttribute('aria-description')).toContain(`winner=${visibleWide.id}`);
-    expect(view.container.querySelector('.detection-band.selected')).not.toBeNull();
+    const plotDraw = recorder.contextFor(plotCanvas);
+    expect(plotDraw?.fillRects.some((rect) => rect.height === 430 && rect.fillStyle === 'rgba(10,132,255,.17)')).toBe(true);
     expect(view.container.querySelector('.candidate-row')?.getAttribute('data-agent-control'))
       .toBe(`classification.candidate.${visibleWide.id}.select`);
     expect(view.container.textContent).toContain('integrated excess');
@@ -259,13 +264,16 @@ describe('analysis visual contracts', () => {
     fireEvent.click(auto);
     expect(onSelectedId).toHaveBeenCalledWith(undefined);
 
+    plotDraw?.reset();
     view.rerender(<ClassificationWorkspace
       {...props}
       selectedId={visibleWide.id}
       selectionOrigin="automatic"
     />);
+    await flushPlotFrame();
     expect(within(view.container).getByRole('button', { name: /Auto · most prominent/i }).getAttribute('aria-pressed')).toBe('true');
-    expect(view.container.querySelectorAll('.detection-band.selected')).toHaveLength(1);
+    expect(plotDraw?.fillRects.filter((rect) => rect.height === 430 && rect.fillStyle === 'rgba(10,132,255,.17)')).toHaveLength(1);
+    recorder.restore();
   });
 
   it('fails the Auto control closed without a complete sweep or detections', () => {
@@ -362,22 +370,35 @@ describe('analysis visual contracts', () => {
     expect(() => selectClassificationCaptureGeometry(legacy, 'invented')).toThrow(/has no menu option/);
   });
 
-  it('renders detection geometry only when the owning workspace enables it', () => {
-    const view = render(<SpectrumPlot sweep={sweep} detections={[detection]} busy={false}/>);
-    expect(within(view.container).getByLabelText('Spectrum plot').getAttribute('aria-description'))
-      .toBe('sweepId=sweep-1; sequence=1');
-    expect(view.container.querySelector('.detection-band')).toBeNull();
-    expect(view.container.querySelector('.detection-center')).toBeNull();
+  it('renders detection geometry only when the owning workspace enables it', async () => {
+    const recorder = installRecordingCanvas();
+    try {
+      const view = render(<SpectrumPlot sweep={sweep} detections={[detection]} busy={false}/>);
+      await flushPlotFrame();
+      expect(within(view.container).getByLabelText('Spectrum plot').getAttribute('aria-description'))
+        .toBe('sweepId=sweep-1; sequence=1');
+      const canvas = within(view.container).getByLabelText('Measured power by frequency') as HTMLCanvasElement;
+      const context = recorder.contextFor(canvas);
+      if (!context) throw new Error('Expected the spectrum canvas draw recording');
+      expect(context.fillRects).toHaveLength(0);
+      expect(detectionCenterStrokes(context, 430)).toHaveLength(0);
 
-    view.rerender(<SpectrumPlot sweep={sweep} detections={[detection]} detectionOverlay selectedDetectionId={detection.id} busy={false}/>);
-    const band = view.container.querySelector('.detection-band');
-    const center = view.container.querySelector('.detection-center');
-    expect(band?.getAttribute('x')).toBe('240');
-    expect(band?.getAttribute('width')).toBe('240');
-    expect(center?.getAttribute('x1')).toBe('360');
-    expect(center?.getAttribute('x2')).toBe('360');
-    expect(band?.classList.contains('selected')).toBe(true);
-    expect(center?.classList.contains('selected')).toBe(true);
+      context.reset();
+      view.rerender(<SpectrumPlot sweep={sweep} detections={[detection]} detectionOverlay selectedDetectionId={detection.id} busy={false}/>);
+      await flushPlotFrame();
+      const band = context.fillRects.find((rect) => rect.height === 430);
+      expect(band?.x).toBe(240);
+      expect(band?.width).toBe(240);
+      const centers = detectionCenterStrokes(context, 430);
+      expect(centers).toHaveLength(1);
+      expect(centers[0]!.segments[0]!.x1).toBe(360);
+      expect(centers[0]!.segments[0]!.x2).toBe(360);
+      // The selected target paints the highlighted band fill and a solid
+      // full-weight center line rather than the passive dashed style.
+      expect(band?.fillStyle).toBe('rgba(10,132,255,.17)');
+      expect(centers[0]!.lineDash).toHaveLength(0);
+      expect(centers[0]!.lineWidth).toBeCloseTo(2.2, 10);
+    } finally { recorder.restore(); }
   });
 
   it('publishes DEV waterfall render evidence during the existing canvas paint', async () => {
@@ -390,25 +411,48 @@ describe('analysis visual contracts', () => {
       moveTo: vi.fn(),
       lineTo: vi.fn(),
       stroke: vi.fn(),
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      putImageData: vi.fn(),
+      imageSmoothingEnabled: true,
     };
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
       .mockReturnValue(context as unknown as CanvasRenderingContext2D);
-    const older = {
-      ...sweep,
-      id: 'sweep-0',
-      sequence: 0,
-      powerDbm: [-110, -95, -65, -85, -105],
-    } satisfies Sweep;
-    const view = render(<WaterfallView
-      history={[sweep, older]}
-      configuration={{ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }}
-      onConfiguration={vi.fn()}
-    />);
-    const canvas = within(view.container).getByLabelText('Measured power by frequency and sweep time');
-    await waitFor(() => expect(canvas.getAttribute('aria-description'))
-      .toMatch(/rows=2; bins=5; colors=2; minDbm=-110; maxDbm=-40/u));
-    expect(context.fillRect).toHaveBeenCalledTimes(11);
-    getContext.mockRestore();
+    const previousImageData = (globalThis as { ImageData?: unknown }).ImageData;
+    class TestImageData {
+      readonly data: Uint8ClampedArray;
+      constructor(readonly width: number, readonly height: number) {
+        this.data = new Uint8ClampedArray(width * height * 4);
+      }
+    }
+    vi.stubGlobal('ImageData', TestImageData);
+    try {
+      const older = {
+        ...sweep,
+        id: 'sweep-0',
+        sequence: 0,
+        powerDbm: [-110, -95, -65, -85, -105],
+      } satisfies Sweep;
+      const view = render(<WaterfallView
+        history={[sweep, older]}
+        configuration={{ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }}
+        onConfiguration={vi.fn()}
+      />);
+      const canvas = within(view.container).getByLabelText('Measured power by frequency and sweep time');
+      await waitFor(() => expect(canvas.getAttribute('aria-description'))
+        .toMatch(/rows=2; bins=5; colors=2; minDbm=-110; maxDbm=-40/u));
+      // One background fill plus one 1px LUT row per coherent sweep into the
+      // ring, composited once as a scaled drawImage instead of per-cell rects.
+      expect(context.fillRect).toHaveBeenCalledTimes(1);
+      expect(context.fillRect).toHaveBeenCalledWith(0, 0, 1_200, 560);
+      expect(context.putImageData).toHaveBeenCalledTimes(2);
+      expect(context.drawImage).toHaveBeenCalledTimes(1);
+      expect(context.stroke).toHaveBeenCalledTimes(11);
+    } finally {
+      getContext.mockRestore();
+      vi.stubGlobal('ImageData', previousImageData);
+      vi.unstubAllGlobals();
+    }
   });
 
   it('uses canonical waveform names and a positive classification pill', () => {
@@ -436,7 +480,7 @@ describe('analysis visual contracts', () => {
     expect(waveformLabel('signal-lab:fm')).not.toMatch(/replay/i);
   });
 
-  it('separates active, qualifying, and agile evidence while hiding retained and released rows', () => {
+  it('separates active, qualifying, and agile evidence while hiding retained and released rows', async () => {
     const active = detection;
     const qualifying = {
       ...detection,
@@ -495,6 +539,7 @@ describe('analysis visual contracts', () => {
       },
     } as DetectedSignal;
     const onSelectedId = vi.fn();
+    const recorder = installRecordingCanvas();
     const view = render(<ClassificationWorkspace
       sweep={detectionSourceSweep}
       detections={[released, retainedMiss, agile, qualifying, active]}
@@ -517,7 +562,11 @@ describe('analysis visual contracts', () => {
     expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-agile-summary.select"]')).toBeNull();
     expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-retained-miss.select"]')).toBeNull();
     expect(view.container.querySelector('[data-agent-control="classification.candidate.signal-released.select"]')).toBeNull();
-    expect(view.container.querySelectorAll('.detection-band')).toHaveLength(1);
+    await flushPlotFrame();
+    const evidenceCanvas = within(view.container).getByLabelText('Measured power by frequency') as HTMLCanvasElement;
+    const evidenceDraw = recorder.contextFor(evidenceCanvas);
+    expect(evidenceDraw?.fillRects.filter((rect) => rect.height === 430)).toHaveLength(1);
+    recorder.restore();
     const evidenceRegion = within(view.container).getByRole('region', { name: /Current detector and classification evidence/i });
     expect(evidenceRegion.querySelector('[role="table"], [role="row"]')).toBeNull();
     expect(evidenceRegion.querySelector('[data-agent-control="classification.candidate.signal-1.select"]')?.tagName).toBe('BUTTON');

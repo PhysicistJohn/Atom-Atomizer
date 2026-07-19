@@ -229,7 +229,7 @@ describe('renderer component fault boundaries', () => {
       busy={false}
     />);
 
-    expect(view.container.querySelectorAll('.trace-line')).toHaveLength(1);
+    expect(view.container.querySelector('canvas[aria-label="Measured power by frequency"]')).not.toBeNull();
     expect(view.container.querySelector('.detection-band')).toBeNull();
     expect(view.container.querySelector('.plot-marker-line')).toBeNull();
     expect(view.container.querySelector('.marker-readout-gutter')).toBeNull();

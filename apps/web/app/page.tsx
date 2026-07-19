@@ -35,7 +35,7 @@ export default function AtomizerWebPage() {
           console.error('[SignalLab Web] automatic browser connection failed', error);
         }
       }
-      const { App } = await import('../../desktop/src/renderer/App.js');
+      const { App } = await import('../../desktop/src/renderer/AppShell.js');
       if (active) setLaunch({ App, signalLab });
     })();
     return () => { active = false; };

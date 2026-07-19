@@ -1,0 +1,1286 @@
+import {
+  analyzerConfigPatchSchema,
+  analyzerConfigSchema,
+  channelMeasurementConfigurationSchema,
+  complexIqConfigurationSchema,
+  projectDetectedPowerTuneHz,
+  zeroSpanConfigSchema,
+  type AnalyzerConfig,
+  type AnalyzerConfigPatch,
+  type ChannelMeasurementConfiguration,
+  type DetectedPowerCaptureReceipt,
+  type InstrumentConfigurationState,
+  type InstrumentSessionSnapshot,
+  type Sweep,
+  type WaveformClassification,
+  type ZeroSpanCapture,
+  type SweptSpectrumConfiguration,
+  type DetectedPowerTimeseriesConfiguration,
+} from '@tinysa/contracts';
+import { classifyZeroSpanEnvelope, createDetectedPowerCaptureReceipt } from '@tinysa/analysis';
+import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from '../instrument-measurement-projection.js';
+import {
+  detectedPowerConfigurationFor,
+  sameSweptSpectrumConfiguration,
+  sweptSpectrumConfigurationFor,
+} from '../instrument-configuration.js';
+import {
+  complexIqConfigurationFor,
+  reconcileComplexIqConfiguration,
+  sameComplexIqConfiguration,
+  type ComplexIqConfiguration,
+  type ComplexIqMeasurement,
+} from '../complex-iq.js';
+import { sanitizeClassificationEvidenceDetections } from '../classification-target-selection.js';
+import {
+  exactClassificationEvidenceSweeps,
+  selectVisibleClassificationRepresentative,
+} from '../classification-work-admission.js';
+import { resolveVisibleClassificationTargetSelection } from '../classification-target-selection.js';
+import {
+  captureReceiptRepresentativeMatches,
+  classificationWindowSweepIds,
+  classificationWorkRevision,
+  resolveRuntimeAdmittedCaptureTarget,
+} from './classification-helpers.js';
+import { acquisitionModeForWorkspace, HISTORY_LIMIT } from '../store.js';
+import {
+  CONTINUOUS_IQ_TRANSACTION,
+  errorMessage,
+  sameAnalyzerConfiguration,
+  sameStructuredValue,
+  type ClassificationExecutionRecord,
+  type ClassificationWork,
+  type ContinuousIqConfigurationOwnership,
+  type ContinuousMeasurementWork,
+  type ContinuousStreamOwnership,
+  type RecordedSweep,
+  type RendererConfigurationRevision,
+  type RendererKernel,
+} from './kernel.js';
+
+export class AcquisitionController {
+  constructor(private readonly k: RendererKernel) {}
+
+  admitContinuousMeasurement(work: ContinuousMeasurementWork): void {
+    // IPC events already arrive serially on the renderer event loop. Perform
+    // the bounded projection/detection/tracking ingest synchronously for every
+    // sweep so history evidence is never silently replaced by a slower
+    // classifier. Only derived Bayesian projections use a latest-wins lane.
+    this.processContinuousMeasurement(work);
+  }
+
+  processContinuousMeasurement(work: ContinuousMeasurementWork): void {
+    const k = this.k;
+    if (!this.isCurrentContinuousWork(work)) return;
+    try {
+      const { measurement, ownership } = work;
+      if (measurement.kind !== 'swept-spectrum') {
+        throw new Error(`Expected swept-spectrum streaming measurement, received ${measurement.kind}`);
+      }
+      const requested = this.requireConfiguration(measurement.configurationRevision, 'swept-spectrum', `Continuous measurement ${measurement.measurementId}`) as SweptSpectrumConfiguration;
+      if (measurement.configurationRevision !== ownership.configurationRevision) {
+        throw new Error(`Continuous measurement ${measurement.measurementId} referenced ${measurement.configurationRevision}; active stream owns ${ownership.configurationRevision}`);
+      }
+      const projected = projectSpectrumMeasurement(measurement, work.session, requested);
+      const recorded = this.recordSweepEvidence(
+        projected,
+        measurement.configurationRevision,
+        ownership,
+      );
+      if (!recorded) throw new Error(`Sweep ${projected.id} was acquired for a superseded analyzer configuration`);
+      if (recorded.classification) k.classification.admitClassificationWork(recorded.classification);
+    } catch (value) {
+      if (!this.isCurrentContinuousWork(work)) return;
+      const message = `Sweep analysis failed: ${errorMessage(value)}`;
+      k.set({ acquisition: 'failed', error: message });
+      this.requestContinuousMeasurementStop(work.ownership, message);
+    }
+  }
+
+  isCurrentContinuousOwnership(ownership: ContinuousStreamOwnership): boolean {
+    const k = this.k;
+    const current = k.continuousStreamOwnership.current;
+    return current === ownership
+      && current.generation === ownership.generation
+      && k.state.instrument.session?.sessionId === ownership.sessionId
+      && k.continuousRequested.current;
+  }
+
+  isCurrentContinuousWork(work: ContinuousMeasurementWork): boolean {
+    return this.isCurrentContinuousOwnership(work.ownership);
+  }
+
+  requestContinuousMeasurementStop(ownership: ContinuousStreamOwnership, message: string): void {
+    const k = this.k;
+    if (k.continuousStreamOwnership.current !== ownership
+      || k.failedContinuousMeasurementStopGeneration.current === ownership.generation) return;
+    k.continuousMeasurementStopRequest.current = { ownership, message };
+    this.drainContinuousMeasurementStop();
+  }
+
+  drainContinuousMeasurementStop(): void {
+    const k = this.k;
+    if (k.continuousMeasurementStopTask.current || k.instrumentTransactionOwner.current) return;
+    const request = k.continuousMeasurementStopRequest.current;
+    if (!request) return;
+    k.continuousMeasurementStopRequest.current = undefined;
+    const task = this.runInstrumentTransaction('stop-invalid-continuous-measurement', async () => {
+      if (k.continuousStreamOwnership.current !== request.ownership) return;
+      k.continuousRequested.current = false;
+      try {
+        await this.stopStreamingAndReleaseConfiguration(request.ownership);
+        k.set({ continuous: false });
+      }
+      catch (value) {
+        k.failedContinuousMeasurementStopGeneration.current = request.ownership.generation;
+        k.set({ error: `${request.message}. Stream stop also failed: ${errorMessage(value)}` });
+        throw value;
+      }
+    });
+    k.continuousMeasurementStopTask.current = task;
+    void task.then(
+      () => this.finishContinuousMeasurementStopTask(task),
+      () => this.finishContinuousMeasurementStopTask(task),
+    );
+  }
+
+  finishContinuousMeasurementStopTask(task: Promise<void>): void {
+    if (this.k.continuousMeasurementStopTask.current !== task) return;
+    this.k.continuousMeasurementStopTask.current = undefined;
+    this.drainContinuousMeasurementStop();
+  }
+
+  async configureAnalyzer(config: AnalyzerConfig, operation: 'configuring' | 'retuning' = 'configuring'): Promise<InstrumentConfigurationState> {
+    const k = this.k;
+    const session = k.requireConnected();
+    const sessionId = session.sessionId;
+    const validated = analyzerConfigSchema.parse(config);
+    const capability = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    if (!capability || capability.kind !== 'swept-spectrum') throw new Error('Active instrument does not advertise swept-spectrum acquisition');
+    const requested = sweptSpectrumConfigurationFor(capability, validated);
+    k.set({ error: undefined, acquisition: operation });
+    const next = await window.atomizerInstrument.configure(requested);
+    if (next.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+      throw new Error(`Swept-spectrum configuration response was invalidated with instrument session ${sessionId}`);
+    }
+    if (next.configuration.kind !== 'swept-spectrum'
+      || !sameSweptSpectrumConfiguration(next.configuration, requested)) {
+      throw new Error('Instrument host returned a different swept-spectrum configuration than it admitted');
+    }
+    k.configurationRevisions.current.commit(next.configurationRevision, { kind: 'swept-spectrum', admitted: next.configuration });
+    k.events.acceptConfiguration(next);
+    return next;
+  }
+
+  requireConfiguration(
+    revision: string,
+    kind: RendererConfigurationRevision['kind'],
+    context: string,
+  ): RendererConfigurationRevision['admitted'] {
+    const retained = this.k.configurationRevisions.current.read(revision);
+    if (!retained) throw new Error(`${context} referenced unknown configuration ${revision}`);
+    if (retained.kind !== kind) throw new Error(`${context} referenced ${retained.kind} configuration ${revision}, expected ${kind}`);
+    return retained.admitted;
+  }
+
+  /** Kind-checked existence assertion for a committed revision (the retired
+   * lease acquisition, minus the lease). */
+  requireConfigurationEntry(revision: string, kind: RendererConfigurationRevision['kind']): void {
+    const retained = this.k.configurationRevisions.current.read(revision);
+    if (!retained) throw new Error(`Configuration revision ${revision} is not retained`);
+    if (retained.kind !== kind) {
+      throw new Error(`Configuration revision ${revision} is ${retained.kind}, expected ${kind}`);
+    }
+  }
+
+  clearContinuousStreamOwnership(expected?: ContinuousStreamOwnership): void {
+    const k = this.k;
+    if (expected && k.continuousStreamOwnership.current !== expected) return;
+    k.continuousStreamOwnership.current = undefined;
+    if (!expected || k.pendingClassificationWork.current?.ownership === expected) k.pendingClassificationWork.current = undefined;
+    if (!expected || k.continuousMeasurementStopRequest.current?.ownership === expected) {
+      k.continuousMeasurementStopRequest.current = undefined;
+    }
+    k.failedContinuousMeasurementStopGeneration.current = undefined;
+  }
+
+  async stopStreamingAndReleaseConfiguration(expected?: ContinuousStreamOwnership): Promise<void> {
+    // A rejected stop leaves the ownership flag intact. The main process may
+    // still own a live acquisition run, so the renderer must keep consuming
+    // its measurements and allow a later retry.
+    const k = this.k;
+    const ownership = expected ?? k.continuousStreamOwnership.current;
+    if (expected && k.continuousStreamOwnership.current !== expected) return;
+    await window.atomizerInstrument.stopStreaming();
+    // Every operational caller uses the renderer transaction gate. This
+    // identity check additionally prevents delayed event-failure cleanup from
+    // releasing the ownership of a replacement stream generation.
+    if (k.continuousStreamOwnership.current !== ownership) return;
+    this.clearContinuousStreamOwnership(ownership);
+  }
+
+  async startStreamingWithConfiguration(revision: string): Promise<void> {
+    const k = this.k;
+    const sessionId = k.requireConnected().sessionId;
+    if (k.continuousStreamOwnership.current) throw new Error('A continuous stream generation is already owned');
+    this.requireConfigurationEntry(revision, 'swept-spectrum');
+    const ownership: ContinuousStreamOwnership = {
+      generation: ++k.continuousStreamGeneration.current,
+      sessionId,
+      configurationRevision: revision,
+    };
+    k.continuousStreamOwnership.current = ownership;
+    k.failedContinuousMeasurementStopGeneration.current = undefined;
+    try {
+      await window.atomizerInstrument.startStreaming();
+      if (k.state.instrument.session?.sessionId !== sessionId || k.continuousStreamOwnership.current !== ownership) {
+        throw new Error(`Continuous acquisition start was invalidated with instrument session ${sessionId}`);
+      }
+    } catch (startFailure) {
+      try {
+        await this.stopStreamingAndReleaseConfiguration(ownership);
+      } catch (stopFailure) {
+        throw new AggregateError(
+          [startFailure, stopFailure],
+          `Continuous acquisition start was not acknowledged and compensating stop also failed: ${errorMessage(startFailure)}; ${errorMessage(stopFailure)}`,
+        );
+      }
+      throw startFailure;
+    }
+  }
+
+  async runInstrumentTransaction<T>(name: string, operation: () => Promise<T>): Promise<T> {
+    const k = this.k;
+    const pauseIq = name !== CONTINUOUS_IQ_TRANSACTION
+      && k.continuousRequested.current
+      && k.state.continuousMode === 'complex-iq';
+    if (pauseIq) k.continuousIqPauseDepth.current++;
+    try {
+      const active = k.instrumentTransactionOwner.current;
+      if (active === CONTINUOUS_IQ_TRANSACTION && pauseIq) {
+        const buffer = k.continuousIqBufferTask.current;
+        if (!buffer) throw new Error('Continuous I/Q transaction has no owned bounded buffer task');
+        try { await buffer; } catch { /* The pump reports its own capability-local failure. */ }
+      }
+      const admittedAfterPause = k.instrumentTransactionOwner.current;
+      if (admittedAfterPause) {
+        throw new Error(`Instrument operation ${admittedAfterPause} is already active; ${name} was not admitted`);
+      }
+      k.instrumentTransactionOwner.current = name;
+      k.set({ instrumentTransactionActive: true });
+      try { return await operation(); }
+      finally {
+        if (k.instrumentTransactionOwner.current === name) {
+          k.instrumentTransactionOwner.current = undefined;
+          k.set({ instrumentTransactionActive: false });
+          this.drainContinuousMeasurementStop();
+          this.drainOperatorContinuousStop();
+        }
+      }
+    } finally {
+      if (pauseIq) this.releaseContinuousIqPause();
+    }
+  }
+
+  releaseContinuousIqPause(): void {
+    const k = this.k;
+    if (k.continuousIqPauseDepth.current < 1) return;
+    k.continuousIqPauseDepth.current--;
+    if (k.continuousIqPauseDepth.current !== 0) return;
+    for (const resume of k.continuousIqResumeWaiters.current) resume();
+    k.continuousIqResumeWaiters.current.clear();
+  }
+
+  async waitForContinuousIqAdmission(): Promise<boolean> {
+    const k = this.k;
+    while (k.continuousRequested.current
+      && k.state.continuousMode === 'complex-iq'
+      && k.continuousIqPauseDepth.current > 0) {
+      await new Promise<void>((resolve) => k.continuousIqResumeWaiters.current.add(resolve));
+    }
+    return k.continuousRequested.current && k.state.continuousMode === 'complex-iq';
+  }
+
+  wakeContinuousIqAdmissionWaiters(): void {
+    const k = this.k;
+    for (const resume of k.continuousIqResumeWaiters.current) resume();
+    k.continuousIqResumeWaiters.current.clear();
+  }
+
+  async runWithContinuousPaused<T>(
+    label: string,
+    operation: () => Promise<T>,
+    shouldResume: (result: T) => boolean = () => true,
+  ): Promise<T> {
+    const k = this.k;
+    const ownership = k.continuousStreamOwnership.current;
+    if (!ownership
+      && k.continuousRequested.current
+      && k.state.continuousMode === 'complex-iq') {
+      return this.runWithContinuousIqPaused(label, operation, shouldResume);
+    }
+    if (!k.continuousRequested.current || !ownership) return operation();
+    try {
+      const sessionId = ownership.sessionId;
+      k.set({ acquisition: 'retuning', notice: `Pausing continuous acquisition for ${label}…` });
+      await this.stopStreamingAndReleaseConfiguration(ownership);
+      const before = k.requireConnected();
+      if (before.sessionId !== sessionId || before.fault) {
+        throw new Error(`${label} was invalidated with instrument session ${sessionId}`);
+      }
+
+      const result = await operation();
+      const after = k.requireConnected();
+      if (after.sessionId !== sessionId || after.fault) {
+        throw new Error(`${label} completed for a superseded instrument session ${sessionId}`);
+      }
+      if (!k.continuousRequested.current) {
+        this.completeContinuousStop(`Continuous acquisition stopped after ${label}`);
+        return result;
+      }
+      // Resume is admitted only after the conflicting operation and all of its
+      // renderer-side acknowledgement checks succeed. RF-on intentionally
+      // leaves collection stopped because acquisition is not safe in that state.
+      if (!shouldResume(result)) {
+        k.set({ acquisition: 'complete', notice: `Continuous acquisition stopped after ${label}` });
+        return result;
+      }
+      if (k.currentGeneratorOutput() !== 'off') {
+        throw new Error(`Continuous acquisition cannot resume after ${label} while RF output is ${k.currentGeneratorOutput()}`);
+      }
+      const resumed = await this.resumeContinuousAfterConflict(sessionId, label);
+      if (!resumed) this.completeContinuousStop(`Continuous acquisition stopped after ${label}`);
+      return result;
+    } catch (value) {
+      k.continuousRequested.current = false;
+      if (!k.continuousStreamOwnership.current) k.set({ continuous: false });
+      k.set({ acquisition: 'failed', notice: undefined, error: `${label} failed: ${errorMessage(value)}` });
+      throw value;
+    }
+  }
+
+  async runWithContinuousIqPaused<T>(
+    label: string,
+    operation: () => Promise<T>,
+    shouldResume: (result: T) => boolean,
+  ): Promise<T> {
+    const k = this.k;
+    const sessionId = k.requireConnected().sessionId;
+    const generation = k.continuousIqGeneration.current;
+    try {
+      k.set({ acquisition: 'retuning', notice: `Pausing bounded I/Q acquisition for ${label}…` });
+      const result = await operation();
+      const after = k.requireConnected();
+      if (after.sessionId !== sessionId || after.fault) {
+        throw new Error(`${label} completed for a superseded instrument session ${sessionId}`);
+      }
+      if (!k.continuousRequested.current || generation !== k.continuousIqGeneration.current) {
+        this.completeContinuousStop(`Continuous I/Q acquisition stopped after ${label}`);
+        return result;
+      }
+      if (!shouldResume(result)) {
+        this.completeContinuousStop(`Continuous I/Q acquisition stopped after ${label}`);
+        return result;
+      }
+      if (k.currentGeneratorOutput() !== 'off') {
+        throw new Error(`Continuous I/Q acquisition cannot resume after ${label} while RF output is ${k.currentGeneratorOutput()}`);
+      }
+      this.requireIqAcquisitionAdmission(after);
+      k.set({ acquisition: 'streaming', notice: `Continuous I/Q acquisition resumed after ${label}` });
+      return result;
+    } catch (value) {
+      k.continuousRequested.current = false;
+      this.wakeContinuousIqAdmissionWaiters();
+      this.releaseContinuousIqConfiguration();
+      k.set({ continuous: false, acquisition: 'failed', notice: undefined, error: `${label} failed: ${errorMessage(value)}` });
+      throw value;
+    }
+  }
+
+  requireIqAcquisitionAdmission(session: InstrumentSessionSnapshot): void {
+    const iq = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (iq?.kind !== 'complex-iq') throw new Error('The active session no longer advertises complex-I/Q acquisition');
+    const profile = session.capabilities.features.find((candidate) => candidate.kind === 'signal-lab-profile-selection');
+    if (profile?.kind === 'signal-lab-profile-selection'
+      && profile.iqProfileIds !== undefined
+      && !profile.iqProfileIds.includes(profile.selectedProfileId)) {
+      throw new Error(`SignalLab profile ${profile.selectedProfileId} is not admitted for complex-I/Q acquisition`);
+    }
+  }
+
+  async resumeContinuousAfterConflict(sessionId: string, label: string): Promise<boolean> {
+    const k = this.k;
+    k.set({ acquisition: 'retuning' });
+    while (true) {
+      if (!k.continuousRequested.current) return false;
+      const active = k.requireConnected();
+      if (active.sessionId !== sessionId || active.fault) {
+        throw new Error(`Continuous acquisition resume was invalidated with instrument session ${sessionId}`);
+      }
+      const targetRevision = k.analyzerRevision.current;
+      const configured = await this.configureAnalyzer(k.state.analyzer, 'retuning');
+      if (!k.continuousRequested.current) return false;
+      if (configured.sessionId !== sessionId || targetRevision !== k.analyzerRevision.current) continue;
+      await this.startStreamingWithConfiguration(configured.configurationRevision);
+      if (!k.continuousRequested.current) {
+        await this.stopStreamingAndReleaseConfiguration();
+        return false;
+      }
+      if (k.state.instrument.session?.sessionId === sessionId
+        && targetRevision === k.analyzerRevision.current
+        && k.continuousStreamOwnership.current?.configurationRevision === configured.configurationRevision) break;
+      await this.stopStreamingAndReleaseConfiguration();
+    }
+    k.set({ acquisition: 'streaming', notice: `Continuous acquisition resumed after ${label}` });
+    return true;
+  }
+
+  stageAnalyzerPatch(input: AnalyzerConfigPatch): { configuration: AnalyzerConfig; changed: boolean } {
+    const k = this.k;
+    const patch = analyzerConfigPatchSchema.parse(input);
+    const previous = k.state.analyzer;
+    const next = analyzerConfigSchema.parse({ ...previous, ...patch });
+    const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    if (capability?.kind === 'swept-spectrum') {
+      if (capability.controls.model === 'synthetic-scalar') {
+        const receiverOnly = [
+          'acquisitionFormat', 'rbwKhz', 'attenuationDb', 'detector',
+          'spurRejection', 'lna', 'avoidSpurs', 'trigger',
+        ].find((key) => key in patch);
+        if (receiverOnly) throw new Error(`${receiverOnly} is not applicable to synthetic scalar acquisition`);
+      }
+      sweptSpectrumConfigurationFor(capability, next);
+    }
+    if (sameAnalyzerConfiguration(previous, next)) return { configuration: previous, changed: false };
+    k.analyzerRevision.current++;
+    k.set({ analyzer: next });
+    k.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, next.startHz, next.stopHz));
+    k.invalidateAcquiredEvidence();
+    return { configuration: next, changed: true };
+  }
+
+  synchronizeContinuousAnalyzer(): Promise<void> {
+    const k = this.k;
+    const active = k.analyzerRetuneTask.current;
+    if (active) return active;
+    if (!k.continuousRequested.current) return Promise.resolve();
+    const task = this.runInstrumentTransaction('retune-continuous-analyzer', () => this.retuneContinuousToLatest());
+    k.analyzerRetuneTask.current = task;
+    void task.then(
+      () => { if (k.analyzerRetuneTask.current === task) k.analyzerRetuneTask.current = undefined; },
+      () => { if (k.analyzerRetuneTask.current === task) k.analyzerRetuneTask.current = undefined; },
+    );
+    return task;
+  }
+
+  async retuneContinuousToLatest(): Promise<void> {
+    const k = this.k;
+    try {
+      k.set({ acquisition: 'retuning', notice: 'Retuning continuous acquisition…' });
+      await this.stopStreamingAndReleaseConfiguration();
+      while (true) {
+        if (!k.continuousRequested.current) {
+          this.completeContinuousStop();
+          return;
+        }
+        const targetRevision = k.analyzerRevision.current;
+        const configured = await this.configureAnalyzer(k.state.analyzer, 'retuning');
+        if (!k.continuousRequested.current) {
+          this.completeContinuousStop();
+          return;
+        }
+        if (targetRevision !== k.analyzerRevision.current) continue;
+        await this.startStreamingWithConfiguration(configured.configurationRevision);
+        if (!k.continuousRequested.current) {
+          await this.stopStreamingAndReleaseConfiguration();
+          this.completeContinuousStop();
+          return;
+        }
+        if (targetRevision === k.analyzerRevision.current) break;
+        await this.stopStreamingAndReleaseConfiguration();
+      }
+      k.set({ acquisition: 'streaming', notice: 'Continuous acquisition retuned' });
+    } catch (value) {
+      k.set({ acquisition: 'failed', error: `Analyzer retune failed: ${errorMessage(value)}` });
+      throw value;
+    }
+  }
+
+  async updateAnalyzer(input: AnalyzerConfigPatch): Promise<AnalyzerConfig> {
+    const staged = this.stageAnalyzerPatch(input);
+    if (staged.changed && (this.k.continuousRequested.current || this.k.analyzerRetuneTask.current)) await this.synchronizeContinuousAnalyzer();
+    return staged.configuration;
+  }
+
+  updateAnalyzerFromUi(input: AnalyzerConfigPatch): void {
+    try {
+      const staged = this.stageAnalyzerPatch(input);
+      if (staged.changed && (this.k.continuousRequested.current || this.k.analyzerRetuneTask.current)) void this.synchronizeContinuousAnalyzer().catch(() => undefined);
+    } catch (value) {
+      this.k.set({ error: `Analyzer configuration failed: ${errorMessage(value)}` });
+      throw value;
+    }
+  }
+
+  recordSweepEvidence(
+    next: Sweep,
+    configurationRevision: string,
+    ownership?: ContinuousStreamOwnership,
+  ): RecordedSweep | undefined {
+    const k = this.k;
+    void configurationRevision;
+    const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+    const currentAdmitted = capability?.kind === 'swept-spectrum'
+      ? sweptSpectrumConfigurationFor(capability, k.state.analyzer)
+      : undefined;
+    if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
+      console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: k.state.analyzer });
+      return undefined;
+    }
+    const sequence = ++k.analysisSequence.current;
+    const nextHistory = [next, ...k.state.history].slice(0, HISTORY_LIMIT);
+    k.set({
+      sweep: next,
+      history: nextHistory,
+      traceFrames: k.traceAccumulator.current.update(next),
+      firmwareTraceFrames: next.firmwareTraces ?? [],
+    });
+    const candidates = k.detector.current.analyze(next);
+    const trackerRows = k.tracker.current.update(next, candidates);
+    const tracked = sanitizeClassificationEvidenceDetections(trackerRows);
+    if (tracked.length !== trackerRows.length) {
+      console.warn('[Classification] quarantined malformed tracker rows before ranking, rendering, or agent projection', {
+        sweepId: next.id,
+        quarantinedRows: trackerRows.length - tracked.length,
+      });
+    }
+    k.set({ detections: tracked });
+    let selectedRepresentative = selectVisibleClassificationRepresentative(
+      tracked,
+      next,
+      k.state.explicitClassificationId,
+    );
+    let selectedSignal = selectedRepresentative?.detection;
+    // Establish selected-target ownership before even a synchronous test
+    // classifier can complete. The render effect is an eventual UI mirror;
+    // it must never arrive later and erase a result for the target this exact
+    // evidence revision already admitted.
+    k.classification.safelyStageClassificationCandidate(
+      selectedRepresentative?.selection.rawTargetId ?? selectedSignal?.id,
+    );
+    const cachedCapture = k.state.zeroCapture;
+    const cachedReceipt = k.zeroCaptureReceiptRef.current;
+    const cachedSweepIds = k.zeroCaptureSpectrumSweepIdsRef.current;
+    if (cachedCapture) {
+      const projectedDetectionId = cachedReceipt?.selection.projectedRepresentativeId
+        ?? cachedCapture.targetDetectionId;
+      const target = selectedSignal?.id === projectedDetectionId ? selectedSignal : undefined;
+      const currentSweepIds = target ? classificationWindowSweepIds(target, nextHistory) : [];
+      if (!cachedReceipt
+        || !target
+        || !captureReceiptRepresentativeMatches(cachedReceipt, target)
+        || !cachedSweepIds
+        || currentSweepIds.length !== cachedSweepIds.length
+        || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
+        k.classification.clearClassificationCapture();
+        selectedRepresentative = selectVisibleClassificationRepresentative(
+          tracked,
+          next,
+          k.state.explicitClassificationId,
+        );
+        selectedSignal = selectedRepresentative?.detection;
+      }
+    }
+    const currentSignals = selectedSignal ? [selectedSignal] : [];
+    const currentSignalIds = new Set(currentSignals.map(({ id }) => id));
+    if (ownership) {
+      // A continuous producer can advance while one selected-signal worker
+      // request is in flight. Retain only that current target's completed
+      // projection; the newest completed work replaces it monotonically.
+      const retained = k.state.classifications.filter(({ detectionId }) => currentSignalIds.has(detectionId));
+      if (retained.length !== k.state.classifications.length) k.set({ classifications: retained });
+    } else {
+      // Single/capture operations retain the exact evidence-revision contract:
+      // no preceding result is shown while the new revision is unresolved.
+      k.set({ classifications: [] });
+    }
+    const requests = currentSignals.flatMap((detection) => {
+      const evidenceSweeps = exactClassificationEvidenceSweeps(detection, nextHistory);
+      if (!evidenceSweeps) {
+        console.warn('[Classification] selected target omitted exact external sweep provenance', {
+          sweepId: next.id,
+          detectionId: detection.id,
+        });
+        return [];
+      }
+      return [{
+        detection,
+        evidence: k.classification.classificationEvidenceForDetection(detection, evidenceSweeps),
+      }];
+    });
+    if (requests.length === 0 || !selectedRepresentative) return {};
+    const selection = selectedRepresentative.selection;
+    const work: ClassificationWork = {
+      revision: classificationWorkRevision(
+        sequence,
+        next,
+        selection,
+        requests[0]!.evidence,
+      ),
+      sequence,
+      ...(ownership ? { ownership } : {}),
+      visibleSweep: {
+        id: next.id,
+        sequence: next.sequence,
+        capturedAt: next.capturedAt,
+      },
+      target: {
+        projectedRepresentativeId: selectedRepresentative.detection.id,
+        rawTargetId: selection.rawTargetId ?? selectedRepresentative.detection.id,
+        selectionOrigin: selection.origin,
+      },
+      requests,
+    };
+    k.classification.stageClassificationExecution(work);
+    return { classification: work };
+  }
+
+  acquire(): Promise<Sweep> { return this.runInstrumentTransaction('acquire-spectrum', () => this.acquireOwned()); }
+
+  async acquireOwned(): Promise<Sweep> {
+    const k = this.k;
+    try {
+      const sessionId = k.requireConnected().sessionId;
+      const configured = await this.configureAnalyzer(k.state.analyzer);
+      this.requireConfigurationEntry(configured.configurationRevision, 'swept-spectrum');
+      k.set({ acquisition: 'acquiring' });
+      const measurement = await window.atomizerInstrument.acquire();
+      if (measurement.kind !== 'swept-spectrum') throw new Error(`Expected swept-spectrum measurement, received ${measurement.kind}`);
+      if (measurement.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+        throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+      }
+      if (measurement.configurationRevision !== configured.configurationRevision) {
+        throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configured.configurationRevision}`);
+      }
+      const active = k.requireConnected();
+      const requested = this.requireConfiguration(measurement.configurationRevision, 'swept-spectrum', `Measurement ${measurement.measurementId}`) as SweptSpectrumConfiguration;
+      const next = projectSpectrumMeasurement(measurement, active, requested);
+      const recorded = this.recordSweepEvidence(next, measurement.configurationRevision);
+      if (!recorded) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
+      await k.classification.classifyRecordedSweep(recorded);
+      k.set({ acquisition: 'complete' });
+      return next;
+    } catch (value) {
+      k.set({ acquisition: 'failed', error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  async acquireFromUi(): Promise<void> {
+    try {
+      if (acquisitionModeForWorkspace(this.k.state.workspace, this.k.state.continuousMode) === 'complex-iq') {
+        await this.acquireIq();
+      } else {
+        await this.acquire();
+      }
+    } catch { /* The owned acquisition path presents its boundary failure. */ }
+  }
+
+  stageIqConfiguration(input: ComplexIqConfiguration): void {
+    const k = this.k;
+    try {
+      const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+      const next = capability?.kind === 'complex-iq'
+        ? reconcileComplexIqConfiguration(capability, input)
+        : complexIqConfigurationSchema.parse(input);
+      if (sameComplexIqConfiguration(next, k.state.iqConfiguration)) return;
+      k.iqConfigurationRevision.current++;
+      k.set({ iqConfiguration: next, error: undefined });
+    } catch (value) {
+      k.set({ error: `I/Q configuration failed: ${errorMessage(value)}` });
+    }
+  }
+
+  acquireIq(): Promise<ComplexIqMeasurement> {
+    return this.runInstrumentTransaction('acquire-complex-iq', () => this.runWithContinuousPaused(
+      'complex I/Q capture',
+      () => this.acquireIqOwned(),
+    ));
+  }
+
+  async acquireIqOwned(options: {
+    readonly configuration?: ComplexIqConfiguration;
+    readonly publish?: () => boolean;
+  } = {}): Promise<ComplexIqMeasurement> {
+    const k = this.k;
+    const activeSession = k.requireConnected();
+    this.requireIqAcquisitionAdmission(activeSession);
+    const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') throw new Error('Active instrument does not advertise complex-I/Q acquisition');
+    const requested = complexIqConfigurationFor(
+      capability,
+      options.configuration ?? k.state.iqConfiguration,
+    );
+    k.set({ error: undefined, acquisition: 'configuring' });
+    const configured = await this.configureIqOwned(requested, false);
+    this.requireConfigurationEntry(configured.configurationRevision, 'complex-iq');
+    k.set({ acquisition: 'acquiring' });
+    try {
+      const measurement = await this.acquireConfiguredIq(configured, options.publish);
+      k.set({ acquisition: 'complete' });
+      return measurement;
+    } catch (value) {
+      k.set({ acquisition: 'failed', error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  async configureIqOwned(
+    requested: ComplexIqConfiguration,
+    background: boolean,
+  ): Promise<InstrumentConfigurationState> {
+    const k = this.k;
+    const sessionId = k.requireConnected().sessionId;
+    try {
+      const configured = await window.atomizerInstrument.configure(requested);
+      if (configured.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+        throw new Error(`Complex-I/Q configuration response was invalidated with instrument session ${sessionId}`);
+      }
+      if (configured.configuration.kind !== 'complex-iq'
+        || !sameComplexIqConfiguration(configured.configuration, requested)) {
+        throw new Error('Instrument host returned a different complex-I/Q configuration than it admitted');
+      }
+      k.configurationRevisions.current.commit(configured.configurationRevision, { kind: 'complex-iq', admitted: configured.configuration });
+      k.events.acceptConfiguration(configured);
+      return configured;
+    } catch (value) {
+      if (!background) {
+        k.set({ acquisition: 'failed', error: errorMessage(value) });
+      }
+      throw value;
+    }
+  }
+
+  async acquireConfiguredIq(
+    configured: InstrumentConfigurationState,
+    publish?: () => boolean,
+  ): Promise<ComplexIqMeasurement> {
+    const k = this.k;
+    const sessionId = configured.sessionId;
+    const measurement = await window.atomizerInstrument.acquire();
+    if (measurement.kind !== 'complex-iq') throw new Error(`Expected complex-iq measurement, received ${measurement.kind}`);
+    if (measurement.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+      throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+    }
+    if (measurement.configurationRevision !== configured.configurationRevision) {
+      throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configured.configurationRevision}`);
+    }
+    const admitted = this.requireConfiguration(measurement.configurationRevision, 'complex-iq', `Measurement ${measurement.measurementId}`) as ComplexIqConfiguration;
+    if (measurement.centerHz !== admitted.centerHz
+      || measurement.sampleRateHz !== admitted.sampleRateHz
+      || measurement.bandwidthHz !== admitted.bandwidthHz
+      || measurement.sampleCount !== admitted.sampleCount
+      || measurement.sampleFormat !== admitted.sampleFormat) {
+      throw new Error(`Measurement ${measurement.measurementId} geometry differs from its admitted complex-I/Q configuration`);
+    }
+    if (!publish || publish()) k.set({ iqCapture: measurement });
+    return measurement;
+  }
+
+  startContinuous(): Promise<void> {
+    const mode = acquisitionModeForWorkspace(this.k.state.workspace, this.k.state.continuousMode);
+    return mode === 'complex-iq'
+      ? this.startContinuousIq()
+      : this.runInstrumentTransaction('start-continuous-acquisition', () => this.startContinuousOwned());
+  }
+
+  startContinuousIq(): Promise<void> {
+    const k = this.k;
+    if (k.continuousRequested.current || k.state.continuous) {
+      return Promise.reject(new Error('Continuous acquisition is already running'));
+    }
+    const active = k.requireConnected();
+    this.requireIqAcquisitionAdmission(active);
+    const capability = active.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') {
+      return Promise.reject(new Error('Active instrument does not advertise complex-I/Q acquisition'));
+    }
+    complexIqConfigurationFor(capability, k.state.iqConfiguration);
+    k.continuousRequested.current = true;
+    k.continuousIqGeneration.current++;
+    k.set({
+      continuous: true,
+      continuousMode: 'complex-iq',
+      acquisition: 'streaming',
+      error: undefined,
+      notice: 'Continuous bounded I/Q capture started',
+    });
+    const task = this.runContinuousIqLoop();
+    k.continuousIqTask.current = task;
+    void task.then(
+      () => this.finishContinuousIqLoop(task),
+      (value) => this.finishContinuousIqLoop(task, value),
+    );
+    return Promise.resolve();
+  }
+
+  async runContinuousIqLoop(): Promise<void> {
+    const k = this.k;
+    while (k.continuousRequested.current && k.state.continuousMode === 'complex-iq') {
+      if (!await this.waitForContinuousIqAdmission()) break;
+      const bufferTask = this.runInstrumentTransaction(CONTINUOUS_IQ_TRANSACTION, async () => {
+        const ownership = await this.ensureContinuousIqConfiguration();
+        return this.acquireConfiguredIq(ownership.configured, () =>
+          k.continuousIqConfigurationOwnership.current === ownership
+          && k.iqConfigurationRevision.current === ownership.stagedRevision
+          && sameComplexIqConfiguration(k.state.iqConfiguration, ownership.configuration));
+      });
+      k.continuousIqBufferTask.current = bufferTask;
+      try { await bufferTask; }
+      finally {
+        if (k.continuousIqBufferTask.current === bufferTask) k.continuousIqBufferTask.current = undefined;
+      }
+      if (!k.continuousRequested.current || k.state.continuousMode !== 'complex-iq') break;
+      // Yield to pointer/keyboard/paint work between bounded driver buffers.
+      // There is never more than one configure+acquire transaction in flight.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+    this.releaseContinuousIqConfiguration();
+  }
+
+  async ensureContinuousIqConfiguration(): Promise<ContinuousIqConfigurationOwnership> {
+    const k = this.k;
+    const session = k.requireConnected();
+    const stagedRevision = k.iqConfigurationRevision.current;
+    const configuration = structuredClone(k.state.iqConfiguration);
+    const existing = k.continuousIqConfigurationOwnership.current;
+    if (existing
+      && existing.sessionId === session.sessionId
+      && existing.stagedRevision === stagedRevision
+      && sameComplexIqConfiguration(existing.configuration, configuration)
+      && k.configurationRevisions.current.has(existing.configured.configurationRevision)) {
+      return existing;
+    }
+    this.releaseContinuousIqConfiguration();
+    const capability = session.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+    if (capability?.kind !== 'complex-iq') throw new Error('Active instrument does not advertise complex-I/Q acquisition');
+    const requested = complexIqConfigurationFor(capability, configuration);
+    const configured = await this.configureIqOwned(requested, true);
+    this.requireConfigurationEntry(configured.configurationRevision, 'complex-iq');
+    const ownership: ContinuousIqConfigurationOwnership = {
+      sessionId: session.sessionId,
+      stagedRevision,
+      configuration: requested,
+      configured,
+    };
+    k.continuousIqConfigurationOwnership.current = ownership;
+    return ownership;
+  }
+
+  releaseContinuousIqConfiguration(): void {
+    this.k.continuousIqConfigurationOwnership.current = undefined;
+  }
+
+  finishContinuousIqLoop(task: Promise<void>, failure?: unknown): void {
+    const k = this.k;
+    if (k.continuousIqTask.current !== task) return;
+    k.continuousIqTask.current = undefined;
+    this.releaseContinuousIqConfiguration();
+    if (failure === undefined || !k.continuousRequested.current) return;
+    k.continuousRequested.current = false;
+    k.set({
+      continuous: false,
+      acquisition: 'failed',
+      notice: undefined,
+      error: `Continuous I/Q acquisition failed: ${errorMessage(failure)}`,
+    });
+  }
+
+  async startContinuousOwned(): Promise<void> {
+    const k = this.k;
+    if (k.continuousRequested.current || k.state.continuous) throw new Error('Continuous acquisition is already running');
+    k.continuousRequested.current = true;
+    k.set({ continuous: true, continuousMode: 'spectrum' });
+    try {
+      while (true) {
+        const targetRevision = k.analyzerRevision.current;
+        const configured = await this.configureAnalyzer(k.state.analyzer);
+        if (!k.continuousRequested.current) {
+          this.completeContinuousStop();
+          return;
+        }
+        if (targetRevision !== k.analyzerRevision.current) continue;
+        k.set({ acquisition: 'streaming' });
+        await this.startStreamingWithConfiguration(configured.configurationRevision);
+        if (!k.continuousRequested.current) {
+          await this.stopStreamingAndReleaseConfiguration();
+          this.completeContinuousStop();
+          return;
+        }
+        if (targetRevision === k.analyzerRevision.current) break;
+        await this.stopStreamingAndReleaseConfiguration();
+        if (!k.continuousRequested.current) {
+          this.completeContinuousStop();
+          return;
+        }
+      }
+    } catch (value) {
+      k.set({ acquisition: 'failed' });
+      if (!k.continuousStreamOwnership.current) {
+        k.continuousRequested.current = false;
+        k.set({ continuous: false });
+      }
+      k.set({ error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  stopContinuous(): Promise<void> {
+    const k = this.k;
+    const existing = k.operatorContinuousStopRequest.current;
+    if (existing) return existing.promise;
+    if (!k.state.continuous && !k.continuousStreamOwnership.current && !k.continuousRequested.current) {
+      return Promise.reject(new Error('Continuous acquisition is not running'));
+    }
+    // This intent flag is deliberately outside the transaction gate. Stop is
+    // admitted even while a pause/configure/resume transaction owns the
+    // instrument; every continuation observes it before starting another
+    // host acquisition.
+    k.continuousRequested.current = false;
+    this.wakeContinuousIqAdmissionWaiters();
+    k.set({ acquisition: 'stopping', notice: 'Stopping continuous acquisition…' });
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const request = { promise, resolve, reject };
+    k.operatorContinuousStopRequest.current = request;
+    void promise.catch(() => undefined);
+    this.drainOperatorContinuousStop();
+    return promise;
+  }
+
+  drainOperatorContinuousStop(): void {
+    const k = this.k;
+    const request = k.operatorContinuousStopRequest.current;
+    if (!request || k.operatorContinuousStopTask.current || k.instrumentTransactionOwner.current) return;
+    if (!k.continuousStreamOwnership.current) {
+      this.completeContinuousStop();
+      k.operatorContinuousStopRequest.current = undefined;
+      request.resolve();
+      return;
+    }
+    const task = this.runInstrumentTransaction('stop-continuous-acquisition', async () => {
+      await this.stopStreamingAndReleaseConfiguration();
+      this.completeContinuousStop();
+    });
+    k.operatorContinuousStopTask.current = task;
+    void task.then(
+      () => this.finishOperatorContinuousStop(task),
+      (value) => this.finishOperatorContinuousStop(task, value),
+    );
+  }
+
+  finishOperatorContinuousStop(task: Promise<void>, failure?: unknown): void {
+    const k = this.k;
+    if (k.operatorContinuousStopTask.current !== task) return;
+    k.operatorContinuousStopTask.current = undefined;
+    const request = k.operatorContinuousStopRequest.current;
+    if (!request) return;
+    k.operatorContinuousStopRequest.current = undefined;
+    if (failure === undefined) {
+      request.resolve();
+      return;
+    }
+    k.set({ acquisition: 'failed', notice: undefined, error: `Continuous acquisition stop failed: ${errorMessage(failure)}` });
+    request.reject(failure);
+  }
+
+  completeContinuousStop(message = 'Continuous acquisition stopped'): void {
+    const k = this.k;
+    k.continuousRequested.current = false;
+    this.wakeContinuousIqAdmissionWaiters();
+    this.releaseContinuousIqConfiguration();
+    k.set({ continuous: false, acquisition: 'complete', notice: message });
+  }
+
+  async startContinuousFromUi(): Promise<void> { try { await this.startContinuous(); } catch { /* Visible in the workspace alert. */ } }
+  async stopContinuousFromUi(): Promise<void> { try { await this.stopContinuous(); } catch (value) { this.k.set({ error: errorMessage(value) }); } }
+
+  acquireZeroSpan(): Promise<ZeroSpanCapture> {
+    return this.runInstrumentTransaction('acquire-detected-power', () => this.runWithContinuousPaused(
+      'detected-power capture',
+      () => this.acquireZeroSpanOwned(),
+    ));
+  }
+
+  async acquireZeroSpanOwned(): Promise<ZeroSpanCapture> {
+    const k = this.k;
+    const activeSession = k.requireConnected();
+    const sessionId = activeSession.sessionId;
+    const validated = zeroSpanConfigSchema.parse(k.state.zeroConfig);
+    const preCaptureSignals = structuredClone(k.state.detections);
+    const preCaptureHistory = [...k.state.history];
+    const preCaptureSweep = k.state.sweep;
+    const requestedSelection = resolveVisibleClassificationTargetSelection(
+      preCaptureSignals,
+      preCaptureSweep,
+      k.state.explicitClassificationId !== undefined
+        ? k.state.explicitClassificationId
+        : undefined,
+    );
+    const requestedSelectionRevision = k.classificationSelectionRevision.current;
+    const requestedRawTargetId = requestedSelection.rawTargetId
+      ?? requestedSelection.detectionId;
+    const admittedTarget = resolveRuntimeAdmittedCaptureTarget(
+      preCaptureSignals,
+      preCaptureHistory,
+      preCaptureSweep,
+      requestedRawTargetId,
+    );
+    if (requestedRawTargetId !== undefined && admittedTarget === undefined) {
+      const message = `Selected classification target ${requestedRawTargetId} is not available on an exact runtime-admitted eight-sweep window`;
+      k.set({ error: message });
+      throw new Error(message);
+    }
+    const preCaptureTarget = admittedTarget?.rawTarget;
+    const preCaptureSweepIds = admittedTarget?.spectrumSweepIds ?? [];
+    k.set({ error: undefined, acquisition: 'acquiring' });
+    try {
+      let configuration: InstrumentConfigurationState;
+      let admittedTargetTuneHz: number | undefined;
+      {
+        const capability = activeSession.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
+        if (!capability || capability.kind !== 'detected-power-timeseries') {
+          throw new Error('Active instrument does not advertise detected-power acquisition');
+        }
+        const projectedTargetTuneHz = preCaptureTarget === undefined
+          ? undefined
+          : projectDetectedPowerTuneHz(
+            preCaptureTarget.peakHz,
+            capability.centerFrequencyHz,
+          );
+        admittedTargetTuneHz = admittedTarget === undefined
+          ? undefined
+          : projectedTargetTuneHz;
+        const captureConfiguration = admittedTargetTuneHz === undefined
+          ? validated
+          : zeroSpanConfigSchema.parse({
+            ...validated,
+            frequencyHz: admittedTargetTuneHz,
+          });
+        const requested = detectedPowerConfigurationFor(
+          capability,
+          captureConfiguration,
+        );
+        if (admittedTargetTuneHz !== undefined) {
+          k.measurement.commitZeroSpanConfiguration(captureConfiguration);
+        }
+        configuration = await window.atomizerInstrument.configure(requested);
+        if (configuration.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+          throw new Error(`Detected-power configuration response was invalidated with instrument session ${sessionId}`);
+        }
+        if (configuration.configuration.kind !== 'detected-power-timeseries'
+          || JSON.stringify(configuration.configuration) !== JSON.stringify(requested)) {
+          throw new Error('Instrument host returned a different detected-power configuration than it admitted');
+        }
+        k.configurationRevisions.current.commit(configuration.configurationRevision, { kind: 'detected-power-timeseries', admitted: configuration.configuration });
+      }
+      k.events.acceptConfiguration(configuration);
+      this.requireConfigurationEntry(configuration.configurationRevision, 'detected-power-timeseries');
+      {
+        const measurement = await window.atomizerInstrument.acquire();
+        if (measurement.kind !== 'detected-power-timeseries') throw new Error(`Expected detected-power-timeseries measurement, received ${measurement.kind}`);
+        if (measurement.sessionId !== sessionId || k.state.instrument.session?.sessionId !== sessionId) {
+          throw new Error(`Measurement ${measurement.measurementId} was invalidated with instrument session ${sessionId}`);
+        }
+        if (measurement.configurationRevision !== configuration.configurationRevision) {
+          throw new Error(`Measurement ${measurement.measurementId} referenced superseding configuration ${measurement.configurationRevision}; expected ${configuration.configurationRevision}`);
+        }
+        const requested = this.requireConfiguration(measurement.configurationRevision, 'detected-power-timeseries', `Measurement ${measurement.measurementId}`) as DetectedPowerTimeseriesConfiguration;
+        const capture = projectDetectedPowerMeasurement(
+          measurement,
+          activeSession,
+          requested,
+          preCaptureTarget?.id,
+        );
+        let captureReceipt: DetectedPowerCaptureReceipt | undefined;
+        if (admittedTarget
+          && preCaptureTarget
+          && admittedTargetTuneHz === capture.frequencyHz
+          && preCaptureSweepIds.length === 8) {
+          try {
+            captureReceipt = createDetectedPowerCaptureReceipt({
+              activeSignals: preCaptureSignals,
+              evidenceSweeps: preCaptureHistory,
+              ...(requestedSelection.origin === 'explicit'
+                ? { preferredDetectionId: preCaptureTarget.id }
+                : {}),
+              capture,
+              admittedTargetTuneHz,
+              spectrumSweepIds: preCaptureSweepIds,
+            });
+          } catch (value) {
+            console.warn(
+              '[Classification] detected-power capture remains unqualified',
+              value,
+            );
+            k.set({
+              notice: `Envelope captured without Bayesian qualification: ${errorMessage(value)}`,
+            });
+          }
+        } else if (preCaptureTarget) {
+          k.set({
+            notice: 'Envelope captured without Bayesian qualification: target was not admitted on the exact eight-sweep window and tune',
+          });
+        }
+        try {
+          await this.configureAnalyzer(k.state.analyzer);
+        } catch (value) {
+          throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
+        }
+        if (!k.classification.classificationSelectionStillOwns(
+          requestedSelectionRevision,
+          requestedSelection,
+        )) {
+          throw new Error(
+            'Detected-power capture selection was superseded before evidence publication',
+          );
+        }
+        k.zeroCaptureReceiptRef.current = captureReceipt;
+        k.set({ zeroCapture: capture, envelope: classifyZeroSpanEnvelope(capture) });
+        // The prior spectrum-only result is not a result for this newly
+        // published detected-power evidence. Fail closed while the qualified
+        // evidence revision is recomputed, including on classifier failure.
+        k.set({ classifications: [] });
+        const sequence = ++k.analysisSequence.current;
+        k.zeroCaptureSpectrumSweepIdsRef.current = captureReceipt
+          ? preCaptureSweepIds
+          : undefined;
+        const selected = admittedTarget?.detection;
+        const evidenceSweeps = selected
+          ? exactClassificationEvidenceSweeps(selected, preCaptureHistory)
+          : undefined;
+        if (captureReceipt
+          && selected?.id !== captureReceipt.selection.projectedRepresentativeId) {
+          throw new Error('Detected-power receipt no longer owns the selected classification representative');
+        }
+        if (selected && !evidenceSweeps) {
+          throw new Error(`Selected classification target ${selected.id} omitted exact external sweep provenance`);
+        }
+        let results: readonly WaveformClassification[] = [];
+        let completedWork: ClassificationWork | undefined;
+        if (selected && evidenceSweeps && preCaptureSweep) {
+          const evidence = k.classification.classificationEvidenceForDetection(selected, evidenceSweeps);
+          const work: ClassificationWork = {
+            revision: classificationWorkRevision(
+              sequence,
+              preCaptureSweep,
+              requestedSelection,
+              evidence,
+            ),
+            sequence,
+            visibleSweep: {
+              id: preCaptureSweep.id,
+              sequence: preCaptureSweep.sequence,
+              capturedAt: preCaptureSweep.capturedAt,
+            },
+            target: {
+              projectedRepresentativeId: selected.id,
+              rawTargetId: admittedTarget.rawTarget.id,
+              selectionOrigin: requestedSelection.origin,
+            },
+            requests: [{ detection: selected, evidence }],
+          };
+          completedWork = work;
+          k.classification.stageClassificationExecution(work);
+          const directAbortController = new AbortController();
+          const directPromise = (async (): Promise<ClassificationExecutionRecord> => {
+            try {
+              const directResults = [await k.classification.waitForClassificationSource(
+                k.requireClassifierRuntime().classifier.classify(
+                  selected,
+                  evidence,
+                  directAbortController.signal,
+                ),
+                directAbortController.signal,
+              )];
+              if (sequence === k.analysisSequence.current
+                && k.classification.classificationWorkTargetIsCurrent(work)) {
+                k.classification.completeClassificationExecution(work, directResults);
+              }
+              return { work, status: 'ready', results: directResults };
+            } catch (value) {
+              if (!directAbortController.signal.aborted) {
+                k.classification.failClassificationExecution(work, value);
+              }
+              return { work, status: 'failed', error: errorMessage(value) };
+            }
+          })();
+          k.classification.registerDirectClassificationTask(work, directPromise, directAbortController);
+          const directOutcome = await directPromise;
+          if (directOutcome.status === 'failed') {
+            throw new Error(directOutcome.error ?? 'Bayesian classification failed');
+          }
+          results = directOutcome.results ?? [];
+        }
+        if (sequence === k.analysisSequence.current
+          && k.classification.classificationSelectionStillOwns(
+            requestedSelectionRevision,
+            requestedSelection,
+          )) k.set({ classifications: completedWork
+            ? k.agent.classificationResultsBoundToWork(completedWork, results)
+            : [] });
+        k.set({ acquisition: 'complete' });
+        return capture;
+      }
+    } catch (value) {
+      k.set({ acquisition: 'failed', error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  async acquireZeroSpanFromUi(): Promise<void> { try { await this.acquireZeroSpan(); } catch { /* Visible in the workspace alert. */ } }
+}
+
+// --- Pure functions retained from App.tsx (test-pinned exports) ---
+
+export function fitChannelConfigurationToSpan(input: ChannelMeasurementConfiguration, startHz: number, stopHz: number): ChannelMeasurementConfiguration {
+  const current = channelMeasurementConfigurationSchema.parse(input);
+  if (!Number.isInteger(startHz) || !Number.isInteger(stopHz) || stopHz <= startHz) throw new Error('Channel measurement reconciliation requires a valid analyzer span');
+  const spanHz = stopHz - startHz;
+  const extent = (configuration: ChannelMeasurementConfiguration) => Math.max(
+    configuration.mainBandwidthHz / 2,
+    configuration.adjacentChannelCount * configuration.channelSpacingHz + configuration.adjacentBandwidthHz / 2,
+  );
+  const requestedExtent = extent(current);
+  const marginHz = spanHz * 0.01;
+  if (current.centerHz - requestedExtent >= startHz + marginHz && current.centerHz + requestedExtent <= stopHz - marginHz) return current;
+
+  const centerHz = Math.round((startHz + stopHz) / 2);
+  if (requestedExtent <= spanHz * 0.45) return channelMeasurementConfigurationSchema.parse({ ...current, centerHz });
+  if (spanHz < 16) return current;
+
+  const unitHz = Math.max(1, Math.floor(spanHz / (3 * current.adjacentChannelCount + 4)));
+  const mainBandwidthHz = Math.max(1, unitHz * 2);
+  const adjacentBandwidthHz = unitHz;
+  const channelSpacingHz = Math.max(1, Math.ceil((mainBandwidthHz + adjacentBandwidthHz) / 2));
+  return channelMeasurementConfigurationSchema.parse({
+    ...current,
+    centerHz,
+    mainBandwidthHz,
+    adjacentBandwidthHz,
+    channelSpacingHz,
+  });
+}
+
+export function coherentSweepCount(history: readonly Sweep[], depth: number): number {
+  const reference = history[0];
+  if (!reference) return 0;
+  return history.filter((candidate) => candidate.frequencyHz.length === reference.frequencyHz.length
+    && candidate.frequencyHz.every((frequency, index) => frequency === reference.frequencyHz[index])).slice(0, depth).length;
+}
+

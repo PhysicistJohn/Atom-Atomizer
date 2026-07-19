@@ -26,7 +26,7 @@ import {
   parseStoredDetection,
   resolveClassificationTargetSelection,
   semanticControlRequiresCoordinates,
-} from './App.js';
+} from './AppShell.js';
 import { agentControlBinding } from '@tinysa/agent';
 import { ATOM_REALTIME_TOOL_CALL_LIMIT } from './atom-agent-retention.js';
 import type { BayesianClassifierRuntime } from './bayesian-classifier-runtime.js';

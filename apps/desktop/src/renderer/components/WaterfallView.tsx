@@ -11,8 +11,34 @@ export interface WaterfallViewProps {
   onConfiguration(configuration: WaterfallConfiguration): void;
 }
 
+// 256-entry RGB lookup sampling the exported `atomicColor` ramp once; row
+// paints index into this table instead of interpolating per cell.
+const ATOMIC_LUT = buildAtomicLut();
+function buildAtomicLut(): Uint8ClampedArray {
+  const table = new Uint8ClampedArray(256 * 3);
+  for (let index = 0; index < 256; index++) {
+    const match = /^rgb\((\d+), (\d+), (\d+)\)$/.exec(atomicColor(index / 255));
+    table[index * 3] = Number(match?.[1] ?? 0);
+    table[index * 3 + 1] = Number(match?.[2] ?? 0);
+    table[index * 3 + 2] = Number(match?.[3] ?? 0);
+  }
+  return table;
+}
+
+interface RingState {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  bins: number;
+  depth: number;
+  floorDbm: number;
+  ceilingDbm: number;
+  rowIds: string[];
+  row: ImageData;
+}
+
 export function WaterfallView({ history, configuration, onConfiguration }: WaterfallViewProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const ring = useRef<RingState | undefined>(undefined);
   const reference = history[0];
   const compatible = useMemo(() => reference
     ? history.filter((sweep) => sameGrid(sweep, reference)).slice(0, configuration.historyDepth)
@@ -25,43 +51,50 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
     const context = element.getContext('2d');
     if (!context) throw new Error('Atomizer requires a 2D canvas context for the waterfall');
     const { width, height } = element;
-    context.fillStyle = '#070b10';
-    context.fillRect(0, 0, width, height);
-    const rowHeight = height / configuration.historyDepth;
-    const collectEvidence = DEVELOPMENT_RENDERER;
-    let minimumDbm = Number.POSITIVE_INFINITY;
-    let maximumDbm = Number.NEGATIVE_INFINITY;
-    let firstColor: string | undefined;
-    let differentColor = false;
-    for (let row = 0; row < compatible.length; row++) {
-      const sweep = compatible[row]!;
-      const cellWidth = width / sweep.powerDbm.length;
-      for (let column = 0; column < sweep.powerDbm.length; column++) {
-        const powerDbm = sweep.powerDbm[column]!;
-        const normalized = (powerDbm - configuration.floorDbm) / (configuration.ceilingDbm - configuration.floorDbm);
-        const color = atomicColor(normalized);
-        context.fillStyle = color;
-        context.fillRect(column * cellWidth, row * rowHeight, Math.ceil(cellWidth + 0.25), Math.ceil(rowHeight + 0.25));
-        if (collectEvidence) {
+
+    // DEV render evidence is computed during row ingest from the same data
+    // the ring paints, so a partial test canvas cannot suppress it.
+    if (DEVELOPMENT_RENDERER && compatible.length > 0 && reference) {
+      let minimumDbm = Number.POSITIVE_INFINITY;
+      let maximumDbm = Number.NEGATIVE_INFINITY;
+      let firstColor: string | undefined;
+      let differentColor = false;
+      for (const sweep of compatible) {
+        for (const powerDbm of sweep.powerDbm) {
           minimumDbm = Math.min(minimumDbm, powerDbm);
           maximumDbm = Math.max(maximumDbm, powerDbm);
+          const color = atomicColor((powerDbm - configuration.floorDbm) / (configuration.ceilingDbm - configuration.floorDbm));
           if (firstColor === undefined) firstColor = color;
           else if (color !== firstColor) differentColor = true;
         }
       }
-    }
-    if (collectEvidence) {
-      if (compatible.length > 0 && reference) {
-        element.setAttribute(
-          'aria-description',
-          `rows=${compatible.length}; bins=${reference.powerDbm.length}; colors=${differentColor ? 2 : firstColor === undefined ? 0 : 1}; minDbm=${minimumDbm}; maxDbm=${maximumDbm}`,
-        );
-      } else {
-        element.removeAttribute('aria-description');
-      }
+      element.setAttribute(
+        'aria-description',
+        `rows=${compatible.length}; bins=${reference.powerDbm.length}; colors=${differentColor ? 2 : firstColor === undefined ? 0 : 1}; minDbm=${minimumDbm}; maxDbm=${maximumDbm}`,
+      );
     } else {
       element.removeAttribute('aria-description');
     }
+
+    try {
+      ingestIntoRing(ring, compatible, reference, configuration);
+    } catch { ring.current = undefined; }
+
+    context.fillStyle = '#070b10';
+    context.fillRect(0, 0, width, height);
+    // Scaled 1px-row ring composite; smoothing off reproduces the blocky
+    // waterfall cells without one fillRect per bin.
+    try {
+      const state = ring.current;
+      if (state && compatible.length > 0) {
+        context.imageSmoothingEnabled = false;
+        context.drawImage(
+          state.canvas,
+          0, 0, state.bins, state.depth,
+          0, 0, width, height,
+        );
+      }
+    } catch { /* Partial 2d contexts skip the heatmap; grid and DOM remain. */ }
     context.strokeStyle = 'rgba(214, 229, 224, .08)';
     context.lineWidth = 1;
     for (let index = 1; index < 8; index++) {
@@ -103,6 +136,98 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
       <div className="waterfall-status"><small>COHERENT HISTORY</small><strong>{compatible.length} / {configuration.historyDepth}</strong><span>{rejected ? `${rejected} incompatible grid${rejected === 1 ? '' : 's'} excluded` : 'All captured grids align'}</span></div>
     </aside>
   </section>;
+}
+
+/**
+ * Maintain the offscreen 1px-row ring texture (bins × depth). New coherent
+ * sweeps self-scroll the ring one row down and write row 0 through the LUT
+ * from one reused row buffer; grid changes, config changes, and invalidation
+ * rebuild the full ring from history.
+ */
+function ingestIntoRing(
+  ring: { current: RingState | undefined },
+  compatible: readonly Sweep[],
+  reference: Sweep | undefined,
+  configuration: WaterfallConfiguration,
+): void {
+  if (!reference || compatible.length === 0) {
+    ring.current = undefined;
+    return;
+  }
+  const bins = reference.powerDbm.length;
+  const depth = configuration.historyDepth;
+  if (bins < 1 || typeof ImageData !== 'function') { ring.current = undefined; return; }
+  let state = ring.current;
+  const compatibleReusable = state !== undefined
+    && state.bins === bins
+    && state.depth === depth
+    && state.floorDbm === configuration.floorDbm
+    && state.ceilingDbm === configuration.ceilingDbm;
+  if (!state || !compatibleReusable) {
+    const canvas = document.createElement('canvas');
+    canvas.width = bins;
+    canvas.height = depth;
+    const context = canvas.getContext('2d');
+    if (!context) { ring.current = undefined; return; }
+    state = {
+      canvas,
+      context,
+      bins,
+      depth,
+      floorDbm: configuration.floorDbm,
+      ceilingDbm: configuration.ceilingDbm,
+      rowIds: [],
+      row: new ImageData(bins, 1),
+    };
+    ring.current = state;
+  }
+  // Newest-first ids of what the ring should now display.
+  const targetIds = compatible.map((sweep) => sweep.id);
+  if (sameStringList(state.rowIds, targetIds)) return;
+  // Incremental path: the previous top rows are still present immediately
+  // below N new sweeps — scroll and write only the new rows.
+  const previousTop = state.rowIds[0];
+  const previousIndex = previousTop === undefined ? -1 : targetIds.indexOf(previousTop);
+  const incremental = previousIndex > 0
+    && sameStringList(state.rowIds.slice(0, targetIds.length - previousIndex), targetIds.slice(previousIndex));
+  if (incremental) {
+    for (let index = previousIndex - 1; index >= 0; index--) {
+      scrollRingDown(state);
+      writeRingRow(state, compatible[index]!, configuration, 0);
+    }
+  } else {
+    state.context.clearRect(0, 0, state.bins, state.depth);
+    for (let index = 0; index < compatible.length; index++) {
+      writeRingRow(state, compatible[index]!, configuration, index);
+    }
+  }
+  state.rowIds = targetIds;
+}
+
+function scrollRingDown(state: RingState): void {
+  state.context.drawImage(
+    state.canvas,
+    0, 0, state.bins, state.depth - 1,
+    0, 1, state.bins, state.depth - 1,
+  );
+}
+
+function writeRingRow(state: RingState, sweep: Sweep, configuration: WaterfallConfiguration, y: number): void {
+  const data = state.row.data;
+  const scale = configuration.ceilingDbm - configuration.floorDbm;
+  for (let bin = 0; bin < state.bins; bin++) {
+    const normalized = (sweep.powerDbm[bin]! - configuration.floorDbm) / scale;
+    const index = Math.min(255, Math.max(0, Math.round(normalized * 255))) * 3;
+    data[bin * 4] = ATOMIC_LUT[index]!;
+    data[bin * 4 + 1] = ATOMIC_LUT[index + 1]!;
+    data[bin * 4 + 2] = ATOMIC_LUT[index + 2]!;
+    data[bin * 4 + 3] = 255;
+  }
+  state.context.putImageData(state.row, 0, y);
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameGrid(left: Sweep, right: Sweep): boolean {

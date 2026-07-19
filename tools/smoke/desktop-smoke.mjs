@@ -279,6 +279,31 @@ async function stopContinuous() {
   pass('continuous-stop', 'continuous acquisition stopped');
 }
 
+async function wlanIqCapture() {
+  // User-reported gap (2026-07-19): a WLAN sim never verified in desktop I/Q.
+  // Select the Wi-Fi family, open the I/Q workspace, take one bounded buffer,
+  // and require the sample readout to render actual capture evidence.
+  await clickOrFail('wlan-iq-generator', 'workspace.generator');
+  const clicked = await evaluate(`(() => {
+    const tab = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim().startsWith('WI-FI'));
+    if (!tab) return 'missing';
+    if (tab.disabled) return 'disabled';
+    tab.click();
+    return 'ok';
+  })()`);
+  if (clicked !== 'ok') throw new Error(`wlan-iq: WI-FI family tab was ${clicked}`);
+  await wait(2500);
+  await clickOrFail('wlan-iq-workspace', 'workspace.iq');
+  await pollFor('wlan-iq-panel', `document.body.innerText.includes('Capture setup')`, 15_000);
+  await clickOrFail('wlan-iq-single', 'acquisition.single');
+  await pollFor('wlan-iq-samples', `(() => {
+    const text = document.body.innerText;
+    return /SAMPLES/i.test(text) && /65,?536|32,?768|16,?384|8,?192|4,?096|2,?048|1,?024/.test(text)
+      && !/NO COMPLEX-SAMPLE CAPTURE YET/i.test(text);
+  })()`, 25_000);
+  pass('wlan-iq', 'WLAN profile produced a rendered I/Q capture');
+}
+
 // ---------------------------------------------------------------------------
 // Main.
 // ---------------------------------------------------------------------------
@@ -291,6 +316,7 @@ const steps = [
   ['spectrum-center', spectrumCenterIs184GHz],
   ['classification', classificationDetectPanel],
   ['continuous-stop', stopContinuous],
+  ['wlan-iq', wlanIqCapture],
 ];
 
 try {

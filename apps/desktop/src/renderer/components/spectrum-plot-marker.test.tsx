@@ -5,8 +5,33 @@ import type { DeviceIdentity, FirmwareTraceFrame, MarkerReading, Sweep, TraceFra
 import { readMarkers } from '@tinysa/analysis';
 import { ClassificationWorkspace } from './ClassificationWorkspace.js';
 import { SpectrumPlot, markerOverlayPlacement } from './SpectrumPlot.js';
+import {
+  allRecordedCoordinates,
+  bracketStrokes,
+  flushPlotFrame,
+  installRecordingCanvas,
+  markerLineStrokes,
+  polylineStrokes,
+  type RecordingContext2D,
+} from './canvas-test-recorder.js';
 
-afterEach(cleanup);
+const recorders: { restore(): void }[] = [];
+function recordCanvas() {
+  const recorder = installRecordingCanvas();
+  recorders.push(recorder);
+  return recorder;
+}
+afterEach(() => {
+  cleanup();
+  for (const recorder of recorders.splice(0)) recorder.restore();
+});
+
+function plotContext(recorder: ReturnType<typeof installRecordingCanvas>): RecordingContext2D {
+  const canvas = screen.getByLabelText('Measured power by frequency');
+  const context = recorder.contextFor(canvas as HTMLCanvasElement);
+  if (!context) throw new Error('Spectrum plot canvas did not acquire its recorded 2d context');
+  return context;
+}
 
 const identity: DeviceIdentity = {
   model: 'SignalLab',
@@ -30,8 +55,8 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     const fixture = markerFixture(50_001);
     const onMarkerPlace = vi.fn(() => true);
     render(<SpectrumPlot sweep={fixture.sweep} traces={[fixture.frame]} busy={false} onMarkerPlace={onMarkerPlace}/>);
-    const svg = screen.getByLabelText('Measured power by frequency');
-    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue({
+    const plot = screen.getByLabelText('Measured power by frequency');
+    vi.spyOn(plot, 'getBoundingClientRect').mockReturnValue({
       left: 100,
       right: 900,
       top: 50,
@@ -51,7 +76,7 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       writable: false,
     });
 
-    fireEvent(svg, event);
+    fireEvent(plot, event);
 
     expect(onMarkerPlace).toHaveBeenCalledWith(25_001);
     expect((event as MouseEvent & { __tinysaAtomMarkerResultV1?: unknown }).__tinysaAtomMarkerResultV1)
@@ -62,8 +87,8 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     const fixture = markerFixture(50_001);
     const onMarkerPlace = vi.fn(() => false);
     render(<SpectrumPlot sweep={fixture.sweep} traces={[fixture.frame]} busy={false} onMarkerPlace={onMarkerPlace}/>);
-    const svg = screen.getByLabelText('Measured power by frequency');
-    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue({
+    const plot = screen.getByLabelText('Measured power by frequency');
+    vi.spyOn(plot, 'getBoundingClientRect').mockReturnValue({
       left: 0,
       right: 1_000,
       top: 0,
@@ -79,7 +104,7 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       value: { token: '123e4567-e89b-42d3-a456-426614174000' },
     });
 
-    fireEvent(svg, event);
+    fireEvent(plot, event);
 
     expect(onMarkerPlace).toHaveBeenCalledWith(50_001);
     expect((event as MouseEvent & { __tinysaAtomMarkerResultV1?: unknown }).__tinysaAtomMarkerResultV1)
@@ -90,18 +115,20 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     { position: 'left', centerHz: 20_001 },
     { position: 'center', centerHz: 50_001 },
     { position: 'right', centerHz: 96_001 },
-  ] as const)('keeps the active card in a reserved sibling gutter and raises the $position diamond/tag above the trace', ({ centerHz }) => {
+  ] as const)('keeps the active card in a reserved sibling gutter and raises the $position diamond/tag above the trace', async ({ centerHz }) => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(centerHz);
     render(<SpectrumPlot sweep={fixture.sweep} traces={[fixture.frame]} markers={[fixture.reading]} activeMarkerId={1} busy={false}/>);
+    await flushPlotFrame();
 
     const panel = screen.getByRole('region', { name: 'Spectrum plot' });
-    const canvas = panel.querySelector('.plot-canvas');
-    const svg = screen.getByLabelText('Measured power by frequency');
+    const canvasShell = panel.querySelector('.plot-canvas');
+    const plot = screen.getByLabelText('Measured power by frequency');
     const gutter = screen.getByTestId('marker-readout-gutter');
     expect(gutter.parentElement).toBe(panel);
-    expect(gutter.nextElementSibling).toBe(canvas);
-    expect(canvas?.contains(gutter)).toBe(false);
-    expect(svg?.contains(gutter)).toBe(false);
+    expect(gutter.nextElementSibling).toBe(canvasShell);
+    expect(canvasShell?.contains(gutter)).toBe(false);
+    expect(plot.contains(gutter)).toBe(false);
     expect(gutter.textContent).toContain('LOCAL SHAPE');
     expect(gutter.textContent).toContain('peak-to-floor');
     expect(gutter.textContent).toContain('99% component OBW');
@@ -111,27 +138,28 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     const markerLabel = overlay.querySelector('[aria-label^="M1 "]');
     if (!(markerLabel instanceof HTMLElement)) throw new Error('Expected the HTML marker overlay item');
     const diamond = screen.getByTestId('marker-m1-diamond');
-    expect(svg?.contains(overlay)).toBe(false);
+    expect(plot.contains(overlay)).toBe(false);
     expect(overlay.contains(markerLabel)).toBe(true);
-    expect(svg?.contains(markerLabel)).toBe(false);
+    expect(plot.contains(markerLabel)).toBe(false);
     expect(markerLabel.getAttribute('data-marker-label-placement')).toBe('above');
     expect(markerLabel.querySelector('span')?.textContent).toBe('M1');
     expect(markerLabel.lastElementChild).toBe(diamond);
     expect(markerLabel.getAttribute('data-marker-trace-y')).not.toBeNull();
     expect(markerLabel.getAttribute('style')).toContain('left:');
-    expect(svg?.querySelector('.plot-marker')).toBeNull();
-    const markerLine = svg?.querySelector('.plot-marker-line');
-    expect(markerLine).not.toBeNull();
-    expect(Number(markerLine?.getAttribute('x1')) / 1_200 * 100)
+    const context = plotContext(recorder);
+    const markerLines = markerLineStrokes(context, 430);
+    expect(markerLines).toHaveLength(1);
+    expect(markerLines[0]!.segments[0]!.x1 / 1_200 * 100)
       .toBeCloseTo(Number.parseFloat(markerLabel.style.left), 10);
-    expect(Number(markerLine?.getAttribute('y1')))
+    expect(markerLines[0]!.segments[0]!.y1)
       .toBeCloseTo(Number(markerLabel.getAttribute('data-marker-trace-y')), 10);
-    expect(screen.getByTestId('marker-three-db-bracket')).toBeTruthy();
-    for (const line of screen.getByTestId('marker-three-db-bracket').querySelectorAll('line')) {
-      expect(Number(line.getAttribute('x1'))).toBeGreaterThanOrEqual(0);
-      expect(Number(line.getAttribute('x1'))).toBeLessThanOrEqual(1_200);
-      expect(Number(line.getAttribute('x2'))).toBeGreaterThanOrEqual(0);
-      expect(Number(line.getAttribute('x2'))).toBeLessThanOrEqual(1_200);
+    const brackets = bracketStrokes(context);
+    expect(brackets).toHaveLength(1);
+    for (const segment of brackets[0]!.segments) {
+      expect(segment.x1).toBeGreaterThanOrEqual(0);
+      expect(segment.x1).toBeLessThanOrEqual(1_200);
+      expect(segment.x2).toBeGreaterThanOrEqual(0);
+      expect(segment.x2).toBeLessThanOrEqual(1_200);
     }
   });
 
@@ -213,19 +241,22 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     expect(gutter.nextElementSibling?.classList.contains('plot-canvas')).toBe(true);
   });
 
-  it('shows dashes and no bracket when an edge crossing is unavailable', () => {
+  it('shows dashes and no bracket when an edge crossing is unavailable', async () => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(1);
     expect(fixture.reading.localCharacterization.widthClassification).toBe('unavailable');
     render(<SpectrumPlot sweep={fixture.sweep} traces={[fixture.frame]} markers={[fixture.reading]} activeMarkerId={1} busy={false}/>);
+    await flushPlotFrame();
 
     const gutter = screen.getByTestId('marker-readout-gutter');
     expect(gutter.textContent).toContain('3 dB unavailable');
     expect(gutter.textContent).toContain('lower crossing not observed');
     expect(gutter.textContent).toContain('99% component OBW');
-    expect(screen.queryByTestId('marker-three-db-bracket')).toBeNull();
+    expect(bracketStrokes(plotContext(recorder))).toHaveLength(0);
   });
 
-  it('projects host trace samples from their physical frequencies rather than array position', () => {
+  it('projects host trace samples from their physical frequencies rather than array position', async () => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(50_001);
     const subspanFrame: TraceFrame = {
       ...fixture.frame,
@@ -233,12 +264,14 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       powerDbm: [-60, -50, -70],
     };
     render(<SpectrumPlot sweep={fixture.sweep} traces={[subspanFrame]} busy={false}/>);
+    await flushPlotFrame();
 
-    const points = document.querySelector('.trace-line')?.getAttribute('points')
-      ?.split(' ')
-      .map((point) => point.split(',').map(Number));
-    expect(points?.map(([x]) => x)).toEqual([240, 600, 960]);
-    expectFiniteSvgGeometry(screen.getByLabelText('Measured power by frequency'));
+    const context = plotContext(recorder);
+    const traces = polylineStrokes(context);
+    expect(traces).toHaveLength(1);
+    const points = [traces[0]!.segments[0]!.x1, ...traces[0]!.segments.map((segment) => segment.x2)];
+    expect(points).toEqual([240, 600, 960]);
+    expectFiniteCanvasGeometry(context);
   });
 
   it.each([
@@ -258,17 +291,20 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       defect: 'nonincreasing frequency',
       mutate: (frame: TraceFrame): TraceFrame => ({ ...frame, frequencyHz: frame.frequencyHz.map((value, index) => index === 50 ? frame.frequencyHz[49]! : value) }),
     },
-  ])('omits a $defect host trace without emitting invalid SVG geometry', ({ mutate }) => {
+  ])('omits a $defect host trace without emitting invalid canvas geometry', async ({ mutate }) => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(50_001);
     render(<SpectrumPlot sweep={fixture.sweep} traces={[mutate(fixture.frame)]} busy={false}/>);
+    await flushPlotFrame();
 
-    const svg = screen.getByLabelText('Measured power by frequency');
-    expect(svg.querySelector('.trace-line')).toBeNull();
-    expect(svg.querySelector('polygon')).toBeNull();
-    expectFiniteSvgGeometry(svg);
+    const context = plotContext(recorder);
+    expect(polylineStrokes(context)).toHaveLength(0);
+    expect(context.pathFills).toHaveLength(0);
+    expectFiniteCanvasGeometry(context);
   });
 
-  it('omits malformed firmware and marker evidence without disturbing a valid host trace', () => {
+  it('omits malformed firmware and marker evidence without disturbing a valid host trace', async () => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(50_001);
     const firmwareTrace: FirmwareTraceFrame = {
       traceId: 2,
@@ -291,14 +327,14 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       activeMarkerId={1}
       busy={false}
     />);
+    await flushPlotFrame();
 
-    const svg = screen.getByLabelText('Measured power by frequency');
-    expect(svg.querySelector('.trace-line.t1')).not.toBeNull();
-    expect(svg.querySelector('.firmware-trace')).toBeNull();
-    expect(svg.querySelector('.plot-marker-line')).toBeNull();
+    const context = plotContext(recorder);
+    expect(polylineStrokes(context)).toHaveLength(1);
+    expect(markerLineStrokes(context, 430)).toHaveLength(0);
     expect(screen.queryByTestId('marker-readout-gutter')).toBeNull();
     expect(screen.getByTestId('plot-marker-overlay').children).toHaveLength(0);
-    expectFiniteSvgGeometry(svg);
+    expectFiniteCanvasGeometry(context);
   });
 
   it('fails marker projection closed for degenerate or nonfinite plot domains', () => {
@@ -312,7 +348,8 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     }, 1_200, 430, -120, -20)).toBeUndefined();
   });
 
-  it('renders a recoverable empty plot plane for a degenerate sweep span', () => {
+  it('renders a recoverable empty plot plane for a degenerate sweep span', async () => {
+    const recorder = recordCanvas();
     const fixture = markerFixture(50_001);
     const degenerateSweep: Sweep = {
       ...fixture.sweep,
@@ -325,20 +362,19 @@ describe('SpectrumPlot signal-aware marker layout', () => {
       activeMarkerId={1}
       busy={false}
     />);
+    await flushPlotFrame();
 
-    const svg = screen.getByLabelText('Measured power by frequency');
-    expect(svg.querySelector('.trace-line')).toBeNull();
-    expect(svg.querySelector('.plot-marker-line')).toBeNull();
+    const context = plotContext(recorder);
+    expect(polylineStrokes(context)).toHaveLength(0);
+    expect(markerLineStrokes(context, 430)).toHaveLength(0);
     expect(screen.queryByTestId('marker-readout-gutter')).not.toBeNull();
-    expectFiniteSvgGeometry(svg);
+    expectFiniteCanvasGeometry(context);
   });
 });
 
-function expectFiniteSvgGeometry(svg: HTMLElement): void {
-  for (const element of [svg, ...svg.querySelectorAll('*')]) {
-    for (const attribute of element.getAttributeNames()) {
-      expect(element.getAttribute(attribute)).not.toMatch(/(?:NaN|Infinity)/);
-    }
+function expectFiniteCanvasGeometry(context: RecordingContext2D): void {
+  for (const value of allRecordedCoordinates(context)) {
+    expect(Number.isFinite(value)).toBe(true);
   }
 }
 
