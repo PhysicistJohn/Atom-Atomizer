@@ -24,6 +24,7 @@ export default defineConfig({
     },
   },
   test: {
+    setupFiles: ['./vitest.setup.ts'],
     include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'apps/**/*.test.tsx'],
     coverage: { provider: 'v8', reporter: ['text', 'html'] }
   }

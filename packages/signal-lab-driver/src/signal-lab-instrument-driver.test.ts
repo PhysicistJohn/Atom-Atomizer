@@ -18,7 +18,7 @@ const temporaryRoots: string[] = [];
 const GENERATOR_ARTIFACTS = [
   'atomizer-bridge.js', 'bluetooth-iq.js', 'canonical-timing.js', 'catalog.js', 'complex-iq.js', 'contracts.js',
   'geran-iq.js', 'measurement-bridge.js', 'measurement-contract.js', 'measurement-service.js', 'ofdm-iq.js',
-  'source-provenance.js', 'waveforms.js',
+  'platform-bytes.js', 'source-provenance.js', 'waveforms.js',
 ] as const;
 const FIXTURE_DESCRIPTORS = SIGNAL_LAB_PROFILE_IDS.map((id) => ({
   id,
