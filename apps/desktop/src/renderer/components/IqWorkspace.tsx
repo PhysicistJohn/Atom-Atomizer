@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, CircleDot, Cpu, Maximize2, Waves, ZoomIn, ZoomOut } from 'lucide-react';
 import { formatExactFrequency, formatFrequency } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
-  previewComplexIq,
   type ComplexIqCapability,
   type ComplexIqConfiguration,
   type ComplexIqMeasurement,
@@ -11,21 +10,24 @@ import {
 } from '../complex-iq.js';
 import { EditableParameter } from './ParameterRow.js';
 
-export function IqWorkspace({ configuration, capability, capture, busy, captureUnavailableReason, onChange }: {
+// Bounded scalar identity of the latest capture. The raw measurement (with
+// its multi-megabyte sample payload) deliberately never crosses into props —
+// see IqContainer.
+export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
+  'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
+
+export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, busy, captureUnavailableReason, onChange }: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
-  capture?: ComplexIqMeasurement;
+  preview?: ComplexIqPreview;
+  previewError?: string;
+  captureMeta?: IqCaptureMeta;
   busy: boolean;
   captureUnavailableReason?: string;
   onChange(configuration: ComplexIqConfiguration): void;
 }) {
   const [plotZoom, setPlotZoom] = useState(1);
-  const previewResult = useMemo(() => {
-    if (!capture) return {};
-    try { return { preview: previewComplexIq(capture) }; }
-    catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
-  }, [capture]);
-  const preview = previewResult.preview;
+  const capture = captureMeta;
   const durationSeconds = capture ? capture.sampleCount / capture.sampleRateHz : undefined;
   const equalRateBandwidth = capability?.bandwidthMode === 'equal-to-sample-rate';
 
@@ -62,7 +64,7 @@ export function IqWorkspace({ configuration, capability, capture, busy, captureU
         <Metric label="Preview peak" value={preview ? formatDbfs(preview.peak) : '—'}/>
         <Metric label="DC (I / Q)" value={preview ? `${preview.dcI.toFixed(4)} / ${preview.dcQ.toFixed(4)}` : '—'}/>
       </div>
-      {previewResult.error && <div className="inline-error" role="alert">I/Q payload could not be visualized: {previewResult.error}</div>}
+      {previewError && <div className="inline-error" role="alert">I/Q payload could not be visualized: {previewError}</div>}
       <footer className="iq-evidence-footer">
         <span>{capture ? `Capture ${capture.measurementId} · ${capture.qualification.replaceAll('-', ' ')}` : 'No complex-sample capture yet'}</span>
         <span>{preview ? `${preview.inspectedSampleCount.toLocaleString()} evenly sampled preview points` : 'Bounded 16K-point renderer budget'}</span>
@@ -87,61 +89,155 @@ export function IqWorkspace({ configuration, capability, capture, busy, captureU
   </div>;
 }
 
+// Retained canvases with rAF latest-wins (same pattern as SpectrumPlot):
+// a fresh continuous buffer only stashes the newest preview and schedules one
+// frame; skipped intermediate buffers never touch the DOM or the canvas. The
+// prior SVG-path rendering rebuilt two ~16k-segment path strings per buffer
+// and held the main thread ~83% busy during an I/Q Run.
+function useIqCanvas(draw: (context: CanvasRenderingContext2D, width: number, height: number) => void) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+  const frameRef = useRef<number | undefined>(undefined);
+
+  const paint = () => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+    const dpr = typeof devicePixelRatio === 'number' && Number.isFinite(devicePixelRatio) && devicePixelRatio > 0
+      ? devicePixelRatio
+      : 1;
+    const width = canvas.clientWidth || canvas.width;
+    const height = canvas.clientHeight || canvas.height;
+    const backingWidth = Math.max(1, Math.round(width * dpr));
+    const backingHeight = Math.max(1, Math.round(height * dpr));
+    if (canvas.width !== backingWidth) canvas.width = backingWidth;
+    if (canvas.height !== backingHeight) canvas.height = backingHeight;
+    try {
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+      drawRef.current(context, width, height);
+    } catch {
+      // A partial 2d context (test stubs) or an interrupted paint must never
+      // break the retained DOM around the canvas; the next frame repaints.
+    }
+  };
+
+  const schedule = () => {
+    if (typeof requestAnimationFrame !== 'function') { paint(); return; }
+    if (frameRef.current !== undefined) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = undefined;
+      paint();
+    });
+  };
+
+  useLayoutEffect(() => { schedule(); });
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(() => schedule());
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      if (frameRef.current !== undefined && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = undefined;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return canvasRef;
+}
+
+function canvasTheme(canvas: HTMLCanvasElement | null) {
+  const style = canvas ? getComputedStyle(canvas) : undefined;
+  return {
+    grid: 'rgba(255,255,255,.05)',
+    axis: 'rgba(255,255,255,.14)',
+    i: style?.getPropertyValue('--cyan').trim() || '#4cc9f0',
+    q: style?.getPropertyValue('--violet').trim() || '#b085f5',
+    symbol: 'rgba(100,210,255,.55)',
+  };
+}
+
+function drawGrid(context: CanvasRenderingContext2D, width: number, height: number, stroke: string) {
+  context.strokeStyle = stroke;
+  context.lineWidth = 1;
+  context.beginPath();
+  for (const fraction of [.2, .4, .6, .8]) {
+    context.moveTo(width * fraction, 0);
+    context.lineTo(width * fraction, height);
+    context.moveTo(0, height * fraction);
+    context.lineTo(width, height * fraction);
+  }
+  context.stroke();
+}
+
 function IqTimePlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: number }) {
-  const width = 900;
-  const height = 290;
-  const fitScale = preview
-    ? Math.max(0.001, ...preview.points.flatMap((point) => [Math.abs(point.i), Math.abs(point.q)]))
-    : 1;
-  const scale = fitScale / zoom;
+  const canvasRef = useIqCanvas((context, width, height) => {
+    const theme = canvasTheme(canvasRef.current);
+    drawGrid(context, width, height, theme.grid);
+    if (!preview) return;
+    let fitScale = 0.001;
+    for (const point of preview.points) {
+      const magnitude = Math.max(Math.abs(point.i), Math.abs(point.q));
+      if (magnitude > fitScale) fitScale = magnitude;
+    }
+    const scale = fitScale / zoom;
+    for (const component of ['i', 'q'] as const) {
+      context.strokeStyle = component === 'i' ? theme.i : theme.q;
+      context.lineWidth = 1.25;
+      context.beginPath();
+      const count = preview.points.length;
+      for (let index = 0; index < count; index++) {
+        const x = count === 1 ? width / 2 : index / (count - 1) * width;
+        const y = height / 2 - preview.points[index]![component] / scale * height * .43;
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      }
+      context.stroke();
+    }
+  });
   return <figure className="iq-chart iq-time-chart">
     <figcaption><span><Activity size={13}/>Time domain</span><small>I and Q · preview normalized to visible peak</small></figcaption>
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="I and Q sample amplitude over capture time">
-      <PlotGrid width={width} height={height}/>
-      {preview && <>
-        <path className="iq-i-trace" d={tracePath(preview.points.map((point) => point.i), width, height, scale)}/>
-        <path className="iq-q-trace" d={tracePath(preview.points.map((point) => point.q), width, height, scale)}/>
-      </>}
-      {!preview && <text className="iq-empty-label" x={width / 2} y={height / 2}>USE SIDEBAR SINGLE OR RUN</text>}
-    </svg>
+    <canvas ref={canvasRef} className="iq-canvas" role="img" aria-label="I and Q sample amplitude over capture time"/>
+    {!preview && <span className="iq-empty-label">USE SIDEBAR SINGLE OR RUN</span>}
     <div className="iq-legend"><span className="i">I</span><span className="q">Q</span></div>
   </figure>;
 }
 
 function ConstellationPlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: number }) {
-  const size = 290;
-  const plotted = preview?.points.filter((_, index) => index % Math.max(1, Math.ceil(preview.points.length / 768)) === 0);
-  const extent = preview ? Math.max(0.001, preview.peak * 1.05) / zoom : 1;
+  const canvasRef = useIqCanvas((context, width, height) => {
+    const theme = canvasTheme(canvasRef.current);
+    drawGrid(context, width, height, theme.grid);
+    context.strokeStyle = theme.axis;
+    context.beginPath();
+    context.moveTo(width / 2, 0);
+    context.lineTo(width / 2, height);
+    context.moveTo(0, height / 2);
+    context.lineTo(width, height / 2);
+    context.stroke();
+    if (!preview) return;
+    const stride = Math.max(1, Math.ceil(preview.points.length / 768));
+    const extent = Math.max(0.001, preview.peak * 1.05) / zoom;
+    context.fillStyle = theme.symbol;
+    for (let index = 0; index < preview.points.length; index += stride) {
+      const point = preview.points[index]!;
+      const x = width / 2 + point.i / extent * width * .44;
+      const y = height / 2 - point.q / extent * height * .44;
+      context.fillRect(x - 1.5, y - 1.5, 3, 3);
+    }
+  });
   return <figure className="iq-chart iq-constellation-chart">
     <figcaption><span><CircleDot size={13}/>Constellation</span><small>Q versus I · no symbol-decision claim</small></figcaption>
-    <svg viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Complex I Q constellation preview">
-      <PlotGrid width={size} height={size}/>
-      <line className="iq-axis" x1={size / 2} x2={size / 2} y1="0" y2={size}/>
-      <line className="iq-axis" x1="0" x2={size} y1={size / 2} y2={size / 2}/>
-      {plotted?.map((point) => <circle key={point.sampleIndex} className="iq-symbol" cx={size / 2 + point.i / extent * size * .44} cy={size / 2 - point.q / extent * size * .44} r="1.7"/>)}
-      {!preview && <text className="iq-empty-label" x={size / 2} y={size / 2}>NO SAMPLES</text>}
-    </svg>
+    <canvas ref={canvasRef} className="iq-canvas iq-constellation-canvas" role="img" aria-label="Complex I Q constellation preview"/>
+    {!preview && <span className="iq-empty-label">NO SAMPLES</span>}
   </figure>;
-}
-
-function PlotGrid({ width, height }: { width: number; height: number }) {
-  return <g className="iq-grid">{[.2, .4, .6, .8].flatMap((fraction) => [
-    <line key={`v-${fraction}`} x1={width * fraction} x2={width * fraction} y1="0" y2={height}/>,
-    <line key={`h-${fraction}`} x1="0" x2={width} y1={height * fraction} y2={height * fraction}/>,
-  ])}</g>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <span><small>{label}</small><strong>{value}</strong></span>;
-}
-
-function tracePath(values: readonly number[], width: number, height: number, scale: number): string {
-  if (values.length === 0) return '';
-  return values.map((value, index) => {
-    const x = values.length === 1 ? width / 2 : index / (values.length - 1) * width;
-    const y = height / 2 - value / scale * height * .43;
-    return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(' ');
 }
 
 function bytesPerSample(format: ComplexIqConfiguration['sampleFormat']): number {

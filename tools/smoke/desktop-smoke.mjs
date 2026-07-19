@@ -304,6 +304,42 @@ async function wlanIqCapture() {
   pass('wlan-iq', 'WLAN profile produced a rendered I/Q capture');
 }
 
+async function runRetargetsAcrossWorkspaces() {
+  // Run follows the operator: a spectrum Run turns into live bounded I/Q
+  // buffers when entering the I/Q workspace, and back into a live spectrum
+  // stream when leaving. Both directions must visibly advance.
+  const iqSequence = () => evaluate(`(() => {
+    const m = /sequence=(\\d+)/.exec(document.querySelector('.iq-workspace')?.getAttribute('aria-description') ?? '');
+    return m ? Number(m[1]) : -1;
+  })()`);
+  const landmarkSequence = () => evaluate(`(() => {
+    const m = /sequence=(\\d+)/.exec(document.querySelector('[aria-label="Acquisition controls"]')?.getAttribute('aria-description') ?? '');
+    return m ? Number(m[1]) : -1;
+  })()`);
+  await clickOrFail('run-retarget', 'measurement.view.spectrum');
+  await wait(500);
+  await clickOrFail('run-retarget', 'acquisition.continuous.start');
+  await wait(2500);
+  await clickOrFail('run-retarget', 'workspace.iq');
+  await wait(3500);
+  const iqBefore = await iqSequence();
+  await wait(2500);
+  const iqAfter = await iqSequence();
+  if (!(iqBefore >= 0 && iqAfter > iqBefore)) {
+    throw new Error(`run-retarget: I/Q did not advance during Run (sequence ${iqBefore} -> ${iqAfter})`);
+  }
+  await clickOrFail('run-retarget', 'measurement.view.spectrum');
+  await wait(3500);
+  const sweepBefore = await landmarkSequence();
+  await wait(2500);
+  const sweepAfter = await landmarkSequence();
+  await clickOrFail('run-retarget', 'acquisition.continuous.stop');
+  if (!(sweepBefore >= 0 && sweepAfter > sweepBefore)) {
+    throw new Error(`run-retarget: spectrum did not resume after leaving I/Q (sequence ${sweepBefore} -> ${sweepAfter})`);
+  }
+  pass('run-retarget', `IQ ${iqBefore}->${iqAfter}, spectrum ${sweepBefore}->${sweepAfter} across one Run`);
+}
+
 // ---------------------------------------------------------------------------
 // Main.
 // ---------------------------------------------------------------------------
@@ -317,6 +353,7 @@ const steps = [
   ['classification', classificationDetectPanel],
   ['continuous-stop', stopContinuous],
   ['wlan-iq', wlanIqCapture],
+  ['run-retarget', runRetargetsAcrossWorkspaces],
 ];
 
 try {

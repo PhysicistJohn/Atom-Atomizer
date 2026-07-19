@@ -21,6 +21,7 @@ import { RenderCommitGate } from '../render-commit.js';
 import type { BayesianClassifierRuntime } from '../bayesian-classifier-runtime.js';
 import type { ComplexIqConfiguration } from '../complex-iq.js';
 import {
+  acquisitionModeForWorkspace,
   generatorOutputState,
   HISTORY_LIMIT,
   type AtomizerRendererState,
@@ -288,6 +289,12 @@ export class RendererKernel {
       throw new Error('The connected instrument does not advertise complex-I/Q acquisition');
     }
     this.set({ workspace: canonical, error: undefined });
+    // Run follows the operator: entering or leaving the I/Q workspace during
+    // continuous acquisition swaps the stream so the visible viewer is live.
+    if (this.state.continuous
+      && acquisitionModeForWorkspace(canonical, this.state.continuousMode) !== this.state.continuousMode) {
+      void this.acquisition.retargetContinuousForWorkspace();
+    }
   }
 
   changeWorkspace(next: WorkspaceId): void {

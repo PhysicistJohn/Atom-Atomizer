@@ -1379,7 +1379,7 @@ describe('operator vertical slice', () => {
     expect(document.body.textContent).toContain('iq-buffer-2');
   });
 
-  it('pins a bounded I/Q Run across workspace navigation and reuses its stable configuration', async () => {
+  it('retargets an I/Q Run to a live spectrum stream when the operator leaves the I/Q workspace', async () => {
     const pending = mockDeferredSignalLabIqBuffers();
 
     render(<App/>);
@@ -1388,18 +1388,46 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(pending).toHaveLength(1));
-
-    fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
     expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
-    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+
+    // Run follows the operator: leaving I/Q drains the in-flight bounded
+    // buffer, then the same Run continues as a live spectrum stream.
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
+    expect(pending).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+  });
+
+  it('retargets a spectrum Run to live bounded I/Q buffers when the operator enters the I/Q workspace', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
+
+    // Run follows the operator: entering I/Q stops the spectrum stream and
+    // continues the same Run as one-at-a-time bounded I/Q buffers.
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
 
     await act(async () => {
       const first = pending[0]!;
       first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
     });
     await waitFor(() => expect(pending).toHaveLength(2));
-    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(1);
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     await act(async () => {
@@ -1407,46 +1435,10 @@ describe('operator vertical slice', () => {
       second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
   });
 
-  it('does not retarget a spectrum Run when the operator enters the I/Q workspace', async () => {
-    mockConnectedInstrument(signalLabIqSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return {
-        sessionId: signalLabIqSession.sessionId,
-        configurationRevision,
-        configuration,
-        configuredAt: '2026-07-10T00:00:00.000Z',
-      };
-    });
-
-    render(<App/>);
-    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
-    await screen.findByText('SIGNALLAB SIMULATION');
-    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
-
-    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
-    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
-    expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
-    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.acquire).not.toHaveBeenCalled();
-  });
-
-  it('lets Atom navigate to and inspect I/Q without blocking an active spectrum Run', async () => {
-    mockConnectedInstrument(signalLabIqSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
-    });
+  it('retargets an active spectrum Run to live I/Q when Atom navigates to the I/Q workspace', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'iq-route-run-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-route-run-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace","inspect_interface"]}' }] })
@@ -1475,16 +1467,22 @@ describe('operator vertical slice', () => {
         activeWorkspace: 'iq',
         rendered: expect.arrayContaining([
           expect.objectContaining({ controlId: 'workspace.iq', enabled: true, preferredTool: 'navigate_workspace' }),
-          expect.objectContaining({ controlId: 'acquisition.continuous.stop', enabled: true, preferredTool: 'stop_continuous_sweeps' }),
         ]),
       },
     });
-    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
+    // Run follows the workspace regardless of who navigated: Atom entering
+    // I/Q retargets the spectrum stream to live bounded I/Q buffers.
+    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
     expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
-    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
   });
 
   it('rejects typed I/Q navigation when the connected source has no complex-I/Q capability', async () => {
@@ -3225,16 +3223,15 @@ describe('operator vertical slice', () => {
     const streamingRevision = configurationRevision;
     const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
 
-    for (const route of ['Waterfall', 'Channel', 'I/Q', 'Device'] as const) {
+    // I/Q is intentionally absent: entering it retargets a Run to bounded
+    // I/Q buffers, so it is no longer a spectrum-stream route.
+    for (const route of ['Waterfall', 'Channel', 'Device'] as const) {
       fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${route.replace('/', '\\/')}$`, 'i') }));
       if (route === 'Waterfall') {
         await screen.findByLabelText(/Measured power by frequency and sweep time/i);
         expect(screen.getByLabelText('Edit Color floor').getAttribute('aria-disabled')).toBe('false');
       } else if (route === 'Channel') {
         await screen.findByText(/Channel setup/i);
-        expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
-      } else if (route === 'I/Q') {
-        await screen.findByText(/Complex baseband/i);
         expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
       } else {
         await screen.findByText(/Instrument source/i);

@@ -936,6 +936,25 @@ export class AcquisitionController {
     }
   }
 
+  // Run follows the operator: navigating between the I/Q workspace and a
+  // spectrum-consuming workspace while continuous acquisition is on swaps the
+  // underlying stream so every viewer is live. Only the newest navigation
+  // wins; an operator Stop between the swap's halves is honored.
+  private continuousRetargetGeneration = 0;
+
+  async retargetContinuousForWorkspace(): Promise<void> {
+    const k = this.k;
+    const generation = ++this.continuousRetargetGeneration;
+    const desired = acquisitionModeForWorkspace(k.state.workspace, k.state.continuousMode);
+    if (!k.state.continuous || desired === k.state.continuousMode) return;
+    try { await this.stopContinuous(); } catch { return; }
+    if (generation !== this.continuousRetargetGeneration) return;
+    if (k.state.continuous || k.continuousRequested.current) return;
+    if (acquisitionModeForWorkspace(k.state.workspace, k.state.continuousMode) !== desired) return;
+    try { await this.startContinuous(); }
+    catch (value) { k.set({ error: errorMessage(value) }); }
+  }
+
   stopContinuous(): Promise<void> {
     const k = this.k;
     const existing = k.operatorContinuousStopRequest.current;

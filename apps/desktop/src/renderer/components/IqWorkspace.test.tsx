@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstrumentAcquisitionCapability, InstrumentMeasurement } from '@tinysa/contracts';
-import { DEFAULT_COMPLEX_IQ_CONFIGURATION } from '../complex-iq.js';
-import { IqWorkspace } from './IqWorkspace.js';
+import { DEFAULT_COMPLEX_IQ_CONFIGURATION, previewComplexIq } from '../complex-iq.js';
+import { IqWorkspace, type IqCaptureMeta } from './IqWorkspace.js';
 
 const capability: Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }> = {
   kind: 'complex-iq',
@@ -43,6 +43,24 @@ function capture(): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> {
   };
 }
 
+// The raw capture never becomes a prop (see IqContainer); components receive
+// the bounded preview plus scalar metadata.
+function captureProps(): { preview: ReturnType<typeof previewComplexIq>; captureMeta: IqCaptureMeta } {
+  const measurement = capture();
+  return {
+    preview: previewComplexIq(measurement),
+    captureMeta: {
+      measurementId: measurement.measurementId,
+      sequence: measurement.sequence,
+      centerHz: measurement.centerHz,
+      sampleCount: measurement.sampleCount,
+      sampleRateHz: measurement.sampleRateHz,
+      sampleFormat: measurement.sampleFormat,
+      qualification: measurement.qualification,
+    },
+  };
+}
+
 afterEach(cleanup);
 
 describe('complex I/Q workspace', () => {
@@ -61,7 +79,7 @@ describe('complex I/Q workspace', () => {
     const view = render(<IqWorkspace
       configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
       capability={capability}
-      capture={capture()}
+      {...captureProps()}
       busy={false}
       onChange={vi.fn()}
     />);
@@ -84,21 +102,21 @@ describe('complex I/Q workspace', () => {
     const view = render(<IqWorkspace
       configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
       capability={capability}
-      capture={capture()}
+      {...captureProps()}
       busy={false}
       onChange={vi.fn()}
     />);
-    const initialTrace = view.container.querySelector('.iq-i-trace')?.getAttribute('d');
+    // Plots render onto retained canvases (no per-buffer SVG DOM); jsdom has
+    // no 2d context, so the zoom contract is asserted through its controls.
+    expect(view.container.querySelectorAll('canvas.iq-canvas')).toHaveLength(2);
     const zoomIn = screen.getByRole('button', { name: 'Zoom I/Q plots in' });
     zoomIn.focus();
     expect(document.activeElement).toBe(zoomIn);
     fireEvent.click(zoomIn);
     expect(screen.getByLabelText('I/Q plot zoom').textContent).toBe('2×');
-    expect(view.container.querySelector('.iq-i-trace')?.getAttribute('d')).not.toBe(initialTrace);
 
     fireEvent.click(screen.getByRole('button', { name: 'Fit I/Q plots to capture' }));
     expect(screen.getByLabelText('I/Q plot zoom').textContent).toBe('1×');
-    expect(view.container.querySelector('.iq-i-trace')?.getAttribute('d')).toBe(initialTrace);
 
     fireEvent.click(zoomIn);
     fireEvent.click(zoomIn);
