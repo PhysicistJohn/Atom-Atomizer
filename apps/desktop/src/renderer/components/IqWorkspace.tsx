@@ -210,13 +210,27 @@ function IqTimePlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: numbe
 function ConstellationPlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: number }) {
   const canvasRef = useIqCanvas((context, width, height) => {
     const theme = canvasTheme(canvasRef.current);
-    drawGrid(context, width, height, theme.grid);
+    // The constellation always plots inside a centered square so I and Q
+    // share one scale — a full-width row must not stretch it elliptically.
+    const side = Math.min(width, height);
+    const originX = (width - side) / 2;
+    const originY = (height - side) / 2;
+    context.strokeStyle = theme.grid;
+    context.lineWidth = 1;
+    context.beginPath();
+    for (const fraction of [.2, .4, .6, .8]) {
+      context.moveTo(originX + side * fraction, originY);
+      context.lineTo(originX + side * fraction, originY + side);
+      context.moveTo(originX, originY + side * fraction);
+      context.lineTo(originX + side, originY + side * fraction);
+    }
+    context.stroke();
     context.strokeStyle = theme.axis;
     context.beginPath();
-    context.moveTo(width / 2, 0);
-    context.lineTo(width / 2, height);
-    context.moveTo(0, height / 2);
-    context.lineTo(width, height / 2);
+    context.moveTo(originX + side / 2, originY);
+    context.lineTo(originX + side / 2, originY + side);
+    context.moveTo(originX, originY + side / 2);
+    context.lineTo(originX + side, originY + side / 2);
     context.stroke();
     if (!preview) return;
     const stride = Math.max(1, Math.ceil(preview.points.length / 768));
@@ -224,8 +238,8 @@ function ConstellationPlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom
     context.fillStyle = theme.symbol;
     for (let index = 0; index < preview.points.length; index += stride) {
       const point = preview.points[index]!;
-      const x = width / 2 + point.i / extent * width * .44;
-      const y = height / 2 - point.q / extent * height * .44;
+      const x = originX + side / 2 + point.i / extent * side * .44;
+      const y = originY + side / 2 - point.q / extent * side * .44;
       context.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   });

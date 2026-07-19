@@ -607,7 +607,7 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .iq-scale-control button:disabled { opacity: .3; }
 .iq-scale-control output { min-width: 27px; color: var(--energy-bright); font: 7px var(--mono); text-align: center; }
 .iq-format-badge { padding: 5px 7px; border: 1px solid rgba(100,210,255,.2); border-radius: 7px; color: var(--cyan); background: rgba(100,210,255,.05); font: 8px var(--mono); text-transform: uppercase; }
-.iq-plot-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr) minmax(220px,.42fr); gap: 10px; overflow: hidden; padding: 10px; }
+.iq-plot-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1.5fr) minmax(180px,1fr); gap: 10px; overflow: hidden; padding: 10px; }
 .iq-chart { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; margin: 0; overflow: hidden; border: 1px solid rgba(255,255,255,.065); border-radius: 12px; background: rgba(0,0,0,.18); }
 .iq-chart figcaption { min-height: 39px; display: flex; align-items: center; justify-content: space-between; padding: 0 11px; border-bottom: 1px solid rgba(255,255,255,.05); }
 .iq-chart figcaption span { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 9px; }

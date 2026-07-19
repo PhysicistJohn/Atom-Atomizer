@@ -322,11 +322,24 @@ async function runRetargetsAcrossWorkspaces() {
   await wait(2500);
   await clickOrFail('run-retarget', 'workspace.iq');
   await wait(3500);
+  const iqCanvasHash = () => evaluate(`(async () => {
+    const canvas = document.querySelector('canvas.iq-canvas');
+    if (!canvas) return 'missing';
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canvas.toDataURL('image/png')));
+    return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
+  })()`);
   const iqBefore = await iqSequence();
+  const pixelsBefore = await iqCanvasHash();
   await wait(2500);
   const iqAfter = await iqSequence();
+  const pixelsAfter = await iqCanvasHash();
   if (!(iqBefore >= 0 && iqAfter > iqBefore)) {
     throw new Error(`run-retarget: I/Q did not advance during Run (sequence ${iqBefore} -> ${iqAfter})`);
+  }
+  // Sequence alone is not liveness: successive captures must be successive
+  // moments of the signal, so the rendered time-domain pixels must change.
+  if (pixelsBefore === 'missing' || pixelsBefore === pixelsAfter) {
+    throw new Error(`run-retarget: I/Q plot pixels did not change across buffers (${pixelsBefore} -> ${pixelsAfter})`);
   }
   await clickOrFail('run-retarget', 'measurement.view.spectrum');
   await wait(3500);
