@@ -41,7 +41,7 @@ export const agentToolNames = [
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
   'configure_signal_detector', 'select_classification_candidate', 'configure_zero_span', 'acquire_zero_span',
-  'configure_generator', 'set_rf_output',
+  'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
   'capture_device_screen', 'remote_device_touch', 'export_latest_sweep',
 ] as const;
 export type AgentToolName = typeof agentToolNames[number];
@@ -103,13 +103,13 @@ export interface AgentTurnResult {
 }
 
 export const agentSemanticControlIds = [
-  'workspace.spectrum', 'workspace.detection', 'workspace.classification', 'workspace.iq', 'workspace.generator', 'workspace.device',
-  'measurement.view.spectrum', 'measurement.view.waterfall', 'measurement.view.channel', 'measurement.view.envelope-stft',
+  'workspace.classification', 'workspace.iq', 'workspace.generator', 'workspace.device',
+  'measurement.view.spectrum', 'measurement.view.waterfall', 'measurement.view.channel',
   'measurement.setup', 'measurement.controls', 'measurement.markers', 'measurement.traces', 'measurement.display',
   'spectrum.marker-place',
   'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop',
   'marker.search.peak', 'marker.search.minimum', 'marker.search.left', 'marker.search.right',
-  'display.auto-scale', 'classification.auto-select', 'classification.capture-envelope', 'stft.capture', 'generator.apply',
+  'display.auto-scale', 'classification.auto-select', 'classification.capture-envelope', 'generator.apply',
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
   'connection.open', 'connection.close', 'connection.cancel', 'connection.refresh', 'connection.connect', 'connection.disconnect', 'connection.retry-cleanup',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
@@ -140,8 +140,8 @@ export interface AgentControlBinding {
 
 /** Closed mapping from every renderer agent hook to its typed operation and evidence class. */
 export const agentControlBindings: readonly AgentControlBinding[] = [
-  { pattern: /^workspace\.(spectrum|detection|classification|iq|generator|device)$/, preferredTool: 'navigate_workspace', risk: 'operate', projection: 'ui-only', guarantee: 'Changes only the active Atomizer workspace while preserving RF-output and acquisition-capability navigation guards.' },
-  { pattern: /^measurement\.view\.(spectrum|waterfall|channel|envelope-stft)$/, preferredTool: 'set_measurement_view', risk: 'operate', projection: 'ui-only', guarantee: 'Selects one bounded analysis projection without changing evidence.' },
+  { pattern: /^workspace\.(classification|iq|generator|device)$/, preferredTool: 'navigate_workspace', risk: 'operate', projection: 'ui-only', guarantee: 'Changes only the active Atomizer workspace while preserving RF-output and acquisition-capability navigation guards.' },
+  { pattern: /^measurement\.view\.(spectrum|waterfall|channel)$/, preferredTool: 'set_measurement_view', risk: 'operate', projection: 'ui-only', guarantee: 'Selects one bounded analysis projection without changing evidence.' },
   { pattern: /^measurement\.(setup|controls|markers|traces|display)$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Opens or closes one local measurement control surface.' },
   { pattern: /^spectrum\.marker-place$/, preferredTool: 'configure_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Places the active marker at one bounded frequency derived from the visible plot coordinate.' },
   { pattern: /^acquisition\.single$/, preferredTool: 'acquire_sweep', risk: 'operate', projection: 'transport', guarantee: 'Requests one complete complex-I/Q buffer on the I/Q workspace or one complete scalar sweep on every other acquisition workspace.' },
@@ -151,16 +151,11 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^analyzer\.preset\.(fm|2g4|5g)$/, preferredTool: 'configure_analyzer', risk: 'operate', projection: 'ui-only', guarantee: 'Stages one declared frequency preset while preserving the remaining analyzer configuration.' },
   { pattern: /^analyzer\.advanced$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Opens or closes only the local advanced analyzer disclosure.' },
   { pattern: /^detection\.(threshold-mode|margin|absolute-level|prominence|minimum-bandwidth|promote|release)$/, preferredTool: 'configure_signal_detector', risk: 'operate', projection: 'host-derived', guarantee: 'Stages deterministic host signal-detection criteria.' },
-  { pattern: /^classification\.envelope-(frequency|window|rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages capability-validated detected-power capture settings.' },
-  { pattern: /^classification\.envelope\.(rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages capability-validated detected-power receiver controls.' },
   { pattern: /^classification\.capture-envelope$/, preferredTool: 'acquire_zero_span', risk: 'operate', projection: 'transport', guarantee: 'Acquires detected power versus time without claiming I/Q.' },
   { pattern: /^classification\.auto-select$/, preferredTool: 'computer_action', risk: 'operate', projection: 'host-derived', guarantee: 'Atomically freezes the visible sweep and complete current target population, clears sticky manual targeting, selects integrated excess power rank 0 without lower-ranked substitution, and returns target/evidence-bound classification readiness. It stages the exact detected-power tune only when that capability is advertised; otherwise staging is explicitly unavailable with null configuration. A disabled empty Auto control returns structured no-target evidence, while incomplete rank evidence returns a distinct admission failure.' },
   { pattern: /^classification\.candidate\.[A-Za-z0-9-]{1,128}\.select$/, preferredTool: 'select_classification_candidate', risk: 'operate', projection: 'ui-only', guarantee: 'Selects only the exact requested current-visible active physical representative or promotion-qualified agile evidence representative. A qualified agile representative stages its uniquely bound current raw tune owner; raw candidate IDs, stale rows, and ambiguous ownership fail closed.' },
   { pattern: /^waterfall\.(floor|ceiling|depth)$/, preferredTool: 'configure_waterfall', risk: 'operate', projection: 'host-derived', guarantee: 'Configures a coherent scalar-sweep history projection.' },
   { pattern: /^channel\.(center|main-bandwidth|spacing|adjacent-bandwidth|adjacent-count|occupied-power|obw-noise)$/, preferredTool: 'configure_channel_measurement', risk: 'operate', projection: 'host-derived', guarantee: 'Configures bounded channel, ACP, ACLR, and OBW integration.' },
-  { pattern: /^stft\.(frequency|samples|capture-time|rbw(-mode)?|attenuation(-mode)?|trigger|trigger-level)$/, preferredTool: 'configure_zero_span', risk: 'operate', projection: 'commanded', guarantee: 'Stages the capability-validated detected-power capture consumed by envelope STFT.' },
-  { pattern: /^stft\.(window|hop|range|remove-dc)$/, preferredTool: 'configure_envelope_stft', risk: 'operate', projection: 'host-derived', guarantee: 'Configures the Hann-windowed detected-envelope STFT.' },
-  { pattern: /^stft\.capture$/, preferredTool: 'acquire_envelope_stft', risk: 'operate', projection: 'transport', guarantee: 'Acquires detected power and derives its envelope STFT.' },
   { pattern: /^marker\.[1-8]\.select$/, preferredTool: 'select_marker', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host marker without changing its visibility or reading configuration.' },
   { pattern: /^marker\.[1-8]\.(enabled|frequency|trace|readout|reference|peak-track)$/, preferredTool: 'configure_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Configures one of eight host marker projections.' },
   { pattern: /^marker\.search\.(threshold|excursion)$/, preferredTool: 'configure_marker_search', risk: 'operate', projection: 'host-derived', guarantee: 'Configures closed marker peak-search eligibility criteria.' },
@@ -222,7 +217,7 @@ export const agentApiCoverage = {
   acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing contextual scalar or complex-I/Q measurement.', failure: 'Incomplete, malformed, wrong-kind, wrong-session, or wrong-configuration evidence is rejected.' },
   startStreaming: { tools: ['start_continuous_sweeps'], projection: 'transport-evidence', guarantee: 'Starts one serialized scalar stream or one-at-a-time backpressured complex-I/Q buffer loop.', failure: 'First acquisition failure terminates the active mode visibly.' },
   stopStreaming: { tools: ['stop_continuous_sweeps'], projection: 'device-state', guarantee: 'Stops after the in-flight operation settles.', failure: 'A non-running stream is rejected rather than treated as success.' },
-  executeFeature: { tools: ['configure_generator', 'set_rf_output', 'read_device_diagnostics', 'capture_device_screen', 'remote_device_touch'], projection: 'device-state', guarantee: 'Executes only a feature and range declared by the active driver; RF enable and touch remain approved.', failure: 'Unsupported features fail rather than falling back to another driver or transport.' },
+  executeFeature: { tools: ['configure_generator', 'set_rf_output', 'select_signal_lab_profile', 'read_device_diagnostics', 'capture_device_screen', 'remote_device_touch'], projection: 'device-state', guarantee: 'Executes only a feature and range declared by the active driver; RF enable and touch remain approved.', failure: 'Unsupported features fail rather than falling back to another driver or transport.' },
   readPreference: { tools: ['get_instrument_state'], projection: 'ui-context', guarantee: 'Reports the persisted or factory startup driver preference.', failure: 'Preference load failure remains visible startup evidence.' },
   writePreference: { tools: [], projection: 'human-safety-boundary', guarantee: 'Startup-source changes remain a local human UI boundary.', failure: 'A preference change never switches the active session implicitly.' },
   subscribe: { tools: ['get_application_state', 'get_instrument_state'], projection: 'ui-context', guarantee: 'Device events update the same state observed by Atom and the UI.', failure: 'Error events remain visible and cannot be converted to success.' },
@@ -232,7 +227,7 @@ export const agentApiCoverage = {
 if (Object.keys(agentApiCoverage).length !== ATOMIZER_DRIVER_API_METHODS.length) throw new Error('Atom generic driver API coverage is not exhaustive');
 
 const agentToolDescriptors: readonly AgentToolDescriptor[] = [
-  { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, contextual continuous-acquisition mode, operation state, staged complex-I/Q configuration and latest bounded I/Q capture summary, simulation status, history count, visible errors, and optional exact latest-sweep RBW/input-attenuation readbacks paired with their qualifications. Physical receiver values are returned only as device-observed; these readbacks do not establish protocol, emitter, operator, or service identity.' },
+  { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, contextual continuous-acquisition mode, operation state, staged complex-I/Q configuration and latest bounded I/Q capture summary, simulation status, history count, visible errors, the connected SignalLab profile catalog (signalLab: selectedProfileId plus every profileId with family and label), and optional exact latest-sweep RBW/input-attenuation readbacks paired with their qualifications. Physical receiver values are returned only as device-observed; these readbacks do not establish protocol, emitter, operator, or service identity.' },
   { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer driver host plus active SignalLab, physical TinySA, or firmware-twin source without conflating USB, firmware execution, or synthetic evidence.' },
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
   { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance and warnings, declared capabilities, active configuration, streaming state, startup preference, and RF command state. A missing RF-generator feature or rfOutput=not-supported grants no RF-output authority.' },
@@ -279,6 +274,7 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one driver-declared detected-power timeseries, then restore the staged swept-spectrum configuration. Classify only detected-envelope behavior.' },
   { type: 'function', name: 'configure_generator', description: 'Apply the complete driver-neutral generator configuration while forcing RF output off. Path, modulation modes, and ranges must be declared by the active driver.' },
   { type: 'function', name: 'set_rf_output', description: 'Enable or disable RF output only when the active driver declares an RF-generator feature. Enabling requires immediate human approval.' },
+  { type: 'function', name: 'select_signal_lab_profile', description: 'Command the connected SignalLab source to emit exactly one profile from its declared signal-lab-profile-selection catalog. Unknown profile IDs fail closed against the advertised catalog before driver I/O. Selection invalidates prior acquired evidence and restages the swept span, detected-power center, and complex-I/Q center around the selected profile exactly as the visual profile picker does. A commanded selection is source configuration, never classifier evidence.' },
   { type: 'function', name: 'capture_device_screen', description: 'Capture one frame using the connected driver’s declared dimensions and pixel format. Fails when no screen feature exists.' },
   { type: 'function', name: 'remote_device_touch', description: 'Send one atomic tap within the connected driver’s declared touch geometry. Every tap requires immediate human approval.' },
   { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with full source/session provenance and explicit RBW/attenuation qualifications.' },
@@ -334,6 +330,7 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   acquire_zero_span: operate('acquire_zero_span'),
   configure_generator: operate('configure_generator'),
   set_rf_output: { name: 'set_rf_output', risk: 'high-impact', approval: 'at-action' },
+  select_signal_lab_profile: operate('select_signal_lab_profile'),
   capture_device_screen: observe('capture_device_screen'),
   remote_device_touch: { name: 'remote_device_touch', risk: 'high-impact', approval: 'at-action' },
   export_latest_sweep: operate('export_latest_sweep'),
@@ -387,6 +384,9 @@ export const agentToolInputSchemas = {
   acquire_zero_span: z.object({}).strict(),
   configure_generator: generatorConfigSchema,
   set_rf_output: z.object({ enabled: z.boolean() }).strict(),
+  // Mirrors the contracts instrumentOpaqueIdSchema bounds; the live session's
+  // advertised profile catalog remains the execution-time source of truth.
+  select_signal_lab_profile: z.object({ profileId: z.string().min(1).max(256).regex(/\S/) }).strict(),
   capture_device_screen: z.object({}).strict(),
   remote_device_touch: z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), gesture: z.literal('tap') }).strict(),
   export_latest_sweep: z.object({ format: z.enum(['csv', 'json']) }).strict(),
@@ -449,6 +449,7 @@ const agentParameterDescriptions: Readonly<Record<string, string>> = Object.free
   'configure_generator.frequencyHz': 'Generator frequency in integer hertz; normal path permits at most 6.3 GHz and mixer at most 17.9226 GHz.',
   'configure_generator.modulationFrequencyHz': 'Modulation rate in integer hertz; FM permits at most 3.5 kHz.',
   'set_rf_output.enabled': 'Requested RF output state. True requires explicit user intent and immediate host approval.',
+  'select_signal_lab_profile.profileId': 'Exact profileId advertised by the connected SignalLab signal-lab-profile-selection capability catalog; never a display label or a guessed ID. When the operator names a profile loosely ("wifi", "5G"), first read the catalog via get_application_state (its signalLab field lists every profileId with family and label) and choose the matching id yourself instead of asking the operator.',
   'remote_device_touch.gesture': 'One press, release, or complete tap gesture; every gesture requires approval.',
 });
 
@@ -628,7 +629,8 @@ You are Atom, the native AI copilot inside Atomizer. Help RF hobbyists learn and
 - custom-source-qualified-receive-only means an exact embedded version maps to one frozen audited source commit for its narrowly declared receiver behavior. Preserve its warning: the runtime serial identity does not attest the documented binary SHA-256, it is not OEM, hardware/RF, or metrology qualification, and it grants no generator, screen, touch, marker, Ultra-band, or RF-output authority. The active capability object remains authoritative.
 - Spectrum-derived views use complete scalar sweeps. Zero span and envelope STFT are detected power, never I/Q, phase, symbols, EVM, decoding, conformance, or protocol identity.
 - Detection candidates are not active emissions until promoted. A frequency-agile 2.4 GHz result is a rolling activity association conditional on admitted local looks; it is never one physical emission, emitter identity, or protocol identity. Observable-class results are measurement hypotheses, never knowledge of SignalLab selected state.
-- Physical TinySA USB, the Renode firmware twin, and SignalLab are distinct registered drivers. SignalLab is the factory startup default and supplies synthetic scalar measurements through its live bridge; it does not emulate USB, execute firmware, or emit RF.
+- Physical TinySA USB, the Renode firmware twin, and SignalLab are distinct registered drivers. SignalLab is the factory startup default and supplies synthetic scalar, detected-power, and complex-I/Q measurements through its live bridge; it does not emulate USB, execute firmware, or emit RF.
+- select_signal_lab_profile commands the connected SignalLab source to emit one declared-catalog profile and restages spans around it. Resolve loose operator names ("wifi", "5G") yourself: load get_application_state alongside it, read its signalLab catalog (profileId/family/label per entry), and pick the match — do not ask the operator for exact ids. A commanded selection is source configuration, never classifier evidence and never inferred knowledge of SignalLab selected state; the visual profile picker stays human-only.
 
 # Safety and human boundaries
 - RF enable requires explicit user intent and immediate host approval. Every remote firmware-screen gesture also requires approval.

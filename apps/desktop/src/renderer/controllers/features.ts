@@ -12,13 +12,21 @@ import { errorMessage, type RendererKernel } from './kernel.js';
 export class FeaturesController {
   constructor(private readonly k: RendererKernel) {}
 
+  /** Throwing profile-selection transaction shared by the UI and Atom paths.
+   * Both run the same continuous-paused executeInstrumentFeature lifecycle, so
+   * the profile-driven span restaging is identical for either caller. */
+  selectSignalLabProfileCommanded(profileId: string) {
+    const k = this.k;
+    return k.acquisition.runInstrumentTransaction('select-signal-lab-profile', () => k.acquisition.runWithContinuousPaused(
+      'SignalLab profile selection',
+      () => k.events.executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }),
+    ));
+  }
+
   async selectSignalLabProfile(profileId: string): Promise<void> {
     const k = this.k;
     try {
-      await k.acquisition.runInstrumentTransaction('select-signal-lab-profile', () => k.acquisition.runWithContinuousPaused(
-        'SignalLab profile selection',
-        () => k.events.executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }),
-      ));
+      await this.selectSignalLabProfileCommanded(profileId);
       k.set({ notice: `SignalLab profile selected: ${profileId}` });
     } catch (value) { k.set({ error: `SignalLab profile selection failed: ${errorMessage(value)}` }); }
   }

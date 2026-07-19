@@ -22,7 +22,7 @@ const validToolArguments = {
   select_classification_candidate: { detectionId: 'signal-12' },
   configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, trigger: { mode: 'single', levelDbm: -65 } },
   acquire_zero_span: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
-  set_rf_output: { enabled: false }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
+  set_rf_output: { enabled: false }, select_signal_lab_profile: { profileId: 'wifi-ofdm-20m' }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
@@ -60,7 +60,7 @@ describe('Atom agent contracts',()=>{
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'iq'}).success).toBe(true);
   });
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(50);
+    expect(agentToolDefinitions).toHaveLength(51);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -72,7 +72,7 @@ describe('Atom agent contracts',()=>{
       assertClosedDescribedObjects(tool.name,tool.parameters);
     }
   });
-  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 50 tools',()=>{
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 51 tools',()=>{
     expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     for(const tool of agentToolDefinitions){
@@ -102,6 +102,9 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('not a guessed or partial configure_marker replacement');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic sources carry only their declared exact timing and never receive invented RF controls');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('SignalLab is the factory startup default');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic scalar, detected-power, and complex-I/Q measurements');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('select_signal_lab_profile commands the connected SignalLab source');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never inferred knowledge of SignalLab selected state');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-source-qualified-receive-only means an exact embedded version maps to one frozen audited source commit');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('runtime serial identity does not attest the documented binary SHA-256');
@@ -148,7 +151,9 @@ describe('Atom agent contracts',()=>{
   });
   it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);
-    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(12_000);
+    // Budget raised 12_000 -> 12_500 with the 51st tool's SignalLab profile
+    // doctrine; the startup surface still carries only the loader definition.
+    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(12_500);
     const loaded=createAtomRealtimeResponseTools(['get_application_state','configure_analyzer']);
     expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','configure_analyzer']);
     expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='configure_analyzer'));
@@ -198,10 +203,12 @@ describe('Atom agent contracts',()=>{
       .toContain('distinct admission failure');
     expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
     expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
-    expect(agentControlBinding('classification.envelope.trigger-level').preferredTool).toBe('configure_zero_span');
-    expect(agentControlBinding('stft.attenuation-mode').preferredTool).toBe('configure_zero_span');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
+    // Retired never-rendered hooks stay retired: no binding may quietly readopt them.
+    for(const retired of ['workspace.spectrum','workspace.detection','measurement.view.envelope-stft','classification.envelope-rbw','classification.envelope.trigger-level','stft.attenuation-mode','stft.window','stft.capture']){
+      expect(()=>agentControlBinding(retired),retired).toThrow(/0 contract bindings/);
+    }
   });
   it('documents contextual Single and Run behavior for the I/Q workspace',()=>{
     expect(agentToolDefinitions.find(({name})=>name==='acquire_sweep')?.description).toContain('I/Q workspace');
@@ -235,6 +242,16 @@ describe('Atom agent contracts',()=>{
     expect(()=>validateAgentToolCall({callId:'9',name:'remote_device_touch',arguments:'{"x":1,"y":2,"gesture":"press"}'})).toThrow();
   });
   it('marks RF output as high impact',()=>expect(validateAgentToolCall({callId:'1',name:'set_rf_output',arguments:'{"enabled":true}'}).policy.approval).toBe('at-action'));
+  it('commands SignalLab profile selection as an approval-free operate tool with a bounded opaque ID',()=>{
+    const validated=validateAgentToolCall({callId:'1',name:'select_signal_lab_profile',arguments:'{"profileId":"wifi-ofdm-20m"}'});
+    expect(validated.policy.risk).toBe('operate');
+    expect(validated.policy.approval).toBe('never');
+    expect(()=>validateAgentToolCall({callId:'2',name:'select_signal_lab_profile',arguments:'{"profileId":""}'})).toThrow();
+    expect(()=>validateAgentToolCall({callId:'3',name:'select_signal_lab_profile',arguments:'{}'})).toThrow();
+    const description=agentToolDefinitions.find(tool=>tool.name==='select_signal_lab_profile')?.description??'';
+    expect(description).toContain('declared signal-lab-profile-selection catalog');
+    expect(description).toContain('never classifier evidence');
+  });
   it('requires an opaque candidate ID for device connection',()=>{
     expect(validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"candidate-1"}'}).policy.risk).toBe('operate');
     expect(()=>validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"/dev/cu.usbmodem"}'})).toThrow();

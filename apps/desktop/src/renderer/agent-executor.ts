@@ -653,6 +653,16 @@ export class AgentExecutor {
     };
   }
 
+  agentSignalLabCatalog = (): { selectedProfileId: string | null; profiles: readonly { profileId: string; family: string; label: string }[] } | null => {
+    const capability = this.k.state.instrument.session?.capabilities.features
+      .find((feature) => feature.kind === 'signal-lab-profile-selection');
+    if (capability?.kind !== 'signal-lab-profile-selection') return null;
+    return {
+      selectedProfileId: capability.selectedProfileId ?? null,
+      profiles: capability.profiles.map(({ profileId, family, label }) => ({ profileId, family, label })),
+    };
+  };
+
   applicationContext = (): string => {
     const k = this.k;
     const state = k.state;
@@ -776,6 +786,7 @@ export class AgentExecutor {
           acquisition: context.acquisition, continuous: context.continuous, continuousMode: context.continuousMode, simulated: context.simulated,
           error: context.visibleError, historyCount: context.historyCount, topology: context.topology,
           connection: k.state.instrument.session ? 'connected' : 'disconnected',
+          signalLab: this.agentSignalLabCatalog(),
           scalarConfiguration: context.scalarConfiguration, generator: context.generator,
           detection: context.detectionConfig, measurement: context.measurement, iq: context.iq,
           latestSweep: context.latestSweep, agentSurfaceVersion: ATOM_AGENT_VERSION,
@@ -1073,6 +1084,32 @@ export class AgentExecutor {
       case 'acquire_zero_span': { assertWorkspaceTransition(k.state.workspace, 'classification', k.currentGeneratorOutput()); const result = await k.acquisition.acquireZeroSpan(); k.applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); k.applyWorkspace('generator'); k.set({ generator: next }); return k.features.configureGeneratorWith(next); }
       case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; k.applyWorkspace('generator'); await k.features.setOutput(enabled); return { enabled, sourceKind: k.state.instrument.session?.provenance.sourceKind ?? 'unknown', evidence: 'driver-commanded' }; }
+      case 'select_signal_lab_profile': {
+        const profileId = (args as { profileId: string }).profileId;
+        const capability = k.state.instrument.session?.capabilities.features
+          .find((feature) => feature.kind === 'signal-lab-profile-selection');
+        if (capability?.kind !== 'signal-lab-profile-selection') throw new Error('Connected driver exposes no SignalLab profile-selection capability');
+        const advertisedProfileIds = capability.profiles.map((profile) => profile.profileId);
+        if (!advertisedProfileIds.includes(profileId)) {
+          throw new Error(`SignalLab profile ${profileId} is not in the advertised catalog: ${advertisedProfileIds.join(', ')}`);
+        }
+        const previousProfileId = capability.selectedProfileId;
+        // Same continuous-paused executeInstrumentFeature transaction as the
+        // visual profile picker, including its profile-driven span restaging.
+        await k.features.selectSignalLabProfileCommanded(profileId);
+        const selected = k.state.instrument.session?.capabilities.features
+          .find((feature) => feature.kind === 'signal-lab-profile-selection');
+        if (selected?.kind !== 'signal-lab-profile-selection' || selected.selectedProfileId !== profileId) {
+          throw new Error(`SignalLab did not report profile ${profileId} as selected after the commanded selection`);
+        }
+        return {
+          selected: true,
+          profileId,
+          previousProfileId,
+          evidence: 'driver-commanded',
+          scalarConfiguration: this.agentConfigurationContext(),
+        };
+      }
       case 'capture_device_screen': { const frame = await k.features.captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.pixelFormat, capturedAt: frame.capturedAt }; }
       case 'remote_device_touch': {
         const value = args as InstrumentScreenPoint & { gesture: 'tap' };
