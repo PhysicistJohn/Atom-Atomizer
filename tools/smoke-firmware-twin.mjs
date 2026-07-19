@@ -28,6 +28,7 @@ let readyResolve;
 let readyReject;
 const ready = new Promise((resolveReady, rejectReady) => { readyResolve = resolveReady; readyReject = rejectReady; });
 const exit = new Promise((resolveExit) => child.once('exit', (code, signal) => resolveExit({ code, signal })));
+child.once('exit', (code, signal) => readyReject(new Error(`Twin bridge exited before declaring ready (code ${code}, signal ${signal}). stderr tail:\n${stderr.slice(-4_000)}`)));
 child.once('error', (error) => readyReject(error));
 lines.on('line', (line) => {
   let value;

@@ -334,9 +334,7 @@ RF output enable always requires approval even if the original prompt requested 
 Firmware installation is not an Atomizer approval path. Application contract 6
 contains no updater UI, preload method, main-process IPC handler, or Atom tool.
 Download, physical preflight, DFU, flashing, journaling, and recovery are owned
-exclusively by standalone sibling `../Atom-Flasher`. Its active interface
-catalog v3 retains active application contract v2 (`deviceContractVersion: 2`);
-interface catalog v2 and legacy application contract v1 are frozen.
+exclusively by standalone sibling `../Atom-Flasher`. Its safety chain (write-started journal, RF-off-before-flash, USB admission, pinned OEM sha) is pinned by its own immutable contract test and safety suite.
 This includes native-picker admission of manifested custom firmware. Atomizer's
 warning-admitted `custom-unqualified` device identity is observation only and
 cannot prove artifact bytes, qualification, or update success. The distinct
@@ -464,7 +462,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-32:** Voice function chains are bounded to eight application calls after one non-executing loader call, and duplicate call IDs terminate the session.
 - **AI-33:** Every runtime method in `AtomizerInstrumentApiV1` has a machine-checked Atom tool or explicit agent exclusion, evidence projection, guarantee, and failure disposition; TinySA protocol-v3 details remain below its driver.
 - **AI-34:** Every rendered button/input/select/textarea/disclosure has either one agent-control contract or an explicit human-agent/approval exclusion; no interactive affordance is orphaned.
-- **AI-35:** Atomizer exposes no firmware-installation UI, IPC method, or Atom tool; standalone `Atom-Flasher` is the exclusive owner. Its active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen.
+- **AI-35:** Atomizer exposes no firmware-installation UI, IPC method, or Atom tool; standalone `Atom-Flasher` is the exclusive owner. Its safety chain (write-started journal, RF-off-before-flash, USB admission, pinned OEM sha) is pinned by its own immutable contract test and safety suite.
 - **AI-36:** Generic app-computer actions continue to fail closed on every local human-only or high-impact control.
 - **AI-37:** The `AtomizerInstrumentApiV1` runtime catalog and preload contain no legacy updater method.
 - **AI-38:** Firmware identity, `custom-unqualified`, and `custom-source-qualified-receive-only` provenance never imply installation authority, binary attestation, or a successful update.

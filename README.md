@@ -9,7 +9,7 @@ The live system is deliberately split into four independently versioned reposito
 | `Atom-Atomizer` | Operator app, instrument host, normal CDC analyzer/generator sessions outside firmware-update sessions, measurement analysis, Atom policy and approvals | Hosts the active SignalLab and `tinysa-zs407` drivers |
 | `Atom-Firmware` | Pinned executable Renode twin and bridge | Selectable through the `tinysa-zs407` driver |
 | `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic complex-I/Q producer for all 34 closed profiles, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned NDJSON measurement edge to Atomizer; Firmware stimulus sink remains reserved |
-| `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Active interface catalog v3 retaining active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 frozen; no Atomizer runtime edge |
+| `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Safety chain pinned by its own immutable contract test and safety suite; no Atomizer runtime edge |
 
 The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
@@ -437,101 +437,20 @@ npm run check
 npm --prefix ../Atom-SignalLab run check
 ```
 
-Cross-repository contract and executable-twin verification:
+Cross-repository and executable-twin verification:
 
 ```bash
-npm run check:trio-contract
 npm run train:signal-classifier
-npm run check:signal-classifier-model
-npm run check:signal-classifier
-npm run check:signal-classifier-publication
 npm run check:bayesian-detector
 npm run check:firmware-twin
-npm run release:trio
 ```
 
-`check:trio-contract` requires byte-identical v4 manifests and reconciles
-Atomizer, Firmware bridge, SignalLab, and external Flasher ownership/contract
-versions. Atom-Flasher's active interface catalog v3 retains the active
-application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and
-legacy application contract v1 are frozen. The trio does not pin an
-independently versioned Flasher firmware release.
 `train:signal-classifier` reproducibly regenerates the content-addressed model
-asset. Its ignored per-chunk cache is trusted-local crash-recovery and
-developer acceleration only; it is not release evidence and must not be copied
-between trust domains. The asset records the SHA-256 of the exact immutable
-bundled sampling-worker closure used for both fitting and calibration.
-Training runtime identity is also exact, not a semver range. The launcher reads
-`.node-version` and rejects before any private build unless its own
-`process.version` is exactly `v22.23.1`; the privately built trainer then
-independently verifies the attested identity
-`exact-repository-node-version-v1` / Node `22.23.1` / V8
-`12.4.254.21-node.56`. The generated training matrix and validation acceptance
-and report must carry that same identity. npm `10.9.8` remains a separate
-developer/CI tooling pin, not part of the trainer runtime identity.
-`check:signal-classifier-model` always starts an
-independent fresh-sampling check, while allowing only an interrupted instance
-of that same journaled check to resume. Once a fresh check completes, the next
-invocation starts a new run. It requires the checked-in model and hash manifest
-to be byte-identical before a trio release can pass. Each invocation compiles
-the trainer/worker pair twice into a private temporary directory, requires the
-two builds to be byte-identical, seals the selected pair read-only, and has the
-executed trainer attest both bundle hashes before it can acquire the exclusive
-run/publication lock. The trainer then pins that immutable worker bundle for
-both fitting and calibration and uses a recovery journal for the two-file
-model/manifest publication. The two renames are recoverable and runtime
-content-identity checked; they are not claimed to be one filesystem-atomic
-pair operation. The hash environment is a byte-consistency admission claim,
-not cryptographic authentication against a same-user adversary; the local
-checkout and installed toolchain remain trusted. These training/publication
-commands fail closed on Windows
-because Node's Windows mode APIs cannot prove the private bundles immutable;
-use macOS or Linux until a Windows ACL- or handle-based admission path is
-implemented. `check:signal-classifier` runs the pinned
-production detector/tracker, exact eight-admission feature window, pinned
-synthetic-support views, measured-interval eligibility masks, and decision
-policy over the SignalLab regression matrix. It keeps fitted unknowns, the
-strict unknown holdout, declared ambiguity stress cases, exact scalar-equivalence
-nulls, and the acquisition-limited one-timeslot GSM scenario as separate audit
-partitions. Exact-equivalence and ambiguity cases must accept only their
-declared compatible evidence classes; they are not forced into a
-scientifically false unique identity. These are observational-equivalence and
-development-regression checks, not untouched physical validation, emitter
-identification, or protocol validation. The following figures are retained from
-the superseded pre-v19 development regression only; they are unavailable as
-current release evidence until a fresh, independently regenerated v19 report
-replaces them. That eight-seed, three-interstitial-RBW regression
-ran 4,200 acquisition attempts and classified 9,944 first-ready
-representatives: hierarchical accuracy was 0.985318, known coverage 0.993796,
-covered-known hierarchical accuracy 1.0, fitted-unknown and strict-holdout
-rejection 1.0, and there were zero disallowed false-accept attempts. All 840
-exact-equivalence nuisance cells, 2,278 representative pairs, and 4,556
-evidence-view pairs matched within `1e-11` with zero discrepancies.
-`check:signal-classifier-publication` is the read-only publication gate run
-immediately after that validator. It requires the generated report, checked-in
-model bytes, hash manifest, README, and normative classifier documents to agree
-on the model SHA-256 and every published rounded validation figure; stale prose
-fails with the expected replacement text.
-The report's unkeyed `evidenceSha256` is a local integrity binding, not provenance authentication. Release trust comes from running the pinned clean-tree model rebuild and validator immediately before the publication gate; a copied or manually resealed report is not independent evidence.
-`check:bayesian-detector` runs a 64,000-null-sweep default simultaneous-family
-design across eight stationary Gamma/correlation configurations, one-look
-production-settings local-candidate Pd gates, a separate exact two-look
-production detector/tracker active-promotion matrix, common-scale gain
-invariance, and separately labeled out-of-model stress diagnostics. The null
-matrix uses the declared permissive high-candidate-load segmentation path; a
-lower threshold can merge components, so it is not presented as a mathematical
-superset of production segmentation. The last published regression observed
-zero nominal-null detections (simultaneous 95% upper bound 0.000933724 against
-the 0.001 target); its one-look branch completed 56,000 alternative trials and
-passed its aggregate pointwise Pd and paired-monotonicity gates, while the
-common-scale gain checks also passed. The two-look
-matrix requires an active runtime track containing the declared center after
-two ordered independent analytic looks; its pointwise lower gates are the
-squares of the predeclared one-look gates. Neither Pd matrix has simultaneous-
-family confidence. Both are conditional on the fixed detector prior and gain
-mixture. The injected mean shift is an observation-domain detector alternative,
-not a synthesized RF waveform, protocol, receiver calibration, sensitivity,
-prevalence, or field-strength claim.
+asset under an exactly pinned Node `22.23.1` runtime; its ignored per-chunk
+cache is local crash-recovery only, not release evidence.
+`check:bayesian-detector` runs the null-sweep false-alarm design, one-look and
+two-look Pd gates, and gain-invariance checks over the production
+detector/tracker.
 `check:firmware-twin` boots Renode, checks
 the exact ready declaration, runs a real firmware sweep, captures the LCD, and
 verifies generator output returns off.
@@ -540,7 +459,7 @@ verifies generator output returns off.
 
 - `apps/desktop`: Electron main/preload, React operator UI, Atom host, and app computer harness.
 - `packages/contracts`: runtime-validated instrument, device, transport, measurement, safety, and `AtomizerInstrumentApiV1` types.
-- `packages/instrument-runtime`: transport-neutral, contract-aware driver/session interfaces, registry, serialized manager, and measurement fingerprinting; it imports no adapter and has no TinySA or serial-port dependency, while enforcing the contracts' closed source/provenance and SignalLab feature variants.
+- `packages/instrument-runtime`: transport-neutral, contract-aware driver/session interfaces, registry, and serialized manager with sequence-tracked measurement delivery; it imports no adapter and has no TinySA or serial-port dependency, while enforcing the contracts' closed source/provenance and SignalLab feature variants.
 - `apps/desktop/src/shared/in-process-signal-lab-driver.ts`: shared in-process SignalLab adapter used by both editions; depends only on contracts, the transport-neutral runtime, and sibling SignalLab sources, never `serialport`.
 - `packages/tinysa`: `tinysa-zs407` adapter plus TinySA-specific physical serial, executable-twin, parser, scheduler, and device-service details (`@tinysa/device`).
 - `packages/test-device`: deterministic protocol test double used only by tests.

@@ -7,7 +7,7 @@ Trio authority: [contracts/trio-composition-v4.json](./contracts/trio-compositio
 
 Protocol authority: [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 Physical evidence: [docs/PHYSICAL_ZS407_CHARACTERIZATION.md](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
-Historical embedded-update evidence: [docs/FIRMWARE_UPDATE_CONTRACT.md](./docs/FIRMWARE_UPDATE_CONTRACT.md); active firmware installation is owned exclusively by sibling `../Atom-Flasher`. Its active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen
+Historical embedded-update evidence: [docs/FIRMWARE_UPDATE_CONTRACT.md](./docs/FIRMWARE_UPDATE_CONTRACT.md); active firmware installation is owned exclusively by sibling `../Atom-Flasher`. Its safety chain (write-started journal, RF-off-before-flash, USB admission, pinned OEM sha) is pinned by its own immutable contract test and safety suite
 Measurement authority: [docs/MEASUREMENT_CONTROLS_CONTRACT.md](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 Advanced-measurement authority: [docs/ADVANCED_MEASUREMENTS_CONTRACT.md](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
 SignalLab authority: sibling `../Atom-SignalLab/CONTRACTS.md` (Atomizer measurement edge active; Firmware stimulus sink reserved, not connected)
@@ -80,7 +80,7 @@ Work-package status is therefore interpreted as follows:
 
 The former embedded updater expanded WP-01 identity/provenance, WP-06 device lifecycle, WP-10 Electron integration, WP-13 hardware qualification, WP-14 release safety, and WP-20 Atom governance. Its accepted physical transaction and safety reasoning remain recorded in `docs/FIRMWARE_UPDATE_CONTRACT.md` and `docs/PHYSICAL_ZS407_CHARACTERIZATION.md` as characterization evidence.
 
-Atomizer no longer exposes firmware-download, preflight, DFU, write, acknowledgement, updater UI, updater IPC, or updater-agent operations. The standalone sibling `../Atom-Flasher` exclusively owns OEM release selection, manifested custom-firmware admission, content-addressed download/import, the local-human boundary, DFU admission, durable journals, and post-reboot continuity/identity verification. Atom-Flasher's active interface catalog v3 retains the active application contract v2 (`deviceContractVersion: 2`); interface catalog v2 and legacy application contract v1 are frozen and verified as historical publications. Atomizer retains only operational firmware compatibility, warning-admitted custom-firmware identity, diagnostics, device transport, traces, and twin behavior.
+Atomizer no longer exposes firmware-download, preflight, DFU, write, acknowledgement, updater UI, updater IPC, or updater-agent operations. The standalone sibling `../Atom-Flasher` exclusively owns OEM release selection, manifested custom-firmware admission, content-addressed download/import, the local-human boundary, DFU admission, durable journals, and post-reboot continuity/identity verification. Atom-Flasher's safety chain (write-started journal, RF-off-before-flash, USB admission, pinned OEM sha) is pinned by its own immutable contract test and safety suite. Atomizer retains only operational firmware compatibility, warning-admitted custom-firmware identity, diagnostics, device transport, traces, and twin behavior.
 
 For custom builds, Flasher's native picker begins in `../Atom-Firmware` when
 that sibling directory exists and remembers another directory only after a
@@ -142,7 +142,7 @@ docs/                     User, support, protocol, ADR, and release documents
 tools/                    Hardware probes and release utilities
 ../Atom-Firmware/       Executable Renode twin and future stimulus sink owner
 ../Atom-SignalLab/      Active high-level measurement producer and stimulus-authoring application
-../Atom-Flasher/        Independent updater (active interface catalog v3 and application contract v2; frozen interface catalog v2 and application contract v1)
+../Atom-Flasher/        Independent updater (safety chain pinned by its own immutable contract test and safety suite)
 ```
 
 ### Ownership rules
@@ -162,7 +162,7 @@ tools/                    Hardware probes and release utilities
 | Physical ZS407 | Physical device | `tinysa-zs407` driver | Exact USB/firmware-shell admission; custom revisions warning-admitted without source provenance |
 | Executable twin | `Atom-Firmware` | `tinysa-zs407` driver | Exact bridge v1 evidence; selectable and never represented as USB |
 | Stimulus intent | `Atom-SignalLab` | Future Firmware sink | Reserved-not-connected until coordinated activation; distinct from the active measurement edge |
-| Firmware installation | `Atom-Flasher` | Physical CDC/DFU device | Outside runtime trio; active interface catalog v3 retains active application contract v2 (`deviceContractVersion: 2`), while interface catalog v2 and legacy application contract v1 are frozen |
+| Firmware installation | `Atom-Flasher` | Physical CDC/DFU device | Outside runtime trio; safety chain pinned by its own immutable contract test and safety suite |
 | Atom tool/control topology | `packages/agent` | Renderer host | Exactly one policy, executor, projection and guarantee per hook |
 
 ### Required state machines
@@ -229,7 +229,7 @@ leases until child exit is confirmed.
 
 ### Assume/guarantee composition rule
 
-For each active producer→consumer edge, release composition is valid only when the producer guarantee implies every consumer assumption: `G_producer => A_consumer`. The three runtime repositories carry byte-identical copies of composition contract v4, and `npm run check:trio-contract` proves identity plus the pinned Firmware and SignalLab bridges, instrument API/driver registry, Atom surface, and external Flasher ownership versions.
+For each active producer→consumer edge, release composition is valid only when the producer guarantee implies every consumer assumption: `G_producer => A_consumer`. The three runtime repositories carry byte-identical copies of composition contract v4; `npm run check:firmware-twin` validates the active copy's version, `$id`, and firmware-party pins at runtime.
 
 - SignalLab→Atomizer assumes an exact bridge-v1 ready declaration and separately built artifact identity; SignalLab guarantees bounded serial NDJSON execution, high-level synthetic spectrum/detected-power observations, bounded deterministic complex-I/Q for all 34 closed profiles with independent bandwidth filtering and profile-dependent analytic-laboratory or standards-derived-engineering qualification, exact required integer-Hz detected-power tuning with source-side receiver filtering, explicit false-valued USB-emulation/firmware-execution/RF-emission claims, and selected-profile exclusion from measurement evidence. Standards-derived envelopes are explicitly neither packet-decodable nor conformance vectors.
 - Physical→Atomizer assumes completed discovery, exact ZS407 USB identity, and the required firmware shell including advertised `zero` offset readback; Atomizer guarantees `execution=physical`, `transport=usb-cdc-acm`, and verified USB only after identity. `zero ?` remains separately probed before raw acquisition is advertised.

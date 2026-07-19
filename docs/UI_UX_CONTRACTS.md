@@ -109,9 +109,7 @@ affordance, updater IPC, or Atom updater tool. Installed firmware identity and
 custom-unqualified provenance remain visible as device evidence. OEM release
 selection, manifested custom-firmware admission, download/import verification,
 preflight, DFU discovery, flashing, journaling, and recovery belong exclusively
-to standalone sibling `../Atom-Flasher`. Its active interface catalog v3
-retains active application contract v2 (`deviceContractVersion: 2`); interface
-catalog v2 and legacy application contract v1 are frozen. Atomizer neither
+to standalone sibling `../Atom-Flasher`. Its safety chain (write-started journal, RF-off-before-flash, USB admission, pinned OEM sha) is pinned by its own immutable contract test and safety suite. Atomizer neither
 launches nor remotely operates that safety boundary.
 
 In a sibling development checkout, Flasher's native custom-manifest picker
