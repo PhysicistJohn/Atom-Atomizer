@@ -2238,7 +2238,7 @@ describe('signal analysis', () => {
 
   it('keeps model provenance while rejecting a hand-built narrow line outside calibrated synthetic support', async () => {
     expect(SIGNAL_LAB_EMSO_MODEL).toMatchObject({
-      id: 'bayesian-observable-equivalence-v8', producer: 'tinysa-signal-lab', observableClassCount: 12,
+      id: 'bayesian-observable-equivalence-v9', producer: 'tinysa-signal-lab', observableClassCount: 12,
       preprocessing: 'scalar-observable-features-v7', priorId: 'engineering-design-class-weights-v1',
     });
     expect(SIGNAL_LAB_EMSO_MODEL).not.toHaveProperty('taxonomySize');
@@ -2251,7 +2251,7 @@ describe('signal analysis', () => {
     const result = await new SignalLabBayesianClassifier().classify(detection, { sweeps });
     expect(result).toMatchObject({
       label: 'unknown', decisionLevel: 'unknown', qualification: 'bayesian-observable-equivalence', scoreKind: 'model-posterior',
-      modelId: 'bayesian-observable-equivalence-v8',
+      modelId: 'bayesian-observable-equivalence-v9',
       unknownReason: 'out-of-domain', decisionSupport: { kind: 'synthetic-support-rank' },
     });
     expect(result.decisionSupport!.threshold).toBeDefined();

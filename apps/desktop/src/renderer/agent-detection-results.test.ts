@@ -248,7 +248,7 @@ describe('Atom detection-result projection', () => {
       label: 'observable:fm-angle-modulated-like',
       confidence: 0.91,
       candidates: [{ label: 'observable:fm-angle-modulated-like', confidence: 0.91, family: 'analog' }],
-      modelId: 'bayesian-observable-equivalence-v8',
+      modelId: 'bayesian-observable-equivalence-v9',
       qualification: 'bayesian-observable-equivalence',
       scoreKind: 'model-posterior',
       decisionLevel: 'equivalence-class',
