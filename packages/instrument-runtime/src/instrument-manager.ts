@@ -43,7 +43,6 @@ import {
   type InstrumentSession,
 } from './instrument-driver.js';
 import { InstrumentDriverRegistry } from './instrument-driver-registry.js';
-import { fingerprintInstrumentMeasurement } from './measurement-fingerprint.js';
 
 export type InstrumentManagerErrorCode =
   | 'admission-limit'
@@ -84,12 +83,11 @@ interface ActiveSession {
   fault?: InstrumentError;
   faultRevision: number;
   lastMeasurementSequence: number;
-  // Retain only a fixed-size digest for late event/return reconciliation. A
-  // complete I/Q result may be 64 MiB, so keeping thousands of full results
-  // here would turn a bounded protocol into an unbounded resident-memory leak.
-  measurementHistory: Map<number, { fingerprint: string; origins: Set<'return' | 'event'> }>;
-  measurementOrder: number[];
-  acquisition?: { eventFingerprint?: string };
+  // One latch per admitted acquisition: whether the driver's session event for
+  // the last returned measurement has already been delivered. Sequences are
+  // positive integers, so plain integer tracking replaces content digests.
+  lastMeasurementEventDelivered: boolean;
+  acquisition?: { eventSequence?: number };
   announced: boolean;
 }
 
@@ -110,7 +108,6 @@ export interface InstrumentConnectionCleanupRequirement {
   readonly phase: 'driver-pending' | 'rejected-session';
 }
 
-const MAX_MEASUREMENT_HISTORY = 8_192;
 const MAX_SYNCHRONOUS_SESSION_EVENTS = 256;
 const MAX_PENDING_MANAGER_OPERATIONS = 64;
 
@@ -301,8 +298,7 @@ export class InstrumentManager {
           : {}),
         faultRevision: 0,
         lastMeasurementSequence: 0,
-        measurementHistory: new Map(),
-        measurementOrder: [],
+        lastMeasurementEventDelivered: true,
         announced: false,
       };
       this.#active = active;
@@ -586,13 +582,12 @@ export class InstrumentManager {
         throw new InstrumentManagerError('driver-contract', 'Driver introduced receive-only safety state after session admission');
       }
       this.#assertPostAwaitState(active, faultRevision);
-      const fingerprint = fingerprintInstrumentMeasurement(measurement);
-      if (acquisition.eventFingerprint && acquisition.eventFingerprint !== fingerprint) {
+      if (acquisition.eventSequence !== undefined && acquisition.eventSequence !== measurement.sequence) {
         const failure = new InstrumentManagerError('driver-contract', 'Driver measurement event and acquisition return disagree');
         this.#faultActive(active, failure);
         throw failure;
       }
-      this.#admitReturnedMeasurement(active, measurement, fingerprint, Boolean(acquisition.eventFingerprint));
+      this.#admitReturnedMeasurement(active, measurement, acquisition.eventSequence !== undefined);
       this.#emit({ type: 'measurement', measurement });
       return measurement;
     } catch (error) {
@@ -843,19 +838,18 @@ export class InstrumentManager {
         assertMeasurementBinding(event.measurement, active, active.configuration);
         const acquisition = active.acquisition;
         if (acquisition) {
-          if (acquisition.eventFingerprint) throw new InstrumentDriverContractError('Driver emitted more than one measurement for one acquisition');
-          acquisition.eventFingerprint = fingerprintInstrumentMeasurement(event.measurement);
+          if (acquisition.eventSequence !== undefined) throw new InstrumentDriverContractError('Driver emitted more than one measurement for one acquisition');
+          acquisition.eventSequence = event.measurement.sequence;
           return undefined;
         }
-        const recorded = active.measurementHistory.get(event.measurement.sequence);
-        if (!recorded || !recorded.origins.has('return')) {
+        // A late event may reconcile only against the most recently returned
+        // measurement, exactly once. Sequences are positive, so the initial
+        // sentinel 0 can never admit an event before the first return.
+        if (event.measurement.sequence !== active.lastMeasurementSequence) {
           throw new InstrumentDriverContractError('Driver emitted a measurement outside an acquisition transaction');
         }
-        if (recorded.fingerprint !== fingerprintInstrumentMeasurement(event.measurement)) {
-          throw new InstrumentDriverContractError('Late driver measurement event disagrees with its acquisition return');
-        }
-        if (recorded.origins.has('event')) throw new InstrumentDriverContractError('Driver repeated a measurement event');
-        recorded.origins.add('event');
+        if (active.lastMeasurementEventDelivered) throw new InstrumentDriverContractError('Driver repeated a measurement event');
+        active.lastMeasurementEventDelivered = true;
         return undefined;
       } else if (event.type === 'status' && event.status === 'faulted') {
         this.#faultActive(active, {
@@ -892,36 +886,23 @@ export class InstrumentManager {
 
   #resetMeasurementState(active: ActiveSession): void {
     active.lastMeasurementSequence = 0;
-    active.measurementHistory.clear();
-    active.measurementOrder.length = 0;
+    active.lastMeasurementEventDelivered = true;
     active.acquisition = undefined;
   }
 
   #admitReturnedMeasurement(
     active: ActiveSession,
     measurement: InstrumentMeasurement,
-    fingerprint: string,
     hasEvent: boolean,
   ): void {
-    const existing = active.measurementHistory.get(measurement.sequence);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) {
-        throw new InstrumentManagerError('driver-contract', `Measurement sequence ${measurement.sequence} changed content`);
-      }
+    if (measurement.sequence === active.lastMeasurementSequence) {
       throw new InstrumentManagerError('driver-contract', `Measurement sequence ${measurement.sequence} was returned more than once`);
     }
-    if (measurement.sequence <= active.lastMeasurementSequence) {
+    if (measurement.sequence < active.lastMeasurementSequence) {
       throw new InstrumentManagerError('driver-contract', `Measurement sequence ${measurement.sequence} is not newer than ${active.lastMeasurementSequence}`);
     }
     active.lastMeasurementSequence = measurement.sequence;
-    active.measurementHistory.set(measurement.sequence, {
-      fingerprint,
-      origins: new Set(hasEvent ? ['return', 'event'] : ['return']),
-    });
-    active.measurementOrder.push(measurement.sequence);
-    if (active.measurementOrder.length > MAX_MEASUREMENT_HISTORY) {
-      active.measurementHistory.delete(active.measurementOrder.shift()!);
-    }
+    active.lastMeasurementEventDelivered = hasEvent;
   }
 
   #faultActive(active: ActiveSession, error: InstrumentError | Error, emit = true): void {

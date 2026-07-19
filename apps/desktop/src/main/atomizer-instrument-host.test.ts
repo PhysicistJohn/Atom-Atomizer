@@ -298,14 +298,14 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(host.state().streaming).toEqual({ status: 'stopped' });
   });
 
-  it('keeps a prolonged zero-latency producer serialized and bounds remembered measurement identities', async () => {
+  it('keeps a prolonged zero-latency producer serialized with exactly one acquisition in flight', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
     const host = new AtomizerInstrumentHost(manager, new FakePreferences(), {
       now: () => new Date(NOW),
       yieldToEventLoop: () => Promise.resolve(),
     });
-    const target = 8_205;
+    const target = 500;
     let stop: Promise<unknown> | undefined;
     host.subscribe((event) => {
       if (event.type === 'measurement' && event.measurement.sequence === target) stop = host.stopStreaming();
@@ -318,11 +318,13 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(manager.acquireCalls).toBe(target);
     expect(manager.maximumConcurrentAcquisitions).toBe(1);
     expect(manager.concurrentAcquisitions).toBe(0);
+    // Sequence policing belongs to the manager; the host republishes whatever
+    // the manager admits, keyed only against double delivery of one tuple.
     manager.measurementQueue.push({
       ...measurementFixture(1),
-      measurementId: 'measurement:reused-after-bounded-window',
+      measurementId: 'measurement:manager-admitted-restart',
     });
-    await expect(host.acquire()).resolves.toMatchObject({ measurementId: 'measurement:reused-after-bounded-window' });
+    await expect(host.acquire()).resolves.toMatchObject({ measurementId: 'measurement:manager-admitted-restart' });
   }, 20_000);
 
   it('makes background acquisition failure queryable and delegates shutdown to manager', async () => {
@@ -345,7 +347,7 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
     manager.echoMeasurementEvent = true;
-    manager.measurementEventTransform = (measurement) => ({ ...measurement, measurementId: 'conflicting-event' });
+    manager.measurementEventTransform = (measurement) => ({ ...measurement, sequence: measurement.sequence + 1 });
     const host = createHost(manager, new FakePreferences());
     const measurements: InstrumentMeasurement[] = [];
     host.subscribe((event) => { if (event.type === 'measurement') measurements.push(event.measurement); });

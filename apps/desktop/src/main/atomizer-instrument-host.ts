@@ -37,14 +37,13 @@ import {
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
 } from '@tinysa/contracts';
-import { fingerprintInstrumentMeasurement, type InstrumentManager } from '@tinysa/instrument-runtime';
+import type { InstrumentManager } from '@tinysa/instrument-runtime';
 import type {
   InstrumentPreference,
   LoadedInstrumentPreference,
 } from './instrument-preference.js';
 import { selectPreferredInstrument } from './startup-admission.js';
 
-const MAX_REMEMBERED_MEASUREMENTS = 8_192;
 const MAX_PENDING_HOST_OPERATIONS = 64;
 
 export interface AtomizerInstrumentPreferencePort {
@@ -108,8 +107,7 @@ type HostLifecycle = 'open' | 'closing' | 'closed';
 export class AtomizerInstrumentHost {
   readonly #listeners = new Set<(event: AtomizerInstrumentEvent) => void>();
   readonly #unsubscribeManager: () => void;
-  readonly #emittedMeasurements = new Map<string, string>();
-  readonly #measurementOrder: string[] = [];
+  #lastPublishedMeasurement: { sessionId: string; configurationRevision: string; sequence: number } | undefined;
   readonly #normalOperations: ScheduledHostOperation[] = [];
   #safetyOperation: ScheduledHostOperation | undefined;
   #operationRunning = false;
@@ -124,7 +122,7 @@ export class AtomizerInstrumentHost {
   #disconnectPromise: Promise<void> | undefined;
   #shutdownPromise: Promise<void> | undefined;
   #connectionEpoch: object = Object.freeze({});
-  #pendingAcquisition: { eventFingerprint?: string } | undefined;
+  #pendingAcquisition: { eventSequence?: number } | undefined;
   #lifecycle: HostLifecycle = 'open';
 
   constructor(
@@ -439,15 +437,14 @@ export class AtomizerInstrumentHost {
 
   async #acquireAndPublish(): Promise<InstrumentMeasurement> {
     if (this.#pendingAcquisition) throw new Error('Instrument host acquisition transaction re-entered');
-    const pending: { eventFingerprint?: string } = {};
+    const pending: { eventSequence?: number } = {};
     this.#pendingAcquisition = pending;
     try {
       const measurement = instrumentMeasurementSchema.parse(await this.manager.acquire());
-      const fingerprint = fingerprintInstrumentMeasurement(measurement);
-      if (pending.eventFingerprint && pending.eventFingerprint !== fingerprint) {
+      if (pending.eventSequence !== undefined && pending.eventSequence !== measurement.sequence) {
         throw new Error('Instrument manager measurement event and acquisition return disagree');
       }
-      this.#emitMeasurementOnce(measurement, fingerprint, true);
+      this.#emitMeasurementOnce(measurement, true);
       return measurement;
     } finally {
       if (this.#pendingAcquisition === pending) this.#pendingAcquisition = undefined;
@@ -458,13 +455,13 @@ export class AtomizerInstrumentHost {
     const event = instrumentManagerEventSchema.parse(value);
     if (event.type === 'measurement') {
       if (this.#pendingAcquisition) {
-        if (this.#pendingAcquisition.eventFingerprint) {
+        if (this.#pendingAcquisition.eventSequence !== undefined) {
           this.#faultActiveStream('Instrument manager emitted more than one measurement for one acquisition');
           return;
         }
-        this.#pendingAcquisition.eventFingerprint = fingerprintInstrumentMeasurement(event.measurement);
+        this.#pendingAcquisition.eventSequence = event.measurement.sequence;
       } else {
-        this.#emitMeasurementOnce(event.measurement, fingerprintInstrumentMeasurement(event.measurement), false);
+        this.#emitMeasurementOnce(event.measurement, false);
       }
     } else {
       if ((event.type === 'status' && event.status === 'faulted') || event.type === 'error') {
@@ -473,20 +470,19 @@ export class AtomizerInstrumentHost {
       this.#emit(event);
     }
     if (event.type === 'disconnected') {
-      this.#emittedMeasurements.clear();
-      this.#measurementOrder.length = 0;
+      this.#lastPublishedMeasurement = undefined;
     }
   }
 
-  #emitMeasurementOnce(measurement: InstrumentMeasurement, fingerprint: string, allowNovel: boolean): void {
-    const key = JSON.stringify([measurement.sessionId, measurement.configurationRevision, measurement.sequence]);
-    const previous = this.#emittedMeasurements.get(key);
-    if (previous) {
-      if (previous !== fingerprint) {
-        const message = `Instrument measurement sequence ${measurement.sequence} changed identity or content`;
-        this.#faultActiveStream(message);
-        throw new Error(message);
-      }
+  #emitMeasurementOnce(measurement: InstrumentMeasurement, allowNovel: boolean): void {
+    // The manager already polices sequence monotonicity and content identity;
+    // the host only needs once-only publication when the same measurement is
+    // delivered through both the manager event and the acquisition return.
+    const last = this.#lastPublishedMeasurement;
+    if (last
+      && last.sessionId === measurement.sessionId
+      && last.configurationRevision === measurement.configurationRevision
+      && last.sequence === measurement.sequence) {
       return;
     }
     if (!allowNovel) {
@@ -494,11 +490,11 @@ export class AtomizerInstrumentHost {
       this.#faultActiveStream(message);
       throw new Error(message);
     }
-    this.#emittedMeasurements.set(key, fingerprint);
-    this.#measurementOrder.push(key);
-    if (this.#measurementOrder.length > MAX_REMEMBERED_MEASUREMENTS) {
-      this.#emittedMeasurements.delete(this.#measurementOrder.shift()!);
-    }
+    this.#lastPublishedMeasurement = {
+      sessionId: measurement.sessionId,
+      configurationRevision: measurement.configurationRevision,
+      sequence: measurement.sequence,
+    };
     this.#emit({ type: 'measurement', measurement });
   }
 

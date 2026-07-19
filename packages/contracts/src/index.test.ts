@@ -11,8 +11,6 @@ import {
   hertz,
   markerConfigurationSchema,
   MAX_STAGED_SWEEP_POINTS,
-  microseconds,
-  modelPackageManifestSchema,
   portCandidateSchema,
   signalDetectionConfigSchema,
   SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES,
@@ -42,8 +40,7 @@ const analyzer = {
 describe('domain units and firmware-derived validation', () => {
   it('accepts exact integer frequencies', () => expect(hertz(17_922_600_000)).toBe(17_922_600_000));
   it('rejects fractional frequencies', () => expect(() => hertz(1.5)).toThrow(RangeError));
-  it('rejects invalid duration and level', () => {
-    expect(() => microseconds(-1)).toThrow(RangeError);
+  it('rejects invalid level', () => {
     expect(() => dBm(Number.NaN)).toThrow(RangeError);
   });
   it('requires a complete, ordered analyzer request', () => {
@@ -122,9 +119,6 @@ describe('domain units and firmware-derived validation', () => {
     expect(portCandidateSchema.safeParse({ id: 'x', path: '/dev/x', usbMatch: 'guessed', transport: 'usb-cdc-acm', execution: 'physical' }).success).toBe(false);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 }).success).toBe(true);
     expect(signalDetectionConfigSchema.safeParse({ threshold: { strategy: 'noise-relative', marginDb: -1 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 1, releaseAfterMissedSweeps: 0 }).success).toBe(false);
-  });
-  it('rejects malformed model package hashes', () => {
-    expect(modelPackageManifestSchema.safeParse({ schemaVersion: 1, modelId: 'm', version: '1', assetSha256: 'not-a-hash' }).success).toBe(false);
   });
   it('closes trace and marker contracts', () => {
     expect(traceBankConfigurationSchema.safeParse([

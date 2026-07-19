@@ -1319,17 +1319,20 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       const returned = sweptMeasurement(session!, configuration.configurationRevision, 1);
       session!.emit({
         type: 'measurement',
-        measurement: { ...returned, measurementId: 'event-disagrees' },
+        measurement: sweptMeasurement(session!, configuration.configurationRevision, 2),
       });
       return returned;
     };
 
-    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'driver-contract',
+      message: 'Driver measurement event and acquisition return disagree',
+    });
     expect(events.some((event) => event.type === 'measurement')).toBe(false);
     expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract' } });
   });
 
-  it('reconciles cloned late I/Q events by digest without retaining the complete payload', async () => {
+  it('reconciles one late I/Q event by sequence without retaining or republishing the payload', async () => {
     let session: StubSession;
     const driver = new StubDriver(
       'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
@@ -1355,7 +1358,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     expect(events.filter((event) => event.type === 'measurement')).toHaveLength(publishedBeforeLateEvent);
   });
 
-  it('terminal-faults a late I/Q event whose payload differs from its acquisition return', async () => {
+  it('terminal-faults a repeated late measurement event', async () => {
     let session: StubSession;
     const driver = new StubDriver(
       'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
@@ -1367,10 +1370,29 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     const returned = complexIqMeasurement(session!, configuration.configurationRevision, 4);
     session!.onAcquire = async () => returned;
     await manager.acquire();
-    const changed = returned.samples.slice();
-    changed[changed.length - 1] = 1;
 
-    session!.emit({ type: 'measurement', measurement: { ...returned, samples: changed } });
+    session!.emit({ type: 'measurement', measurement: { ...returned, samples: returned.samples.slice() } });
+    expect(manager.snapshot()?.fault).toBeUndefined();
+    session!.emit({ type: 'measurement', measurement: { ...returned, samples: returned.samples.slice() } });
+
+    expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract', recoverable: false } });
+    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+  });
+
+  it('terminal-faults a late measurement event whose sequence was never returned', async () => {
+    let session: StubSession;
+    const driver = new StubDriver(
+      'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, complexIqCapabilities())),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await manager.connect((await manager.discover()).candidates[0]!);
+    const configuration = await manager.configure(iqConfiguration());
+    const returned = complexIqMeasurement(session!, configuration.configurationRevision, 4);
+    session!.onAcquire = async () => returned;
+    await manager.acquire();
+
+    session!.emit({ type: 'measurement', measurement: { ...returned, sequence: 9, samples: returned.samples.slice() } });
 
     expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract', recoverable: false } });
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });

@@ -38,8 +38,13 @@ async function ensureApp() {
     if (target) { pass('app-running', 'CDP already reachable on :9222'); return target; }
   } catch { /* not running yet */ }
   info('app-launch', 'CDP unreachable; launching "Atomizer Dev" with --remote-debugging-port=9222');
+  // The dev installer auto-launches the app WITHOUT the debug flag, and `open`
+  // on a running app ignores new --args entirely; kill any flagless instance
+  // first so the flagged launch below actually takes effect.
+  await run('pkill', ['-f', 'Atomizer Dev.app']).catch(() => undefined);
+  await wait(2000);
   await run('open', ['-a', 'Atomizer Dev', '--args', '--remote-debugging-port=9222']);
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     await wait(1500);
     try {

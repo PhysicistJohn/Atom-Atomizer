@@ -39,8 +39,6 @@ export const SOURCE_QUALIFIED_ZS407_CUSTOM_RECEIVER_FIRMWARE_IDENTITIES = Object
 } as const);
 
 export type SupportedZs407FirmwareVersion = keyof typeof SUPPORTED_ZS407_FIRMWARE_IDENTITIES;
-export type SupportedZs407FirmwareRevision =
-  (typeof SUPPORTED_ZS407_FIRMWARE_IDENTITIES)[SupportedZs407FirmwareVersion]['reportedRevision'];
 export type SupportedZs407FirmwareSourceCommit =
   (typeof SUPPORTED_ZS407_FIRMWARE_IDENTITIES)[SupportedZs407FirmwareVersion]['sourceCommit'];
 export type FirmwareSourceCommit =

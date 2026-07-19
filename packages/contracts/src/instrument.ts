@@ -87,46 +87,10 @@ export function projectDetectedPowerTuneHz(
   return projected;
 }
 
-export const INSTRUMENT_CONTRACT_LIMITS_V1 = Object.freeze({
-  complexIqBytes: MAX_COMPLEX_IQ_BYTES_V1,
-  complexIqSampleFormats: MAX_COMPLEX_IQ_SAMPLE_FORMATS_V1,
-  scalarMeasurementBytes: MAX_SCALAR_MEASUREMENT_BYTES_V1,
-  sweptSpectrumPoints: MAX_SWEPT_SPECTRUM_POINTS_V1,
-  detectedPowerSamples: MAX_DETECTED_POWER_SAMPLES_V1,
-  screenFrameBytes: MAX_SCREEN_FRAME_BYTES_V1,
-  screenDimension: MAX_SCREEN_DIMENSION_V1,
-  frequencyHz: MAX_INSTRUMENT_FREQUENCY_HZ_V1,
-  sampleRateHz: MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1,
-  durationSeconds: MAX_INSTRUMENT_DURATION_SECONDS_V1,
-  elapsedMilliseconds: MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1,
-  powerAbsoluteDb: MAX_INSTRUMENT_POWER_ABS_DB_V1,
-  driverDiscoveryCandidates: MAX_DRIVER_DISCOVERY_CANDIDATES_V1,
-  driverDiscoveryFailures: MAX_DRIVER_DISCOVERY_FAILURES_V1,
-  discoveryCandidates: MAX_DISCOVERY_CANDIDATES_V1,
-  discoveryFailures: MAX_DISCOVERY_FAILURES_V1,
-  acquisitionCapabilities: MAX_ACQUISITION_CAPABILITIES_V1,
-  featureCapabilities: MAX_FEATURE_CAPABILITIES_V1,
-  rfGeneratorPaths: MAX_RF_GENERATOR_PATHS_V1,
-  diagnosticReports: MAX_DIAGNOSTIC_REPORTS_V1,
-  diagnosticLines: MAX_DIAGNOSTIC_LINES_V1,
-  diagnosticLineCharacters: MAX_DIAGNOSTIC_LINE_CHARACTERS_V1,
-  signalLabProfiles: MAX_SIGNAL_LAB_PROFILES_V1,
-  signalLabSourceReferences: MAX_SIGNAL_LAB_SOURCE_REFERENCES_V1,
-  endpointPathCharacters: MAX_INSTRUMENT_ENDPOINT_PATH_CHARACTERS_V1,
-  metadataCharacters: MAX_INSTRUMENT_METADATA_CHARACTERS_V1,
-  messageCharacters: MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1,
-  timestampCharacters: MAX_INSTRUMENT_TIMESTAMP_CHARACTERS_V1,
-  sequence: MAX_INSTRUMENT_SEQUENCE_V1,
-  driverIdCharacters: MAX_INSTRUMENT_DRIVER_ID_CHARACTERS_V1,
-  opaqueIdCharacters: MAX_INSTRUMENT_OPAQUE_ID_CHARACTERS_V1,
-  sourceKinds: MAX_INSTRUMENT_SOURCE_KINDS_V1,
-} as const);
-
 export const instrumentDriverIdSchema = z.string().min(1).max(MAX_INSTRUMENT_DRIVER_ID_CHARACTERS_V1)
   .regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/);
 export type InstrumentDriverId = z.infer<typeof instrumentDriverIdSchema>;
 export const instrumentOpaqueIdSchema = z.string().min(1).max(MAX_INSTRUMENT_OPAQUE_ID_CHARACTERS_V1).regex(/\S/);
-export type InstrumentOpaqueId = z.infer<typeof instrumentOpaqueIdSchema>;
 export const instrumentTimestampSchema = z.string().max(MAX_INSTRUMENT_TIMESTAMP_CHARACTERS_V1).datetime();
 
 /**
@@ -368,7 +332,6 @@ export const instrumentDriverDiscoveryFailureSchema = z.object({
   recoverable: z.boolean(),
   message: z.string().min(1).max(MAX_INSTRUMENT_MESSAGE_CHARACTERS_V1),
 }).strict();
-export type InstrumentDriverDiscoveryFailure = z.infer<typeof instrumentDriverDiscoveryFailureSchema>;
 export const instrumentDriverDiscoveryResultSchema = z.object({
   candidates: boundedReadonlyArray(instrumentCandidateDescriptorSchema, MAX_DRIVER_DISCOVERY_CANDIDATES_V1),
   failures: boundedReadonlyArray(instrumentDriverDiscoveryFailureSchema, MAX_DRIVER_DISCOVERY_FAILURES_V1),
@@ -626,7 +589,6 @@ const signalLabProfileGeometryShape = {
 } as const;
 
 export const signalLabProfileGeometrySchema = z.object(signalLabProfileGeometryShape).strict();
-export type SignalLabProfileGeometry = z.infer<typeof signalLabProfileGeometrySchema>;
 
 const signalLabWaveformProjectionSchema = z.object({
   allocation: z.enum([
@@ -688,7 +650,6 @@ export const signalLabWaveformDescriptorSchema = z.object({
     context.addIssue({ code: 'custom', path: ['source', 'organization'], message: 'Standards or conformance-qualified waveforms require an external standards organization' });
   }
 });
-export type SignalLabWaveformDescriptor = z.infer<typeof signalLabWaveformDescriptorSchema>;
 
 export const signalLabChannelStateSchema = z.object({
   model: z.enum(['awgn', 'rayleigh']),
@@ -895,7 +856,6 @@ export const instrumentMeasurementQualificationSchema = z.enum([
   'analytic-complex-baseband',
   'standards-derived-complex-baseband',
 ]);
-export type InstrumentMeasurementQualification = z.infer<typeof instrumentMeasurementQualificationSchema>;
 
 const scalarMeasurementQualificationSchema = z.enum([
   'device-observed',

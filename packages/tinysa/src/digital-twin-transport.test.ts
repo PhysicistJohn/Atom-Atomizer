@@ -475,6 +475,30 @@ done
     }
   });
 
+  it('A9: rejects a ready handshake whose contractVersion does not match, loudly and before opening', async () => {
+    const mismatchedReady = JSON.stringify({
+      ...JSON.parse(READY) as Record<string, unknown>,
+      contractVersion: 2,
+    });
+    const repository = await bridgeRepository(`
+printf '%s\\n' "$$" > "$(dirname "$0")/bridge.pid"
+printf '%s\\n' '${mismatchedReady}'
+/bin/sleep 60
+`);
+    const transport = new RenodeDigitalTwinTransport(repository);
+    const events: TransportEvent['type'][] = [];
+    transport.onEvent((event) => events.push(event.type));
+
+    await expect(transport.open(structuredClone(transport.port)))
+      .rejects.toThrow(/ready mismatch at contractVersion/);
+
+    // The refused bridge process group is reaped and the transport never opened.
+    expect(events).not.toContain('opened');
+    const pid = Number((await readFile(join(repository, 'tools/bridge.pid'), 'utf8')).trim());
+    await expectProcessGroupGone(pid);
+    await expect(transport.close()).resolves.toBeUndefined();
+  });
+
   it('treats an unsolicited response as terminal and reaps the bridge process group', async () => {
     const repository = await bridgeRepository(`
 printf '%s\\n' '${READY}'

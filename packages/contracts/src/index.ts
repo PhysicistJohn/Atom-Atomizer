@@ -36,8 +36,6 @@ export * from './instrument.js';
 export * from './firmware-provenance.js';
 export * from './atomizer-instrument-api.js';
 
-/** Version of the internal TinySA ZS407 shell/protocol contract, not the public renderer API. */
-export const TINYSA_PROTOCOL_CONTRACT_VERSION = 3 as const;
 export const TINYSA_USB_VENDOR_ID = '0483' as const;
 export const TINYSA_USB_PRODUCT_ID = '5740' as const;
 export const TINYSA_SHELL_PROMPT = 'ch> ' as const;
@@ -85,7 +83,6 @@ export const MAX_STAGED_SWEEP_POINTS = 4_096;
 
 export type Hertz = number & { readonly __unit: 'Hz' };
 export type DecibelMilliwatt = number & { readonly __unit: 'dBm' };
-export type Microseconds = number & { readonly __unit: 'us' };
 
 export const hertz = (value: number): Hertz => {
   if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('Frequency must be a non-negative safe integer in Hz');
@@ -95,17 +92,12 @@ export const dBm = (value: number): DecibelMilliwatt => {
   if (!Number.isFinite(value)) throw new RangeError('Level must be finite');
   return value as DecibelMilliwatt;
 };
-export const microseconds = (value: number): Microseconds => {
-  if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('Duration must be a non-negative safe integer');
-  return value as Microseconds;
-};
 
 export const instrumentTransportKindSchema = z.enum(['usb-cdc-acm', 'renode-monitor-bridge', 'protocol-test-double']);
 export type InstrumentTransportKind = z.infer<typeof instrumentTransportKindSchema>;
 export const executionEnvironmentSchema = z.enum(['physical', 'firmware-digital-twin', 'protocol-test-double']);
 export type ExecutionEnvironment = z.infer<typeof executionEnvironmentSchema>;
 export const usbMatchSchema = z.enum(['exact-zs407-cdc', 'unverified-serial', 'firmware-digital-twin', 'protocol-test-double']);
-export type UsbMatch = z.infer<typeof usbMatchSchema>;
 export const digitalTwinProvenanceSchema = z.object({
   contractVersion: z.literal(1),
   bridge: z.literal('renode-monitor-v1'),
@@ -1241,30 +1233,6 @@ export interface AnalysisModeDefinition {
   status: 'available' | 'experimental' | 'requires-model';
   requiredCapabilities: readonly string[];
 }
-export const modelPackageManifestSchema = z.object({
-  schemaVersion: z.literal(1),
-  modelId: z.string().min(1),
-  version: z.string().min(1),
-  assetSha256: z.string().regex(/^[a-f0-9]{64}$/i),
-  taxonomyId: z.string().min(1),
-  preprocessingId: z.string().min(1),
-  license: z.string().min(1),
-  supportedDomain: z.object({
-    models: z.array(z.string().min(1)).min(1),
-    firmware: z.array(z.string().min(1)),
-    minimumFrequencyHz: z.number().int().nonnegative(),
-    maximumFrequencyHz: z.number().int().positive(),
-    pointCounts: z.array(z.number().int().min(2)).min(1),
-  }).strict().refine((value) => value.maximumFrequencyHz > value.minimumFrequencyHz, { message: 'maximumFrequencyHz must exceed minimumFrequencyHz' }),
-  metrics: z.object({
-    datasetId: z.string().min(1),
-    macroF1: z.number().min(0).max(1),
-    expectedCalibrationError: z.number().min(0).max(1),
-    openSetRecall: z.number().min(0).max(1),
-  }).strict(),
-}).strict();
-export type ModelPackageManifest = z.infer<typeof modelPackageManifestSchema>;
-
 export const screenPointSchema = z.object({
   x: z.number().int().min(0).max(ZS407_FIRMWARE_LIMITS.screenWidth - 1),
   y: z.number().int().min(0).max(ZS407_FIRMWARE_LIMITS.screenHeight - 1),
@@ -1660,9 +1628,3 @@ export interface WaveformClassificationEvidence {
   detectedPowerCaptureReceipt?: DetectedPowerCaptureReceipt;
 }
 
-export interface AnalysisApiV2 {
-  listModes(): Promise<readonly AnalysisModeDefinition[]>;
-  configureDetection(config: SignalDetectionConfig): Promise<void>;
-  analyzeSweep(sweep: Sweep): Promise<readonly DetectedSignal[]>;
-  classify(detection: DetectedSignal, evidence: WaveformClassificationEvidence): Promise<WaveformClassification>;
-}
