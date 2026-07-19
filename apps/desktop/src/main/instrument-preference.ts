@@ -11,7 +11,7 @@ import {
 import {
   SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
   SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
-} from '@tinysa/signal-lab-driver';
+} from '../shared/in-process-signal-lab-driver.js';
 
 export const SIGNAL_LAB_DRIVER_ID = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
 export const INSTRUMENT_PREFERENCE_FILENAME = 'instrument-preference-v1.json' as const;

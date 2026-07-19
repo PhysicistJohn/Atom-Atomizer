@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   classificationCaptureTargetProjections,
@@ -28,9 +26,9 @@ import type {
   WaveformClassification,
 } from '@tinysa/contracts';
 import {
+  InProcessSignalLabDriver,
   SIGNAL_LAB_EXACT_SWEEP_SECONDS,
-  SignalLabInstrumentDriver,
-} from '@tinysa/signal-lab-driver';
+} from '../shared/in-process-signal-lab-driver.js';
 import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
 import { AtomizerInstrumentHost } from './atomizer-instrument-host.js';
 import {
@@ -89,14 +87,9 @@ const CANONIZED_PROFILE_GATES: readonly CanonizedProfileGate[] = [
   ], FULL_BAND_BLUETOOTH_OPPORTUNITIES),
 ];
 
-const atomizerRepositoryRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
-const shippedBridge = resolve(atomizerRepositoryRoot, '..', 'Atom-SignalLab', 'dist', 'bridge', 'atomizer-bridge.js');
 const signalLabIntegrationRequired = process.env.SIGNAL_LAB_INTEGRATION_REQUIRED === '1';
 const profileFilter = process.env.SIGNAL_LAB_CLASSIFIER_PROFILE?.trim();
 
-if (signalLabIntegrationRequired && !existsSync(shippedBridge)) {
-  throw new Error(`Required SignalLab integration bridge is missing at ${shippedBridge}`);
-}
 if (signalLabIntegrationRequired && profileFilter) {
   throw new Error('Required SignalLab integration may not narrow the canonized profile matrix');
 }
@@ -108,10 +101,10 @@ if (profileFilter && activeProfileGates.length !== 1) {
 }
 
 describe('SignalLab live observable-classification release gates', () => {
-  // Standalone Atomizer checkouts can omit sibling repositories. `npm run
-  // check` and the trio release gate build SignalLab first, so these tests are
-  // mandatory there and skipped only when the owned executable is absent.
-  it.skipIf(!existsSync(shippedBridge))(
+  // The measurement service runs in-process from sibling-repo sources (the
+  // same sources this file already requires from Atom-Classifier), so these
+  // gates are unconditional: no shipped bridge executable exists to be absent.
+  it(
     'matches the App-compatible consecutive-spectrum branch with no automatic detected-power capture',
     async () => {
       const host = createLiveSignalLabHost();
@@ -247,7 +240,7 @@ describe('SignalLab live observable-classification release gates', () => {
     600_000,
   );
 
-  it.skipIf(!existsSync(shippedBridge))(
+  it(
     'keeps a fresh qualified-envelope branch causal and excludes unqualified manual captures from Bayesian envelope evidence',
     async () => {
       const host = createLiveSignalLabHost();
@@ -441,7 +434,7 @@ describe('SignalLab live observable-classification release gates', () => {
     600_000,
   );
 
-  it.skipIf(!existsSync(shippedBridge))(
+  it(
     'keeps the live LTE E-TM3.1 equivalence-class probability inside the worker boundary',
     async () => {
       const host = createLiveSignalLabHost();
@@ -491,11 +484,7 @@ describe('SignalLab live observable-classification release gates', () => {
 });
 
 function createLiveSignalLabHost(): AtomizerInstrumentHost {
-  const driver = new SignalLabInstrumentDriver({
-    atomizerRepositoryRoot,
-    environment: {},
-    bridge: { readyTimeoutMs: 10_000, requestTimeoutMs: 7_000, shutdownTimeoutMs: 3_000 },
-  });
+  const driver = new InProcessSignalLabDriver();
   const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]));
   return new AtomizerInstrumentHost(manager, {
     load: async () => ({

@@ -132,7 +132,7 @@ Every package must:
 apps/desktop/             Electron main, preload, and React renderer
 packages/contracts/       Pure serializable TypeScript contracts
 packages/instrument-runtime/ Transport-neutral driver/session interfaces, registry, manager, and measurement fingerprinting
-packages/signal-lab-driver/ SignalLab adapter and bridge client (`@tinysa/signal-lab-driver`); contracts/runtime only, no serialport
+apps/desktop/src/shared/  In-process SignalLab adapter shared by both editions; contracts/runtime only, no serialport
 packages/tinysa/          TinySA driver plus TinySA source-specific internals (`@tinysa/device`)
 packages/test-device/     Test-only protocol double and transcript fixtures
 packages/analysis/        Traces, markers, detection and characterization
@@ -244,9 +244,10 @@ serialized `InstrumentManager`, and measurement fingerprinting depend on
 `@tinysa/contracts` and Zod, not on TinySA protocols or `serialport`.
 The runtime imports no adapter, but it is contract-aware and enforces the
 current closed source/provenance and SignalLab feature variants.
-`@tinysa/signal-lab-driver` depends only on that transport-neutral runtime and
-the contracts and owns the SignalLab adapter and bridge client without
-serial-port coupling.
+The shared in-process SignalLab adapter
+(`apps/desktop/src/shared/in-process-signal-lab-driver.ts`) depends only on
+that transport-neutral runtime, the contracts, and the sibling SignalLab
+sources, without serial-port coupling.
 `@tinysa/device` separately owns the `tinysa-zs407` adapter and all
 TinySA-specific protocol/transport code; its former generic compatibility
 entry points and runtime re-export are removed. Electron main imports lifecycle services

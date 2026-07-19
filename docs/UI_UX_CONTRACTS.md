@@ -1156,11 +1156,11 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
 | Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
-| Execution admission | `packages/instrument-runtime/src/instrument-driver-registry.ts`, `packages/instrument-runtime/src/instrument-manager.ts`, `packages/signal-lab-driver/src/signal-lab-instrument-driver.ts`, `packages/tinysa/src/tinysa-instrument-driver.ts`, `apps/desktop/src/main/atomizer-instrument-host.ts` |
+| Execution admission | `packages/instrument-runtime/src/instrument-driver-registry.ts`, `packages/instrument-runtime/src/instrument-manager.ts`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa/src/tinysa-instrument-driver.ts`, `apps/desktop/src/main/atomizer-instrument-host.ts` |
 | Trio/driver/SignalLab topology | `contracts/trio-composition-v4.json`, `packages/contracts/src/instrument.ts`, `packages/agent/src/index.ts` |
 | Detection and classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Complex I/Q | `components/IqWorkspace.tsx`, `apps/desktop/src/renderer/complex-iq.ts`, `packages/contracts/src/instrument.ts` |
-| Generator / embedded SignalLab Studio | `components/GeneratorWorkspace.tsx`, `apps/desktop/src/renderer/signal-lab-studio.ts`, `../Atom-SignalLab/src/SignalLabStudio.tsx`, `packages/signal-lab-driver`, `packages/tinysa` |
+| Generator / embedded SignalLab Studio | `components/GeneratorWorkspace.tsx`, `apps/desktop/src/renderer/signal-lab-studio.ts`, `../Atom-SignalLab/src/SignalLabStudio.tsx`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa` |
 | Device diagnostics/screen/touch | `components/DeviceWorkspace.tsx`, `packages/tinysa` |
 | CSV/JSON export | `apps/desktop/src/main/sweep-export.ts`, `main.ts` |
 | Visual tokens/layout | `apps/desktop/src/renderer/styles.css` |

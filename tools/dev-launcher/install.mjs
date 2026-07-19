@@ -10,7 +10,7 @@ const { requirePrivateEnvironmentFile } = require('./private-environment-file.cj
 
 const APP_NAME = 'Atomizer Dev';
 const BUNDLE_ID = 'org.tinysa.atomizer.dev';
-const CONTRACT_VERSION = 3;
+const CONTRACT_VERSION = 4;
 const here = dirname(fileURLToPath(import.meta.url));
 // Persist one canonical checkout identity even when the installer was invoked
 // through a compatibility symlink such as ../TinySA. This keeps logs, Vite

@@ -56,8 +56,9 @@ The transport-neutral, contract-aware driver lifecycle is owned by
 the serialized manager, and measurement fingerprinting depend only on the
 runtime contracts and validation library. The runtime imports no source
 adapter, but it enforces the contracts' current closed source/provenance and
-SignalLab feature variants. `@tinysa/signal-lab-driver` depends only on that
-runtime and `@tinysa/contracts`; it owns the SignalLab adapter and bridge client
+SignalLab feature variants. The SignalLab adapter is the shared in-process
+driver at `apps/desktop/src/shared/in-process-signal-lab-driver.ts`; it depends
+only on that runtime, `@tinysa/contracts`, and the sibling SignalLab sources,
 without a TinySA or `serialport` dependency. `@tinysa/device` owns only the
 `tinysa-zs407` adapter plus TinySA-specific serial, Renode, parser, scheduler,
 and device-service code. It does not re-export generic lifecycle ownership or
@@ -67,24 +68,21 @@ producer can evolve without inheriting another source's transport assumptions.
 
 ## SignalLab
 
-SignalLab is a separate application and Git repository. Atomizer builds and launches its version-1 high-level measurement bridge for the `signal-lab` driver:
+SignalLab is a separate application and Git repository. Atomizer runs its
+measurement service in-process in both editions: the shared `signal-lab`
+driver bundles the sibling checkout's `src/measurement-service.ts` (and the
+active v1 measurement contract document) directly into the desktop main
+process and the web page — no bridge subprocess, no packaged resource
+staging.
 
 ```bash
 npm --prefix ../Atom-SignalLab install
-npm --prefix ../Atom-SignalLab run build:bridge
 npm --prefix ../Atom-SignalLab run dev
 ```
 
-`npm run package:mac` first rebuilds that bridge, builds Atomizer, and stages a
-self-contained `signal-lab` Electron resource root containing the active v1
-contract, every generator-hashed JavaScript artifact, its ESM package
-boundary, and SignalLab's exact pinned Zod runtime. Electron Builder copies that
-root to `process.resourcesPath/signal-lab`, which is the only packaged location
-the factory-default driver admits. The pre-signing `afterPack` hook re-hashes
-the actual `.app` copy, rejects extra/missing/symlinked files, and normalizes the
-bridge executable mode. `npm run check:packaged-resources` verifies
-the layout, executable mode, dependency resolution, path-indirection rejection,
-and packaging configuration without producing a release artifact.
+`npm run package:mac` builds Atomizer with those SignalLab sources bundled
+into the main-process build; the packaged app carries no separate `signal-lab`
+resource root.
 
 It owns a 34-profile closed catalog: 12 public canonized scalar-observable
 profiles share the classifier's executable known-scenario source, while 22
@@ -543,7 +541,7 @@ verifies generator output returns off.
 - `apps/desktop`: Electron main/preload, React operator UI, Atom host, and app computer harness.
 - `packages/contracts`: runtime-validated instrument, device, transport, measurement, safety, and `AtomizerInstrumentApiV1` types.
 - `packages/instrument-runtime`: transport-neutral, contract-aware driver/session interfaces, registry, serialized manager, and measurement fingerprinting; it imports no adapter and has no TinySA or serial-port dependency, while enforcing the contracts' closed source/provenance and SignalLab feature variants.
-- `packages/signal-lab-driver`: independent SignalLab adapter and bridge client (`@tinysa/signal-lab-driver`); depends only on contracts and the transport-neutral runtime, never `serialport`.
+- `apps/desktop/src/shared/in-process-signal-lab-driver.ts`: shared in-process SignalLab adapter used by both editions; depends only on contracts, the transport-neutral runtime, and sibling SignalLab sources, never `serialport`.
 - `packages/tinysa`: `tinysa-zs407` adapter plus TinySA-specific physical serial, executable-twin, parser, scheduler, and device-service details (`@tinysa/device`).
 - `packages/test-device`: deterministic protocol test double used only by tests.
 - `packages/analysis`: traces, markers, detection, metrics, channel analysis, morphology, and envelope STFT.

@@ -13,18 +13,18 @@ import {
 } from '../../desktop/src/main/atomizer-instrument-host.js';
 import type { LoadedInstrumentPreference } from '../../desktop/src/main/instrument-preference.js';
 import {
-  BROWSER_SIGNAL_LAB_CANDIDATE_ID,
-  BROWSER_SIGNAL_LAB_DRIVER_ID,
-  BrowserSignalLabDriver,
-} from './browser-signal-lab-driver.js';
+  InProcessSignalLabDriver,
+  SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
+  SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
+} from '../../desktop/src/shared/in-process-signal-lab-driver.js';
 
 const PREF_KEY = 'atomizer:web:instrument-preference';
 
 const FACTORY_PREFERENCE = {
   schemaVersion: 1,
-  driverId: BROWSER_SIGNAL_LAB_DRIVER_ID,
+  driverId: SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
   candidateKind: 'signal-lab',
-  candidateId: BROWSER_SIGNAL_LAB_CANDIDATE_ID,
+  candidateId: SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
   updatedAt: '2026-01-01T00:00:00.000Z',
 } as const;
 
@@ -67,13 +67,13 @@ const browserPreferencePort: AtomizerInstrumentPreferencePort = {
 
 /**
  * The browser edition runs the same InstrumentManager + AtomizerInstrumentHost
- * stack as the desktop main process; only the driver (in-page SignalLab) and
- * this thin window-API adapter differ. Contract enforcement, streaming, event
- * ordering, and measurement reconciliation are therefore shared, not
- * reimplemented.
+ * stack — and the same in-process SignalLab driver — as the desktop main
+ * process; only this thin window-API adapter differs. Contract enforcement,
+ * streaming, event ordering, and measurement reconciliation are therefore
+ * shared, not reimplemented.
  */
 function createBrowserInstrumentApi(): AtomizerInstrumentApiV1 {
-  const manager = new InstrumentManager(new InstrumentDriverRegistry([new BrowserSignalLabDriver()]));
+  const manager = new InstrumentManager(new InstrumentDriverRegistry([new InProcessSignalLabDriver()]));
   const host = new AtomizerInstrumentHost(manager, browserPreferencePort);
   return {
     version: ATOMIZER_INSTRUMENT_API_VERSION,

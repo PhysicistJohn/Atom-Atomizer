@@ -1,6 +1,5 @@
 {
-  "contractVersion": 3,
+  "contractVersion": 4,
   "instrumentPolicy": "signal-lab-default-no-fallback",
-  "signalLabRepository": "../Atom-SignalLab",
   "port": 5173
 }

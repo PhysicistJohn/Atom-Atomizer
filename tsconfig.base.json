@@ -12,7 +12,6 @@
     "paths": {
       "@tinysa/contracts": ["packages/contracts/src/index.ts"],
       "@tinysa/instrument-runtime": ["packages/instrument-runtime/src/index.ts"],
-      "@tinysa/signal-lab-driver": ["packages/signal-lab-driver/src/index.ts"],
       "@tinysa/device": ["packages/tinysa/src/index.ts"],
       "@tinysa/test-device": ["packages/test-device/src/index.ts"],
       "@tinysa/analysis": ["packages/analysis/src/index.ts"],

@@ -58,7 +58,6 @@ jobs:
       - name: Install Atomizer
         run: npm ci
       - run: npm run check:launcher
-      - run: npm run check:packaged-resources
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
@@ -129,6 +128,6 @@ jobs:
       - name: Validate the Bayesian detector
         working-directory: Atom-Atomizer
         run: npm run check:bayesian-detector
-      - name: Require real SignalLab bridge interoperability
+      - name: Require real in-process SignalLab interoperability
         working-directory: Atom-Atomizer
         run: npm run check

@@ -11,7 +11,7 @@ import {
   TinySaZs407InstrumentDriver,
 } from '@tinysa/device';
 import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
-import { SignalLabInstrumentDriver } from '@tinysa/signal-lab-driver';
+import { InProcessSignalLabDriver } from '../shared/in-process-signal-lab-driver.js';
 import { OpenAiGateway } from './ai-gateway.js';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
@@ -42,7 +42,6 @@ await loadPrivateEnvironmentFromCandidates(privateEnvironment.candidates, {
   explicitFirstCandidate: privateEnvironment.explicitFirstCandidate,
 });
 const firmwareRepository = resolve(process.env.TINYSA_FIRMWARE_REPO?.trim() || resolve(here, '../../../../../Atom-Firmware'));
-const atomizerRepository = resolve(process.env.ATOMIZER_REPOSITORY_ROOT?.trim() || resolve(here, '../../../..'));
 const transport = new PhysicalOrTwinTransport(new NodeSerialTransport(), new RenodeDigitalTwinTransport(firmwareRepository));
 const device = new TinySaDeviceService(transport);
 const ai = new OpenAiGateway();
@@ -54,10 +53,7 @@ const ipcAdmission = new BoundedPrivilegedIpcAdmission();
 app.setName('Atomizer');
 const instrumentManager = new InstrumentManager(new InstrumentDriverRegistry([
   new TinySaZs407InstrumentDriver(device),
-  new SignalLabInstrumentDriver({
-    atomizerRepositoryRoot: atomizerRepository,
-    ...(app.isPackaged ? { packagedResourcesRoot: process.resourcesPath } : {}),
-  }),
+  new InProcessSignalLabDriver(),
 ]));
 const instrumentHost = new AtomizerInstrumentHost(
   instrumentManager,

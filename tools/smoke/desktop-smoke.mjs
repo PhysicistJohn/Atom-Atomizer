@@ -130,6 +130,10 @@ async function ensureConnected() {
   // The app auto-connects SignalLab via startup preference; give that a chance.
   try {
     await pollFor('auto-connect', isConnected, 45_000);
+    // A fresh launcher install rebuilds everything and the first Vite compile
+    // can mount the connection pill well before the sidebar acquisition
+    // controls exist; wait for the full control surface before proceeding.
+    await pollFor('controls-mounted', `Boolean(document.querySelector('button[data-agent-control="acquisition.single"]'))`, 60_000);
     pass('connected', 'session established (auto-connect or pre-existing)');
     return;
   } catch { /* fall through to the manual dialog path */ }

@@ -17,19 +17,18 @@ special file, ownership mismatch, or group/other permission bit fails closed
 with the rejected path, observed metadata where safe, and a corrective action.
 
 The installed launcher is bound to this checkout. On every cold launch it rebuilds
-and protocol-validates the sibling SignalLab measurement bridge, rebuilds the shared
-runtime packages plus Electron main/preload, starts Vite on the explicit port in
-`config.json`, and then imports the freshly built main process. Renderer changes use
-Vite HMR while the app is open. Main, preload, shared-package, and SignalLab bridge
+the shared runtime packages plus Electron main/preload, starts Vite on the explicit
+port in `config.json`, and then imports the freshly built main process. The SignalLab
+measurement service runs in-process (bundled from the sibling `../Atom-SignalLab`
+sources); there is no bridge subprocess to build or validate. Renderer changes use
+Vite HMR while the app is open. Main, preload, shared-package, and SignalLab source
 changes take effect after quitting and reopening the Dock app.
 
 `config.json` is the runtime contract. It pins
-`"instrumentPolicy": "signal-lab-default-no-fallback"` and the sibling SignalLab
-repository. The launcher passes the freshly built bridge through the explicit
-`ATOMIZER_SIGNAL_LAB_BRIDGE` boundary. A fresh launcher profile starts with SignalLab;
-Atomizer honors later explicit device selections, and startup admission never falls
-through to another driver when the preferred driver fails. SignalLab build, bridge
-handshake, discovery, evidence, insecure or missing `.env`, or occupied-port
+`"instrumentPolicy": "signal-lab-default-no-fallback"`. A fresh launcher profile
+starts with SignalLab; Atomizer honors later explicit device selections, and startup
+admission never falls through to another driver when the preferred driver fails.
+Package build, discovery, insecure or missing `.env`, or occupied-port
 failure aborts visibly and writes details to
 `~/Library/Logs/Atomizer Dev.log`. The current log and its sole `.1`
 rotation are each capped at 4 MiB; one child-process write is capped at 64 KiB,

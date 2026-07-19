@@ -8,8 +8,7 @@
     "dev": "npm run build:main && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build:main && vite build",
     "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron",
-    "stage:signal-lab-resource": "node ../../tools/stage-signal-lab-packaged-resource.mjs",
-    "package:prepare": "npm --prefix ../../../Atom-SignalLab run build:bridge && npm --prefix ../.. run build && npm run stage:signal-lab-resource",
+    "package:prepare": "npm --prefix ../.. run build",
     "package:mac": "npm run package:prepare && electron-builder --mac dmg zip",
     "package:win": "npm run package:prepare && electron-builder --win nsis portable",
     "package:linux": "npm run package:prepare && electron-builder --linux AppImage",
@@ -21,7 +20,6 @@
     "@tinysa/contracts": "*",
     "@tinysa/device": "*",
     "@tinysa/instrument-runtime": "*",
-    "@tinysa/signal-lab-driver": "*",
     "dotenv": "17.4.2",
     "lucide-react": "1.24.0",
     "react": "19.2.7",
@@ -54,18 +52,10 @@
       "node_modules/@serialport/**",
       "node_modules/serialport/**"
     ],
-    "afterPack": "../../tools/after-pack-signal-lab-resource.mjs",
     "files": [
       "dist/main/**",
       "dist/renderer/**",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "dist/packaged-resources/signal-lab",
-        "to": "signal-lab",
-        "filter": ["**/*"]
-      }
     ],
     "mac": {
       "icon": "build/icon.icns",

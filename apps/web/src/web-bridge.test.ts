@@ -138,6 +138,9 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
     if (signalLab?.kind !== 'signal-lab-profile-selection') throw new Error('SignalLab feature missing');
     const firstPerFamily = new Map<string, (typeof signalLab.profiles)[number]>();
     for (const profile of signalLab.profiles) {
+      // The capability schema also admits bare profile geometry; this session
+      // must advertise complete catalog descriptors.
+      if (!('family' in profile)) throw new Error(`SignalLab profile ${profile.profileId} lost its catalog descriptor`);
       if (!firstPerFamily.has(profile.family)) firstPerFamily.set(profile.family, profile);
     }
     expect(firstPerFamily.size).toBeGreaterThanOrEqual(6);

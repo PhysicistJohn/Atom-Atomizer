@@ -14,8 +14,8 @@ export default defineConfig(async () => {
     resolve: { dedupe: ['react', 'react-dom', 'lucide-react'] },
     server: {
       fs: {
-        // The browser edition bundles sibling-repo SignalLab sources, including
-        // the ?raw measurement-contract document, from ../../../Atom-SignalLab.
+        // The browser edition bundles sibling-repo SignalLab sources
+        // (measurement service + contract document) from ../../../Atom-SignalLab.
         allow: [new URL('../../..', import.meta.url).pathname],
       },
     },

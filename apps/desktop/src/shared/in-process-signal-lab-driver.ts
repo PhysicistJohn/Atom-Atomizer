@@ -22,17 +22,17 @@ import {
   type InstrumentDriver,
   type InstrumentSession,
 } from '@tinysa/instrument-runtime';
-import { AtomizerMeasurementService } from '../../../../Atom-SignalLab/src/measurement-service.js';
-import { type MeasurementSourceStatus } from '../../../../Atom-SignalLab/src/measurement-contract.js';
-import { base64ToBytes, sha256HexOfBytes } from '../../../../Atom-SignalLab/src/platform-bytes.js';
-import contractDocumentText from '../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v1.json?raw';
+import { AtomizerMeasurementService } from '../../../../../Atom-SignalLab/src/measurement-service.js';
+import { type MeasurementSourceStatus } from '../../../../../Atom-SignalLab/src/measurement-contract.js';
+import { base64ToBytes, sha256HexOfBytes } from '../../../../../Atom-SignalLab/src/platform-bytes.js';
+import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v1.json' with { type: 'json' };
 
-export const BROWSER_SIGNAL_LAB_DRIVER_ID = 'signal-lab' as const;
-export const BROWSER_SIGNAL_LAB_CANDIDATE_ID = 'signal-lab:web' as const;
-export const BROWSER_SIGNAL_LAB_SOURCE_ID = 'web' as const;
+export const SIGNAL_LAB_INSTRUMENT_DRIVER_ID = 'signal-lab' as const;
+export const SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID = 'signal-lab:default' as const;
+export const SIGNAL_LAB_INSTRUMENT_SOURCE_ID = 'default' as const;
 
-/** Same producer contract the desktop bridge enforces (see SignalLab's SIGNAL_LAB_EXACT_SWEEP_SECONDS). */
-const EXACT_SWEEP_SECONDS = 0.05;
+/** Canonical synthetic scalar-view duration admitted by the measurement service. */
+export const SIGNAL_LAB_EXACT_SWEEP_SECONDS = 0.05 as const;
 
 const SYNTHETIC_CONTROLS = {
   schemaVersion: 1,
@@ -41,23 +41,26 @@ const SYNTHETIC_CONTROLS = {
 } as const;
 
 /**
- * The desktop edition hashes the exact contract-file bytes it ships; the
- * browser bundles that same file's text, so its hash is byte-identical. The
- * generator hash cannot bind to shipped dist artifacts here — the generator IS
- * the page bundle — so it is a deterministic domain-separated derivation that
- * identifies "the in-page generator admitted for this contract" without
- * claiming desktop artifact identity.
+ * Both editions bundle the same contract JSON document, so hashing its
+ * canonical serialization identifies the admitted contract content
+ * byte-identically on desktop and web. (This is a hash of the parsed
+ * document's JSON serialization, not of the on-disk file bytes: with the
+ * bridge subprocess gone, nothing independently re-reads the file, and JSON
+ * bundling deterministically preserves member order.) The generator IS the
+ * app bundle itself, so its hash is a deterministic domain-separated
+ * derivation that identifies "the in-process generator admitted for this
+ * contract" without claiming any shipped-artifact identity.
  */
-const CONTRACT_SHA256 = sha256HexOfBytes(contractDocumentText);
-const IN_PAGE_GENERATOR_SHA256 = sha256HexOfBytes(`atomizer-web-in-page-generator\0${CONTRACT_SHA256}`);
+const CONTRACT_SHA256 = sha256HexOfBytes(JSON.stringify(contractDocument));
+const IN_PROCESS_GENERATOR_SHA256 = sha256HexOfBytes(`atomizer-in-process-generator\0${CONTRACT_SHA256}`);
 
 const CANDIDATE_DESCRIPTOR: InstrumentCandidateDescriptor = {
   schemaVersion: 1,
-  driverId: BROWSER_SIGNAL_LAB_DRIVER_ID,
-  candidateId: BROWSER_SIGNAL_LAB_CANDIDATE_ID,
-  displayName: 'SignalLab · Browser',
+  driverId: SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
+  candidateId: SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
+  displayName: 'SignalLab synthetic measurement source',
   sourceKind: 'signal-lab',
-  signalLab: { sourceId: BROWSER_SIGNAL_LAB_SOURCE_ID },
+  signalLab: { sourceId: SIGNAL_LAB_INSTRUMENT_SOURCE_ID },
 };
 
 function requireInteger(value: number, min: number, max: number, label: string): void {
@@ -67,14 +70,14 @@ function requireInteger(value: number, min: number, max: number, label: string):
 }
 
 /**
- * In-page SignalLab driver for the browser edition. It runs the exact
- * AtomizerMeasurementService the desktop bridge subprocess runs, and plugs
- * into the same InstrumentManager/AtomizerInstrumentHost stack, so the two
- * editions share one instrument code path end to end — only the process
- * boundary differs.
+ * In-process SignalLab driver shared by both editions. Desktop main and the
+ * browser page construct this same driver over the same in-process
+ * AtomizerMeasurementService and plug it into the same
+ * InstrumentManager/AtomizerInstrumentHost stack, so the two editions share
+ * one instrument code path end to end.
  */
-export class BrowserSignalLabDriver implements InstrumentDriver {
-  readonly driverId = BROWSER_SIGNAL_LAB_DRIVER_ID;
+export class InProcessSignalLabDriver implements InstrumentDriver {
+  readonly driverId = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
   readonly sourceKinds = Object.freeze(['signal-lab'] as const);
 
   async discover(): Promise<InstrumentDriverDiscoveryResult> {
@@ -85,19 +88,19 @@ export class BrowserSignalLabDriver implements InstrumentDriver {
     const candidate = instrumentCandidateSchema.parse(candidateValue);
     if (candidate.driverId !== this.driverId
       || candidate.sourceKind !== 'signal-lab'
-      || candidate.candidateId !== BROWSER_SIGNAL_LAB_CANDIDATE_ID
-      || candidate.signalLab.sourceId !== BROWSER_SIGNAL_LAB_SOURCE_ID) {
-      throw new Error('The browser edition only admits its in-page SignalLab source');
+      || candidate.candidateId !== SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID
+      || candidate.signalLab.sourceId !== SIGNAL_LAB_INSTRUMENT_SOURCE_ID) {
+      throw new Error('SignalLab only admits its in-process measurement source');
     }
     const service = new AtomizerMeasurementService({
       contractSha256: CONTRACT_SHA256,
-      generatorSha256: IN_PAGE_GENERATOR_SHA256,
+      generatorSha256: IN_PROCESS_GENERATOR_SHA256,
     });
-    return new BrowserSignalLabSession(candidate, service);
+    return new InProcessSignalLabSession(candidate, service);
   }
 
   async cleanupPendingConnection(): Promise<void> {
-    // The in-page service holds no process, port, or file lease to release.
+    // The in-process service holds no process, port, or file lease to release.
   }
 }
 
@@ -106,8 +109,8 @@ interface ConfigurationBinding {
   readonly producerConfigurationEpoch: string;
 }
 
-class BrowserSignalLabSession implements InstrumentSession {
-  readonly driverId = BROWSER_SIGNAL_LAB_DRIVER_ID;
+class InProcessSignalLabSession implements InstrumentSession {
+  readonly driverId = SIGNAL_LAB_INSTRUMENT_DRIVER_ID;
   readonly rfOutput = 'not-supported' as const;
   readonly sessionId: string;
   readonly candidate: InstrumentCandidate;
@@ -159,8 +162,8 @@ class BrowserSignalLabSession implements InstrumentSession {
     } else {
       if (configuration.controls.model !== 'synthetic-scalar'
         || configuration.controls.timingQualification !== 'simulation-exact'
-        || configuration.sweepTimeSeconds !== EXACT_SWEEP_SECONDS) {
-        throw new RangeError(`SignalLab admits only exact ${EXACT_SWEEP_SECONDS}s synthetic scalar timing and no receiver controls`);
+        || configuration.sweepTimeSeconds !== SIGNAL_LAB_EXACT_SWEEP_SECONDS) {
+        throw new RangeError(`SignalLab admits only exact ${SIGNAL_LAB_EXACT_SWEEP_SECONDS}s synthetic scalar timing and no receiver controls`);
       }
       if (configuration.kind === 'swept-spectrum') {
         requireInteger(configuration.startHz, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1.min, SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1.max, 'SignalLab sweep start');
@@ -205,7 +208,7 @@ class BrowserSignalLabSession implements InstrumentSession {
     if (command.sessionId !== this.sessionId) throw new Error('SignalLab feature names a different session');
     if (command.kind === 'signal-lab-profile-selection') {
       // A source-state mutation invalidates any prior acquisition binding
-      // before dispatch, exactly like the desktop session.
+      // before dispatch, in both editions identically.
       this.#configuration = undefined;
       const previousEpoch = this.#status.configurationRevision;
       const status = command.action === 'select-profile'
@@ -255,7 +258,7 @@ class BrowserSignalLabSession implements InstrumentSession {
     this.#service.dispatch({
       type: 'request',
       contractVersion: 1,
-      requestId: 'browser-session-shutdown',
+      requestId: 'in-process-session-shutdown',
       method: 'shutdown',
       params: {},
     });
@@ -407,7 +410,7 @@ class BrowserSignalLabSession implements InstrumentSession {
           kind: 'swept-spectrum',
           frequencyHz: { min: spectrum.minimumFrequencyHz, max: spectrum.maximumFrequencyHz, step: 1 },
           points: { min: spectrum.minimumPoints, max: spectrum.maximumPoints, step: 1 },
-          sweepTimeSeconds: { automatic: false, manualSeconds: { min: EXACT_SWEEP_SECONDS, max: EXACT_SWEEP_SECONDS } },
+          sweepTimeSeconds: { automatic: false, manualSeconds: { min: SIGNAL_LAB_EXACT_SWEEP_SECONDS, max: SIGNAL_LAB_EXACT_SWEEP_SECONDS } },
           controls: SYNTHETIC_CONTROLS,
           powerUnit: 'dBm',
         },
@@ -415,7 +418,7 @@ class BrowserSignalLabSession implements InstrumentSession {
           kind: 'detected-power-timeseries',
           centerFrequencyHz: { min: detected.minimumFrequencyHz, max: detected.maximumFrequencyHz, step: detected.frequencyStepHz },
           sampleCount: { min: detected.minimumPoints, max: detected.maximumPoints, step: 1 },
-          sweepTimeSeconds: { automatic: false, manualSeconds: { min: EXACT_SWEEP_SECONDS, max: EXACT_SWEEP_SECONDS } },
+          sweepTimeSeconds: { automatic: false, manualSeconds: { min: SIGNAL_LAB_EXACT_SWEEP_SECONDS, max: SIGNAL_LAB_EXACT_SWEEP_SECONDS } },
           controls: SYNTHETIC_CONTROLS,
           powerUnit: 'dBm',
           timing: 'uniform',

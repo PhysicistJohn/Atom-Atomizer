@@ -15,7 +15,7 @@
  * The fake driver below implements InstrumentDriver/InstrumentSession honestly
  * (real epoch advancement, real capability mutation on profile selection) with
  * capabilities modeled on the signal-lab shape used by
- * apps/web/src/browser-signal-lab-driver.ts.
+ * apps/desktop/src/shared/in-process-signal-lab-driver.ts.
  */
 import { describe, expect, it } from 'vitest';
 import type {
