@@ -208,11 +208,14 @@ export function useAtomAgent(host: AtomAgentHost) {
         const loaderCalls=turn.toolCalls.filter(isAtomToolLoaderCall);
         if(loaderCalls.length){
           if(turn.toolCalls.length!==1)throw new Error('load_atom_tools must be the only call in its Realtime response');
-          if(loaded)throw new Error('load_atom_tools may appear only once in one Atom text operation');
           textCallIds.current.recordCalls(turn.toolCalls);
-          loadedToolNames=validateAtomToolLoadCall(loaderCalls[0]!);
+          // Loads are additive within one operation: a follow-up load unions
+          // into the working set instead of failing the whole operation when
+          // the model plans its tools in stages.
+          const requested=validateAtomToolLoadCall(loaderCalls[0]!);
+          loadedToolNames=loaded?[...new Set([...loadedToolNames,...requested])]:requested;
           loaded=true;
-          append('tool',`Loaded ${loadedToolNames.join(', ')}`);
+          append('tool',`Loaded ${requested.join(', ')}`);
           outputs.push({callId:loaderCalls[0]!.callId,output:JSON.stringify({ok:true,loadedToolNames})});
         }else{
           if(!loadedToolNames.length)throw new Error('Realtime returned an application tool before an exact tool set was loaded');
@@ -333,11 +336,12 @@ export function useAtomAgent(host: AtomAgentHost) {
         const loaderCalls=completed.calls.filter(isAtomToolLoaderCall);
         if(loaderCalls.length){
           if(completed.calls.length!==1)throw new Error('load_atom_tools must be the only call in its Realtime response');
-          if(voiceLoadedToolNames.current.length)throw new Error('load_atom_tools may appear only once in one Atom voice operation');
           const loader=loaderCalls[0]!;
           voiceCallIds.current.recordCalls([loader]);
-          voiceLoadedToolNames.current=validateAtomToolLoadCall(loader);
-          append('tool',`Loaded ${voiceLoadedToolNames.current.join(', ')}`);
+          // Additive within one voice operation, mirroring the text path.
+          const requested=validateAtomToolLoadCall(loader);
+          voiceLoadedToolNames.current=[...new Set([...voiceLoadedToolNames.current,...requested])];
+          append('tool',`Loaded ${requested.join(', ')}`);
           deliveries.push({callId:loader.callId,output:{ok:true,loadedToolNames:voiceLoadedToolNames.current}});
         }else{
           if(!voiceLoadedToolNames.current.length)throw new Error('Realtime returned an application tool before an exact tool set was loaded');

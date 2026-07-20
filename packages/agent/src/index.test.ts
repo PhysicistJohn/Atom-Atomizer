@@ -151,9 +151,10 @@ describe('Atom agent contracts',()=>{
   });
   it('starts with one compact loader and installs only exact response-scoped schemas',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);
-    // Budget raised 12_000 -> 12_500 with the 51st tool's SignalLab profile
-    // doctrine; the startup surface still carries only the loader definition.
-    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(12_500);
+    // Budget raised 12_500 -> 13_500 with the hardware-session doctrine
+    // (one-step source switching, atomic-patch retry, comprehensive loads);
+    // the startup surface still carries only the loader definition.
+    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(13_500);
     const loaded=createAtomRealtimeResponseTools(['get_application_state','configure_analyzer']);
     expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','configure_analyzer']);
     expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='configure_analyzer'));

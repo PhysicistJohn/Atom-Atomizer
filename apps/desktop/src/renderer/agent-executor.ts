@@ -830,6 +830,17 @@ export class AgentExecutor {
         const issued = k.agentConnectionCandidates.current.get(candidateId);
         k.agentConnectionCandidates.current.clear();
         if (!issued) throw new Error(`Connection candidate ${candidateId} was not issued by the latest list_connection_candidates result`);
+        // Same selection-driven semantics as the visual chooser: connecting
+        // while another session is active tears that session down first, and
+        // connecting to the already-active source is an idempotent no-op.
+        const activeSession = k.state.instrument.session;
+        if (activeSession
+          && activeSession.candidate.driverId === issued.driverId
+          && activeSession.candidate.sourceKind === issued.sourceKind
+          && activeSession.candidate.candidateId === issued.candidateId) {
+          return { connected: true, alreadyConnected: true, driverId: activeSession.driverId, sourceKind: activeSession.provenance.sourceKind, execution: activeSession.provenance.execution, qualification: activeSession.provenance.qualification, displayName: activeSession.candidate.displayName };
+        }
+        if (activeSession) await k.connection.disconnectDevice();
         const next = await k.acquisition.runInstrumentTransaction('connect-issued-instrument', async () => {
           const discovery = await window.atomizerInstrument.discover();
           k.connection.acceptDiscovery(discovery.candidates, discovery.failures);
