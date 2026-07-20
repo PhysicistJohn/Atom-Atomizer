@@ -1170,6 +1170,13 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   }
   .workspace-shell.spectrum-workspace { overflow-y: auto; }
   .workspace-shell.classification-workspace { overflow-y: auto; }
+  /* Atom is a bottom sheet on mobile, not a right side-panel: neutralize the
+     desktop .ai-open rules that reserve 438px on the right (which shoved the
+     whole workspace off-screen the moment Atom opened) and re-expand the
+     detect grid to two columns. Higher-specificity overrides, later in the
+     cascade so they win at mobile widths. */
+  .ai-open .workspace-shell { padding: 12px 12px 84px; }
+  .ai-open .classification-grid { grid-template-columns: minmax(0, 1fr); }
 
   /* Two-column layouts stack one panel per row. */
   .analysis-layout,
