@@ -1219,6 +1219,15 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
     grid-template: none / minmax(0, 1fr);
     overflow: visible;
   }
+  /* Detect panel: stack the classifier result above the detector/capture
+     controls and let the whole thing flow in the scrollable workspace shell
+     (the desktop 280px min second column crushes the classifier on a phone). */
+  .detect-workspace {
+    flex: none;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+  .detect-stage, .detect-config { overflow: visible; }
   .pipeline-panel, .safety-panel, .capability-ledger, .classification-capture-strip { grid-column: auto; }
   .classification-capture-strip { grid-template-columns: minmax(0, 1fr); }
   .safety-panel { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
@@ -1314,6 +1323,19 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   [class*="channelSection"] { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
   [class*="channelParameters"] { grid-column: 1; width: 100%; max-width: none; }
   [class*="channelParameters"] > * { width: 100%; }
+
+  /* The embedded SignalLab studio lays its sections on fixed pixel grid rows
+     (tabs / catalog / channel / footer) and clips the overflow. On a phone the
+     profile cards reflow taller than their allotted row and bleed into the
+     section below (the catalog visibly overlapped the channel config). Let the
+     rows size to their content and flow in the scrollable workspace column. */
+  [class*="_embedded"] {
+    height: auto !important;
+    min-height: 0 !important;
+    grid-template-rows: none !important;
+    grid-auto-rows: min-content !important;
+    overflow: visible !important;
+  }
 
   /* Dialogs fit the screen. */
   .connection-dialog { width: min(94vw, 520px); }
