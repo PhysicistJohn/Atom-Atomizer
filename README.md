@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/logo.jpg" alt="AtomOS Atomizer" width="520"></p>
+
 # Atomizer
 
 Atomizer is an AI-native Electron instrument host. It owns operator intent, instrument selection and lifecycle, measurement projections, and Atom—the application-layer voice and tool-using RF agent. Its current drivers compose SignalLab and the tinySA Ultra+ ZS407 without flattening synthetic measurements, physical USB, or executable firmware into the same evidence class.
