@@ -430,6 +430,8 @@ function emitMicrophoneCaptureCheck(track:MediaStreamTrack):void{
   console.info('[Atom Realtime] applied microphone settings',applied);
   if(checks.every(check=>check.matches))console.info('[Atom Realtime] microphone processing settings VERIFIED');else console.warn('[Atom Realtime] browser did not report every requested microphone processing setting as applied',checks.filter(check=>!check.matches));
   console.groupEnd();
-  const mismatches=checks.filter(check=>!check.matches);
-  if(mismatches.length)throw new Error(`Microphone processing configuration mismatch: ${mismatches.map(check=>check.setting).join(', ')}`);
+  // getSettings() is a best-effort readback: mobile browsers (notably iOS
+  // Safari) omit noiseSuppression/autoGainControl even when the constraints
+  // were honored. The constraints are still requested at getUserMedia; a
+  // reporting gap must not refuse voice, so this is diagnostic only.
 }

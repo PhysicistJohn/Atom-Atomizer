@@ -26,14 +26,16 @@ export default function AtomizerWebPage() {
     if (signalLab) document.title = 'SignalLab — AtomOS';
 
     void (async () => {
-      if (signalLab) {
-        try {
-          const discovery = await window.atomizerInstrument.discover();
-          const candidate = discovery.candidates.find((value) => value.sourceKind === 'signal-lab');
-          if (candidate) await window.atomizerInstrument.connect(candidate);
-        } catch (error) {
-          console.error('[SignalLab Web] automatic browser connection failed', error);
-        }
+      // SignalLab is the factory-default source on every browser host, so
+      // connect it at startup the way the desktop app auto-connects its
+      // preferred candidate — the operator should not have to open the
+      // chooser to get a working session.
+      try {
+        const discovery = await window.atomizerInstrument.discover();
+        const candidate = discovery.candidates.find((value) => value.sourceKind === 'signal-lab');
+        if (candidate) await window.atomizerInstrument.connect(candidate);
+      } catch (error) {
+        console.error('[Atomizer Web] automatic SignalLab connection failed', error);
       }
       const { App } = await import('../../desktop/src/renderer/AppShell.js');
       if (active) setLaunch({ App, signalLab });
