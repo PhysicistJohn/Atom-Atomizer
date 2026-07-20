@@ -9,7 +9,22 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # Both real jobs need the private Atom-Classifier sibling. Until the
+  # ATOMOS_CLASSIFIER_READ_TOKEN repo secret exists (fine-grained PAT with
+  # read access to PhysicistJohn/Atom-Classifier), they skip cleanly instead
+  # of failing at checkout on every push. The secrets context is not legal in
+  # a job-level if, so a one-step gate job exports its presence.
+  classifier-token-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - id: probe
+        run: echo "present=${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
+
   verify:
+    needs: classifier-token-gate
+    if: needs.classifier-token-gate.outputs.present == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +79,8 @@ jobs:
       - run: npm audit --audit-level=high
 
   signal-lab-interop:
+    needs: classifier-token-gate
+    if: needs.classifier-token-gate.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
