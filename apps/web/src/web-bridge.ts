@@ -5,7 +5,7 @@ import {
   type AtomizerInstrumentApiV1,
   type SweepExportRequest,
 } from '@tinysa/contracts';
-import { ATOM_AGENT_MODEL, ATOM_AGENT_REASONING_EFFORT, ATOM_AGENT_VOICE } from '@tinysa/agent';
+import { createBrowserAtomAgent } from './atom-realtime-client.js';
 import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
 import {
   AtomizerInstrumentHost,
@@ -125,26 +125,9 @@ export function installWebBridge(): void {
   installed = true;
   window.atomizerInstrument = createBrowserInstrumentApi();
   window.atomizerFiles = files;
-  window.atomAgent = {
-    async status() {
-      return {
-        configured: false,
-        model: ATOM_AGENT_MODEL,
-        voice: ATOM_AGENT_VOICE,
-        reasoningEffort: ATOM_AGENT_REASONING_EFFORT,
-        textAgent: false,
-        realtime: false,
-        textTransport: 'realtime-websocket',
-      };
-    },
-    async createRealtimeCall() { throw new Error('Atom AI is available in the desktop edition.'); },
-    async agentTurn() { throw new Error('Atom AI is available in the desktop edition.'); },
-    async computerScreenshot() { throw new Error('Computer control is unavailable in the browser edition.'); },
-    async computerClick() { throw new Error('Computer control is unavailable in the browser edition.'); },
-    async computerType() { throw new Error('Computer control is unavailable in the browser edition.'); },
-    async computerKey() { throw new Error('Computer control is unavailable in the browser edition.'); },
-    async computerScroll() { throw new Error('Computer control is unavailable in the browser edition.'); },
-  };
+  // Atom runs in the browser against worker-minted ephemeral Realtime tokens;
+  // status() reflects whether the deployment carries the OPENAI_KEY secret.
+  window.atomAgent = createBrowserAtomAgent();
 }
 
 export { createBrowserInstrumentApi };
