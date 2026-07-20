@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Activity, CircleDot, Cpu, Maximize2, Waves, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, CircleDot, Cpu, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
 import { formatExactFrequency, formatFrequency } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
@@ -8,7 +8,15 @@ import {
   type ComplexIqMeasurement,
   type ComplexIqPreview,
 } from '../complex-iq.js';
+import type { ModulationClassification } from '../embedding-classifier-runtime.js';
 import { EditableParameter } from './ParameterRow.js';
+
+const MODULATION_LABELS: Record<string, string> = {
+  cw: 'Continuous wave', am: 'AM', fm: 'FM',
+  gsm: 'GSM / GERAN', ofdm: 'OFDM', dsss: 'DSSS', bluetooth: 'Bluetooth', unknown: 'Unknown',
+};
+function modLabel(id: string): string { return MODULATION_LABELS[id] ?? id.toUpperCase(); }
+function leafLabel(id: string): string { return id.replace(/-like$/, '').replaceAll('-', ' '); }
 
 // Bounded scalar identity of the latest capture. The raw measurement (with
 // its multi-megabyte sample payload) deliberately never crosses into props —
@@ -16,12 +24,13 @@ import { EditableParameter } from './ParameterRow.js';
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
   'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
 
-export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, busy, captureUnavailableReason, onChange }: {
+export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, busy, captureUnavailableReason, onChange }: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
   preview?: ComplexIqPreview;
   previewError?: string;
   captureMeta?: IqCaptureMeta;
+  modulation?: ModulationClassification;
   busy: boolean;
   captureUnavailableReason?: string;
   onChange(configuration: ComplexIqConfiguration): void;
@@ -53,6 +62,7 @@ export function IqWorkspace({ configuration, capability, preview, previewError, 
           <span className="iq-format-badge">{capture?.sampleFormat ?? configuration.sampleFormat}</span>
         </div>
       </header>
+      <LiveModulationBar modulation={modulation} hasCapture={captureMeta !== undefined}/>
       <div className="iq-plot-grid">
         <IqTimePlot preview={preview} zoom={plotZoom}/>
         <ConstellationPlot preview={preview} zoom={plotZoom}/>
@@ -274,4 +284,25 @@ function formatDbfs(linear: number): string {
 
 function formatPlotZoom(zoom: number): string {
   return `${zoom.toLocaleString('en-US', { maximumFractionDigits: 1 })}×`;
+}
+
+/**
+ * Compact live modulation readout: auto-identifies the modulation from the
+ * streaming complex baseband and updates on every capture. The full candidate
+ * breakdown and detector controls live in the Detect panel; this is the
+ * at-a-glance "what am I looking at" monitor beside the plots.
+ */
+function LiveModulationBar({ modulation, hasCapture }: { modulation?: ModulationClassification; hasCapture: boolean }) {
+  const runners = modulation?.candidates.filter((candidate) => candidate.label !== modulation.candidates[0]?.label).slice(0, 2) ?? [];
+  return <div className="iq-live-mod" role="status" aria-label="Live modulation classification">
+    <span className="iq-live-mod-tag"><Radar size={13}/>Modulation</span>
+    {!hasCapture && <span className="iq-live-mod-idle">Run or Single to auto-identify</span>}
+    {hasCapture && !modulation && <span className="iq-live-mod-idle">Identifying…</span>}
+    {modulation && <>
+      <strong className="iq-live-mod-label">{modulation.isUnknown ? 'Unknown' : modLabel(modulation.modulation)}</strong>
+      <span className={`iq-live-mod-conf${modulation.isUnknown ? ' unknown' : ''}`}>{modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}%`}</span>
+      {modulation.topLeaf && <em className="iq-live-mod-leaf">likely {leafLabel(modulation.topLeaf.label)}</em>}
+      {runners.length > 0 && <span className="iq-live-mod-runners">{runners.map((candidate) => `${modLabel(candidate.label)} ${Math.round(candidate.confidence * 100)}%`).join(' · ')}</span>}
+    </>}
+  </div>;
 }

@@ -607,6 +607,15 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .iq-scale-control button:disabled { opacity: .3; }
 .iq-scale-control output { min-width: 27px; color: var(--energy-bright); font: 7px var(--mono); text-align: center; }
 .iq-format-badge { padding: 5px 7px; border: 1px solid rgba(100,210,255,.2); border-radius: 7px; color: var(--cyan); background: rgba(100,210,255,.05); font: 8px var(--mono); text-transform: uppercase; }
+/* Live modulation readout beside the I/Q plots — auto-identifies as I/Q streams. */
+.iq-live-mod { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 10px 10px 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,132,255,.05); }
+.iq-live-mod-tag { display: inline-flex; align-items: center; gap: 6px; color: var(--energy-bright); font: 8px var(--mono); text-transform: uppercase; letter-spacing: .07em; }
+.iq-live-mod-label { color: var(--ink); font: 600 14px var(--mono); letter-spacing: -.01em; }
+.iq-live-mod-conf { padding: 2px 8px; border-radius: 999px; color: #08131f; background: var(--green); font: 700 9px var(--mono); }
+.iq-live-mod-conf.unknown { color: var(--ink); background: rgba(255,255,255,.08); }
+.iq-live-mod-leaf { color: var(--cyan); font: 8px var(--mono); font-style: normal; text-transform: uppercase; letter-spacing: .05em; }
+.iq-live-mod-runners { margin-left: auto; color: var(--quiet); font: 8px var(--mono); }
+.iq-live-mod-idle { color: var(--muted); font: 9px var(--mono); }
 .iq-plot-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1.5fr) minmax(180px,1fr); gap: 10px; overflow: hidden; padding: 10px; }
 .iq-chart { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; margin: 0; overflow: hidden; border: 1px solid rgba(255,255,255,.065); border-radius: 12px; background: rgba(0,0,0,.18); }
 .iq-chart figcaption { min-height: 39px; display: flex; align-items: center; justify-content: space-between; padding: 0 11px; border-bottom: 1px solid rgba(255,255,255,.05); }

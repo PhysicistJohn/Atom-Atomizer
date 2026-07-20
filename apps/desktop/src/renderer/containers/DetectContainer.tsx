@@ -34,9 +34,15 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
 
   const source: 'iq' | 'scalar' | 'none' =
     iqCapable && capture ? 'iq' : !iqCapable && sweep && target ? 'scalar' : 'none';
-  const captureId = capture?.measurementId;
-  const sweepId = sweep?.id;
-  const targetId = target?.id;
+
+  // Re-classify only when the actual classification input changes — the I/Q
+  // flavor depends solely on the capture, so it must not re-run on every sweep
+  // during a spectrum Run (that just re-classifies the same frozen capture).
+  const classifyKey = source === 'iq'
+    ? `iq:${capture?.measurementId}`
+    : source === 'scalar'
+      ? `scalar:${sweep?.id}:${target?.id}`
+      : 'none';
 
   const [modulation, setModulation] = useState<ModulationClassification | undefined>(undefined);
   const [pending, setPending] = useState(false);
@@ -63,7 +69,7 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, captureId, sweepId, targetId]);
+  }, [classifyKey]);
 
   return <DetectWorkspace
     modulation={modulation}
