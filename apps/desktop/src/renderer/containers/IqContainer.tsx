@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
 import { decodeComplexIqChannels, previewComplexIq } from '../complex-iq.js';
-import { classifyIqModulation, type ModulationClassification } from '../embedding-classifier-runtime.js';
+import { classifyIqModulation, recoverIqConstellation, type ModulationClassification, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, useStore } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
@@ -39,13 +39,17 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
   // crosses into JSX. The last good result is held across a transient failure so
   // the readout doesn't flicker during a Run.
   const [modulation, setModulation] = useState<ModulationClassification | undefined>(undefined);
+  // Blind-recovered symbol constellation (equalize + carrier lock), computed
+  // from the same decoded prefix. Shown when it resolves distinct symbols.
+  const [recovered, setRecovered] = useState<RecoveredConstellation | undefined>(undefined);
   const captureId = capture?.measurementId;
   const captureBandwidthHz = s.iqConfiguration.bandwidthHz;
   useEffect(() => {
-    if (!capture) { setModulation(undefined); return; }
+    if (!capture) { setModulation(undefined); setRecovered(undefined); return; }
     let cancelled = false;
     try {
       const { re, im } = decodeComplexIqChannels(capture);
+      try { setRecovered(recoverIqConstellation(re, im)); } catch { /* keep the last recovery */ }
       classifyIqModulation(re, im, captureBandwidthHz)
         .then((result) => { if (!cancelled) setModulation(result); })
         .catch(() => { /* keep the last result through a transient decode/inference error */ });
@@ -61,6 +65,7 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     previewError={previewError}
     captureMeta={captureMeta}
     modulation={modulation}
+    recovered={recovered}
     busy={!connected || busy}
     captureUnavailableReason={selectIqCaptureUnavailableReason(s)}
     onChange={(configuration) => runtime.acquisition.stageIqConfiguration(configuration)}

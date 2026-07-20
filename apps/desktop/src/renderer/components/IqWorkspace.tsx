@@ -8,7 +8,7 @@ import {
   type ComplexIqMeasurement,
   type ComplexIqPreview,
 } from '../complex-iq.js';
-import type { ModulationClassification } from '../embedding-classifier-runtime.js';
+import type { ModulationClassification, RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import { EditableParameter } from './ParameterRow.js';
 
 const MODULATION_LABELS: Record<string, string> = {
@@ -24,13 +24,14 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
   'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
 
-export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, busy, captureUnavailableReason, onChange }: {
+export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, recovered, busy, captureUnavailableReason, onChange }: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
   preview?: ComplexIqPreview;
   previewError?: string;
   captureMeta?: IqCaptureMeta;
   modulation?: ModulationClassification;
+  recovered?: RecoveredConstellation;
   busy: boolean;
   captureUnavailableReason?: string;
   onChange(configuration: ComplexIqConfiguration): void;
@@ -65,7 +66,7 @@ export function IqWorkspace({ configuration, capability, preview, previewError, 
       <LiveModulationBar modulation={modulation} hasCapture={captureMeta !== undefined}/>
       <div className="iq-plot-grid">
         <IqTimePlot preview={preview} zoom={plotZoom}/>
-        <ConstellationPlot preview={preview} zoom={plotZoom}/>
+        <ConstellationPlot preview={preview} recovered={recovered} zoom={plotZoom}/>
       </div>
       <div className="iq-metric-strip">
         <Metric label="Samples" value={capture?.sampleCount.toLocaleString() ?? '—'}/>
@@ -217,7 +218,11 @@ function IqTimePlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: numbe
   </figure>;
 }
 
-function ConstellationPlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom: number }) {
+function ConstellationPlot({ preview, recovered, zoom }: { preview?: ComplexIqPreview; recovered?: RecoveredConstellation; zoom: number }) {
+  // Show the recovered symbol constellation whenever recovery resolved distinct
+  // symbols; otherwise fall back to the raw pre-equalization scatter (a smear /
+  // cloud that carries no symbol decisions — e.g. multicarrier or low SNR).
+  const showRecovered = recovered?.clean === true;
   const canvasRef = useIqCanvas((context, width, height) => {
     const theme = canvasTheme(canvasRef.current);
     // The constellation always plots inside a centered square so I and Q
@@ -242,21 +247,40 @@ function ConstellationPlot({ preview, zoom }: { preview?: ComplexIqPreview; zoom
     context.moveTo(originX, originY + side / 2);
     context.lineTo(originX + side, originY + side / 2);
     context.stroke();
-    if (!preview) return;
-    const stride = Math.max(1, Math.ceil(preview.points.length / 768));
-    const extent = Math.max(0.001, preview.peak * 1.05) / zoom;
-    context.fillStyle = theme.symbol;
-    for (let index = 0; index < preview.points.length; index += stride) {
-      const point = preview.points[index]!;
-      const x = originX + side / 2 + point.i / extent * side * .44;
-      const y = originY + side / 2 - point.q / extent * side * .44;
-      context.fillRect(x - 1.5, y - 1.5, 3, 3);
+
+    const plot = (points: readonly { i: number; q: number }[], extent: number, size: number, color: string) => {
+      const stride = Math.max(1, Math.ceil(points.length / 1200));
+      context.fillStyle = color;
+      const half = size / 2;
+      for (let index = 0; index < points.length; index += stride) {
+        const point = points[index]!;
+        const x = originX + side / 2 + point.i / extent * side * .44;
+        const y = originY + side / 2 - point.q / extent * side * .44;
+        context.fillRect(x - half, y - half, size, size);
+      }
+    };
+
+    if (showRecovered && recovered) {
+      // Symbols are unit-RMS; a ±~2.6 window frames QPSK..QAM with margin.
+      let peak = 0;
+      for (const point of recovered.points) peak = Math.max(peak, Math.abs(point.i), Math.abs(point.q));
+      const extent = Math.max(1.4, Math.min(peak * 1.08, 6)) / zoom;
+      plot(recovered.points, extent, 3.4, theme.symbol);
+      return;
     }
+    if (!preview) return;
+    const extent = Math.max(0.001, preview.peak * 1.05) / zoom;
+    plot(preview.points, extent, 3, theme.symbol);
   });
+  const subtitle = showRecovered && recovered
+    ? `recovered symbols · ${recovered.sps} sps · ISI ${recovered.residualIsi.toFixed(2)}`
+    : recovered
+      ? 'raw samples · no clean symbol recovery (multicarrier or low SNR)'
+      : 'Q versus I · raw samples';
   return <figure className="iq-chart iq-constellation-chart">
-    <figcaption><span><CircleDot size={13}/>Constellation</span><small>Q versus I · no symbol-decision claim</small></figcaption>
-    <canvas ref={canvasRef} className="iq-canvas iq-constellation-canvas" role="img" aria-label="Complex I Q constellation preview"/>
-    {!preview && <span className="iq-empty-label">NO SAMPLES</span>}
+    <figcaption><span><CircleDot size={13}/>Constellation{showRecovered && <em className="iq-constellation-badge">RECOVERED</em>}</span><small>{subtitle}</small></figcaption>
+    <canvas ref={canvasRef} className="iq-canvas iq-constellation-canvas" role="img" aria-label={showRecovered ? 'Recovered symbol constellation' : 'Complex I Q constellation preview'}/>
+    {!preview && !showRecovered && <span className="iq-empty-label">NO SAMPLES</span>}
   </figure>;
 }
 
