@@ -652,7 +652,9 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   animation: atom-enter .32s var(--ease) both;
 }
 .atom-head { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid rgba(202,195,246,.09); }
-.atom-identity { display: flex; align-items: center; gap: 11px; }
+.atom-identity { display: flex; align-items: center; gap: 11px; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; }
+.atom-head-state { display: none; }
+.atom-grabber { display: none; }
 .atom-mark { width: 37px; height: 37px; display: grid; place-items: center; border: 1px solid rgba(172,160,255,.18); border-radius: 12px; color: #c5bbff; background: linear-gradient(145deg, rgba(155,140,255,.16), rgba(100,210,255,.055)); box-shadow: inset 0 1px rgba(255,255,255,.06); }
 .atom-identity strong { font-size: 13px; font-weight: 650; }
 .icon-button { width: 30px; height: 30px; display: inline-grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; }
@@ -1197,36 +1199,85 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .device-facts, .channel-results, .signal-lab-profile-facts, .iq-driver-facts { grid-template-columns: minmax(0, 1fr); }
   .marker-selector { grid-template-columns: repeat(4, 1fr); row-gap: 6px; }
 
-  /* Atom docks as a bottom sheet with a scrim so it reads as a layer over
-     the workspace rather than floating mid-scroll. */
+  /* Atom docks as a collapsible bottom sheet: expanded to work with it, or
+     collapsed to a slim status bar so the workspace stays visible with voice
+     still running. The grabber and the identity both toggle the two states. */
   .atom-panel {
     top: auto;
     left: 0;
     right: 0;
     bottom: 0;
     width: auto;
-    height: min(64dvh, 560px);
-    border-radius: 20px 20px 0 0;
+    height: min(58dvh, 540px);
+    grid-template-rows: 16px 52px auto minmax(0,1fr) auto auto 28px;
+    border-radius: 18px 18px 0 0;
     border-bottom: 0;
-    padding-top: 8px;
     box-shadow: 0 -18px 60px rgba(0,0,0,.55);
     animation: atom-sheet-in .26s var(--ease);
+    transition: height .24s var(--ease);
   }
-  .atom-panel::after {
-    /* Grabber handle. */
-    content: '';
-    position: absolute;
-    top: 7px; left: 50%;
-    width: 34px; height: 4px;
-    transform: translateX(-50%);
-    border-radius: 2px;
-    background: rgba(202,195,246,.28);
+  .atom-panel.collapsed { height: 68px; }
+  .atom-panel.collapsed .voice-stage,
+  .atom-panel.collapsed .atom-messages,
+  .atom-panel.collapsed .atom-prompts,
+  .atom-panel.collapsed .atom-composer,
+  .atom-panel.collapsed .atom-foot { display: none; }
+  .atom-grabber {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    background: transparent;
   }
+  .atom-grabber span { width: 36px; height: 4px; border-radius: 2px; background: rgba(202,195,246,.32); }
+  .atom-head { min-height: 52px; }
+  .atom-identity { flex: 1; }
+  .atom-head-state { display: inline; margin-left: 4px; color: var(--quiet); font: 8px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
   @keyframes atom-sheet-in { from { transform: translateY(18px); opacity: .4; } to { transform: none; opacity: 1; } }
 
   /* The floating browser-edition badge collides with the sheet and repeats
      the topbar; retire it on phones. */
   .web-edition-badge { display: none; }
+
+  /* Measurement disclosure panels (sweep setup, traces & markers, display
+     controls) are fixed-width desktop side-panels — wider than the phone, so
+     they clipped off-screen and buried the plot. On mobile they open as a
+     full-width sheet under the nav strip, scrollable, over the workspace. */
+  .measurement-overlay,
+  .measurement-overlay.controls {
+    position: fixed;
+    width: auto;
+    inset: 110px 8px auto 8px;
+    max-height: calc(100dvh - 180px);
+    overflow: auto;
+  }
+  .inspector-head { border-right: 0; }
+
+  /* The measurement stage grows with its content in the scroll column instead
+     of clipping to a fixed height. */
+  .measurement-workspace { min-height: 0; height: auto; overflow: visible; grid-template-rows: 52px auto; }
+  .measurement-stage { overflow: visible; }
+  .measurement-stage-content, .spectrum-stage, .waterfall-view, .channel-analysis-view { height: auto; }
+  .spectrum-stage { min-height: 58dvh; }
+
+  /* Waterfall and channel stack their side settings below a full-width plot. */
+  .waterfall-view { grid-template: minmax(320px, 56dvh) auto 31px / minmax(0, 1fr); }
+  .waterfall-canvas-shell { border-right: 0; border-bottom: 1px solid var(--line); }
+  .waterfall-console { grid-column: 1; grid-row: 2; }
+  .analysis-axis-footer { grid-column: 1; grid-row: 3; padding-left: 52px; border-right: 0; }
+  .channel-analysis-view { grid-template-columns: minmax(0, 1fr); }
+  .channel-visual { min-height: 320px; border-right: 0; border-bottom: 1px solid var(--line); }
+
+  /* The SignalLab channel-model config (CSS-module component) crams its noise
+     floor / seed params into a ~13px column beside the model toggle; the
+     module hash changes per build but the readable prefix is stable. Stack
+     heading, toggle, and params into a full-width column. */
+  [class*="channelSection"] { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
+  [class*="channelParameters"] { grid-column: 1; width: 100%; max-width: none; }
+  [class*="channelParameters"] > * { width: 100%; }
 
   /* Dialogs fit the screen. */
   .connection-dialog { width: min(94vw, 520px); }
