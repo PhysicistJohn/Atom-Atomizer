@@ -937,6 +937,11 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .measurement-overlay { width: 390px; position: absolute; z-index: 12; inset: 12px 12px 12px auto; overflow: hidden; padding: 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 21px; background: rgba(12,12,15,.8); box-shadow: 0 30px 95px rgba(0,0,0,.58), inset 0 1px rgba(255,255,255,.05); backdrop-filter: blur(36px) saturate(125%); animation: stage-overlay-enter .18s var(--ease); }
 .measurement-overlay.controls { width: 420px; }
 .measurement-overlay .inspector, .measurement-overlay .measurement-dock { height: 100%; overflow: auto; background: rgba(27,27,30,.74); box-shadow: none; }
+/* Dismiss affordances used only on mobile, where the overlay floats over (and
+   hides) the toolbar toggle that would otherwise close it. On desktop the
+   toolbar stays visible beside the overlay, so these stay hidden. */
+.measurement-overlay-scrim { display: none; }
+.measurement-overlay-close { display: none; position: absolute; top: 9px; right: 9px; z-index: 2; width: 32px; height: 32px; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 9px; color: var(--ink-soft); background: rgba(22,22,26,.92); cursor: pointer; }
 .firmware-trace-bank { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .firmware-trace-bank .panel-section-label { padding: 7px 13px 9px; }
 .firmware-trace-bank .parameter-row { min-height: 42px; }
@@ -1308,15 +1313,21 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   /* Measurement disclosure panels (sweep setup, traces & markers, display
      controls) are fixed-width desktop side-panels — wider than the phone, so
      they clipped off-screen and buried the plot. On mobile they open as a
-     full-width sheet under the nav strip, scrollable, over the workspace. */
+     full-width sheet BELOW the nav strip (top clears the 133px header+nav so it
+     no longer tucks under them), scrollable, over a tap-to-dismiss scrim. The
+     sheet covers the toolbar toggle that opens it, so a scrim + an explicit
+     close button provide the only way back out. */
   .measurement-overlay,
   .measurement-overlay.controls {
     position: fixed;
     width: auto;
-    inset: 110px 8px auto 8px;
-    max-height: calc(100dvh - 180px);
+    inset: 141px 8px auto 8px;
+    max-height: calc(100dvh - 200px);
+    padding-top: 46px;
     overflow: auto;
   }
+  .measurement-overlay-scrim { display: block; position: fixed; inset: 0; z-index: 11; border: 0; background: rgba(0, 0, 0, .5); }
+  .measurement-overlay-close { display: flex; }
   .inspector-head { border-right: 0; }
 
   /* The measurement stage grows with its content in the scroll column instead
@@ -1334,13 +1345,8 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .channel-analysis-view { grid-template-columns: minmax(0, 1fr); }
   .channel-visual { min-height: 320px; border-right: 0; border-bottom: 1px solid var(--line); }
 
-  /* The SignalLab channel-model config (CSS-module component) crams its noise
-     floor / seed params into a ~13px column beside the model toggle; the
-     module hash changes per build but the readable prefix is stable. Stack
-     heading, toggle, and params into a full-width column. */
-  [class*="channelSection"] { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
-  [class*="channelParameters"] { grid-column: 1; width: 100%; max-width: none; }
-  [class*="channelParameters"] > * { width: 100%; }
+  /* (The SignalLab channel-model config stacks itself on narrow screens via its
+     own module @media rule -- see SignalLabStudio.module.css. No override here.) */
 
   /* The embedded SignalLab studio (CSS-module) fills a fixed desktop cell:
      height:100%, four fixed grid rows (tabs / catalog / channel / footer), and

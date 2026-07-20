@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { BarChart3, Clock3, Crosshair, RadioTower, Repeat2, SlidersHorizontal, Square, Zap } from 'lucide-react';
+import { BarChart3, Clock3, Crosshair, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
 import type {
   AnalyzerConfig,
   AnalyzerConfigPatch,
@@ -96,7 +96,9 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
       </div>
     </header>
     <div className="measurement-stage">
+      {overlay && <button type="button" className="measurement-overlay-scrim" aria-label="Close panel" data-agent-exclusion="human-overlay-dismiss" onClick={() => setOverlay(undefined)}/>}
       {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? 'Sweep setup overlay' : 'Trace and marker overlay'}>
+        <button type="button" className="measurement-overlay-close" aria-label="Close panel" data-agent-exclusion="human-overlay-dismiss" onClick={() => setOverlay(undefined)}><X size={16}/></button>
         {overlay === 'setup'
           ? <AnalyzerInspector config={props.analyzer} capability={props.spectrumCapability} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
           : <MeasurementDock traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
