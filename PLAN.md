@@ -61,7 +61,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
 | Executable Firmware twin | selectable `tinysa-zs407` source; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
-| SignalLab | active high-level NDJSON measurement driver; exact `signal-lab:default` factory candidate with no fallback; deterministic complete-buffer `cf32le` I/Q for all 34 closed profiles—3 analytic laboratory envelopes and 31 standards-derived engineering envelopes that are neither packet-decodable nor conformance vectors; seeded AWGN/Rayleigh; selected profile excluded from measurement/classifier evidence; separately versioned stimulus intent | framework-generated independently validated standards assets remain future; Firmware-owned stimulus sink remains reserved-not-connected until a coordinated future trio contract activates it |
+| SignalLab | active high-level NDJSON measurement driver; exact `signal-lab:default` factory candidate with no fallback; deterministic complete-buffer `cf32le` I/Q for all 34 closed profiles: 3 analytic laboratory envelopes and 31 standards-derived engineering envelopes that are neither packet-decodable nor conformance vectors; seeded AWGN/Rayleigh; selected profile excluded from measurement/classifier evidence; separately versioned stimulus intent | framework-generated independently validated standards assets remain future; Firmware-owned stimulus sink remains reserved-not-connected until a coordinated future trio contract activates it |
 | Instrument host and TinySA service | static registry, independent discovery, persisted explicit preference, serialized lifecycle, capability/evidence validation; main-owned RF state with command-acknowledged physical and firmware-executed-twin qualification; atomic event/return measurement reconciliation; bounded exact-VID/PID serial lifecycle; TinySA-only shipped/OEM/custom revision registry, analyzer readback, text/raw sweeps, diagnostics, screen/touch and safe generator | complete physical timing, fault, touch, RF and recovery qualification matrices |
 | Electron bridge | `AtomizerInstrumentApiV1` handlers, runtime validation, event subscription, export dialog, sandbox; no firmware-installation IPC | CSP hardening audit and IPC abuse suite |
 | Spectrum measurements | one no-scroll shared stage selected by first-class Spectrum/Waterfall/Channel sidebar destinations with no top view tabs; live React-derived SVG trace geometry; analyzer/trigger controls; four traces; eight markers with narrow sampled-peak/local-3 dB and bounded-broad centroid/component-OBW semantics; amplitude scaling; coherent waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; non-rendered detected-envelope STFT API; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |
@@ -77,7 +77,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 
 ## Execution gates
 
-### Gate A — firmware-derived software baseline
+### Gate A: firmware-derived software baseline
 
 Complete when contracts, parser, scheduler, simulator, device service, IPC, analysis, Atom tools, all five legacy `WorkspaceId` values, all four rendered workspace surfaces, and all six visible sidebar destinations build and pass without hardware.
 
@@ -88,7 +88,7 @@ Evidence:
 - `npm run build`
 - simulator walkthrough for connect, text/raw sweep, continuous stop, detection persistence, morphology result, zero span, generator-off configuration, diagnostics, screen/touch, export, and Atom tool calls
 
-### Gate B — physical ZS407 characterization
+### Gate B: physical ZS407 characterization
 
 Active. The delivered unit is admitted with exact descriptors, shipped-version/source resolution, `info`-borne ZS407 identity, complete `help`, battery/device readback, mutually consistent 101-point text/raw FM-band sweeps, a device-observed 174 dB raw offset, and an exact 307,200-byte screen frame. See `docs/PHYSICAL_ZS407_CHARACTERIZATION.md`. The remaining experiments below are still required before Gate B closes.
 
@@ -105,7 +105,7 @@ Required experiments:
 
 Any firmware variance becomes an explicit capability-profile change with fixtures and an ADR. It is not hidden behind UI conditionals.
 
-### Gate C — RF analysis qualification
+### Gate C: RF analysis qualification
 
 Use physically captured, session-grouped data. Detection reports event precision/recall, false alarms per hour, probability versus SNR, frequency/bandwidth error, and boundary behavior. Classification separates:
 
@@ -115,7 +115,7 @@ Use physically captured, session-grouped data. Detection reports event precision
 
 A production classifier requires a frozen taxonomy, corpus license/provenance, grouped splits, open-set holdout, calibrated confidence, model hash, preprocessing ID, supported-domain statement, and reproducible metrics. Until then, results remain experimental and may return `unknown`.
 
-### Gate D — desktop release
+### Gate D: desktop release
 
 Complete only after clean install/connect/sweep on frozen macOS, Windows, and Linux versions; native serial ABI packaging; RF safety cases; crash/restart behavior; dependency audit/SBOM; keyboard/accessibility review; signed/notarized packages as applicable; and user/support documentation.
 
@@ -134,7 +134,7 @@ Complete only after clean install/connect/sweep on frozen macOS, Windows, and Li
 
 The exact model is `gpt-realtime-2.1`, which the official model catalog describes as a reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
 
-Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 50-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
+Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 51-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
 
 Every application capability ships with a domain contract, closed agent schema, risk class, executor through the same application host, context projection, UI activity, tests, and docs. RF enable and remote physical-screen touch require action-time approval. Computer clicks are application-only and DOM-hit-tested; every coordinate action consumes a short-lived screenshot ID, focus-sensitive input verifies the expected target, and high-impact targets are blocked.
 

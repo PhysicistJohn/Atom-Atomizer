@@ -1,8 +1,8 @@
 <p align="center"><img src="docs/brand/logo.jpg" alt="AtomOS Atomizer" width="520"></p>
 
-# Atomizer
+# AtomOS Atomizer
 
-Atomizer is an AI-native Electron instrument host. It owns operator intent, instrument selection and lifecycle, measurement projections, and Atom—the application-layer voice and tool-using RF agent. Its current drivers compose SignalLab and the tinySA Ultra+ ZS407 without flattening synthetic measurements, physical USB, or executable firmware into the same evidence class.
+AtomOS Atomizer is an AI-native Electron instrument host. It owns operator intent, instrument selection and lifecycle, measurement projections, and Atom, the application-layer voice and tool-using RF agent. Its current drivers compose SignalLab and the tinySA Ultra+ ZS407 without flattening synthetic measurements, physical USB, or executable firmware into the same evidence class.
 
 The live system is deliberately split into four independently versioned repositories:
 
@@ -15,11 +15,11 @@ The live system is deliberately split into four independently versioned reposito
 
 The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
-USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while TinySA Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
+USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while Atom-Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
 
 Composition v4 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
 
-For owner-built firmware, TinySA Flasher's native manifest picker starts in the
+For owner-built firmware, Atom-Flasher's native manifest picker starts in the
 sibling `../Atom-Firmware` checkout when that directory exists. It remembers a
 different picker directory only after the selected manifest passes Flasher's
 normal admission. That convenience grants no authority to the source checkout,
@@ -31,7 +31,7 @@ Requirements:
 
 - Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
   the package contract and CI).
-- `../Atom-SignalLab`, whose separately built measurement bridge is the factory-default instrument source and whose corpus is pinned by the Bayesian observable-class model.
+- `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and whose corpus is pinned by the Bayesian observable-class model.
 - The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
 - `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
 
@@ -74,7 +74,7 @@ SignalLab is a separate application and Git repository. Atomizer runs its
 measurement service in-process in both editions: the shared `signal-lab`
 driver bundles the sibling checkout's `src/measurement-service.ts` (and the
 active v1 measurement contract document) directly into the desktop main
-process and the web page — no bridge subprocess, no packaged resource
+process and the web page, with no bridge subprocess and no packaged resource
 staging.
 
 ```bash
@@ -157,7 +157,7 @@ Both AI paths use exactly `gpt-realtime-2.1`:
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both response paths use the identical closed registry of 50 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical closed registry of 51 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
 Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one 15-second-bounded startup connection attempt with the microphone muted; it remains cancellable while connecting, and an explicit typed request cleanly preempts voice rather than disappearing. Microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
 
@@ -216,7 +216,7 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
   classification candidate stages that projected tune before capture.
   Outputs are evidence-equivalence classes such as CW-like, AM-like,
   FM/angle-like, GSM-like, Wi-Fi-like, Bluetooth-like, and LTE/NR
-  cellular-OFDM ambiguous—not protocol identities or physically calibrated
+  cellular-OFDM ambiguous, not protocol identities or physically calibrated
   probabilities.
 - Detect presents live-observation names, retains ranked unknown
   probability and content-addressed model/corpus provenance, binds features to the
@@ -289,8 +289,8 @@ has `spectrum.sidebandScore >= 0.2`, or both `envelope.rangeDb >= 2` and
 CW-like or `unknown`. This is an evidence-resolution gate, not a universal FM
 definition.
 The checked-in v8 likelihood architecture has 28 ordered feature dimensions and 12 exact leaf class IDs. Its spectrum-only population has 18 source scenarios and 28 likelihood components; each envelope population has 16 scenarios and 26 components because the Bluetooth-like class is structurally unsupported for fixed-tune envelope evidence. Under scenario-components-with-three-shared-covariance-csma-activity-modes-v1, exactly five pinned CSMA sources use three deterministic activity modes while every other supported source/view pair uses one component; source scenarios retain equal within-class mass, CSMA modes use empirical within-source weights, and each decomposed source shares one pooled within-mode covariance. Under frequency-agile-fixed-tune-envelope-censoring-v1, the analysis boundary validates the physical capture and schema-4 receipt first, including its canonical SHA-256 binding of all returned samples, cadence, requested geometry, RF metadata, and provenance, then excludes detected-power envelope features for every frequency-agile association and classifies its exact regional spectrum/history view. This censor is triggered by observed association geometry, never a truth label or requested hypothesis; Bluetooth envelope component and calibration arrays are therefore exactly empty. The resulting
-support rank is an engineering cutoff input, not a p-value or an exchangeable-
-sample coverage guarantee. Its pinned 35-scenario SignalLab corpus is
+support rank is an engineering cutoff input, not a p-value or an
+exchangeable-sample coverage guarantee. Its pinned 35-scenario SignalLab corpus is
 `observable-scalar-corpus-v13` at commit
 `03bc13eb9d5efcfc5f2f9c1792042f670b71ef9a`. The canonical JSON manifest
 covering the executed TypeScript import closure (`src/canonical-timing.ts`,
@@ -447,9 +447,10 @@ npm run check:bayesian-detector
 npm run check:firmware-twin
 ```
 
-`train:signal-classifier` reproducibly regenerates the content-addressed model
-asset under an exactly pinned Node `22.23.1` runtime; its ignored per-chunk
-cache is local crash-recovery only, not release evidence.
+`train:signal-classifier` delegates to the sibling `../Atom-Classifier`
+checkout, which reproducibly regenerates the content-addressed model asset
+under an exactly pinned Node `22.23.1` runtime; its ignored per-chunk cache is
+local crash-recovery only, not release evidence.
 `check:bayesian-detector` runs the null-sweep false-alarm design, one-look and
 two-look Pd gates, and gain-invariance checks over the production
 detector/tracker.
@@ -460,6 +461,7 @@ verifies generator output returns off.
 ## Workspace map
 
 - `apps/desktop`: Electron main/preload, React operator UI, Atom host, and app computer harness.
+- `apps/web`: browser edition of the same operator app; reuses the desktop renderer sources and the shared in-process SignalLab driver.
 - `packages/contracts`: runtime-validated instrument, device, transport, measurement, safety, and `AtomizerInstrumentApiV1` types.
 - `packages/instrument-runtime`: transport-neutral, contract-aware driver/session interfaces, registry, and serialized manager with sequence-tracked measurement delivery; it imports no adapter and has no TinySA or serial-port dependency, while enforcing the contracts' closed source/provenance and SignalLab feature variants.
 - `apps/desktop/src/shared/in-process-signal-lab-driver.ts`: shared in-process SignalLab adapter used by both editions; depends only on contracts, the transport-neutral runtime, and sibling SignalLab sources, never `serialport`.
@@ -500,3 +502,14 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 - [UI and UX](./docs/UI_UX_CONTRACTS.md)
 - [Master work-package contract](./CONTRACTS.md)
 - [Delivery and hardware-qualification plan](./PLAN.md)
+
+## Part of the AtomOS suite
+
+- [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): this repository, the AtomOS Atomizer operator app.
+- [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): Bayesian RF waveform-classification trainer and independent validator.
+- [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reverse-engineered, LLVM cross-built TinySA firmware and the executable Renode twin bridge.
+- [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): standalone fail-closed firmware flasher.
+- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): Renode digital twin of the NeptuneSDR.
+- [Atom-SignalLab](https://github.com/PhysicistJohn/Atom-SignalLab): 3GPP and reference signal generation.
+- [Atom-TinySA-Twin](https://github.com/PhysicistJohn/Atom-TinySA-Twin): Renode digital twin booting real ZS407 firmware.
+- [Atom-Website](https://github.com/PhysicistJohn/Atom-Website): product site.

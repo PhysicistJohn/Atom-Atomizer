@@ -1,4 +1,4 @@
-# Atom AI — Native Agent, Voice, Tool, and Computer-Use Contract
+# Atom AI: Native Agent, Voice, Tool, and Computer-Use Contract
 
 Status: execution baseline  
 Version: 9.0.0
@@ -82,7 +82,7 @@ Atomizer owns operator intent, instrument selection/lifecycle, OpenAI credential
 
 | Source | Driver / transport | Qualification | USB status |
 |---|---|---|---|
-| SignalLab | `signal-lab` / `signal-lab-measurement-bridge` | Scalar `synthetic-visual-projection`; all-profile deterministic I/Q—CW/AM/FM `analytic-complex-baseband`, 31 standards-labelled profiles `standards-derived-complex-baseband`; no RF, firmware, generator, screen, or touch claim | Not a USB source |
+| SignalLab | `signal-lab` / `signal-lab-measurement-bridge` | Scalar `synthetic-visual-projection`; all-profile deterministic I/Q: CW/AM/FM `analytic-complex-baseband`, 31 standards-labelled profiles `standards-derived-complex-baseband`; no RF, firmware, generator, screen, or touch claim | Not a USB source |
 | Physical ZS407 | `tinysa-zs407` / `usb-cdc-acm` | `device-observed` after exact identity; custom firmware may remain warning-admitted and unqualified | Verified only after exact identity; real USB transactions |
 | Executable twin | `tinysa-zs407` / `renode-monitor-bridge` | `firmware-executed-twin` | Not verified; USB transactions not modeled |
 | Protocol test double | test-only / `protocol-test-double` | Test evidence only | Not verified or modeled |
@@ -157,7 +157,7 @@ unconfigured -> idle -> connecting -> listening <-> thinking <-> speaking
 - Input-transcription failure is shown and terminates the voice session; it is never replaced with guessed text or another model.
 - Partial assistant transcripts are not persisted as complete messages.
 - Function calls are harvested only from completed `response.done` output. They go through the identical validator, policy and approval path as text-agent calls; every function output is submitted before exactly one continuation `response.create`.
-- A user response starts with only `load_atom_tools`. A valid loader call is the sole call in its response and selects one to eight names from the closed 50-tool enum. The continuation uses a one-response `tools` override containing the loader plus only those exact concrete schemas. A new speech turn returns to the compact session surface.
+- A user response starts with only `load_atom_tools`. A valid loader call is the sole call in its response and selects one to eight names from the closed 51-tool enum. The continuation uses a one-response `tools` override containing the loader plus only those exact concrete schemas. A new speech turn returns to the compact session surface.
 - The loader is accepted once per user speech operation. A failed application call cannot widen that operation's selected set. Composite operations therefore preload their bounded recovery dependencies without executing them. In particular, a peak-marker operation loads both `search_marker` and `acquire_sweep`: it searches current complete trace data directly, and acquires first only after a no-data result or when the user explicitly requests fresh evidence.
 - Invalid function names/JSON/arguments become explicit failed `function_call_output` results so Atom may make one schema-grounded correction inside the bounded chain; they do not masquerade as host success or tear down an otherwise healthy voice transport.
 - Voice function chains are limited to eight application calls per user speech turn; the non-executing loader does not consume that operation allowance. Duplicate call IDs fail the session.
@@ -263,6 +263,7 @@ Raw sweep arrays, screenshots, prior sessions, file contents, diagnostic logs an
 | `configure_zero_span` | Operate | Never | Stages detected-power-versus-time capture settings |
 | `acquire_zero_span` | Operate | Never | Captures and characterizes one envelope |
 | `configure_generator` | Operate | Never | Commands output off and stages generator |
+| `select_signal_lab_profile` | Operate | Never | Commands the connected SignalLab source to emit exactly one profile from its advertised selection catalog; unknown IDs fail closed before driver I/O, and selection invalidates prior acquired evidence and restages the swept span, detected-power center, and complex-I/Q center exactly as the visual profile picker does |
 | `set_rf_output` | High impact | At action for enable | Enables/disables output on the connected execution backend and returns execution evidence |
 | `capture_device_screen` | Observe | Never | Reads and displays one exact RGB565 frame |
 | `remote_device_touch` | High impact | At action | Operates the general firmware UI, which may expose RF controls |
@@ -283,9 +284,9 @@ row.
 
 Legal application calls in one Realtime response execute sequentially against one synchronous controller snapshot, not render-time React closures. Before an action-containing response batch has effects, Atomizer preflights every emitted call against its concrete schema and exact response-scoped authorization. A preflight failure suppresses every non-cleanup action in that batch. Otherwise the first execution failure or approval denial suppresses every later non-cleanup call, and each suppressed call receives one explicit recoverable skipped result naming the failed dependency. Three exact safety cleanups remain best-effort in emitted order after either barrier: RF output off, stop continuous acquisition, and disconnect. Mutable backend readiness is checked immediately before each high-impact call rather than assumed during whole-batch preflight; approval is bound to the complete session, driver, source-kind, and execution identity and that identity is re-attested before execution. An all-observe batch remains independent: one invalid or failed read does not suppress another valid read. Recovery occurs only in a later model continuation after the failed, skipped, and cleanup results are visible. Every controller-domain mutation atomically updates the authoritative ref and its React projection; successful configure→operate and acquire→read chains therefore observe the preceding call. DOM-dependent inspection and computer calls additionally wait for the exact preceding mutation revision to reach a layout commit. That wait is bounded to two seconds, rejects on renderer unmount, returns immediately when no mutation is pending, and fails closed rather than inspecting stale DOM.
 
-All 50 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints—trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span—remain fail-closed runtime refinements and are repeated in tool/property descriptions.
+All 51 registered parameter schemas are generated from the same Zod objects used to accept execution. The persistent Realtime session never carries that entire registry: its one loader schema contains only the closed name enum, and `response.create` installs the selected concrete definitions for one response. Realtime requires a closed top-level `type: object` and rejects top-level `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and `not`; catalog tests enforce that admission rule for every application tool. Cross-field constraints (trigger mode/level, marker delta reference, channel overlap, waterfall floor/ceiling, STFT hop/window, generator path/modulation, and merged analyzer span) remain fail-closed runtime refinements and are repeated in tool/property descriptions.
 
-Transient numeric-entry panels are body-level portals carrying the originating row identity in `data-parameter-editor`. While open, the one stable `data-agent-control` moves from the occluded source row to the portal and the source becomes an explicit exclusion, so duplicate hooks cannot appear. Their field, keypad, unit terminators, and close/apply controls cannot create a second configuration path. When an exact domain tool exists—such as `configure_analyzer` or `configure_marker`—Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
+Transient numeric-entry panels are body-level portals carrying the originating row identity in `data-parameter-editor`. While open, the one stable `data-agent-control` moves from the occluded source row to the portal and the source becomes an explicit exclusion, so duplicate hooks cannot appear. Their field, keypad, unit terminators, and close/apply controls cannot create a second configuration path. When an exact domain tool exists, such as `configure_analyzer` or `configure_marker`, Atom uses it instead of reproducing keypad clicks; computer operation remains an app-scoped semantic/visual path, not a second validation path.
 
 ### 7.2 Every-feature hook rule
 
@@ -308,7 +309,7 @@ A feature is not complete when only its visual control exists.
 
 Atom’s computer use is confined to Atomizer. It combines a semantic interface map with a screenshot-first visual loop:
 
-1. Electron captures only its own bounded visible `BrowserWindow` content—never the desktop—with animations, transitions, and caret painting temporarily normalized.
+1. Electron captures only its own bounded visible `BrowserWindow` content (never the desktop) with animations, transitions, and caret painting temporarily normalized.
 2. The CSS-sized bitmap is hashed, assigned a 15-second one-use coordinate ID and a rotating main-owned focus grant, and sent as explicitly untrusted image input with its focused-target identity on the active trusted Realtime transport.
 3. Atom returns bounded click/scroll calls containing that exact ID, or type/key calls containing the exact expected focus target.
 4. Main consumes the coordinate grant, recaptures under the same normalization, requires the exact bitmap hash plus unchanged dimensions/display scale, then hit-tests the current app DOM. Focus actions require the exact granted target. Native type/key/scroll input is guarded again at renderer event delivery; scroll also repeats native geometry, scale, bounds, and protected-target checks after the awaited hit-test immediately before injection.
@@ -469,7 +470,7 @@ Curated evals cover frequency/span conversion, dB versus dBm, RBW tradeoffs, att
 - **AI-39:** Voice config includes and exactly verifies `audio.input.transcription.model = gpt-realtime-whisper`; user and assistant deltas stream into one message per turn.
 - **AI-40:** Atom makes one 15-second-bounded startup voice connection attempt with microphone muted; it remains cancellable while Connecting, and an explicit typed request preempts voice without losing the prompt. Mic/speaker state remains independently human-controlled and visually encoded.
 - **AI-41:** Realtime calls are harvested only at `response.done`; all outputs precede exactly one continuation response.
-- **AI-42:** Every one of the 50 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
+- **AI-42:** Every one of the 51 tool definitions has a concrete JSON schema, matching runtime validator and policy; `configure_analyzer` is a non-empty patch merged into a full device config.
 - **AI-43:** Invalid model tool arguments are returned as failed tool evidence for bounded correction and never terminate voice merely because a Zod parse failed.
 - **AI-44:** Auto/manual/teardown/hot-module-replacement voice races cannot create overlapping peers, tracks, or playback streams; applied echo cancellation, noise suppression, and AGC must all report true.
 - **AI-45:** WebRTC call creation carries only the immutable exact-model bootstrap; the compact shared loader session is sent and exactly acknowledged before the muted microphone can be enabled.

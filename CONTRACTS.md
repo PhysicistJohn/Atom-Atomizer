@@ -1,4 +1,4 @@
-# tinySA Desktop — Master Statement of Work and Work-Package Contracts
+# tinySA Desktop: Master Statement of Work and Work-Package Contracts
 
 Status: active execution baseline, instrument API v1, TinySA protocol v3, trio composition v4, 2026-07-17
 Companion: [PLAN.md](./PLAN.md)
@@ -220,7 +220,7 @@ admission, the manager owns the session. Public `InstrumentManager.disconnect()`
 teardown: it first disconnects the admitted session, then retries any retained
 rejected-session teardown, and only after those succeed invokes
 `cleanupPendingConnection()` on every statically registered driver. Pending
-cleanup attempts are aggregate—all registered drivers are attempted—and any
+cleanup attempts are aggregate (all registered drivers are attempted), and any
 failure keeps Electron's before-quit gate closed and the teardown retryable.
 Registry validation rejects a driver with no pending-cleanup method. TinySA
 currently forwards this hook to its retained device/transport teardown;
@@ -260,7 +260,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 ## 4. Work packages
 
-## WP-00 — Product baseline and repository foundation
+## WP-00: Product baseline and repository foundation
 
 **Outcome:** a buildable, governed monorepo with frozen v1 product boundaries.  
 **Estimate:** 3–5 ED.  
@@ -281,7 +281,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 **Excluded:** device implementation and finished UI.
 
-## WP-01 — ZS407 protocol characterization
+## WP-01: ZS407 protocol characterization
 
 **Outcome:** evidence-backed protocol and capability specification for the delivered hardware/firmware.  
 **Estimate:** 6–10 ED plus access to hardware.  
@@ -304,7 +304,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 
 **Excluded:** relying on wiki dimensions as test evidence; destructive calibration; DFU.
 
-## WP-02 — Domain and API contracts
+## WP-02: Domain and API contracts
 
 **Outcome:** stable, platform-neutral TypeScript vocabulary for the entire system.  
 **Estimate:** 4–6 ED.  
@@ -324,7 +324,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Representative requests/events survive structured-clone and JSON fixture round trips where applicable.
 - All downstream owners approve the API review.
 
-## WP-03 — Fake instrument, transcript harness, and fixtures
+## WP-03: Fake instrument, transcript harness, and fixtures
 
 **Outcome:** deterministic development and CI without physical hardware.  
 **Estimate:** 5–8 ED.  
@@ -343,7 +343,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Simulator asserts illegal command concurrency and records all host writes.
 - Golden replay produces byte-identical results and fixture provenance is documented.
 
-## WP-04 — Serial discovery and transport
+## WP-04: Serial discovery and transport
 
 **Outcome:** cross-platform, reconnect-aware byte transport owned by Electron main.  
 **Estimate:** 5–8 ED.  
@@ -362,7 +362,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - No read listener or OS handle leaks across 100 simulated reconnects.
 - Transport never interprets tinySA command content.
 
-## WP-05 — Console codec and command scheduler
+## WP-05: Console codec and command scheduler
 
 **Outcome:** lossless parsing and serialized execution across mixed text/binary/stream responses.  
 **Estimate:** 8–13 ED.  
@@ -382,7 +382,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Timeout/cancel/disconnect settles each operation exactly once and the next operation either starts synchronized or forces reconnect.
 - Streaming cannot steal a solicited response.
 
-## WP-06 — Device service, capability engine, and safety policy
+## WP-06: Device service, capability engine, and safety policy
 
 **Outcome:** one coherent high-level instrument independent of Electron and React.  
 **Estimate:** 10–15 ED.  
@@ -402,7 +402,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - All ZS407 capability-matrix rows map to one typed operation or a documented exclusion.
 - Safety test suite proves output cannot become enabled through connect, reconnect, restore, import, or analyzer actions.
 
-## WP-07 — Electron main/preload security bridge
+## WP-07: Electron main/preload security bridge
 
 **Outcome:** a minimal secure desktop boundary exposing `AtomizerInstrumentApiV1`.
 **Estimate:** 4–7 ED.  
@@ -421,7 +421,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Window reload/close removes subscriptions and leaves the device in defined state.
 - Security checklist and automated smoke tests pass.
 
-## WP-08 — Design system and application shell
+## WP-08: Design system and application shell
 
 **Outcome:** accessible, responsive desktop framework for all product surfaces.  
 **Estimate:** 6–10 ED.  
@@ -439,7 +439,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Keyboard-only operation reaches all controls; focus and errors are visible; controls have accessible names.
 - Generator enabled/unknown states remain visible from every route.
 
-## WP-09 — Analyzer workspace and visualization
+## WP-09: Analyzer workspace and visualization
 
 **Outcome:** configure, acquire, inspect, and monitor spectra from the desktop.  
 **Estimate:** 12–18 ED.  
@@ -448,7 +448,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 **Deliverables**
 
 - Frequency start/stop/center/span and point/RBW controls with capability-aware validation.
-- Instrument contract v1 is an internal pre-publication boundary. Scalar capabilities and admitted configurations use a closed `receiver` or `synthetic-scalar` control model: complete receiver commands are acknowledged or rejected, available geometry/RBW/attenuation readback remains separate evidence, and SignalLab carries only its exact 0.05 s simulation timing with no fabricated RF controls. Source provenance constrains the capability model at session and export admission. A successful main-process configuration response—not renderer intent—is the sole `requested` configuration retained in measurement evidence; JSON and CSV exports preserve that full request.
+- Instrument contract v1 is an internal pre-publication boundary. Scalar capabilities and admitted configurations use a closed `receiver` or `synthetic-scalar` control model: complete receiver commands are acknowledged or rejected, available geometry/RBW/attenuation readback remains separate evidence, and SignalLab carries only its exact 0.05 s simulation timing with no fabricated RF controls. Source provenance constrains the capability model at session and export admission. A successful main-process configuration response, not renderer intent, is the sole `requested` configuration retained in measurement evidence; JSON and CSV exports preserve that full request.
 - Attenuation, LNA/LNA2, AGC, trigger, repeat, spur, trace/calculation and other accepted analyzer controls.
 - Single/continuous acquisition, pause/resume, performant trace plot, axes/units, zoom/pan/reset, markers, peak search, delta/readouts, waterfall.
 - Freshness, effective settings, commanded/verified state, dropped-frame/backpressure and disconnected indications.
@@ -460,7 +460,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Plot interaction stays responsive at the measured maximum device rate on the reference machine.
 - Invalid or unsupported settings cannot reach the service.
 
-## WP-10 — Generator and remote-instrument workspaces
+## WP-10: Generator and remote-instrument workspaces
 
 **Outcome:** safely operate accepted signal-generator functions and every remaining device UI function.  
 **Estimate:** 9–14 ED.  
@@ -480,7 +480,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Touch coordinates hit corners/center within characterized tolerance at every supported scale.
 - Remote-screen soak has bounded memory and cleanly yields the command channel when required.
 
-## WP-11 — Sessions, persistence, import, and export
+## WP-11: Sessions, persistence, import, and export
 
 **Outcome:** reproducible local measurements without corrupting or silently changing device state.  
 **Estimate:** 7–11 ED.  
@@ -500,7 +500,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Import never executes device commands; applying imported settings is a separate validated explicit action and cannot enable RF output.
 - Golden exports open correctly in common spreadsheet/image tools and document their schema.
 
-## WP-12 — Diagnostics, resilience, and supportability
+## WP-12: Diagnostics, resilience, and supportability
 
 **Outcome:** failures are recoverable and diagnosable without exposing sensitive host data.  
 **Estimate:** 5–8 ED.  
@@ -518,7 +518,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Support bundle contains required reproduction metadata but no home-directory username, unrelated ports, session contents, or raw data unless explicitly included.
 - Repeated failure/recovery does not leak handles, listeners, timers, or unbounded logs.
 
-## WP-13 — Verification and hardware qualification
+## WP-13: Verification and hardware qualification
 
 **Outcome:** traceable evidence that the assembled product meets its contract.  
 **Estimate:** 12–18 ED distributed across development, plus hardware/platform access.  
@@ -538,7 +538,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - 8-hour analyzer soak and 1-hour remote-screen soak have bounded resources and zero unexplained desynchronization.
 - No S1/S2 defects; deferred S3/S4 items have owner-approved release notes.
 
-## WP-14 — Packaging, supply chain, documentation, and release
+## WP-14: Packaging, supply chain, documentation, and release
 
 **Outcome:** reproducible, installable, supportable v1 artifacts.  
 **Estimate:** 8–13 ED plus certificate/provisioning lead time.  
@@ -558,7 +558,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Upgrade preserves valid data; failed update has documented recovery; uninstall behavior matches documentation.
 - A new developer can build/test from the delivered instructions and a new user can connect/acquire/export without undocumented steps.
 
-## WP-15 — Signal detection and event tracking
+## WP-15: Signal detection and event tracking
 
 **Outcome:** evidence-backed, configurable detection of RF emissions with stable event tracking.  
 **Estimate:** 12–18 ED plus representative capture collection.  
@@ -580,7 +580,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Precision/recall, false alarms, SNR response and estimation error meet thresholds frozen after WP-01 capture characterization.
 - Continuous tracking has bounded memory and deterministic replay from a recorded session.
 
-## WP-16 — Classification infrastructure and model lifecycle
+## WP-16: Classification infrastructure and model lifecycle
 
 **Outcome:** safe local waveform-classification pipeline with candid unknown behavior.  
 **Estimate:** 10–16 ED.  
@@ -600,7 +600,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Model installation occurs in a trusted process and loads no executable scripts from the package.
 - Classification never receives transport, raw IPC, filesystem or generator capabilities.
 
-## WP-17 — Classification corpus, training and validated model
+## WP-17: Classification corpus, training and validated model
 
 **Outcome:** a reproducible classifier whose stated domain and performance are scientifically defensible.  
 **Estimate:** 20–40 ED after the capture protocol and taxonomy are frozen; RF capture time is additional.  
@@ -622,7 +622,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Open-set evaluation demonstrates the agreed unknown-detection behavior.
 - A clean build reproduces the accepted model artifact or documents deterministic tolerance and exact provenance.
 
-## WP-18 — AI-native application and tool foundation
+## WP-18: AI-native application and tool foundation
 
 **Outcome:** every application capability has a governed agentic surface using the same domain APIs as the UI.  
 **Estimate:** 7–11 ED.  
@@ -631,7 +631,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 **Deliverables**
 
 - Exact model constants, Atom system contract, pull-based state access, and typed tool/result/approval contracts.
-- Closed 50-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
+- Closed 51-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
 - Agent-hook completion rule for all future features and source-to-contract traceability.
 - Hobbyist/engineer behavior profiles without changing safety authority.
 
@@ -641,7 +641,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Raw serial, unrestricted IPC, calibration, DFU, deletion and arbitrary filesystem/network operations are absent.
 - Text, voice and app-computer paths use one tool validator and policy table.
 
-## WP-19 — Native Realtime voice
+## WP-19: Native Realtime voice
 
 **Outcome:** low-latency speech-to-speech operation with `gpt-realtime-2.1`.
 **Estimate:** 6–10 ED plus microphone/platform qualification.  
@@ -659,7 +659,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - `OPENAI_KEY` never crosses main/preload; media resources close on every exit/failure path.
 - Barge-in does not duplicate or replay an instrument operation.
 
-## WP-20 — Text agent transport and app-scoped computer use
+## WP-20: Text agent transport and app-scoped computer use
 
 **Outcome:** multi-step text agent and semantic computer operation confined to Atomizer.  
 **Estimate:** 6–10 ED.  
@@ -678,7 +678,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Computer actions are screenshot-relative, bounded to the Atomizer content area, and cannot address URLs, other windows or RF enable.
 - Native tools are selected over computer actions for exact measurement configuration in evals.
 
-## WP-21 — Agent security, privacy, RF evals, and release qualification
+## WP-21: Agent security, privacy, RF evals, and release qualification
 
 **Outcome:** evidence that Atom is useful, honest, safe and private for hobbyist and engineering workflows.  
 **Estimate:** 8–14 ED distributed across agent development.  
@@ -697,7 +697,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 - Zero policy-bypass or unapproved RF-enable cases across the release red-team corpus.
 - RF expert accepts the supported-domain claims and known limitations.
 
-## WP-22 — Advanced swept measurements and bounded instrument stage
+## WP-22: Advanced swept measurements and bounded instrument stage
 
 **Outcome:** the Spectrum route provides the core measurement workflows common
 to entry spectrum analyzers without scrolling, hidden data, or unsupported I/Q
