@@ -55,8 +55,10 @@ class BrowserTextSession {
     this.#ready = (async () => {
       const token = await mintEphemeralToken();
       // Browsers cannot set Authorization headers on a WebSocket; OpenAI's
-      // browser transport carries the ephemeral secret in a subprotocol.
-      const socket = new WebSocket(REALTIME_URL, ['realtime', `openai-insecure-api-key.${token}`, 'openai-beta.realtime-v1']);
+      // browser transport carries the ephemeral secret in a subprotocol. No
+      // openai-beta marker: that routes to the retired Beta API, while the
+      // session config (type: 'realtime') is the GA contract.
+      const socket = new WebSocket(REALTIME_URL, ['realtime', `openai-insecure-api-key.${token}`]);
       this.#socket = socket;
       socket.onmessage = (event) => this.#handleMessage(typeof event.data === 'string' ? event.data : '');
       socket.onerror = () => this.#fail(new Error('Realtime text connection failed'));
