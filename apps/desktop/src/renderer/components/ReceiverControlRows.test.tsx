@@ -3,7 +3,6 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnalyzerConfig, InstrumentAcquisitionCapability, ZeroSpanConfig } from '@tinysa/contracts';
 import { AnalyzerInspector } from './AnalyzerInspector.js';
-import { classificationCaptureGeometryMenu } from './ClassificationWorkspace.js';
 import { DetectedPowerReceiverControls } from './ReceiverControlRows.js';
 
 const spectrumCapability: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }> = {
@@ -98,17 +97,5 @@ describe('capability-derived receiver controls', () => {
     }} disabled={false} controlPrefix="stft" onChange={() => undefined}/>);
     expect(screen.getByRole('status').textContent).toContain('Receiver controls not applicable');
     expect(screen.queryByRole('combobox', { name: 'RBW mode' })).toBeNull();
-  });
-
-  it('withholds pinned Bayesian geometry when the active capability cannot construct it', () => {
-    const narrow: typeof detectedCapability = {
-      ...detectedCapability,
-      sampleCount: { min: 20, max: 20, step: 1 },
-      sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
-    };
-    expect(classificationCaptureGeometryMenu({ ...zero, points: 20, sweepTimeSeconds: 0.05 }, narrow)).toEqual({
-      value: 'current',
-      options: [{ value: 'current', label: '20 × 50 ms · current · only capability-admitted geometry' }],
-    });
   });
 });

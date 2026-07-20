@@ -324,7 +324,7 @@ const EXPECTED_TOOL_NAMES = [
   'get_measurement_state', 'select_marker', 'configure_marker', 'configure_marker_search', 'search_marker', 'select_trace', 'configure_trace', 'configure_firmware_trace_visibility', 'reset_trace', 'configure_spectrum_display', 'auto_scale_spectrum_display',
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
-  'configure_signal_detector', 'select_classification_candidate', 'configure_zero_span', 'acquire_zero_span',
+  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span',
   'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
   'capture_device_screen', 'remote_device_touch', 'export_latest_sweep',
 ] as const;
@@ -336,7 +336,7 @@ const EXPECTED_SEMANTIC_CONTROL_IDS = [
   'spectrum.marker-place',
   'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop',
   'marker.search.peak', 'marker.search.minimum', 'marker.search.left', 'marker.search.right',
-  'display.auto-scale', 'classification.auto-select', 'classification.capture-envelope', 'generator.apply',
+  'display.auto-scale', 'classification.capture-envelope', 'generator.apply',
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
   'connection.open', 'connection.close', 'connection.refresh', 'connection.disconnect', 'connection.retry-cleanup',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
@@ -357,8 +357,6 @@ const EXPECTED_BINDING_PATTERNS = [
   '^analyzer\\.advanced$',
   '^detection\\.(threshold-mode|margin|absolute-level|prominence|minimum-bandwidth|promote|release)$',
   '^classification\\.capture-envelope$',
-  '^classification\\.auto-select$',
-  '^classification\\.candidate\\.[A-Za-z0-9-]{1,128}\\.select$',
   '^waterfall\\.(floor|ceiling|depth)$',
   '^channel\\.(center|main-bandwidth|spacing|adjacent-bandwidth|adjacent-count|occupied-power|obw-noise)$',
   '^marker\\.[1-8]\\.select$',
@@ -400,7 +398,7 @@ const EXPECTED_CONCRETE_CONTROL_IDS = [
   'atom.approve-high-impact', 'atom.close', 'atom.microphone-mute', 'atom.speaker-mute', 'atom.toggle',
   'channel.adjacent-bandwidth', 'channel.adjacent-count', 'channel.center', 'channel.main-bandwidth',
   'channel.obw-noise', 'channel.occupied-power', 'channel.spacing',
-  'classification.auto-select', 'classification.capture-envelope',
+  'classification.capture-envelope',
   'connection.close', 'connection.disconnect',
   'connection.open', 'connection.refresh', 'connection.retry-cleanup',
   'detection.absolute-level', 'detection.margin', 'detection.minimum-bandwidth', 'detection.prominence',
@@ -417,7 +415,6 @@ const EXPECTED_CONCRETE_CONTROL_IDS = [
 ] as const;
 
 const EXPECTED_TEMPLATE_WITNESSES = [
-  '^classification\\.candidate\\.[A-Za-z0-9-]+\\.select$',
   '^connection\\.candidate\\.[A-Za-z0-9-]+\\.select$',
   '^firmware-trace\\.[A-Za-z0-9-]+\\.visible$',
   '^marker\\.[A-Za-z0-9-]+\\.enabled$',

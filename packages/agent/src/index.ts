@@ -23,7 +23,7 @@ export const ATOM_AGENT_VOICE = 'ballad' as const;
 export const ATOM_AGENT_REASONING_EFFORT = 'high' as const;
 export const ATOM_AGENT_VAD_THRESHOLD = 0.97 as const;
 export const ATOM_AGENT_TRANSCRIPTION_MODEL = 'gpt-realtime-whisper' as const;
-export const ATOM_AGENT_VERSION = 9 as const;
+export const ATOM_AGENT_VERSION = 10 as const;
 export const ATOM_TOOL_LOADER_NAME = 'load_atom_tools' as const;
 export const ATOM_MAX_LOADED_TOOLS = 8 as const;
 
@@ -40,7 +40,7 @@ export const agentToolNames = [
   'get_measurement_state', 'select_marker', 'configure_marker', 'configure_marker_search', 'search_marker', 'select_trace', 'configure_trace', 'configure_firmware_trace_visibility', 'reset_trace', 'configure_spectrum_display', 'auto_scale_spectrum_display',
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
-  'configure_signal_detector', 'select_classification_candidate', 'configure_zero_span', 'acquire_zero_span',
+  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span',
   'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
   'capture_device_screen', 'remote_device_touch', 'export_latest_sweep',
 ] as const;
@@ -109,7 +109,7 @@ export const agentSemanticControlIds = [
   'spectrum.marker-place',
   'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop',
   'marker.search.peak', 'marker.search.minimum', 'marker.search.left', 'marker.search.right',
-  'display.auto-scale', 'classification.auto-select', 'classification.capture-envelope', 'generator.apply',
+  'display.auto-scale', 'classification.capture-envelope', 'generator.apply',
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
   'connection.open', 'connection.close', 'connection.refresh', 'connection.disconnect', 'connection.retry-cleanup',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
@@ -124,7 +124,6 @@ export const agentHighImpactSemanticControlIds = [
 
 export const agentComputerActionControlIds = [
   'measurement.setup', 'measurement.controls', 'measurement.markers', 'measurement.traces', 'measurement.display',
-  'classification.auto-select',
   'analyzer.advanced',
   'connection.open', 'connection.close',
   'error.dismiss', 'notice.dismiss', 'atom.close', 'atom.toggle',
@@ -152,8 +151,6 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^analyzer\.advanced$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Opens or closes only the local advanced analyzer disclosure.' },
   { pattern: /^detection\.(threshold-mode|margin|absolute-level|prominence|minimum-bandwidth|promote|release)$/, preferredTool: 'configure_signal_detector', risk: 'operate', projection: 'host-derived', guarantee: 'Stages deterministic host signal-detection criteria.' },
   { pattern: /^classification\.capture-envelope$/, preferredTool: 'acquire_zero_span', risk: 'operate', projection: 'transport', guarantee: 'Acquires detected power versus time without claiming I/Q.' },
-  { pattern: /^classification\.auto-select$/, preferredTool: 'computer_action', risk: 'operate', projection: 'host-derived', guarantee: 'Atomically freezes the visible sweep and complete current target population, clears sticky manual targeting, selects integrated excess power rank 0 without lower-ranked substitution, and returns target/evidence-bound classification readiness. It stages the exact detected-power tune only when that capability is advertised; otherwise staging is explicitly unavailable with null configuration. A disabled empty Auto control returns structured no-target evidence, while incomplete rank evidence returns a distinct admission failure.' },
-  { pattern: /^classification\.candidate\.[A-Za-z0-9-]{1,128}\.select$/, preferredTool: 'select_classification_candidate', risk: 'operate', projection: 'ui-only', guarantee: 'Selects only the exact requested current-visible active physical representative or promotion-qualified agile evidence representative. A qualified agile representative stages its uniquely bound current raw tune owner; raw candidate IDs, stale rows, and ambiguous ownership fail closed.' },
   { pattern: /^waterfall\.(floor|ceiling|depth)$/, preferredTool: 'configure_waterfall', risk: 'operate', projection: 'host-derived', guarantee: 'Configures a coherent scalar-sweep history projection.' },
   { pattern: /^channel\.(center|main-bandwidth|spacing|adjacent-bandwidth|adjacent-count|occupied-power|obw-noise)$/, preferredTool: 'configure_channel_measurement', risk: 'operate', projection: 'host-derived', guarantee: 'Configures bounded channel, ACP, ACLR, and OBW integration.' },
   { pattern: /^marker\.[1-8]\.select$/, preferredTool: 'select_marker', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host marker without changing its visibility or reading configuration.' },
@@ -230,8 +227,8 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
   { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance and warnings, declared capabilities, active configuration, streaming state, startup preference, and RF command state. A missing RF-generator feature or rfOutput=not-supported grants no RF-output authority.' },
   { type: 'function', name: 'get_latest_sweep_summary', description: 'Read the latest spectrum sweep range, peak, robust noise floor, metrics, point count, capture timestamp, source, and optional exact RBW/input-attenuation values paired with their qualifications. Physical receiver values are returned only as device-observed; these readbacks do not establish protocol, emitter, operator, or service identity.' },
-  { type: 'function', name: 'get_detection_results', description: 'Read separately projected frequency-local detections, 2.4 GHz frequency-agile activity, static classifier associations, and the exact frozen visible-spectrum automatic target rank population. Targeting readback includes selected raw/projected IDs and explicit no-target, collecting, inference-pending, ready, unavailable, or failed classification readiness bound to one evidence revision. Associations are explicitly neither physical emissions nor common-process, simultaneity, emitter, or protocol identity.' },
-  { type: 'function', name: 'get_classification_results', description: 'Read open-set Bayesian observable evidence classes plus current selected-target readiness and an additive automaticOperation receipt for the last Auto action. While Auto inference is pending, poll automaticOperation.readiness: its frozen target/evidence revision survives newer Run sweeps, Stop, and manual retarget; a subsequent Auto supersedes it, while device/span evidence invalidation retires it. Ready is returned only when result detection ID, numeric target signature, ordered scalar sweep window, optional detected-power capture, and automatic/operator selection condition match. Results are equivalence classes, never SignalLab selected-state proof, protocol decoding, conformance, emitter identity, or I/Q classification.' },
+  { type: 'function', name: 'get_detection_results', description: 'Read separately projected frequency-local detections, 2.4 GHz frequency-agile activity, and static classifier associations from the visible spectrum. Associations are explicitly neither physical emissions nor common-process, simultaneity, emitter, or protocol identity.' },
+  { type: 'function', name: 'get_classification_results', description: 'Classify the capture currently in the workspace with the embedding modulation classifier. Complex-I/Q sessions (SignalLab/SDR) classify the latest I/Q buffer; scalar analyzers classify the visible sweep around its strongest live detection. Returns the modulation family, refined modulation, confidence, unknown flag, top family candidates, and the flavor (iq or magnitude); when no capture is available it reports available:false. Results are open-set equivalence classes, never protocol decoding, conformance, emitter identity, or SignalLab selected-state proof.' },
   { type: 'function', name: 'read_device_diagnostics', description: 'Read every diagnostics report declared by the connected driver. Fails when that source exposes no diagnostics feature.' },
   { type: 'function', name: 'list_connection_candidates', description: 'List current connection candidates and issue opaque IDs bound to this exact result. Call immediately before connect_device; raw OS paths and serials are withheld.' },
   { type: 'function', name: 'connect_device', description: 'Connect exactly one opaque candidate issued by the latest multi-driver discovery result. Switching is one step: an active session to a different source is torn down automatically first, and connecting to the already-active source is an idempotent no-op — never ask the operator to disconnect. Stale, changed, unknown, or disappeared candidates fail; no driver or source is substituted.' },
@@ -267,7 +264,6 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'configure_spectrum_display', description: 'Configure the host spectrum amplitude axis reference level and dB per division. This does not claim firmware display readback.' },
   { type: 'function', name: 'auto_scale_spectrum_display', description: 'Derive and apply a host spectrum amplitude axis from the latest complete sweep. Fails when no sweep exists.' },
   { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior.' },
-  { type: 'function', name: 'select_classification_candidate', description: 'Select exactly one requested current-visible active physical representative or current promotion-qualified frequency-agile evidence representative, clear any envelope bound to another selection, and stage the nearest admitted detected-power tune without acquiring. A qualified agile representative maps to its uniquely bound latest raw physical tune owner. Ordinary candidate IDs, raw agile-member IDs, stale, released, ambiguous, absent, or silently substituted IDs fail closed.' },
   { type: 'function', name: 'configure_zero_span', description: 'Apply a non-empty patch to staged detected-power timeseries capture. Receiver RBW, attenuation, and trigger are capability-validated; synthetic sources accept only geometry and exact timing. This is detected envelope data, never I/Q.' },
   { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one driver-declared detected-power timeseries, then restore the staged swept-spectrum configuration. Classify only detected-envelope behavior.' },
   { type: 'function', name: 'configure_generator', description: 'Apply the complete driver-neutral generator configuration while forcing RF output off. Path, modulation modes, and ranges must be declared by the active driver.' },
@@ -323,7 +319,6 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   configure_spectrum_display: operate('configure_spectrum_display'),
   auto_scale_spectrum_display: operate('auto_scale_spectrum_display'),
   configure_signal_detector: operate('configure_signal_detector'),
-  select_classification_candidate: operate('select_classification_candidate'),
   configure_zero_span: operate('configure_zero_span'),
   acquire_zero_span: operate('acquire_zero_span'),
   configure_generator: operate('configure_generator'),
@@ -377,7 +372,6 @@ export const agentToolInputSchemas = {
   configure_spectrum_display: spectrumDisplayConfigurationSchema,
   auto_scale_spectrum_display: z.object({}).strict(),
   configure_signal_detector: signalDetectionConfigSchema,
-  select_classification_candidate: z.object({ detectionId: z.string().min(1).max(128).regex(/^[A-Za-z0-9-]+$/) }).strict(),
   configure_zero_span: zeroSpanConfigPatchSchema,
   acquire_zero_span: z.object({}).strict(),
   configure_generator: generatorConfigSchema,
@@ -612,7 +606,7 @@ You are Atom, the native AI copilot inside Atomizer. Help RF hobbyists learn and
 - configure_analyzer is a non-empty staged patch. The active driver's closed capability model admits every supported receiver control (format, RBW, attenuation, sweep time, detector, spur handling, LNA, and trigger) or rejects it; synthetic sources carry only their declared exact timing and never receive invented RF controls.
 - configure_zero_span is a non-empty staged detected-power patch. Its frequency, sample count, duration, RBW, attenuation, and trigger are merged with staged values, then admitted by the active driver's closed capability model; synthetic sources accept only their declared geometry and exact timing and reject RF controls. configure_generator, configure_marker, and configure_trace replace complete configurations. If the user supplied only part of a complete configuration, load and read the relevant state first.
 - The legacy acquire_sweep and start_continuous_sweeps names are the typed global Single and Run controls. After navigate_workspace selects I/Q, they acquire one bounded complex-I/Q buffer or start one-at-a-time backpressured I/Q buffers and stay on I/Q. On every other acquisition workspace they retain scalar-spectrum behavior. Use get_application_state to verify workspace, continuousMode, staged I/Q geometry, and latest capture provenance; stop_continuous_sweeps stops either mode.
-- For automatic Detect targeting, navigate to classification and call computer_action with controlId classification.auto-select. Its structured result freezes the visible sweep, reports complete-rank admission, the integrated-excess population, and either an exact frozen detected-power tune or explicit capability-unavailable/null staging. It may validly report no-target, collecting, inference-pending, ready, unavailable, or failed; ranking-admission failure is not no-target. Never substitute a lower rank or treat an older same-ID result as ready. When pending, use get_classification_results and poll the additive automaticOperation.readiness receipt until that exact frozen revision explicitly becomes ready, unavailable, or failed; top-level readiness remains the current UI revision. Do not infer readiness from elapsed time.
+- For Detect modulation classification, call get_classification_results. It classifies the capture currently in the workspace with the embedding classifier: complex-I/Q sessions classify the latest I/Q buffer, scalar analyzers classify the visible sweep around its strongest live detection. It returns the modulation family, refined modulation, confidence, unknown flag, and top candidates, or available:false when no capture exists. Acquire an I/Q buffer or a sweep first when needed; these are open-set equivalence classes, never protocol, emitter, or SignalLab selected-state identity.
 - A response containing any operate or high-impact call is one ordered fail-fast batch: Atomizer preflights every schema and response-scoped authorization before effects, executes in emitted order only if that preflight passes, and skips every remaining non-cleanup call after the first failure or approval denial. Three narrow safety cleanups remain best-effort in emitted order after either barrier: set_rf_output with enabled false, stop_continuous_sweeps, and disconnect_device. Treat each structured skipped result as non-execution and continue only from actual results. An all-observe batch remains independent, so one failed read does not prevent other valid reads in that same response.
 - Mutable backend readiness is never a whole-batch preflight assumption. Immediately before every high-impact call Atomizer requires a complete active sessionId, driverId, sourceKind, and execution identity. Approval-required calls bind approval to that exact identity and re-attest it after approval; a missing or changed backend rejects execution. This permits an earlier successful connect_device call to establish the backend for a later high-impact call in the same ordered batch.
 - For "place a marker on the peak" or equivalent requests, preload both acquire_sweep and search_marker in the operation's one response-scoped tool set. If the current workspace may be I/Q and a fresh scalar sweep is required, also load navigate_workspace and navigate to spectrum before acquire_sweep. Preloading does not authorize or execute an acquisition. Use search_marker action "peak", not a guessed or partial configure_marker replacement. Search the marker's assigned current complete host trace directly when it has data. Only when that trace has no data, or the user requests fresh evidence, acquire one complete sweep before searching. Tool calls are executed in emitted order, so in that recovery or fresh-evidence case emit acquisition before search. Load get_measurement_state too when the user asks for readback or characterization.

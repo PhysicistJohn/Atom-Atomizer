@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { CircleAlert } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
@@ -6,10 +6,6 @@ import { Sidebar } from './components/Sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { useAtomAgent } from './useAtomAgent.js';
 import { DEVELOPMENT_RENDERER } from './development.js';
-import {
-  createBayesianClassifierRuntime,
-  type BayesianClassifierRuntime,
-} from './bayesian-classifier-runtime.js';
 import type { WorkspaceId } from './ui-contracts.js';
 import {
   acquisitionModeForWorkspace,
@@ -26,14 +22,12 @@ import { RendererKernel } from './controllers/kernel.js';
 import { InstrumentEventsController } from './controllers/instrument-events.js';
 import { ConnectionController } from './controllers/connection.js';
 import { AcquisitionController, fitChannelConfigurationToSpan } from './controllers/acquisition.js';
-import { ClassificationController } from './controllers/classification.js';
 import { MeasurementController } from './controllers/measurement.js';
 import { FeaturesController } from './controllers/features.js';
 import { AgentExecutor } from './agent-executor.js';
-import { resolveVisibleClassificationTargetSelection } from './classification-target-selection.js';
 import { ConnectionContainer } from './containers/ConnectionContainer.js';
 import { MeasurementActions, MeasurementContainer } from './containers/MeasurementContainer.js';
-import { ClassificationContainer } from './containers/ClassificationContainer.js';
+import { DetectContainer } from './containers/DetectContainer.js';
 import { IqContainer } from './containers/IqContainer.js';
 import { GeneratorContainer } from './containers/GeneratorContainer.js';
 import { DeviceContainer } from './containers/DeviceContainer.js';
@@ -53,23 +47,20 @@ export interface RendererRuntime {
   readonly events: InstrumentEventsController;
   readonly connection: ConnectionController;
   readonly acquisition: AcquisitionController;
-  readonly classification: ClassificationController;
   readonly measurement: MeasurementController;
   readonly features: FeaturesController;
   readonly agent: AgentExecutor;
 }
 
 export function createRendererRuntime(options: {
-  readonly classifierRuntimeFactory: () => BayesianClassifierRuntime;
   readonly initialWorkspace: WorkspaceId;
   readonly initialAgentOpen: boolean;
 }): RendererRuntime {
   const store = new AtomizerStore(createInitialRendererState(options));
-  const kernel = new RendererKernel(store, options.classifierRuntimeFactory);
+  const kernel = new RendererKernel(store);
   kernel.events = new InstrumentEventsController(kernel);
   kernel.connection = new ConnectionController(kernel);
   kernel.acquisition = new AcquisitionController(kernel);
-  kernel.classification = new ClassificationController(kernel);
   kernel.measurement = new MeasurementController(kernel);
   kernel.features = new FeaturesController(kernel);
   kernel.agent = new AgentExecutor(kernel);
@@ -79,7 +70,6 @@ export function createRendererRuntime(options: {
     events: kernel.events,
     connection: kernel.connection,
     acquisition: kernel.acquisition,
-    classification: kernel.classification,
     measurement: kernel.measurement,
     features: kernel.features,
     agent: kernel.agent,
@@ -87,8 +77,6 @@ export function createRendererRuntime(options: {
 }
 
 export interface AppProps {
-  /** Dependency seam for evidence-lifecycle tests; production uses the admitted bundled runtime. */
-  readonly classifierRuntimeFactory?: () => BayesianClassifierRuntime;
   /** Optional launch workspace for browser deep links; desktop keeps the spectrum default. */
   readonly initialWorkspace?: WorkspaceId;
   /** Browser launch surfaces can start focused without opening the Atom agent panel. */
@@ -96,17 +84,15 @@ export interface AppProps {
 }
 
 export function App({
-  classifierRuntimeFactory = createBayesianClassifierRuntime,
   initialWorkspace = 'spectrum',
   initialAgentOpen = true,
 }: AppProps = {}) {
-  const [runtime] = useState(() => createRendererRuntime({ classifierRuntimeFactory, initialWorkspace, initialAgentOpen }));
+  const [runtime] = useState(() => createRendererRuntime({ initialWorkspace, initialAgentOpen }));
   const { store, kernel } = runtime;
   const state = useSyncExternalStore(store.subscribe, () => store.get());
   const {
     workspace, measurementView, agentOpen, instrument, acquisition,
     continuous, continuousMode, error, notice, sweep,
-    explicitClassificationId, detections,
   } = state;
 
   const session = instrument.session;
@@ -116,15 +102,6 @@ export function App({
   const iqCapability = selectIqCapability(state);
   const generatorCapability = selectGeneratorCapability(state);
   const signalLabProfileCapability = selectSignalLabProfileCapability(state);
-  const classificationTargetSelection = useMemo(
-    () => resolveVisibleClassificationTargetSelection(
-      detections,
-      sweep,
-      explicitClassificationId,
-    ),
-    [detections, explicitClassificationId, sweep],
-  );
-  const selectedClassificationId = classificationTargetSelection.detectionId;
 
   const renderedControllerRevision = store.revision;
   useLayoutEffect(() => {
@@ -140,17 +117,11 @@ export function App({
   }, []);
 
   useEffect(() => {
-    if (!kernel.classifierRuntime.current) {
-      const classifier = kernel.classifierRuntimeFactory();
-      kernel.classifierRuntime.current = classifier;
-      store.set({ classifierAvailability: classifier.status });
-    }
     const unsubscribe = window.atomizerInstrument.subscribe(kernel.events.handleInstrumentEvent);
     const generation = ++kernel.initializationGeneration.current;
     void kernel.events.initialize(generation);
     return () => {
       kernel.initializationGeneration.current++;
-      kernel.pendingClassificationWork.current = undefined;
       if (kernel.continuousRequested.current && kernel.continuousStreamOwnership.current) {
         void window.atomizerInstrument.stopStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
@@ -159,15 +130,6 @@ export function App({
       kernel.continuousRequested.current = false;
       kernel.events.rejectInvalidatingFeatureReceipt(new Error('Atomizer renderer unmounted before the invalidating feature lifecycle settled'));
       unsubscribe();
-      // React StrictMode immediately remounts effects on the same component
-      // instance. Defer disposal one microtask so that replay can restore the
-      // mounted flag; a real unmount still terminates the model worker.
-      queueMicrotask(() => {
-        if (!kernel.rendererMounted.current) {
-          kernel.classifierRuntime.current?.classifier.dispose?.();
-          kernel.classifierRuntime.current = undefined;
-        }
-      });
     };
   }, []);
   // Mount-time persistence parity with the retired per-key effects: a
@@ -176,18 +138,6 @@ export function App({
   useEffect(() => {
     store.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, state.analyzer.startHz, state.analyzer.stopHz));
   }, [state.analyzer.startHz, state.analyzer.stopHz]);
-  useEffect(() => {
-    if (explicitClassificationId !== undefined
-      && classificationTargetSelection.explicitDetectionId === undefined) {
-      kernel.classificationSelectionRevision.current++;
-      store.set({ explicitClassificationId: undefined });
-      kernel.classification.clearClassificationCapture();
-      store.set({ classifications: [] });
-    }
-    kernel.classification.safelyStageClassificationCandidate(
-      classificationTargetSelection.rawTargetId ?? selectedClassificationId,
-    );
-  }, [detections, explicitClassificationId, classificationTargetSelection.explicitDetectionId, classificationTargetSelection.rawTargetId, selectedClassificationId]);
   useEffect(() => {
     if (session && !generatorCapability && !signalLabProfileCapability && workspace === 'generator') store.set({ workspace: 'spectrum' });
   }, [session, generatorCapability, signalLabProfileCapability, workspace]);
@@ -245,7 +195,7 @@ export function App({
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => store.set({ error: undefined })}>Dismiss</button></div>}
       {notice && <div className="global-notice" role="status"><span>{notice}</span><button data-agent-control="notice.dismiss" onClick={() => store.set({ notice: undefined })}>Dismiss</button></div>}
       {workspace === 'spectrum' && <MeasurementContainer runtime={runtime} measurementActions={measurementActions}/>}
-      {(workspace === 'detection' || workspace === 'classification') && <ClassificationContainer runtime={runtime}/>}
+      {(workspace === 'detection' || workspace === 'classification') && <DetectContainer runtime={runtime}/>}
       {workspace === 'iq' && <IqContainer runtime={runtime}/>}
       {workspace === 'generator' && <GeneratorContainer runtime={runtime}/>}
       {workspace === 'device' && <DeviceContainer runtime={runtime}/>}

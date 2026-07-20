@@ -38,7 +38,6 @@ import {
   type TraceFrame,
   type TraceId,
   type WaterfallConfiguration,
-  type WaveformClassification,
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
@@ -143,7 +142,6 @@ export interface AtomizerRendererState {
   readonly sweep: Sweep | undefined;
   readonly history: readonly Sweep[];
   readonly detections: readonly DetectedSignal[];
-  readonly classifications: readonly WaveformClassification[];
   readonly explicitClassificationId: string | undefined;
   readonly zeroCapture: ZeroSpanCapture | undefined;
   readonly envelope: EnvelopeClassification | undefined;
@@ -160,7 +158,6 @@ export interface AtomizerRendererState {
   readonly error: string | undefined;
   readonly notice: string | undefined;
   readonly detectedPowerTargetStagingFailure: string | undefined;
-  readonly classifierAvailability: 'ready' | 'unavailable';
 }
 
 /** localStorage-persisted keys (`atomizer:v2:<name>`), written through on change. */
@@ -283,7 +280,6 @@ export function createInitialRendererState(options: {
     sweep: undefined,
     history: [],
     detections: [],
-    classifications: [],
     explicitClassificationId: undefined,
     zeroCapture: undefined,
     envelope: undefined,
@@ -300,7 +296,6 @@ export function createInitialRendererState(options: {
     error: undefined,
     notice: undefined,
     detectedPowerTargetStagingFailure: undefined,
-    classifierAvailability: 'ready',
   };
 }
 

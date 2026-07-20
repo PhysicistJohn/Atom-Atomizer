@@ -1,4 +1,4 @@
-import type { DetectedSignal, WaveformClassification } from '@tinysa/contracts';
+import type { DetectedSignal } from '@tinysa/contracts';
 
 type StaticClassificationAssociationMode = Extract<
   NonNullable<DetectedSignal['associationMode']>,
@@ -45,20 +45,6 @@ export function agentClassificationAssociation(detection: DetectedSignal | undef
     representsSimultaneity: false as const,
     representsProtocolIdentity: false as const,
   };
-}
-
-/** Attach the exact association lineage to the representative result itself. */
-export function agentClassificationResults(
-  detections: readonly DetectedSignal[],
-  classifications: readonly WaveformClassification[],
-) {
-  const detectionById = new Map(detections
-    .filter(agentDetectionRowIsSafe)
-    .map((detection) => [detection.id, detection] as const));
-  return classifications.map((classification) => ({
-    ...classification,
-    classificationAssociation: agentClassificationAssociation(detectionById.get(classification.detectionId)),
-  }));
 }
 
 /**

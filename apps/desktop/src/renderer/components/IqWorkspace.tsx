@@ -9,7 +9,6 @@ import {
   type ComplexIqPreview,
 } from '../complex-iq.js';
 import { EditableParameter } from './ParameterRow.js';
-import type { ModulationClassification } from '../embedding-classifier-runtime.js';
 
 // Bounded scalar identity of the latest capture. The raw measurement (with
 // its multi-megabyte sample payload) deliberately never crosses into props —
@@ -17,14 +16,12 @@ import type { ModulationClassification } from '../embedding-classifier-runtime.j
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
   'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
 
-export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, modulationPending, busy, captureUnavailableReason, onChange }: {
+export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, busy, captureUnavailableReason, onChange }: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
   preview?: ComplexIqPreview;
   previewError?: string;
   captureMeta?: IqCaptureMeta;
-  modulation?: ModulationClassification;
-  modulationPending?: boolean;
   busy: boolean;
   captureUnavailableReason?: string;
   onChange(configuration: ComplexIqConfiguration): void;
@@ -67,7 +64,6 @@ export function IqWorkspace({ configuration, capability, preview, previewError, 
         <Metric label="Preview peak" value={preview ? formatDbfs(preview.peak) : '—'}/>
         <Metric label="DC (I / Q)" value={preview ? `${preview.dcI.toFixed(4)} / ${preview.dcQ.toFixed(4)}` : '—'}/>
       </div>
-      <ModulationCard modulation={modulation} pending={modulationPending ?? false} hasCapture={captureMeta !== undefined}/>
       {previewError && <div className="inline-error" role="alert">I/Q payload could not be visualized: {previewError}</div>}
       <footer className="iq-evidence-footer">
         <span>{capture ? `Capture ${capture.measurementId} · ${capture.qualification.replaceAll('-', ' ')}` : 'No complex-sample capture yet'}</span>
@@ -278,53 +274,4 @@ function formatDbfs(linear: number): string {
 
 function formatPlotZoom(zoom: number): string {
   return `${zoom.toLocaleString('en-US', { maximumFractionDigits: 1 })}×`;
-}
-
-const MODULATION_LABELS: Record<string, string> = {
-  cw: 'Continuous wave', am: 'AM', fm: 'FM',
-  gsm: 'GSM / GERAN', ofdm: 'OFDM', dsss: 'DSSS', bluetooth: 'Bluetooth',
-  noise: 'Noise', chirp: 'Chirp / LFM', unknown: 'Unknown',
-};
-function modLabel(id: string): string { return MODULATION_LABELS[id] ?? id.toUpperCase(); }
-function leafLabel(id: string): string { return id.replace(/-like$/, '').replaceAll('-', ' '); }
-
-function ModulationCard({ modulation, pending, hasCapture }: {
-  modulation?: ModulationClassification;
-  pending: boolean;
-  hasCapture: boolean;
-}) {
-  if (!hasCapture) return null;
-  return (
-    <div className="iq-modulation-card" role="group" aria-label="Modulation classification">
-      <div className="iq-modulation-head">
-        <div><Cpu size={14}/><span><strong>Modulation</strong><small>Metric-embedding classifier · synthetic-trained</small></span></div>
-        {modulation && (
-          <span className={`iq-modulation-badge${modulation.isUnknown ? ' unknown' : ''}`}>
-            {modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}%`}
-          </span>
-        )}
-      </div>
-      {pending && !modulation && <p className="iq-modulation-pending">Classifying…</p>}
-      {modulation && (
-        <>
-          <div className="iq-modulation-primary">
-            <span className="iq-modulation-label">{modulation.isUnknown ? 'Unknown signal' : modLabel(modulation.modulation)}</span>
-            {modulation.topLeaf && <span className="iq-modulation-leaf">likely {leafLabel(modulation.topLeaf.label)}</span>}
-          </div>
-          <div className="iq-modulation-bars">
-            {modulation.candidates.map((candidate) => (
-              <div key={candidate.label} className="iq-modulation-bar">
-                <span>{modLabel(candidate.label)}</span>
-                <div className="iq-modulation-track"><div style={{ width: `${Math.round(candidate.confidence * 100)}%` }}/></div>
-                <em>{Math.round(candidate.confidence * 100)}%</em>
-              </div>
-            ))}
-          </div>
-          <p className="iq-modulation-note">
-            Occupied bandwidth ≈ {(modulation.bwFraction * 100).toFixed(0)}% of sample rate · modulation from complex baseband, not a protocol or emitter identity.
-          </p>
-        </>
-      )}
-    </div>
-  );
 }

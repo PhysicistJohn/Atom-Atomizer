@@ -84,16 +84,6 @@ export function sanitizeClassificationEvidenceDetections(
         && detection.detectorConfig.minimumConsecutiveSweeps > 0)));
 }
 
-/** Return only render-safe evidence owned by the exact sweep on screen. */
-export function sanitizeVisibleClassificationEvidenceDetections(
-  detections: readonly DetectedSignal[],
-  sweep: Sweep | undefined,
-): readonly DetectedSignal[] {
-  if (!sweep) return [];
-  return sanitizeClassificationEvidenceDetections(detections).filter((detection) =>
-    detectionIsFromVisibleSweep(detection, sweep));
-}
-
 /**
  * Bind selectable targets to the exact sweep currently drawn in the Detect
  * workspace. The tracker normally guarantees this relationship through its

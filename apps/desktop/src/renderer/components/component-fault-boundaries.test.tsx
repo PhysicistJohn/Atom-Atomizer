@@ -6,13 +6,10 @@ import type {
   GeneratorConfig,
   InstrumentFeatureCapability,
   MarkerReading,
-  SignalDetectionConfig,
   Sweep,
   TraceFrame,
-  WaveformClassification,
 } from '@tinysa/contracts';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
-import { ClassificationWorkspace } from './ClassificationWorkspace.js';
 import { GeneratorWorkspace } from './GeneratorWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 
@@ -27,15 +24,6 @@ const generatorConfig: GeneratorConfig = {
   amDepthPercent: 50,
   fmDeviationHz: 10_000,
 };
-
-const zeroConfig = {
-  frequencyHz: 50,
-  points: 450,
-  rbwKhz: 'auto',
-  attenuationDb: 'auto',
-  sweepTimeSeconds: 0.05,
-  trigger: { mode: 'auto' },
-} as const;
 
 describe('renderer component fault boundaries', () => {
   it('keeps capability-drifted RF settings visible and recoverable while apply remains disabled', () => {
@@ -114,65 +102,6 @@ describe('renderer component fault boundaries', () => {
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
     fireEvent.click(profile);
     expect(onProfile).toHaveBeenCalledWith('cw');
-  });
-
-  it('renders contract-valid custom detector values that are outside the quick presets', () => {
-    const detectionConfig = {
-      threshold: { strategy: 'noise-relative', marginDb: 10 },
-      minimumBandwidthHz: 12_345,
-      minimumProminenceDb: 6,
-      minimumConsecutiveSweeps: 7,
-      releaseAfterMissedSweeps: 9,
-    } satisfies SignalDetectionConfig;
-
-    render(<ClassificationWorkspace
-      detections={[]}
-      classifications={[]}
-      onSelectedId={vi.fn()}
-      detectionConfig={detectionConfig}
-      onDetectionConfig={vi.fn()}
-      zeroConfig={zeroConfig}
-      busy={false}
-      onAcquireZero={vi.fn()}
-    />);
-
-    for (const [label, value] of [
-      ['Minimum bandwidth', '12345'],
-      ['Promote after', '7'],
-      ['Release after', '9'],
-    ] as const) {
-      const select = screen.getByRole('combobox', { name: label }) as HTMLSelectElement;
-      expect(select.value).toBe(value);
-      expect(select.getAttribute('aria-invalid')).toBeNull();
-      expect(select.selectedOptions[0]?.textContent).toContain('custom');
-    }
-  });
-
-  it('quarantines malformed classifier output instead of throwing during result rendering', () => {
-    const sweep = makeSweep();
-    const detection = makeDetection(sweep);
-    const malformed = {
-      detectionId: detection.id,
-      label: null,
-      confidence: Number.NaN,
-      candidates: null,
-      modelId: 'malformed',
-      evidence: null,
-    } as unknown as WaveformClassification;
-
-    render(<ClassificationWorkspace
-      sweep={sweep}
-      detections={[detection]}
-      classifications={[malformed]}
-      selectedId={detection.id}
-      onSelectedId={vi.fn()}
-      zeroConfig={zeroConfig}
-      busy={false}
-      onAcquireZero={vi.fn()}
-    />);
-
-    expect(screen.getByRole('heading', { name: 'Select evidence' })).toBeTruthy();
-    expect(document.querySelector('.result-card')).toBeNull();
   });
 
   it('bounds malformed channel configuration before array allocation or SVG projection', () => {
@@ -287,56 +216,6 @@ function makeSweep(): Sweep {
       usbIdentityVerified: false,
       execution: 'protocol-test-double',
     },
-  };
-}
-
-function makeDetection(sweep: Sweep): DetectedSignal {
-  return {
-    id: 'fault-signal',
-    startHz: 25,
-    stopHz: 75,
-    peakHz: 50,
-    peakDbm: -40,
-    prominenceDb: 50,
-    prominenceThresholdDb: 6,
-    bandwidthHz: 50,
-    thresholdDbm: -80,
-    noiseFloorDbm: -100,
-    firstSeenAt: sweep.capturedAt,
-    lastSeenAt: sweep.capturedAt,
-    sweepIds: [sweep.id],
-    persistenceSweeps: 2,
-    missedSweeps: 0,
-    state: 'active',
-    detectorId: 'fault-detector',
-    detectorConfig: {
-      threshold: { strategy: 'noise-relative', marginDb: 10 },
-      minimumProminenceDb: 6,
-      minimumBandwidthHz: 0,
-      minimumConsecutiveSweeps: 2,
-      releaseAfterMissedSweeps: 2,
-    },
-    bayesianEvidence: {
-      modelId: 'fault-model',
-      posteriorScope: 'track-state',
-      priorSignalProbability: 0.01,
-      posteriorSignalProbability: 0.99,
-      logBayesFactor: 10,
-      effectiveIndependentBins: 3,
-      effectiveReferenceCells: 10,
-      noiseShape: 1,
-      posteriorPredictiveNullProbability: 0.001,
-      targetPosteriorPredictiveNullProbability: 0.001,
-      targetSweepFalseAlarmProbability: 0.001,
-      multiplicityAdjustedTests: 1,
-      testedRegionStartHz: 0,
-      testedRegionStopHz: 100,
-      qualification: 'ideal-exponential-not-physically-calibrated',
-      noiseSigmaDb: 1,
-      observedMeanShiftDb: 10,
-      looks: 2,
-    },
-    qualityFlags: [],
   };
 }
 

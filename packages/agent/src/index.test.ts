@@ -19,7 +19,6 @@ const validToolArguments = {
   get_channel_measurement_results: {}, configure_envelope_stft: { windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 },
   get_envelope_stft_results: {}, acquire_envelope_stft: {},
   configure_signal_detector: { threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 },
-  select_classification_candidate: { detectionId: 'signal-12' },
   configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, trigger: { mode: 'single', levelDbm: -65 } },
   acquire_zero_span: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
   set_rf_output: { enabled: false }, select_signal_lab_profile: { profileId: 'wifi-ofdm-20m' }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
@@ -60,7 +59,7 @@ describe('Atom agent contracts',()=>{
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'iq'}).success).toBe(true);
   });
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(51);
+    expect(agentToolDefinitions).toHaveLength(50);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -72,7 +71,7 @@ describe('Atom agent contracts',()=>{
       assertClosedDescribedObjects(tool.name,tool.parameters);
     }
   });
-  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 51 tools',()=>{
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 50 tools',()=>{
     expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     for(const tool of agentToolDefinitions){
@@ -132,14 +131,6 @@ describe('Atom agent contracts',()=>{
       expect(description).toContain('do not establish protocol, emitter, operator, or service identity');
     }
   });
-  it('describes exact physical and qualified-agile classification selection without raw-member ambiguity',()=>{
-    const description=agentToolDefinitions.find(tool=>tool.name==='select_classification_candidate')?.description??'';
-    expect(description).toContain('promotion-qualified frequency-agile evidence representative');
-    expect(description).toContain('raw agile-member IDs');
-    expect(description).toContain('fail closed');
-    const binding=agentControlBinding('classification.candidate.agile-2g4-activity-0001.select');
-    expect(binding.guarantee).toContain('uniquely bound current raw tune owner');
-  });
   it('advertises the exact visual-state recapture required by every coordinate action',()=>{
     for(const name of ['computer_click','computer_scroll'] as const){
       const tool=agentToolDefinitions.find(candidate=>candidate.name===name);
@@ -189,20 +180,8 @@ describe('Atom agent contracts',()=>{
       expect(agentComputerActionControlIds).not.toContain(controlId);
       expect(agentControlBinding(controlId).risk).toBe('high-impact');
     }
-    expect(agentComputerActionControlIds).toContain('classification.auto-select');
     expect(agentControlBinding('workspace.iq').preferredTool).toBe('navigate_workspace');
     expect(agentControlBinding('connection.retry-cleanup').preferredTool).toBe('disconnect_device');
-    expect(agentControlBinding('classification.auto-select').preferredTool).toBe('computer_action');
-    expect(agentControlBinding('classification.auto-select').projection).toBe('host-derived');
-    expect(agentControlBinding('classification.auto-select').guarantee)
-      .toContain('integrated excess power');
-    expect(agentControlBinding('classification.auto-select').guarantee)
-      .toContain('structured no-target evidence');
-    expect(agentControlBinding('classification.auto-select').guarantee)
-      .toContain('staging is explicitly unavailable with null configuration');
-    expect(agentControlBinding('classification.auto-select').guarantee)
-      .toContain('distinct admission failure');
-    expect(agentControlBinding('classification.candidate.signal-12.select').preferredTool).toBe('select_classification_candidate');
     expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
@@ -275,7 +254,6 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'4',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":16,"window":"hann","removeDc":true,"dynamicRangeDb":80}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'5',name:'get_channel_measurement_results',arguments:'{}'}).policy.risk).toBe('observe');
     expect(()=>validateAgentToolCall({callId:'6',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":128,"window":"hann","removeDc":true,"dynamicRangeDb":80}'})).toThrow();
-    expect(validateAgentToolCall({callId:'7',name:'select_classification_candidate',arguments:'{"detectionId":"signal-12"}'}).policy.risk).toBe('operate');
   });
 });
 

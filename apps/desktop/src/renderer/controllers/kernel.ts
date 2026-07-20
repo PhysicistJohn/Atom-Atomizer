@@ -1,24 +1,21 @@
 import {
+  signalDetectionConfigSchema,
   type AnalyzerConfig,
   type AtomizerInstrumentEvent,
   type AtomizerInstrumentFeatureExecution,
   type DetectedPowerCaptureReceipt,
-  type DetectedSignal,
   type InstrumentCandidate,
   type InstrumentConfigurationState,
   type InstrumentFeatureRequest,
   type InstrumentSessionSnapshot,
+  type SignalDetectionConfig,
   type SweptSpectrumConfiguration,
   type DetectedPowerTimeseriesConfiguration,
-  type Sweep,
-  type WaveformClassification,
 } from '@tinysa/contracts';
-import { SignalDetector, SignalTracker, TraceAccumulator, type WaveformEvidence } from '@tinysa/analysis';
+import { SignalDetector, SignalTracker, TraceAccumulator } from '@tinysa/analysis';
 import { assertWorkspaceTransition, type GeneratorOutputState, type WorkspaceId } from '../ui-contracts.js';
-import type { ClassificationTargetSelection } from '../classification-target-selection.js';
 import { RevisionGuard } from '../revision-guard.js';
 import { RenderCommitGate } from '../render-commit.js';
-import type { BayesianClassifierRuntime } from '../bayesian-classifier-runtime.js';
 import type { ComplexIqConfiguration } from '../complex-iq.js';
 import {
   acquisitionModeForWorkspace,
@@ -31,7 +28,6 @@ import {
 import type { InstrumentEventsController } from './instrument-events.js';
 import type { ConnectionController } from './connection.js';
 import type { AcquisitionController } from './acquisition.js';
-import type { ClassificationController } from './classification.js';
 import type { MeasurementController } from './measurement.js';
 import type { FeaturesController } from './features.js';
 import type { AgentExecutor } from '../agent-executor.js';
@@ -77,86 +73,6 @@ export interface OperatorContinuousStopRequest {
   readonly reject: (reason: unknown) => void;
 }
 
-export interface ClassificationWork {
-  readonly revision: string;
-  readonly sequence: number;
-  readonly ownership?: ContinuousStreamOwnership;
-  readonly visibleSweep: {
-    readonly id: string;
-    readonly sequence: number;
-    readonly capturedAt: string;
-  };
-  readonly target: {
-    readonly projectedRepresentativeId: string;
-    readonly rawTargetId: string;
-    readonly selectionOrigin: ClassificationTargetSelection['origin'];
-  };
-  readonly requests: readonly {
-    readonly detection: DetectedSignal;
-    readonly evidence: WaveformEvidence;
-  }[];
-}
-
-export interface ClassificationExecutionRecord {
-  readonly work: ClassificationWork;
-  readonly status: 'inference-pending' | 'ready' | 'failed';
-  readonly results?: readonly WaveformClassification[];
-  readonly error?: string;
-}
-
-export interface DirectClassificationTaskRecord {
-  readonly work: ClassificationWork;
-  readonly promise: Promise<ClassificationExecutionRecord>;
-  readonly abortController: AbortController;
-}
-
-export interface FrozenAutomaticClassificationSnapshot {
-  readonly visibleSweep?: Sweep;
-  readonly detections: readonly DetectedSignal[];
-  readonly history: readonly Sweep[];
-  readonly analysisSequence: number;
-  readonly rankingAdmission: import('../classification-target-selection.js').VisibleClassificationTargetProjectionAdmission;
-  readonly projections: readonly import('@tinysa/analysis').ClassificationCaptureTargetProjection[];
-}
-
-export type AutomaticDetectedPowerStaging =
-  | {
-    readonly status: 'staged';
-    readonly centerHz: number;
-    readonly configuration: import('@tinysa/contracts').ZeroSpanConfig;
-  }
-  | {
-    readonly status: 'unavailable';
-    readonly reason: 'detected-power-capability-unavailable' | 'target-not-stageable';
-    readonly error?: string;
-    readonly centerHz: null;
-    readonly configuration: null;
-  }
-  | {
-    readonly status: 'not-requested';
-    readonly reason: 'no-ranked-target';
-    readonly centerHz: null;
-    readonly configuration: null;
-  };
-
-export interface AutomaticClassificationOperationRecord {
-  readonly operationId: number;
-  readonly snapshot: FrozenAutomaticClassificationSnapshot;
-  readonly selection: ClassificationTargetSelection;
-  readonly detectedPowerStaging: AutomaticDetectedPowerStaging;
-  work?: ClassificationWork;
-  execution?: ClassificationExecutionRecord;
-  promise?: Promise<ClassificationExecutionRecord>;
-  preferredSource?: Promise<ClassificationExecutionRecord>;
-}
-
-export interface AutomaticClassificationDrainState {
-  generation: number;
-  abortController: AbortController;
-  activeOperation: AutomaticClassificationOperationRecord;
-  promise?: Promise<ClassificationExecutionRecord>;
-}
-
 export type InvalidatingFeatureRequest =
   | Extract<InstrumentFeatureRequest, { kind: 'signal-lab-profile-selection' }>
   | Extract<InstrumentFeatureRequest, { kind: 'touch' }>
@@ -178,10 +94,6 @@ export interface InvalidatingFeatureReceipt {
   settled: boolean;
 }
 
-export interface RecordedSweep {
-  readonly classification?: ClassificationWork;
-}
-
 export interface Ref<T> { current: T }
 const ref = <T,>(current: T): Ref<T> => ({ current });
 
@@ -194,12 +106,10 @@ const ref = <T,>(current: T): Ref<T> => ({ current });
 export class RendererKernel {
   readonly store: AtomizerStore;
   readonly renderCommit: RenderCommitGate;
-  readonly classifierRuntimeFactory: () => BayesianClassifierRuntime;
 
   events!: InstrumentEventsController;
   connection!: ConnectionController;
   acquisition!: AcquisitionController;
-  classification!: ClassificationController;
   measurement!: MeasurementController;
   features!: FeaturesController;
   agent!: AgentExecutor;
@@ -207,10 +117,7 @@ export class RendererKernel {
   readonly detector: Ref<SignalDetector>;
   readonly tracker: Ref<SignalTracker>;
   readonly traceAccumulator: Ref<TraceAccumulator>;
-  readonly stagedClassificationTargetIdRef = ref<string | undefined>(undefined);
-  readonly classificationSelectionRevision = ref(0);
   readonly zeroCaptureReceiptRef = ref<DetectedPowerCaptureReceipt | undefined>(undefined);
-  readonly zeroCaptureSpectrumSweepIdsRef = ref<readonly string[] | undefined>(undefined);
   readonly analyzerRevision = ref(0);
   readonly agentConnectionCandidates = ref(new Map<string, InstrumentCandidate>());
   readonly configurationRevisions = ref(new RevisionGuard<RendererConfigurationRevision>(CONFIGURATION_REVISION_LIMIT));
@@ -224,19 +131,6 @@ export class RendererKernel {
   readonly continuousIqResumeWaiters = ref(new Set<() => void>());
   readonly continuousIqConfigurationOwnership = ref<ContinuousIqConfigurationOwnership | undefined>(undefined);
   readonly iqConfigurationRevision = ref(0);
-  readonly classificationTask = ref<Promise<ClassificationExecutionRecord> | undefined>(undefined);
-  readonly classificationTaskWork = ref<ClassificationWork | undefined>(undefined);
-  readonly classificationTaskAbortController = ref<AbortController | undefined>(undefined);
-  readonly directClassificationTask = ref<DirectClassificationTaskRecord | undefined>(undefined);
-  readonly pendingClassificationWork = ref<ClassificationWork | undefined>(undefined);
-  readonly classificationExecution = ref<ClassificationExecutionRecord | undefined>(undefined);
-  readonly lastAutomaticClassificationOperation = ref<AutomaticClassificationOperationRecord | undefined>(undefined);
-  readonly automaticClassificationDrain = ref<AutomaticClassificationDrainState | undefined>(undefined);
-  readonly automaticClassificationDrainGeneration = ref(0);
-  readonly automaticClassificationOperationSequence = ref(0);
-  readonly pinnedAutomaticClassificationRevisions = ref(new Map<string, number>());
-  readonly lastPublishedClassificationSequence = ref(0);
-  readonly classifierRuntime = ref<BayesianClassifierRuntime | undefined>(undefined);
   readonly pendingInvalidatingFeatureReceipt = ref<InvalidatingFeatureReceipt | undefined>(undefined);
   readonly continuousMeasurementStopRequest = ref<ContinuousMeasurementStopRequest | undefined>(undefined);
   readonly continuousMeasurementStopTask = ref<Promise<void> | undefined>(undefined);
@@ -251,10 +145,9 @@ export class RendererKernel {
   readonly instrumentDiscoveryEventSequence = ref(0);
   readonly initializationGeneration = ref(0);
 
-  constructor(store: AtomizerStore, classifierRuntimeFactory: () => BayesianClassifierRuntime) {
+  constructor(store: AtomizerStore) {
     this.store = store;
     this.renderCommit = new RenderCommitGate(store);
-    this.classifierRuntimeFactory = classifierRuntimeFactory;
     const state = store.get();
     this.detector = ref(new SignalDetector(state.detectionConfig));
     this.tracker = ref(new SignalTracker(state.detectionConfig));
@@ -272,10 +165,23 @@ export class RendererKernel {
     return active;
   }
 
-  requireClassifierRuntime(): BayesianClassifierRuntime {
-    const runtime = this.classifierRuntime.current;
-    if (!runtime) throw new Error('Bayesian classifier runtime has not completed renderer mount admission');
-    return runtime;
+  /** Reconfigure the shared signal detector/tracker and clear stale detections
+   * plus any detected-power envelope bound to the previous criteria. */
+  applyDetectionConfiguration(input: SignalDetectionConfig): SignalDetectionConfig {
+    const next = signalDetectionConfigSchema.parse(input);
+    if (JSON.stringify(next) === JSON.stringify(this.state.detectionConfig)) return this.state.detectionConfig;
+    this.detector.current.configure(next);
+    this.tracker.current.configure(next);
+    this.analysisSequence.current++;
+    this.set({ detectionConfig: next, detections: [] });
+    this.clearZeroSpanCapture();
+    return next;
+  }
+
+  /** Drop the retained detected-power (zero-span) capture and its envelope. */
+  clearZeroSpanCapture(): void {
+    this.zeroCaptureReceiptRef.current = undefined;
+    this.set({ zeroCapture: undefined, envelope: undefined });
   }
 
   currentGeneratorOutput(): GeneratorOutputState {
@@ -304,7 +210,6 @@ export class RendererKernel {
 
   invalidateAcquiredEvidence(clearInstrumentConfigurations = false): void {
     this.analysisSequence.current++;
-    this.classificationSelectionRevision.current++;
     if (clearInstrumentConfigurations) {
       this.acquisition.releaseContinuousIqConfiguration();
       this.configurationRevisions.current.clear();
@@ -318,14 +223,10 @@ export class RendererKernel {
       traceFrames: this.traceAccumulator.current.frames(),
       firmwareTraceFrames: [],
       detections: [],
-      classifications: [],
       explicitClassificationId: undefined,
       detectedPowerTargetStagingFailure: undefined,
     });
-    this.classificationExecution.current = undefined;
-    this.stagedClassificationTargetIdRef.current = undefined;
-    this.classification.retireClassificationOperations('Classification evidence was invalidated');
-    this.classification.clearClassificationCapture();
+    this.clearZeroSpanCapture();
   }
 }
 

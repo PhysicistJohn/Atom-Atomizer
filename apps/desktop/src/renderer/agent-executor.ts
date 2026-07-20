@@ -19,18 +19,14 @@ import {
   type SignalDetectionConfig,
   type Sweep,
   type TraceId,
-  type WaveformClassification,
   type ZeroSpanConfig,
   type ZeroSpanConfigPatch,
 } from '@tinysa/contracts';
 import {
-  CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
   autoScaleSpectrum,
   calculateSweepMetrics,
-  classificationCaptureTargetRankEvidence,
   classifyZeroSpanEnvelope,
   computeEnvelopeStft,
-  extractObservableFeatures,
   readMarkers,
   searchMarker,
 } from '@tinysa/analysis';
@@ -48,9 +44,9 @@ import {
   type AgentToolName,
 } from '@tinysa/agent';
 import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor, assertWorkspaceTransition, type WorkspaceId } from './ui-contracts.js';
-import { agentClassificationResults, agentDetectionResults } from './agent-detection-results.js';
-import { resolveVisibleClassificationTargetSelection, type ClassificationTargetSelection } from './classification-target-selection.js';
-import { exactClassificationEvidenceSweeps } from './classification-work-admission.js';
+import { agentDetectionResults } from './agent-detection-results.js';
+import { classifyIqModulation, classifyScalarSweep, type ModulationClassification } from './embedding-classifier-runtime.js';
+import { decodeComplexIqChannels } from './complex-iq.js';
 import { stageDetectedPowerConfigurationPatch } from './instrument-configuration.js';
 import type { InstrumentScreenPoint } from './components/DeviceWorkspace.js';
 import { instrumentCandidateIsSimulated } from './controllers/connection.js';
@@ -58,15 +54,10 @@ import { coherentSweepCount } from './controllers/acquisition.js';
 import {
   errorMessage,
   evaluateAnalysis,
-  sameStringArray,
-  type ClassificationExecutionRecord,
-  type ClassificationWork,
-  type FrozenAutomaticClassificationSnapshot,
-  type AutomaticDetectedPowerStaging,
   type RendererKernel,
 } from './controllers/kernel.js';
 import type { AcquisitionState } from './ui-contracts.js';
-import type { ContinuousAcquisitionMode } from './store.js';
+import { selectIqCapability, type ContinuousAcquisitionMode } from './store.js';
 
 export class AgentExecutor {
   constructor(private readonly k: RendererKernel) {}
@@ -164,461 +155,6 @@ export class AgentExecutor {
     } as const;
   }
 
-  agentAutomaticRankPopulation(
-    snapshot: FrozenAutomaticClassificationSnapshot,
-  ) {
-    return snapshot.projections.map((projection, rank) => {
-      const evidence = classificationCaptureTargetRankEvidence(projection.rawTarget);
-      if (!evidence) {
-        throw new Error(
-          `Automatic classification rank ${rank} lost its frozen source-sweep evidence`,
-        );
-      }
-      return {
-        rank,
-        rawTargetId: projection.rawTarget.id,
-        projectedRepresentativeId: projection.projectedRepresentative.id,
-        projectionKind: projection.projectionKind,
-        rankEvidence: evidence,
-      };
-    });
-  }
-
-  classificationInferenceRemainsPending(work: ClassificationWork): boolean {
-    const k = this.k;
-    const pinned = k.lastAutomaticClassificationOperation.current;
-    if (pinned?.work?.revision === work.revision
-      && pinned.execution?.status === 'inference-pending'
-      && pinned.promise !== undefined) return true;
-    if (!k.classification.classificationWorkLifecycleIsCurrent(work)
-      || !k.classification.classificationWorkTargetIsCurrent(work)) return false;
-    return k.classificationTaskWork.current?.revision === work.revision
-      || k.directClassificationTask.current?.work.revision === work.revision
-      || k.pendingClassificationWork.current?.revision === work.revision;
-  }
-
-  agentClassificationEvidenceWindow(work: ClassificationWork) {
-    const request = work.requests[0];
-    const externalSpectrumSweepIds = request?.evidence.sweeps.map((item) => item.id) ?? [];
-    let spectrumSweepIds = externalSpectrumSweepIds;
-    let modelEvidenceProjection:
-      | { readonly status: 'ready' }
-      | { readonly status: 'failed'; readonly error: string } = { status: 'ready' };
-    if (request) {
-      try {
-        spectrumSweepIds = [...extractObservableFeatures(
-          request.detection,
-          request.evidence,
-        ).sweepIds];
-      } catch (value) {
-        modelEvidenceProjection = {
-          status: 'failed',
-          error: errorMessage(value),
-        };
-      }
-    }
-    const zeroSpanSpectrumSweepIds = request?.evidence.zeroSpanSpectrumSweepIds ?? [];
-    return {
-      spectrumSweepIds,
-      externalSpectrumSweepIds,
-      modelEvidenceProjection,
-      spectrumWindow: {
-        order: 'newest-to-oldest' as const,
-        count: spectrumSweepIds.length,
-        newestSweepId: spectrumSweepIds[0] ?? null,
-        oldestSweepId: spectrumSweepIds.at(-1) ?? null,
-        maximumModelWindowSweeps: 8,
-      },
-      zeroSpanCaptureId: request?.evidence.zeroSpan?.id ?? null,
-      zeroSpanSpectrumSweepIds,
-    };
-  }
-
-  agentClassificationResultBinding(
-    work: ClassificationWork,
-    result: WaveformClassification,
-  ) {
-    const request = work.requests[0];
-    const evidence = this.agentClassificationEvidenceWindow(work);
-    const receiptMode = request?.evidence.detectedPowerCaptureReceipt?.selection.mode;
-    const receiptSelectionOriginMatches = receiptMode === undefined
-      || (work.target.selectionOrigin === 'automatic'
-        ? receiptMode === 'integrated-excess-current'
-        : receiptMode === 'preferred-target');
-    const expectedDetectedPowerSelectionCondition = receiptMode === undefined
-      ? null
-      : work.target.selectionOrigin === 'automatic'
-        ? 'automatic-current-source-sweep-integrated-excess-rank-0'
-        : 'operator-preferred-current-target';
-    const targetMatches = result.detectionId === work.target.projectedRepresentativeId;
-    const centerHzMatches = request !== undefined
-      && result.evidence.centerHz === request.detection.peakHz;
-    const bandwidthHzMatches = request !== undefined
-      && result.evidence.bandwidthHz === request.detection.bandwidthHz;
-    const peakDbmMatches = request !== undefined
-      && result.evidence.peakDbm === request.detection.peakDbm;
-    const spectrumSweepIdsMatch = sameStringArray(
-      result.evidence.sweepIds,
-      evidence.spectrumSweepIds,
-    );
-    const zeroSpanCaptureMatches = (result.evidence.zeroSpanCaptureId ?? null)
-      === evidence.zeroSpanCaptureId;
-    const selectionConditionMatches = (result.evidence.detectedPowerSelectionCondition ?? null)
-      === expectedDetectedPowerSelectionCondition;
-    const modelEvidenceProjectionMatches = evidence.modelEvidenceProjection.status === 'ready';
-    return {
-      bound: targetMatches
-        && centerHzMatches
-        && bandwidthHzMatches
-        && peakDbmMatches
-        && modelEvidenceProjectionMatches
-        && spectrumSweepIdsMatch
-        && zeroSpanCaptureMatches
-        && selectionConditionMatches
-        && receiptSelectionOriginMatches,
-      targetMatches,
-      centerHzMatches,
-      bandwidthHzMatches,
-      peakDbmMatches,
-      modelEvidenceProjectionMatches,
-      spectrumSweepIdsMatch,
-      zeroSpanCaptureMatches,
-      selectionConditionMatches,
-      receiptSelectionOriginMatches,
-      expected: {
-        revision: work.revision,
-        projectedRepresentativeId: work.target.projectedRepresentativeId,
-        centerHz: request?.detection.peakHz ?? null,
-        bandwidthHz: request?.detection.bandwidthHz ?? null,
-        peakDbm: request?.detection.peakDbm ?? null,
-        spectrumSweepIds: evidence.spectrumSweepIds,
-        zeroSpanCaptureId: evidence.zeroSpanCaptureId,
-        detectedPowerSelectionCondition: expectedDetectedPowerSelectionCondition,
-      },
-      result: {
-        detectionId: result.detectionId,
-        centerHz: result.evidence.centerHz,
-        bandwidthHz: result.evidence.bandwidthHz,
-        peakDbm: result.evidence.peakDbm,
-        spectrumSweepIds: result.evidence.sweepIds,
-        zeroSpanCaptureId: result.evidence.zeroSpanCaptureId ?? null,
-        detectedPowerSelectionCondition:
-          result.evidence.detectedPowerSelectionCondition ?? null,
-      },
-    };
-  }
-
-  classificationResultsBoundToWork(
-    work: ClassificationWork,
-    results: readonly WaveformClassification[],
-  ): readonly WaveformClassification[] {
-    return results.filter((result) =>
-      this.agentClassificationResultBinding(work, result).bound);
-  }
-
-  agentClassificationReadiness(
-    snapshot: FrozenAutomaticClassificationSnapshot,
-    selection: ClassificationTargetSelection,
-    executionOverride?: ClassificationExecutionRecord,
-  ) {
-    const k = this.k;
-    if (snapshot.rankingAdmission.status === 'ranking-admission-failed') {
-      return {
-        status: 'failed' as const,
-        reason: 'ranking-admission-failed' as const,
-        error: 'The complete visible target population lacks exact current-source-sweep rank evidence',
-        revision: null,
-        target: null,
-        evidence: null,
-        resultBinding: null,
-        result: null,
-        rankingAdmission: snapshot.rankingAdmission,
-      };
-    }
-    const projectedRepresentativeId = selection.detectionId;
-    const rawTargetId = selection.rawTargetId ?? projectedRepresentativeId;
-    const target = projectedRepresentativeId === undefined
-      ? undefined
-      : snapshot.projections.find((projection) =>
-        projection.projectedRepresentative.id === projectedRepresentativeId
-        && projection.rawTarget.id === rawTargetId);
-    if (!snapshot.visibleSweep || !target || !projectedRepresentativeId || !rawTargetId) {
-      return {
-        status: 'no-target' as const,
-        revision: null,
-        target: null,
-        evidence: null,
-        resultBinding: null,
-        result: null,
-      };
-    }
-    const execution = executionOverride ?? k.classificationExecution.current;
-    const matchingExecution = execution
-      && execution.work.visibleSweep.id === snapshot.visibleSweep.id
-      && execution.work.visibleSweep.sequence === snapshot.visibleSweep.sequence
-      && execution.work.sequence === snapshot.analysisSequence
-      && execution.work.target.projectedRepresentativeId === projectedRepresentativeId
-      && execution.work.target.rawTargetId === rawTargetId
-      && execution.work.target.selectionOrigin === selection.origin
-      ? execution
-      : undefined;
-    const targetReadback = {
-      projectedRepresentativeId,
-      rawTargetId,
-      selectionOrigin: selection.origin,
-      frozenVisibleSweepId: snapshot.visibleSweep.id,
-      frozenVisibleSweepSequence: snapshot.visibleSweep.sequence,
-    };
-    if (k.classifierRuntime.current?.status === 'unavailable') {
-      return {
-        status: 'unavailable' as const,
-        reason: 'classifier-runtime-unavailable' as const,
-        revision: matchingExecution?.work.revision ?? null,
-        target: targetReadback,
-        evidence: matchingExecution
-          ? this.agentClassificationEvidenceWindow(matchingExecution.work)
-          : null,
-        resultBinding: null,
-        result: null,
-      };
-    }
-    if (matchingExecution?.status === 'failed') {
-      return {
-        status: 'failed' as const,
-        reason: 'inference-failed' as const,
-        error: matchingExecution.error ?? 'Bayesian classification failed',
-        revision: matchingExecution.work.revision,
-        target: targetReadback,
-        evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-        resultBinding: null,
-        result: null,
-      };
-    }
-    if (matchingExecution?.status === 'inference-pending') {
-      if (!this.classificationInferenceRemainsPending(matchingExecution.work)) {
-        return {
-          status: 'failed' as const,
-          reason: 'orphaned-inference-revision' as const,
-          error: 'The target-bound inference revision is no longer executing or queued',
-          revision: matchingExecution.work.revision,
-          target: targetReadback,
-          evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-          resultBinding: null,
-          result: null,
-        };
-      }
-      return {
-        status: 'inference-pending' as const,
-        revision: matchingExecution.work.revision,
-        target: targetReadback,
-        evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-        resultBinding: null,
-        result: null,
-      };
-    }
-    if (matchingExecution?.status === 'ready') {
-      const result = matchingExecution.results?.find((candidate) =>
-        candidate.detectionId === projectedRepresentativeId);
-      if (!result) {
-        return {
-          status: 'failed' as const,
-          reason: 'target-result-missing' as const,
-          error: 'The completed inference returned no result for the frozen selected target',
-          revision: matchingExecution.work.revision,
-          target: targetReadback,
-          evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-          resultBinding: null,
-          result: null,
-        };
-      }
-      const resultBinding = this.agentClassificationResultBinding(
-        matchingExecution.work,
-        result,
-      );
-      if (!resultBinding.bound) {
-        return {
-          status: 'failed' as const,
-          reason: 'result-evidence-binding-mismatch' as const,
-          error: 'The classifier result does not bind to the exact frozen target and evidence window',
-          revision: matchingExecution.work.revision,
-          target: targetReadback,
-          evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-          resultBinding,
-          result: null,
-        };
-      }
-      if (result.qualification === 'unavailable') {
-        return {
-          status: 'unavailable' as const,
-          reason: result.unknownReason ?? 'model-unavailable',
-          revision: matchingExecution.work.revision,
-          target: targetReadback,
-          evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-          resultBinding,
-          result,
-        };
-      }
-      return {
-        status: 'ready' as const,
-        revision: matchingExecution.work.revision,
-        target: targetReadback,
-        evidence: this.agentClassificationEvidenceWindow(matchingExecution.work),
-        resultBinding,
-        result,
-      };
-    }
-    let evidenceSweeps: readonly Sweep[] | undefined;
-    try {
-      evidenceSweeps = exactClassificationEvidenceSweeps(
-        target.projectedRepresentative,
-        snapshot.history,
-      );
-    } catch (value) {
-      return {
-        status: 'failed' as const,
-        reason: 'evidence-window-invalid' as const,
-        error: errorMessage(value),
-        revision: null,
-        target: targetReadback,
-        evidence: null,
-        resultBinding: null,
-        result: null,
-      };
-    }
-    return {
-      status: 'collecting' as const,
-      reason: evidenceSweeps?.length
-        ? 'awaiting-target-bound-inference-revision' as const
-        : 'exact-evidence-window-unavailable' as const,
-      revision: null,
-      target: targetReadback,
-      evidence: evidenceSweeps?.length ? {
-        spectrumSweepIds: evidenceSweeps.map((item) => item.id),
-        spectrumWindow: {
-          order: 'newest-to-oldest' as const,
-          count: evidenceSweeps.length,
-          newestSweepId: evidenceSweeps[0]?.id ?? null,
-          oldestSweepId: evidenceSweeps.at(-1)?.id ?? null,
-          maximumModelWindowSweeps: 8,
-        },
-        zeroSpanCaptureId: null,
-        zeroSpanSpectrumSweepIds: [],
-      } : null,
-      resultBinding: null,
-      result: null,
-    };
-  }
-
-  agentAutomaticClassificationSelection(
-    snapshot: FrozenAutomaticClassificationSnapshot,
-    detectedPowerStaging: AutomaticDetectedPowerStaging,
-    operationExecution?: ClassificationExecutionRecord,
-  ) {
-    const rankPopulation = this.agentAutomaticRankPopulation(snapshot);
-    const winner = snapshot.projections[0];
-    const selection: ClassificationTargetSelection = {
-      ...(winner ? {
-        detectionId: winner.projectedRepresentative.id,
-        ...(winner.rawTarget.id === winner.projectedRepresentative.id
-          ? {}
-          : { rawTargetId: winner.rawTarget.id }),
-      } : {}),
-      origin: 'automatic',
-    };
-    return {
-      frozenVisibleSweep: snapshot.visibleSweep ? {
-        id: snapshot.visibleSweep.id,
-        sequence: snapshot.visibleSweep.sequence,
-        capturedAt: snapshot.visibleSweep.capturedAt,
-      } : null,
-      selection: {
-        origin: 'automatic' as const,
-        selected: winner !== undefined,
-        rank: winner ? 0 : null,
-        rankPopulationSize: rankPopulation.length,
-        rawTargetId: winner?.rawTarget.id ?? null,
-        projectedRepresentativeId:
-          winner?.projectedRepresentative.id ?? null,
-        stagedDetectedPowerCenterHz:
-          detectedPowerStaging.centerHz,
-        stagedDetectedPowerConfiguration:
-          detectedPowerStaging.configuration,
-        detectedPowerStaging,
-      },
-      ranking: {
-        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
-        tieBreakPolicy: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL.tieBreakPolicy,
-        admission: snapshot.rankingAdmission,
-        population: rankPopulation,
-      },
-      classificationReadiness: this.agentClassificationReadiness(
-        snapshot,
-        selection,
-        operationExecution,
-      ),
-    };
-  }
-
-  agentAutomaticClassificationOperationState() {
-    const pinned = this.k.lastAutomaticClassificationOperation.current;
-    if (!pinned) return null;
-    const snapshot = pinned.snapshot;
-    const selection = pinned.selection;
-    return {
-      operationId: pinned.operationId,
-      supersededBy: 'subsequent-auto-only' as const,
-      frozenVisibleSweep: snapshot.visibleSweep ? {
-        id: snapshot.visibleSweep.id,
-        sequence: snapshot.visibleSweep.sequence,
-        capturedAt: snapshot.visibleSweep.capturedAt,
-      } : null,
-      selection: {
-        origin: selection.origin,
-        projectedRepresentativeId: selection.detectionId ?? null,
-        rawTargetId: selection.rawTargetId ?? selection.detectionId ?? null,
-      },
-      ranking: {
-        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
-        admission: snapshot.rankingAdmission,
-        population: this.agentAutomaticRankPopulation(snapshot),
-      },
-      detectedPowerStaging: pinned.detectedPowerStaging,
-      readiness: this.agentClassificationReadiness(
-        snapshot,
-        selection,
-        pinned.execution,
-      ),
-    };
-  }
-
-  agentCurrentClassificationState() {
-    const k = this.k;
-    const snapshot = k.classification.freezeAutomaticClassificationSnapshot();
-    const selection = resolveVisibleClassificationTargetSelection(
-      snapshot.detections,
-      snapshot.visibleSweep,
-      k.state.explicitClassificationId,
-    );
-    return {
-      frozenVisibleSweep: snapshot.visibleSweep ? {
-        id: snapshot.visibleSweep.id,
-        sequence: snapshot.visibleSweep.sequence,
-        capturedAt: snapshot.visibleSweep.capturedAt,
-      } : null,
-      selection: {
-        origin: selection.origin,
-        projectedRepresentativeId: selection.detectionId ?? null,
-        rawTargetId: selection.rawTargetId ?? selection.detectionId ?? null,
-      },
-      automaticRanking: {
-        model: CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
-        admission: snapshot.rankingAdmission,
-        population: this.agentAutomaticRankPopulation(snapshot),
-      },
-      automaticOperation: this.agentAutomaticClassificationOperationState(),
-      readiness: this.agentClassificationReadiness(snapshot, selection),
-    };
-  }
 
   agentLatestSweepSummary(
     currentSweep: Sweep,
@@ -667,6 +203,34 @@ export class AgentExecutor {
     };
   };
 
+  /**
+   * Classify what is currently in the store through the embedding classifier
+   * that drives the Detect panel: the complex-I/Q flavor when the connected
+   * instrument advertises I/Q and a capture is present, otherwise the magnitude
+   * flavor over the visible sweep's strongest live detection.
+   */
+  async classifyCurrentCapture() {
+    const state = this.k.state;
+    if (selectIqCapability(state) !== undefined && state.iqCapture) {
+      const { re, im } = decodeComplexIqChannels(state.iqCapture);
+      return projectModulationClassification(
+        await classifyIqModulation(re, im, state.iqConfiguration.bandwidthHz),
+      );
+    }
+    const sweep = state.sweep;
+    const target = state.detections
+      .filter((detection) => detection.state !== 'released')
+      .reduce<(typeof state.detections)[number] | undefined>(
+        (best, detection) => (best && best.peakDbm >= detection.peakDbm ? best : detection),
+        undefined,
+      );
+    if (sweep && target) {
+      const result = await classifyScalarSweep(sweep.powerDbm, sweep.frequencyHz, target.peakHz, target.bandwidthHz);
+      if (result) return projectModulationClassification(result);
+    }
+    return { available: false as const, reason: 'no capture available to classify' } as const;
+  }
+
   applicationContext = (): string => {
     const k = this.k;
     const state = k.state;
@@ -676,7 +240,6 @@ export class AgentExecutor {
     const currentSweep = state.sweep;
     const currentHistory = state.history;
     const currentDetections = state.detections;
-    const currentClassifications = state.classifications;
     const currentZeroCapture = state.zeroCapture;
     const currentZeroCaptureReceipt = k.zeroCaptureReceiptRef.current;
     const currentEnvelope = state.envelope;
@@ -689,11 +252,6 @@ export class AgentExecutor {
       currentDetections,
     );
     const currentMetrics = currentSweep ? calculateSweepMetrics(currentSweep) : undefined;
-    const currentSelection = resolveVisibleClassificationTargetSelection(
-      currentDetections,
-      currentSweep,
-      state.explicitClassificationId,
-    );
     const channelMeasurement = evaluateAnalysis(() => k.measurement.requireChannelMeasurement());
     const envelopeStft = evaluateAnalysis(() => k.measurement.requireEnvelopeStft());
     return JSON.stringify({
@@ -740,13 +298,6 @@ export class AgentExecutor {
         ? this.agentLatestSweepSummary(currentSweep, currentMetrics)
         : null,
       detections: agentDetectionResults(currentDetections),
-      classifications: currentClassifications.map(({ detectionId, label, confidence, modelId, unknownReason }) => ({ detectionId, label, confidence, modelId, unknownReason })),
-      selectedClassificationId: agentSelectedClassificationId({
-        receiptProjectedRepresentativeId:
-          currentZeroCaptureReceipt?.selection.projectedRepresentativeId,
-        captureRawTargetId: currentZeroCapture?.targetDetectionId,
-        currentSelectionId: currentSelection.detectionId,
-      }),
       zeroSpan: currentZeroCapture && currentEnvelope ? {
         frequencyHz: currentZeroCapture.frequencyHz,
         samples: currentZeroCapture.powerDbm.length,
@@ -807,16 +358,8 @@ export class AgentExecutor {
       };
       case 'get_instrument_state': return { ...k.state.instrument, generatorOutput: k.currentGeneratorOutput(), scalarConfiguration: this.agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(this.applicationContext()).latestSweep;
-      case 'get_detection_results': return {
-        ...agentDetectionResults(k.state.detections),
-        classificationTargeting: this.agentCurrentClassificationState(),
-      };
-      case 'get_classification_results': return {
-        contract: 'classification-results-with-association-lineage-v1',
-        ...this.agentCurrentClassificationState(),
-        spectral: agentClassificationResults(k.state.detections, k.state.classifications),
-        zeroSpan: k.state.zeroCapture ? { captureId: k.state.zeroCapture.id, envelope: k.state.envelope ?? null } : null,
-      };
+      case 'get_detection_results': return agentDetectionResults(k.state.detections);
+      case 'get_classification_results': return this.classifyCurrentCapture();
       case 'read_device_diagnostics': return k.features.refreshDiagnostics();
       case 'list_connection_candidates': {
         const discovery = await k.acquisition.runInstrumentTransaction('list-connection-candidates', () => window.atomizerInstrument.discover());
@@ -870,15 +413,6 @@ export class AgentExecutor {
         if (targets.length !== 1) throw new Error(`Semantic control ${control} has ${targets.length} rendered targets; expected exactly one`);
         const target = targets[0]!;
         if (target.closest('[data-agent-exclusion]')) throw new Error(`Semantic control ${control} is a local human-only boundary`);
-        if (control === 'classification.auto-select') {
-          const selection = await k.classification.selectAutomaticClassificationCandidate();
-          return {
-            activated: control,
-            preferredTool: binding.preferredTool,
-            projection: binding.projection,
-            ...selection,
-          };
-        }
         if (isDisabledControl(target)) throw new Error(`Semantic control ${control} is disabled`);
         if (target instanceof HTMLDetailsElement) target.open = !target.open;
         else target.click();
@@ -1038,52 +572,7 @@ export class AgentExecutor {
         k.measurement.applyDisplay(display);
         return { display, sweepId: latestSweep.id, evidence: 'host-derived-complete-sweep' };
       }
-      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); k.applyWorkspace('classification'); return k.classification.applyDetectionConfiguration(next); }
-      case 'select_classification_candidate': {
-        const detectionId = (args as { detectionId: string }).detectionId;
-        const requestedSelection = resolveVisibleClassificationTargetSelection(
-          k.state.detections,
-          k.state.sweep,
-          detectionId,
-        );
-        if (requestedSelection.origin !== 'explicit'
-          || requestedSelection.explicitDetectionId !== detectionId
-          || requestedSelection.detectionId === undefined) {
-          throw new Error(`Detection ${detectionId} is not an exact current physical or qualified agile-representative classification target`);
-        }
-        k.applyWorkspace('classification');
-        const stagedDetectedPower = k.classification.selectClassificationCandidate(detectionId);
-        const stagedDetectionId = k.stagedClassificationTargetIdRef.current;
-        const expectedRawTargetId = requestedSelection.rawTargetId
-          ?? requestedSelection.detectionId;
-        if (stagedDetectionId !== expectedRawTargetId) {
-          throw new Error(`Detection ${detectionId} was not retained as the exact staged classification target`);
-        }
-        return {
-          detectionId: requestedSelection.detectionId,
-          rawTargetId: expectedRawTargetId,
-          selected: true,
-          stagedDetectedPowerCenterHz: stagedDetectedPower.centerHz ?? null,
-          stagedDetectedPowerConfiguration: stagedDetectedPower.centerHz === undefined
-            ? null
-            : structuredClone(k.state.zeroConfig),
-          detectedPowerStaging: stagedDetectedPower.centerHz === undefined ? {
-            status: 'unavailable',
-            reason: k.state.instrument.session?.capabilities.acquisitions
-              .some((candidate) => candidate.kind === 'detected-power-timeseries')
-              ? 'target-not-stageable'
-              : 'detected-power-capability-unavailable',
-            ...(stagedDetectedPower.failure
-              ? { error: stagedDetectedPower.failure }
-              : {}),
-          } : {
-            status: 'staged',
-            centerHz: stagedDetectedPower.centerHz,
-            configuration: structuredClone(k.state.zeroConfig),
-          },
-          evidence: 'ui-staging',
-        };
-      }
+      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); k.applyWorkspace('classification'); return k.applyDetectionConfiguration(next); }
       case 'configure_zero_span': {
         const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
         const { patch, configuration: next } = stageDetectedPowerConfigurationPatch(
@@ -1093,7 +582,7 @@ export class AgentExecutor {
         );
         k.applyWorkspace('classification');
         k.measurement.commitZeroSpanConfiguration(next);
-        k.classification.clearClassificationCapture();
+        k.clearZeroSpanCapture();
         return { patch, scalarConfiguration: this.agentConfigurationContext(k.state.analyzer, next) };
       }
       case 'acquire_zero_span': { assertWorkspaceTransition(k.state.workspace, 'classification', k.currentGeneratorOutput()); const result = await k.acquisition.acquireZeroSpan(); k.applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
@@ -1143,6 +632,20 @@ export class AgentExecutor {
 
 export function semanticControlRequiresCoordinates(control: AgentSemanticControlId): boolean {
   return control === 'spectrum.marker-place';
+}
+
+/** Compact, prop-safe projection of an embedding modulation classification. */
+function projectModulationClassification(result: ModulationClassification) {
+  return {
+    available: true as const,
+    contract: 'capture-modulation-classification-v1' as const,
+    flavor: result.flavor,
+    family: result.family,
+    modulation: result.modulation,
+    confidence: result.confidence,
+    isUnknown: result.isUnknown,
+    candidates: result.candidates,
+  };
 }
 
 export function agentSelectedClassificationId({

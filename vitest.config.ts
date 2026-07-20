@@ -1,9 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
-import { createOptionalBayesianClassifierVitePlugin } from './apps/desktop/src/main/optional-bayesian-classifier-vite.ts';
 
 export default defineConfig({
-  plugins: [createOptionalBayesianClassifierVitePlugin()],
   server: {
     fs: {
       // Both editions bundle sibling-repo SignalLab sources (measurement

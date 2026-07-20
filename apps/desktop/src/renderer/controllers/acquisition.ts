@@ -12,7 +12,6 @@ import {
   type InstrumentConfigurationState,
   type InstrumentSessionSnapshot,
   type Sweep,
-  type WaveformClassification,
   type ZeroSpanCapture,
   type SweptSpectrumConfiguration,
   type DetectedPowerTimeseriesConfiguration,
@@ -31,30 +30,17 @@ import {
   type ComplexIqConfiguration,
   type ComplexIqMeasurement,
 } from '../complex-iq.js';
-import { sanitizeClassificationEvidenceDetections } from '../classification-target-selection.js';
-import {
-  exactClassificationEvidenceSweeps,
-  selectVisibleClassificationRepresentative,
-} from '../classification-work-admission.js';
 import { resolveVisibleClassificationTargetSelection } from '../classification-target-selection.js';
-import {
-  captureReceiptRepresentativeMatches,
-  classificationWindowSweepIds,
-  classificationWorkRevision,
-  resolveRuntimeAdmittedCaptureTarget,
-} from './classification-helpers.js';
+import { resolveRuntimeAdmittedCaptureTarget } from './classification-helpers.js';
 import { acquisitionModeForWorkspace, HISTORY_LIMIT } from '../store.js';
 import {
   CONTINUOUS_IQ_TRANSACTION,
   errorMessage,
   sameAnalyzerConfiguration,
   sameStructuredValue,
-  type ClassificationExecutionRecord,
-  type ClassificationWork,
   type ContinuousIqConfigurationOwnership,
   type ContinuousMeasurementWork,
   type ContinuousStreamOwnership,
-  type RecordedSweep,
   type RendererConfigurationRevision,
   type RendererKernel,
 } from './kernel.js';
@@ -65,8 +51,7 @@ export class AcquisitionController {
   admitContinuousMeasurement(work: ContinuousMeasurementWork): void {
     // IPC events already arrive serially on the renderer event loop. Perform
     // the bounded projection/detection/tracking ingest synchronously for every
-    // sweep so history evidence is never silently replaced by a slower
-    // classifier. Only derived Bayesian projections use a latest-wins lane.
+    // sweep so history evidence is never silently replaced.
     this.processContinuousMeasurement(work);
   }
 
@@ -86,10 +71,8 @@ export class AcquisitionController {
       const recorded = this.recordSweepEvidence(
         projected,
         measurement.configurationRevision,
-        ownership,
       );
       if (!recorded) throw new Error(`Sweep ${projected.id} was acquired for a superseded analyzer configuration`);
-      if (recorded.classification) k.classification.admitClassificationWork(recorded.classification);
     } catch (value) {
       if (!this.isCurrentContinuousWork(work)) return;
       const message = `Sweep analysis failed: ${errorMessage(value)}`;
@@ -198,7 +181,6 @@ export class AcquisitionController {
     const k = this.k;
     if (expected && k.continuousStreamOwnership.current !== expected) return;
     k.continuousStreamOwnership.current = undefined;
-    if (!expected || k.pendingClassificationWork.current?.ownership === expected) k.pendingClassificationWork.current = undefined;
     if (!expected || k.continuousMeasurementStopRequest.current?.ownership === expected) {
       k.continuousMeasurementStopRequest.current = undefined;
     }
@@ -526,8 +508,7 @@ export class AcquisitionController {
   recordSweepEvidence(
     next: Sweep,
     configurationRevision: string,
-    ownership?: ContinuousStreamOwnership,
-  ): RecordedSweep | undefined {
+  ): boolean {
     const k = this.k;
     void configurationRevision;
     const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
@@ -536,9 +517,9 @@ export class AcquisitionController {
       : undefined;
     if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
       console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: k.state.analyzer });
-      return undefined;
+      return false;
     }
-    const sequence = ++k.analysisSequence.current;
+    k.analysisSequence.current++;
     const nextHistory = [next, ...k.state.history].slice(0, HISTORY_LIMIT);
     k.set({
       sweep: next,
@@ -548,102 +529,8 @@ export class AcquisitionController {
     });
     const candidates = k.detector.current.analyze(next);
     const trackerRows = k.tracker.current.update(next, candidates);
-    const tracked = sanitizeClassificationEvidenceDetections(trackerRows);
-    if (tracked.length !== trackerRows.length) {
-      console.warn('[Classification] quarantined malformed tracker rows before ranking, rendering, or agent projection', {
-        sweepId: next.id,
-        quarantinedRows: trackerRows.length - tracked.length,
-      });
-    }
-    k.set({ detections: tracked });
-    let selectedRepresentative = selectVisibleClassificationRepresentative(
-      tracked,
-      next,
-      k.state.explicitClassificationId,
-    );
-    let selectedSignal = selectedRepresentative?.detection;
-    // Establish selected-target ownership before even a synchronous test
-    // classifier can complete. The render effect is an eventual UI mirror;
-    // it must never arrive later and erase a result for the target this exact
-    // evidence revision already admitted.
-    k.classification.safelyStageClassificationCandidate(
-      selectedRepresentative?.selection.rawTargetId ?? selectedSignal?.id,
-    );
-    const cachedCapture = k.state.zeroCapture;
-    const cachedReceipt = k.zeroCaptureReceiptRef.current;
-    const cachedSweepIds = k.zeroCaptureSpectrumSweepIdsRef.current;
-    if (cachedCapture) {
-      const projectedDetectionId = cachedReceipt?.selection.projectedRepresentativeId
-        ?? cachedCapture.targetDetectionId;
-      const target = selectedSignal?.id === projectedDetectionId ? selectedSignal : undefined;
-      const currentSweepIds = target ? classificationWindowSweepIds(target, nextHistory) : [];
-      if (!cachedReceipt
-        || !target
-        || !captureReceiptRepresentativeMatches(cachedReceipt, target)
-        || !cachedSweepIds
-        || currentSweepIds.length !== cachedSweepIds.length
-        || currentSweepIds.some((sweepId, index) => sweepId !== cachedSweepIds[index])) {
-        k.classification.clearClassificationCapture();
-        selectedRepresentative = selectVisibleClassificationRepresentative(
-          tracked,
-          next,
-          k.state.explicitClassificationId,
-        );
-        selectedSignal = selectedRepresentative?.detection;
-      }
-    }
-    const currentSignals = selectedSignal ? [selectedSignal] : [];
-    const currentSignalIds = new Set(currentSignals.map(({ id }) => id));
-    if (ownership) {
-      // A continuous producer can advance while one selected-signal worker
-      // request is in flight. Retain only that current target's completed
-      // projection; the newest completed work replaces it monotonically.
-      const retained = k.state.classifications.filter(({ detectionId }) => currentSignalIds.has(detectionId));
-      if (retained.length !== k.state.classifications.length) k.set({ classifications: retained });
-    } else {
-      // Single/capture operations retain the exact evidence-revision contract:
-      // no preceding result is shown while the new revision is unresolved.
-      k.set({ classifications: [] });
-    }
-    const requests = currentSignals.flatMap((detection) => {
-      const evidenceSweeps = exactClassificationEvidenceSweeps(detection, nextHistory);
-      if (!evidenceSweeps) {
-        console.warn('[Classification] selected target omitted exact external sweep provenance', {
-          sweepId: next.id,
-          detectionId: detection.id,
-        });
-        return [];
-      }
-      return [{
-        detection,
-        evidence: k.classification.classificationEvidenceForDetection(detection, evidenceSweeps),
-      }];
-    });
-    if (requests.length === 0 || !selectedRepresentative) return {};
-    const selection = selectedRepresentative.selection;
-    const work: ClassificationWork = {
-      revision: classificationWorkRevision(
-        sequence,
-        next,
-        selection,
-        requests[0]!.evidence,
-      ),
-      sequence,
-      ...(ownership ? { ownership } : {}),
-      visibleSweep: {
-        id: next.id,
-        sequence: next.sequence,
-        capturedAt: next.capturedAt,
-      },
-      target: {
-        projectedRepresentativeId: selectedRepresentative.detection.id,
-        rawTargetId: selection.rawTargetId ?? selectedRepresentative.detection.id,
-        selectionOrigin: selection.origin,
-      },
-      requests,
-    };
-    k.classification.stageClassificationExecution(work);
-    return { classification: work };
+    k.set({ detections: trackerRows });
+    return true;
   }
 
   acquire(): Promise<Sweep> { return this.runInstrumentTransaction('acquire-spectrum', () => this.acquireOwned()); }
@@ -668,7 +555,6 @@ export class AcquisitionController {
       const next = projectSpectrumMeasurement(measurement, active, requested);
       const recorded = this.recordSweepEvidence(next, measurement.configurationRevision);
       if (!recorded) throw new Error(`Sweep ${next.id} was acquired for a superseded analyzer configuration`);
-      await k.classification.classifyRecordedSweep(recorded);
       k.set({ acquisition: 'complete' });
       return next;
     } catch (value) {
@@ -1047,11 +933,8 @@ export class AcquisitionController {
     const requestedSelection = resolveVisibleClassificationTargetSelection(
       preCaptureSignals,
       preCaptureSweep,
-      k.state.explicitClassificationId !== undefined
-        ? k.state.explicitClassificationId
-        : undefined,
+      k.state.explicitClassificationId,
     );
-    const requestedSelectionRevision = k.classificationSelectionRevision.current;
     const requestedRawTargetId = requestedSelection.rawTargetId
       ?? requestedSelection.detectionId;
     const admittedTarget = resolveRuntimeAdmittedCaptureTarget(
@@ -1144,16 +1027,16 @@ export class AcquisitionController {
             });
           } catch (value) {
             console.warn(
-              '[Classification] detected-power capture remains unqualified',
+              '[ZeroSpan] detected-power capture remains unqualified',
               value,
             );
             k.set({
-              notice: `Envelope captured without Bayesian qualification: ${errorMessage(value)}`,
+              notice: `Envelope captured without target qualification: ${errorMessage(value)}`,
             });
           }
         } else if (preCaptureTarget) {
           k.set({
-            notice: 'Envelope captured without Bayesian qualification: target was not admitted on the exact eight-sweep window and tune',
+            notice: 'Envelope captured without target qualification: target was not admitted on the exact eight-sweep window and tune',
           });
         }
         try {
@@ -1161,98 +1044,8 @@ export class AcquisitionController {
         } catch (value) {
           throw new Error(`Zero-span capture ${capture.id} completed, but restoring the staged swept-analyzer configuration failed: ${errorMessage(value)}`);
         }
-        if (!k.classification.classificationSelectionStillOwns(
-          requestedSelectionRevision,
-          requestedSelection,
-        )) {
-          throw new Error(
-            'Detected-power capture selection was superseded before evidence publication',
-          );
-        }
         k.zeroCaptureReceiptRef.current = captureReceipt;
         k.set({ zeroCapture: capture, envelope: classifyZeroSpanEnvelope(capture) });
-        // The prior spectrum-only result is not a result for this newly
-        // published detected-power evidence. Fail closed while the qualified
-        // evidence revision is recomputed, including on classifier failure.
-        k.set({ classifications: [] });
-        const sequence = ++k.analysisSequence.current;
-        k.zeroCaptureSpectrumSweepIdsRef.current = captureReceipt
-          ? preCaptureSweepIds
-          : undefined;
-        const selected = admittedTarget?.detection;
-        const evidenceSweeps = selected
-          ? exactClassificationEvidenceSweeps(selected, preCaptureHistory)
-          : undefined;
-        if (captureReceipt
-          && selected?.id !== captureReceipt.selection.projectedRepresentativeId) {
-          throw new Error('Detected-power receipt no longer owns the selected classification representative');
-        }
-        if (selected && !evidenceSweeps) {
-          throw new Error(`Selected classification target ${selected.id} omitted exact external sweep provenance`);
-        }
-        let results: readonly WaveformClassification[] = [];
-        let completedWork: ClassificationWork | undefined;
-        if (selected && evidenceSweeps && preCaptureSweep) {
-          const evidence = k.classification.classificationEvidenceForDetection(selected, evidenceSweeps);
-          const work: ClassificationWork = {
-            revision: classificationWorkRevision(
-              sequence,
-              preCaptureSweep,
-              requestedSelection,
-              evidence,
-            ),
-            sequence,
-            visibleSweep: {
-              id: preCaptureSweep.id,
-              sequence: preCaptureSweep.sequence,
-              capturedAt: preCaptureSweep.capturedAt,
-            },
-            target: {
-              projectedRepresentativeId: selected.id,
-              rawTargetId: admittedTarget.rawTarget.id,
-              selectionOrigin: requestedSelection.origin,
-            },
-            requests: [{ detection: selected, evidence }],
-          };
-          completedWork = work;
-          k.classification.stageClassificationExecution(work);
-          const directAbortController = new AbortController();
-          const directPromise = (async (): Promise<ClassificationExecutionRecord> => {
-            try {
-              const directResults = [await k.classification.waitForClassificationSource(
-                k.requireClassifierRuntime().classifier.classify(
-                  selected,
-                  evidence,
-                  directAbortController.signal,
-                ),
-                directAbortController.signal,
-              )];
-              if (sequence === k.analysisSequence.current
-                && k.classification.classificationWorkTargetIsCurrent(work)) {
-                k.classification.completeClassificationExecution(work, directResults);
-              }
-              return { work, status: 'ready', results: directResults };
-            } catch (value) {
-              if (!directAbortController.signal.aborted) {
-                k.classification.failClassificationExecution(work, value);
-              }
-              return { work, status: 'failed', error: errorMessage(value) };
-            }
-          })();
-          k.classification.registerDirectClassificationTask(work, directPromise, directAbortController);
-          const directOutcome = await directPromise;
-          if (directOutcome.status === 'failed') {
-            throw new Error(directOutcome.error ?? 'Bayesian classification failed');
-          }
-          results = directOutcome.results ?? [];
-        }
-        if (sequence === k.analysisSequence.current
-          && k.classification.classificationSelectionStillOwns(
-            requestedSelectionRevision,
-            requestedSelection,
-          )) k.set({ classifications: completedWork
-            ? k.agent.classificationResultsBoundToWork(completedWork, results)
-            : [] });
         k.set({ acquisition: 'complete' });
         return capture;
       }

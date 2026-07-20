@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { DetectedSignal, WaveformClassification } from '@tinysa/contracts';
-import { agentClassificationResults, agentDetectionResults } from './agent-detection-results.js';
+import type { DetectedSignal } from '@tinysa/contracts';
+import { agentDetectionResults } from './agent-detection-results.js';
 
 describe('Atom detection-result projection', () => {
   it('separates rolling activity associations from frequency-local detections', () => {
@@ -243,18 +243,6 @@ describe('Atom detection-result projection', () => {
       associationMissedSweeps: 0,
       multicomponentAssociationObservations: [observation],
     } as unknown as DetectedSignal;
-    const classification = {
-      detectionId: multicomponent.id,
-      label: 'observable:fm-angle-modulated-like',
-      confidence: 0.91,
-      candidates: [{ label: 'observable:fm-angle-modulated-like', confidence: 0.91, family: 'analog' }],
-      modelId: 'bayesian-observable-equivalence-v9',
-      qualification: 'bayesian-observable-equivalence',
-      scoreKind: 'model-posterior',
-      decisionLevel: 'equivalence-class',
-      classifiedAt: '2026-07-15T00:00:00.000Z',
-      evidence: { centerHz: 100_000_000, bandwidthHz: 8_000_000, peakDbm: -51, sweepIds: ['sweep-8'] },
-    } satisfies WaveformClassification;
 
     const detections = agentDetectionResults([multicomponent]);
     const association = detections.localDetections[0]?.classificationAssociation;
@@ -274,9 +262,5 @@ describe('Atom detection-result projection', () => {
         latestObservation: observation,
       },
     });
-    const results = agentClassificationResults([multicomponent], [classification]);
-    expect(results[0]?.classificationAssociation).toEqual(association);
-    expect(results[0]?.classificationAssociation?.multicomponentLineage?.observations)
-      .toEqual([observation]);
   });
 });

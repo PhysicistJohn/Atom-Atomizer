@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { DeviceIdentity, FirmwareTraceFrame, MarkerReading, Sweep, TraceFrame } from '@tinysa/contracts';
 import { readMarkers } from '@tinysa/analysis';
-import { ClassificationWorkspace } from './ClassificationWorkspace.js';
 import { SpectrumPlot, markerOverlayPlacement } from './SpectrumPlot.js';
 import {
   allRecordedCoordinates,
@@ -209,36 +208,6 @@ describe('SpectrumPlot signal-aware marker layout', () => {
     expect(item).toBeInstanceOf(HTMLElement);
     expect((item as HTMLElement).style.left).toBe(expectedLeft);
     expect(screen.getByTestId('marker-m1-diamond')).toBeTruthy();
-  });
-
-  it('reserves the same explicit gutter row in the combined detection/classification spectrum host', () => {
-    const fixture = markerFixture(50_001);
-    render(<ClassificationWorkspace
-      sweep={fixture.sweep}
-      traces={[fixture.frame]}
-      markers={[fixture.reading]}
-      activeMarkerId={1}
-      detections={[]}
-      classifications={[]}
-      onSelectedId={() => undefined}
-      zeroConfig={{
-        frequencyHz: 50_001,
-        points: 450,
-        rbwKhz: 'auto',
-        attenuationDb: 'auto',
-        sweepTimeSeconds: 0.05,
-        trigger: { mode: 'auto' },
-      }}
-      busy={false}
-      onAcquireZero={() => undefined}
-    />);
-
-    const host = document.querySelector('.classification-spectrum');
-    const panel = host?.querySelector('.plot-panel');
-    const gutter = screen.getByTestId('marker-readout-gutter');
-    expect(panel?.classList.contains('has-marker-readout-gutter')).toBe(true);
-    expect(gutter.parentElement).toBe(panel);
-    expect(gutter.nextElementSibling?.classList.contains('plot-canvas')).toBe(true);
   });
 
   it('shows dashes and no bracket when an edge crossing is unavailable', async () => {
