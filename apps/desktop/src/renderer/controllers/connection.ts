@@ -53,6 +53,10 @@ export class ConnectionController {
     try {
       const next = await window.atomizerInstrument.connect(candidate);
       k.events.acceptSession(next);
+      // Selecting a source connects and closes the chooser in one step.
+      // Reopening it while connected shows the source list with the active
+      // source marked (no dead-end "Connected" screen), so switching or
+      // disconnecting stays one click away.
       k.set({ connectionOpen: false, notice: connectionNotice(next) });
       return next;
     } catch (value) {
@@ -65,6 +69,22 @@ export class ConnectionController {
     const k = this.k;
     const candidate = k.state.candidates.find((value) => instrumentCandidateUiKey(value) === k.state.selectedCandidateId);
     if (!candidate) { k.set({ error: 'Select an available instrument source before connecting' }); return; }
+    try { await this.connectCandidate(candidate); } catch { /* Presented in the connection dialog. */ }
+  }
+
+  // Selection-driven connect: picking a source connects to it, switching away
+  // from any current session first. The manager refuses to open a second
+  // session, so the disconnect-before-connect ordering is mandatory, not
+  // cosmetic. Picking the already-active source is a no-op.
+  async chooseCandidate(candidateKey: string): Promise<void> {
+    const k = this.k;
+    const candidate = k.state.candidates.find((value) => instrumentCandidateUiKey(value) === candidateKey);
+    if (!candidate) return;
+    k.set({ selectedCandidateId: candidateKey });
+    if (connectedCandidateKey(k.state) === candidateKey) return;
+    if (k.state.instrument.session) {
+      try { await this.disconnectDevice(); } catch { return; }
+    }
     try { await this.connectCandidate(candidate); } catch { /* Presented in the connection dialog. */ }
   }
 
@@ -108,6 +128,19 @@ export class ConnectionController {
       k.set({ notice: `${candidate.displayName} will be used at the next startup` });
     } catch (value) { k.set({ error: `Startup preference failed: ${errorMessage(value)}` }); }
   }
+}
+
+// The connected candidate's UI key is derived from the live session, but its
+// discoveryRevision differs from the current candidate list, so match on the
+// stable identity triple instead of the full UI key.
+export function connectedCandidateKey(state: { instrument: AtomizerInstrumentState; candidates: readonly InstrumentCandidate[] }): string | undefined {
+  const session = state.instrument.session;
+  if (!session) return undefined;
+  const match = state.candidates.find((candidate) =>
+    candidate.driverId === session.candidate.driverId
+    && candidate.sourceKind === session.candidate.sourceKind
+    && candidate.candidateId === session.candidate.candidateId);
+  return match ? instrumentCandidateUiKey(match) : undefined;
 }
 
 export function preferredCandidate(candidates: readonly InstrumentCandidate[], state: AtomizerInstrumentState): InstrumentCandidate | undefined {

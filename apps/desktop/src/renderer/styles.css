@@ -725,24 +725,25 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .dialog-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 13px 18px; }
 .dialog-toolbar p { margin: 0; color: var(--muted); font-size: 9px; }
 .port-list { padding: 0 14px 14px; }
-.port-option { width: 100%; display: grid; grid-template-columns: 38px 1fr 20px; align-items: center; gap: 11px; margin: 6px 0; padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: rgba(0,0,0,.15); text-align: left; }
-.port-option:hover, .port-option.selected { border-color: rgba(10,132,255,.26); background: rgba(10,132,255,.045); }
+.port-option { width: 100%; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 11px; margin: 6px 0; padding: 11px; border: 1px solid var(--line); border-radius: 13px; background: rgba(0,0,0,.15); text-align: left; }
+.port-option:hover:not(:disabled), .port-option.selected { border-color: rgba(10,132,255,.26); background: rgba(10,132,255,.045); }
+.port-option:disabled { cursor: default; }
+.port-option.connected { border-color: rgba(48,209,88,.4); background: rgba(48,209,88,.06); }
 .port-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; color: var(--muted); background: var(--panel-soft); }
 .port-option.selected .port-icon, .port-option.selected i { color: var(--energy); }
+.port-option.connected .port-icon { color: #30d158; }
 .port-option > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; }
 .port-option strong { font-size: 10px; }
 .port-option small { overflow: hidden; margin-top: 4px; color: var(--quiet); font: 8px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .port-option i { display: grid; place-items: center; }
+.port-connected { display: inline-flex; align-items: center; gap: 4px; color: #30d158; font: 7px var(--mono); letter-spacing: .08em; }
 .no-ports { min-height: 155px; display: flex; align-items: center; justify-content: center; flex-direction: column; border: 1px dashed var(--line); border-radius: 13px; color: var(--quiet); }
 .no-ports strong { margin: 10px 0 4px; color: var(--ink-soft); font-size: 10px; }
 .no-ports span { font-size: 8px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 18px; border-top: 1px solid var(--line); }
 .inline-error { margin: 0 14px 13px; padding: 10px; border: 1px solid rgba(255,126,114,.25); border-radius: 10px; color: #ffb7b0; background: rgba(100,35,31,.22); font-size: 8px; }
-.connected-state { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 38px; text-align: center; }
-.connected-glyph { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 50%; color: var(--energy); background: rgba(10,132,255,.075); }
-.connected-state h3 { margin: 14px 0 5px; }
-.connected-state .danger-outline { margin-top: 15px; }
-.danger-outline { height: 36px; padding: 0 14px; border: 1px solid rgba(255,126,114,.3); color: #ffaaa2; background: transparent; font-size: 9px; }
+.danger-outline { height: 36px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border: 1px solid rgba(255,126,114,.3); color: #ffaaa2; background: transparent; font-size: 9px; }
+.dialog-actions .danger-outline:disabled { opacity: .4; }
 
 /* V2 instrument surfaces: one exact contract, progressively disclosed. */
 .global-notice {

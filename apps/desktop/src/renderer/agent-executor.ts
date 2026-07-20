@@ -653,13 +653,17 @@ export class AgentExecutor {
     };
   }
 
-  agentSignalLabCatalog = (): { selectedProfileId: string | null; profiles: readonly { profileId: string; family: string; label: string }[] } | null => {
+  agentSignalLabCatalog = (): { selectedProfileId: string | null; profiles: readonly { profileId: string; family?: string; label: string }[] } | null => {
     const capability = this.k.state.instrument.session?.capabilities.features
       .find((feature) => feature.kind === 'signal-lab-profile-selection');
     if (capability?.kind !== 'signal-lab-profile-selection') return null;
     return {
       selectedProfileId: capability.selectedProfileId ?? null,
-      profiles: capability.profiles.map(({ profileId, family, label }) => ({ profileId, family, label })),
+      // Catalog entries are either full descriptors (with family/label) or
+      // bare geometry; loose-name resolution wants the labels when present.
+      profiles: capability.profiles.map((profile) => 'label' in profile
+        ? { profileId: profile.profileId, family: profile.family, label: profile.label }
+        : { profileId: profile.profileId, label: profile.profileId }),
     };
   };
 

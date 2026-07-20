@@ -3573,9 +3573,11 @@ describe('operator vertical slice', () => {
       });
     });
 
-    const dialog = screen.getByRole('dialog', { name: 'Connect' });
+    const dialog = screen.getByRole('dialog', { name: 'Instrument source' });
     expect(within(dialog).getByRole('alert').textContent).toMatch(/Connection cleanup required/i);
-    expect(within(dialog).getByRole('button', { name: 'Connect' }).hasAttribute('disabled')).toBe(true);
+    // While cleanup is required every source row is blocked from connecting.
+    expect(within(dialog).getAllByRole('button').filter((b) => b.getAttribute('data-agent-control')?.startsWith('connection.candidate'))
+      .every((b) => b.hasAttribute('disabled'))).toBe(true);
 
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
     fireEvent.change(composer, { target: { value: 'Inspect the cleanup control.' } });
@@ -3641,10 +3643,15 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     expect(within(dialog).getByRole('button', { name: /TinySA physical A.*STARTUP DEFAULT/i })).toBeTruthy();
+    // Selecting B connects to it and closes the chooser; reopen to pin the
+    // now-connected source as the startup default.
     fireEvent.click(within(dialog).getByRole('button', { name: /TinySA physical B/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Use at startup' }));
+    await waitFor(() => expect(window.atomizerInstrument.connect).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /tinySA Ultra\+ ZS407|No instrument/i }));
+    const reopened = await screen.findByRole('dialog', { name: /Instrument source/i });
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Use at startup' }));
 
     await waitFor(() => expect(window.atomizerInstrument.writePreference).toHaveBeenCalledWith({
       driverId: second.driverId,
@@ -3879,9 +3886,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy());
@@ -3908,9 +3914,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -3930,9 +3935,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -3958,9 +3962,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -3991,9 +3994,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy());
@@ -4030,9 +4032,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenCalledOnce());
@@ -4056,9 +4057,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomAgent.status).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     expect(within(navigation).getAllByRole('button').map((button) => button.textContent?.trim()))
@@ -4139,7 +4139,7 @@ describe('operator vertical slice', () => {
     };
     assertRenderedContracts();
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    await screen.findByRole('dialog', { name: /^Connect$/i });
+    await screen.findByRole('dialog', { name: /Instrument source/i });
     assertRenderedContracts();
     fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
@@ -4167,9 +4167,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
@@ -4181,9 +4180,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(1));
@@ -4709,9 +4707,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -4740,9 +4737,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
 
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
@@ -4764,9 +4760,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
 
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
@@ -4810,9 +4805,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(within(screen.getByRole('navigation', { name: /Primary navigation/i })).getByRole('button', { name: /Generate/i }));
 
@@ -4849,9 +4843,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const dialog = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -4903,9 +4896,8 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
 
@@ -4931,9 +4923,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
@@ -4957,9 +4948,8 @@ describe('operator vertical slice', () => {
     const { container } = render(<App/>);
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole('button', { name: /No instrument/i }));
-    const connection = await screen.findByRole('dialog', { name: /^Connect$/i });
+    const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
-    fireEvent.click(within(connection).getByRole('button', { name: /^Connect$/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
