@@ -625,6 +625,27 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .iq-metric-strip small, .iq-driver-facts small { display: block; color: var(--quiet); font: 7px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
 .iq-metric-strip strong, .iq-driver-facts strong { display: block; overflow: hidden; margin-top: 4px; color: var(--ink-soft); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .iq-evidence-footer { min-height: 29px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-top: 1px solid rgba(255,255,255,.05); color: var(--quiet); font: 7px var(--mono); text-transform: uppercase; }
+
+/* Embedding modulation classifier result card (I/Q workspace). */
+.iq-modulation-card { margin: 0 10px 10px; padding: 11px 12px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(10,132,255,.05); }
+.iq-modulation-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.iq-modulation-head > div { display: flex; align-items: center; gap: 8px; color: var(--energy-bright); }
+.iq-modulation-head strong { display: block; color: var(--ink); font: 600 11px var(--mono); }
+.iq-modulation-head small { display: block; margin-top: 2px; color: var(--quiet); font: 7px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.iq-modulation-badge { padding: 3px 8px; border-radius: 999px; color: #08131f; background: var(--green); font: 700 9px var(--mono); }
+.iq-modulation-badge.unknown { color: var(--ink); background: rgba(255,255,255,.08); }
+.iq-modulation-pending { margin: 10px 0 0; color: var(--muted); font: 9px var(--mono); }
+.iq-modulation-primary { display: flex; align-items: baseline; gap: 9px; margin: 9px 0 8px; }
+.iq-modulation-label { color: var(--ink); font: 600 16px var(--mono); letter-spacing: -.01em; }
+.iq-modulation-leaf { color: var(--cyan); font: 8px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.iq-modulation-bars { display: flex; flex-direction: column; gap: 5px; }
+.iq-modulation-bar { display: grid; grid-template-columns: 82px 1fr 34px; align-items: center; gap: 8px; }
+.iq-modulation-bar > span { overflow: hidden; color: var(--ink-soft); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.iq-modulation-track { height: 6px; border-radius: 999px; background: rgba(255,255,255,.07); overflow: hidden; }
+.iq-modulation-track > div { height: 100%; border-radius: 999px; background: var(--energy); }
+.iq-modulation-bar > em { color: var(--muted); font: 8px var(--mono); font-style: normal; text-align: right; }
+.iq-modulation-bar:first-child .iq-modulation-track > div { background: var(--green); }
+.iq-modulation-note { margin: 9px 0 0; color: var(--quiet); font: 7px/1.5 var(--mono); }
 .iq-control-panel { display: flex; flex-direction: column; }
 .iq-parameter-stack { padding: 8px 12px 0; }
 .iq-driver-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 9px 12px; }

@@ -166,6 +166,35 @@ export function previewComplexIq(
   };
 }
 
+/**
+ * Decode a CONTIGUOUS full-resolution prefix of a capture into separate I and Q
+ * `Float64Array` channels — the numeric form the embedding modulation classifier
+ * consumes. Unlike {@link previewComplexIq} (which subsamples for plotting), this
+ * keeps samples contiguous so band detection and resampling are meaningful. The
+ * prefix is bounded (`maxSamples`) so the work stays fixed regardless of the
+ * multi-megabyte capture size; the classifier normalizes to a canonical length
+ * internally, so a few thousand contiguous samples suffice.
+ */
+export function decodeComplexIqChannels(
+  capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat'>,
+  maxSamples = 4_096,
+): { re: Float64Array; im: Float64Array } {
+  const expectedBytes = complexIqPayloadByteLength(capture.sampleCount, capture.sampleFormat);
+  if (capture.samples.byteLength !== expectedBytes) {
+    throw new RangeError(`I/Q payload contains ${capture.samples.byteLength} bytes; expected ${expectedBytes}`);
+  }
+  const n = Math.min(capture.sampleCount, Math.max(1, maxSamples));
+  const view = new DataView(capture.samples.buffer, capture.samples.byteOffset, capture.samples.byteLength);
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const [i, q] = decodeSample(view, k, capture.sampleFormat);
+    re[k] = i;
+    im[k] = q;
+  }
+  return { re, im };
+}
+
 function decodeSample(view: DataView, sampleIndex: number, format: ComplexIqSampleFormat): readonly [number, number] {
   switch (format) {
     case 'cf32le': {
