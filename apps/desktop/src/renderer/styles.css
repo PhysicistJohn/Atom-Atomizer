@@ -1094,3 +1094,140 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---------------------------------------------------------------------------
+   Mobile PWA layout (web edition on phones). Desktop pixels are frozen: every
+   rule lives inside this media query and the Electron shell never renders at
+   these widths. Structure: sidebar becomes a top nav strip, the workspace
+   stacks one panel per row and scrolls, and Atom docks as a bottom sheet.
+--------------------------------------------------------------------------- */
+@media (max-width: 880px) {
+  body { min-width: 0; min-height: 0; }
+  .app-shell {
+    height: 100dvh;
+    grid-template: 52px auto minmax(0, 1fr) / minmax(0, 1fr);
+  }
+  .topbar { grid-column: 1; gap: 8px; padding: 0 10px; }
+  .topbar .brand-lockup small { display: none; }
+  .connection-pill { max-width: 44vw; }
+  .connection-pill > span:nth-of-type(2) { overflow: hidden; }
+  .connection-pill strong, .connection-pill small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Sidebar -> horizontal nav strip under the topbar. */
+  .sidebar {
+    grid-row: 2;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .sidebar nav { flex-direction: row; gap: 6px; }
+  .nav-item { flex-direction: row; gap: 6px; min-width: max-content; padding: 7px 10px; }
+  .nav-item .nav-icon svg { width: 15px; height: 15px; }
+  .sidebar-acquisition {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    padding: 0 2px 0 12px;
+    border-top: 0;
+    /* Run/Single stay reachable while the nav strip scrolls beneath them.
+       An opaque backdrop and a hard left edge tuck scrolled nav items away
+       cleanly instead of ghosting them under a translucent button. */
+    position: sticky;
+    right: -10px;
+    z-index: 1;
+    background: var(--bg);
+    box-shadow: -12px 0 12px -6px var(--bg);
+  }
+  .sidebar-acquisition::before {
+    content: '';
+    position: absolute;
+    left: -1px; top: 6px; bottom: 6px;
+    width: 1px;
+    background: var(--line);
+  }
+  /* Run/Single already signal acquisition state; the lone dot is noise here. */
+  .sidebar-acquisition-state { display: none; }
+  .sidebar-acquisition-buttons { display: flex; gap: 6px; }
+  .sidebar-acquisition button { min-height: 34px; flex-direction: row; gap: 5px; padding: 4px 10px; }
+
+  /* Workspace: single scrolling column. */
+  .workspace-shell {
+    grid-column: 1;
+    grid-row: 3;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px 12px 84px;
+  }
+  .workspace-shell.spectrum-workspace { overflow-y: auto; }
+  .workspace-shell.classification-workspace { overflow-y: auto; }
+
+  /* Two-column layouts stack one panel per row. */
+  .analysis-layout,
+  .iq-workspace,
+  .device-layout,
+  .channel-analysis-view { grid-template-columns: minmax(0, 1fr); }
+  .channel-visual { border-right: 0; border-bottom: 1px solid var(--line); }
+  .generator-layout { height: auto; grid-template: none / minmax(0, 1fr); }
+  .classification-grid {
+    flex: none;
+    grid-template: none / minmax(0, 1fr);
+    overflow: visible;
+  }
+  .pipeline-panel, .safety-panel, .capability-ledger, .classification-capture-strip { grid-column: auto; }
+  .classification-capture-strip { grid-template-columns: minmax(0, 1fr); }
+  .safety-panel { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
+
+  /* Plots keep a readable height inside the scroll column. */
+  .spectrum-workspace .analysis-layout { min-height: 62dvh; }
+  .analysis-layout { min-height: 0; }
+  .plot-panel, .channel-plot-shell { min-height: 300px; }
+  .iq-plot-grid { grid-template-rows: minmax(240px, 1.5fr) minmax(180px, 1fr); }
+
+  /* Dense strips wrap to two columns instead of overflowing. */
+  .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .iq-metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .device-facts, .channel-results, .signal-lab-profile-facts, .iq-driver-facts { grid-template-columns: minmax(0, 1fr); }
+  .marker-selector { grid-template-columns: repeat(4, 1fr); row-gap: 6px; }
+
+  /* Atom docks as a bottom sheet with a scrim so it reads as a layer over
+     the workspace rather than floating mid-scroll. */
+  .atom-panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: min(64dvh, 560px);
+    border-radius: 20px 20px 0 0;
+    border-bottom: 0;
+    padding-top: 8px;
+    box-shadow: 0 -18px 60px rgba(0,0,0,.55);
+    animation: atom-sheet-in .26s var(--ease);
+  }
+  .atom-panel::after {
+    /* Grabber handle. */
+    content: '';
+    position: absolute;
+    top: 7px; left: 50%;
+    width: 34px; height: 4px;
+    transform: translateX(-50%);
+    border-radius: 2px;
+    background: rgba(202,195,246,.28);
+  }
+  @keyframes atom-sheet-in { from { transform: translateY(18px); opacity: .4; } to { transform: none; opacity: 1; } }
+
+  /* The floating browser-edition badge collides with the sheet and repeats
+     the topbar; retire it on phones. */
+  .web-edition-badge { display: none; }
+
+  /* Dialogs fit the screen. */
+  .connection-dialog { width: min(94vw, 520px); }
+}
