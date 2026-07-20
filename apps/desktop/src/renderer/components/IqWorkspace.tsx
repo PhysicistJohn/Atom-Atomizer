@@ -295,14 +295,16 @@ function formatPlotZoom(zoom: number): string {
 function LiveModulationBar({ modulation, hasCapture }: { modulation?: ModulationClassification; hasCapture: boolean }) {
   const runners = modulation?.candidates.filter((candidate) => candidate.label !== modulation.candidates[0]?.label).slice(0, 2) ?? [];
   return <div className="iq-live-mod" role="status" aria-label="Live modulation classification">
-    <span className="iq-live-mod-tag"><Radar size={13}/>Modulation</span>
-    {!hasCapture && <span className="iq-live-mod-idle">Run or Single to auto-identify</span>}
-    {hasCapture && !modulation && <span className="iq-live-mod-idle">Identifying…</span>}
-    {modulation && <>
-      <strong className="iq-live-mod-label">{modulation.isUnknown ? 'Unknown' : modLabel(modulation.modulation)}</strong>
-      <span className={`iq-live-mod-conf${modulation.isUnknown ? ' unknown' : ''}`}>{modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}%`}</span>
-      {modulation.topLeaf && <em className="iq-live-mod-leaf">likely {leafLabel(modulation.topLeaf.label)}</em>}
+    <div className="iq-live-mod-primary">
+      <span className="iq-live-mod-tag"><Radar size={13}/>Modulation</span>
+      {!hasCapture && <span className="iq-live-mod-idle">Run or Single to auto-identify</span>}
+      {hasCapture && !modulation && <span className="iq-live-mod-idle">Identifying…</span>}
+      {modulation && <strong className="iq-live-mod-label">{modulation.isUnknown ? 'Unknown' : modLabel(modulation.modulation)}</strong>}
+      {modulation?.topLeaf && <em className="iq-live-mod-leaf">likely {leafLabel(modulation.topLeaf.label)}</em>}
+    </div>
+    {modulation && <div className="iq-live-mod-secondary">
+      <span className={`iq-live-mod-conf${modulation.isUnknown ? ' unknown' : ''}`}>{modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}% confidence`}</span>
       {runners.length > 0 && <span className="iq-live-mod-runners">{runners.map((candidate) => `${modLabel(candidate.label)} ${Math.round(candidate.confidence * 100)}%`).join(' · ')}</span>}
-    </>}
+    </div>}
   </div>;
 }
