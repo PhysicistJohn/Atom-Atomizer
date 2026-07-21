@@ -322,8 +322,8 @@ describe('canonical SignalLab marker-local stress matrix', () => {
   it('exercises all sixteen production-resolution looks for every non-canonized selectable profile', () => {
     const canonized = new Set(Object.keys(CANONIZED_REPLAY_PROFILE_SCENARIOS));
     const nonCanonized = SYNTHESIZED_SIGNAL_PROFILES.filter((profile) => !canonized.has(profile));
-    expect(SYNTHESIZED_SIGNAL_PROFILES).toHaveLength(34);
-    expect(nonCanonized).toHaveLength(22);
+    expect(SYNTHESIZED_SIGNAL_PROFILES).toHaveLength(39);
+    expect(nonCanonized).toHaveLength(27);
 
     for (const profile of nonCanonized) {
       const looks = Array.from({ length: 16 }, (_, sweepIndex) => productionProfileLook(profile, sweepIndex));

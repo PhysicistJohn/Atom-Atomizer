@@ -1232,7 +1232,7 @@ describe('operator vertical slice', () => {
           centerHz: expect.any(Number),
           sampleCount: 2,
           sampleRateHz: 2_000_000,
-          bandwidthHz: 1_500_000,
+          bandwidthHz: 2_000_000,
           sampleFormat: 'cf32le',
           timing: {
             capturedAt: '2026-07-10T00:00:01.000Z',

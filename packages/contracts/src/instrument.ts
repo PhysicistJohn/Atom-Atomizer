@@ -621,7 +621,7 @@ const signalLabSourceReferenceSchema = z.object({
 export const signalLabWaveformDescriptorSchema = z.object({
   ...signalLabProfileGeometryShape,
   label: metadataStringSchema,
-  family: z.enum(['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan', 'bluetooth']),
+  family: z.enum(['tone', 'analog', 'geran', 'e-utra', 'nr', 'wlan', 'bluetooth', 'reference']),
   model: metadataStringSchema,
   qualification: z.enum(['visual', 'standards-derived', 'conformance-validated']),
   occupiedBandwidthHz: positiveFrequencyHzSchema,

@@ -11,11 +11,17 @@ export type ComplexIqCapability = Extract<InstrumentAcquisitionCapability, { kin
 export type ComplexIqConfiguration = Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
 export type ComplexIqMeasurement = Extract<InstrumentMeasurement, { kind: 'complex-iq' }>;
 
+// Default to a wide NeptuneSDR-class capture (56 MHz sample rate, 40 MHz usable
+// bandwidth). This is wide enough to represent the single-carrier reference
+// waveforms (7 Msym/s => 8 samples/symbol) and any real signal an operator points
+// at; a connected driver with a narrower lattice reconciles this down to its own
+// capability. The prior 2 MHz default could not even represent a 7 MHz-symbol
+// reference (symbol rate exceeded the sample rate).
 export const DEFAULT_COMPLEX_IQ_CONFIGURATION: ComplexIqConfiguration = {
   kind: 'complex-iq',
   centerHz: 100_000_000,
-  sampleRateHz: 2_000_000,
-  bandwidthHz: 1_500_000,
+  sampleRateHz: 56_000_000,
+  bandwidthHz: 40_000_000,
   sampleCount: 65_536,
   sampleFormat: 'cf32le',
 };

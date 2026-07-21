@@ -18,11 +18,13 @@ const capability: Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' 
 
 describe('driver-neutral complex I/Q staging', () => {
   it('reconciles persisted values to the exact connected-driver lattice', () => {
+    // The wide default reconciles down to this driver's advertised maxima
+    // (20 MHz sample rate, 16 MHz bandwidth on the ci16le lattice).
     expect(reconcileComplexIqConfiguration(capability, DEFAULT_COMPLEX_IQ_CONFIGURATION)).toEqual({
       kind: 'complex-iq',
       centerHz: 100_000_000,
-      sampleRateHz: 2_000_000,
-      bandwidthHz: 1_600_000,
+      sampleRateHz: 20_000_000,
+      bandwidthHz: 16_000_000,
       sampleCount: 65_536,
       sampleFormat: 'ci16le',
     });
@@ -40,7 +42,7 @@ describe('driver-neutral complex I/Q staging', () => {
   it('rejects values and formats that the driver did not advertise', () => {
     const valid = reconcileComplexIqConfiguration(capability, DEFAULT_COMPLEX_IQ_CONFIGURATION);
     expect(complexIqConfigurationFor(capability, valid)).toEqual(valid);
-    expect(() => complexIqConfigurationFor(capability, { ...valid, sampleRateHz: 2_500_000 }))
+    expect(() => complexIqConfigurationFor(capability, { ...valid, sampleRateHz: 20_500_000 }))
       .toThrow(/sample rate.*outside/i);
     expect(() => complexIqConfigurationFor(capability, { ...valid, sampleFormat: 'cf32le' }))
       .toThrow(/not advertised/i);

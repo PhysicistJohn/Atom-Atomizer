@@ -48,9 +48,14 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     if (!capture) { setModulation(undefined); setRecovered(undefined); return; }
     let cancelled = false;
     try {
-      const { re, im } = decodeComplexIqChannels(capture);
+      // Recovery needs enough symbols to populate a dense high-order grid (256-QAM
+      // wants ~2k symbols); at ~8 sps that is a 16k-sample prefix. The classifier
+      // keeps its usual 4k-sample view (a zero-copy prefix) so its behavior is
+      // unchanged. estimateSps caps its own analysis window, so the longer decode
+      // only costs a linear CMA pass, not a quadratic periodogram.
+      const { re, im } = decodeComplexIqChannels(capture, 16_384);
       try { setRecovered(recoverIqConstellation(re, im)); } catch { /* keep the last recovery */ }
-      classifyIqModulation(re, im, captureBandwidthHz)
+      classifyIqModulation(re.subarray(0, 4_096), im.subarray(0, 4_096), captureBandwidthHz)
         .then((result) => { if (!cancelled) setModulation(result); })
         .catch(() => { /* keep the last result through a transient decode/inference error */ });
     } catch { /* keep the last result */ }
