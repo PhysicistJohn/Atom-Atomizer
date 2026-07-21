@@ -13,5 +13,6 @@ export function GeneratorContainer({ runtime }: { runtime: RendererRuntime }) {
     onApply={() => void features.configureGeneratorFromUi()} onOutput={(enabled) => void features.setOutputFromUi(enabled)}
     onSignalLabProfile={(profileId) => void features.selectSignalLabProfile(profileId)}
     onSignalLabChannel={(channel) => void features.configureSignalLabChannel(channel)}
+    onSignalLabCustomWaveform={(standard, selections) => void features.configureSignalLabCustomWaveform(standard, selections)}
   />;
 }

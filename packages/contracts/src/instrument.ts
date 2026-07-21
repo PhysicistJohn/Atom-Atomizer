@@ -1063,6 +1063,18 @@ export const signalLabConfigureChannelFeatureRequestSchema = z.object({
   action: z.literal('configure-channel'),
   channel: signalLabChannelStateSchema,
 }).strict();
+export const signalLabCustomWaveformStandardSchema = z.enum(['lte', 'nr', 'wifi']);
+/** Custom-builder selections: parameter key -> option ('auto' or a legal value); legality is re-validated by the SignalLab constraint resolver. */
+export const signalLabCustomWaveformSelectionsSchema = z.record(
+  z.string().min(1).max(48).regex(/^[A-Za-z][A-Za-z0-9]*$/),
+  z.string().min(1).max(48),
+).refine((selections) => Object.keys(selections).length <= 32, { message: 'Too many custom-waveform selections' });
+export const signalLabConfigureCustomWaveformFeatureRequestSchema = z.object({
+  kind: z.literal('signal-lab-profile-selection'),
+  action: z.literal('configure-custom-waveform'),
+  standard: signalLabCustomWaveformStandardSchema,
+  selections: signalLabCustomWaveformSelectionsSchema,
+}).strict();
 export const instrumentFeatureRequestSchema = z.union([
   rfGeneratorConfigureFeatureRequestSchema,
   rfGeneratorOutputFeatureRequestSchema,
@@ -1071,6 +1083,7 @@ export const instrumentFeatureRequestSchema = z.union([
   diagnosticsReadFeatureRequestSchema,
   signalLabSelectProfileFeatureRequestSchema,
   signalLabConfigureChannelFeatureRequestSchema,
+  signalLabConfigureCustomWaveformFeatureRequestSchema,
 ]);
 export type InstrumentFeatureRequest = z.infer<typeof instrumentFeatureRequestSchema>;
 
@@ -1082,6 +1095,7 @@ export const touchTapFeatureCommandSchema = touchTapFeatureRequestSchema.extend(
 export const diagnosticsReadFeatureCommandSchema = diagnosticsReadFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const signalLabSelectProfileFeatureCommandSchema = signalLabSelectProfileFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const signalLabConfigureChannelFeatureCommandSchema = signalLabConfigureChannelFeatureRequestSchema.extend(featureCommandSessionShape).strict();
+export const signalLabConfigureCustomWaveformFeatureCommandSchema = signalLabConfigureCustomWaveformFeatureRequestSchema.extend(featureCommandSessionShape).strict();
 export const instrumentFeatureCommandSchema = z.union([
   rfGeneratorConfigureFeatureCommandSchema,
   rfGeneratorOutputFeatureCommandSchema,
@@ -1090,6 +1104,7 @@ export const instrumentFeatureCommandSchema = z.union([
   diagnosticsReadFeatureCommandSchema,
   signalLabSelectProfileFeatureCommandSchema,
   signalLabConfigureChannelFeatureCommandSchema,
+  signalLabConfigureCustomWaveformFeatureCommandSchema,
 ]);
 export type InstrumentFeatureCommand = z.infer<typeof instrumentFeatureCommandSchema>;
 
@@ -1151,6 +1166,10 @@ export const signalLabConfigureChannelFeatureResultSchema = signalLabConfigureCh
   ...featureResultSessionShape,
   producerConfigurationEpoch: instrumentOpaqueIdSchema,
 }).strict();
+export const signalLabConfigureCustomWaveformFeatureResultSchema = signalLabConfigureCustomWaveformFeatureRequestSchema.extend({
+  ...featureResultSessionShape,
+  producerConfigurationEpoch: instrumentOpaqueIdSchema,
+}).strict();
 export const instrumentFeatureResultSchema = z.union([
   rfGeneratorConfigureFeatureResultSchema,
   rfGeneratorOutputFeatureResultSchema,
@@ -1159,6 +1178,7 @@ export const instrumentFeatureResultSchema = z.union([
   diagnosticsReadFeatureResultSchema,
   signalLabSelectProfileFeatureResultSchema,
   signalLabConfigureChannelFeatureResultSchema,
+  signalLabConfigureCustomWaveformFeatureResultSchema,
 ]);
 export type InstrumentFeatureResult = z.infer<typeof instrumentFeatureResultSchema>;
 

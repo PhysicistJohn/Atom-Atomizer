@@ -213,7 +213,9 @@ class InProcessSignalLabSession implements InstrumentSession {
       const previousEpoch = this.#status.configurationRevision;
       const status = command.action === 'select-profile'
         ? this.#service.selectProfile({ profile: command.profileId })
-        : this.#service.configureChannel({ channel: command.channel });
+        : command.action === 'configure-channel'
+          ? this.#service.configureChannel({ channel: command.channel })
+          : this.#service.configureCustomWaveform({ standard: command.standard, selections: command.selections });
       if (command.action === 'select-profile' && status.profile !== command.profileId) {
         throw new Error('SignalLab did not acknowledge the selected profile');
       }
@@ -223,21 +225,32 @@ class InProcessSignalLabSession implements InstrumentSession {
       this.#status = status;
       this.#provenance = this.#buildProvenance();
       this.#capabilities = this.#buildCapabilities();
-      return command.action === 'select-profile'
-        ? parseInstrumentFeatureResult({
-            sessionId: this.sessionId,
-            kind: 'signal-lab-profile-selection',
-            action: 'select-profile',
-            profileId: command.profileId,
-            producerConfigurationEpoch: status.configurationRevision,
-          })
-        : parseInstrumentFeatureResult({
-            sessionId: this.sessionId,
-            kind: 'signal-lab-profile-selection',
-            action: 'configure-channel',
-            channel: command.channel,
-            producerConfigurationEpoch: status.configurationRevision,
-          });
+      if (command.action === 'select-profile') {
+        return parseInstrumentFeatureResult({
+          sessionId: this.sessionId,
+          kind: 'signal-lab-profile-selection',
+          action: 'select-profile',
+          profileId: command.profileId,
+          producerConfigurationEpoch: status.configurationRevision,
+        });
+      }
+      if (command.action === 'configure-channel') {
+        return parseInstrumentFeatureResult({
+          sessionId: this.sessionId,
+          kind: 'signal-lab-profile-selection',
+          action: 'configure-channel',
+          channel: command.channel,
+          producerConfigurationEpoch: status.configurationRevision,
+        });
+      }
+      return parseInstrumentFeatureResult({
+        sessionId: this.sessionId,
+        kind: 'signal-lab-profile-selection',
+        action: 'configure-custom-waveform',
+        standard: command.standard,
+        selections: command.selections,
+        producerConfigurationEpoch: status.configurationRevision,
+      });
     }
     // Defensive teardown callers may ask every instrument to make RF safe.
     // SignalLab has no RF path, so an explicit off request is a safe no-op.

@@ -601,7 +601,9 @@ function signalLabFeatureExecution(
         features: session.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
           ? request.action === 'select-profile'
             ? { ...feature, selectedProfileId: request.profileId }
-            : { ...feature, channel: request.channel }
+            : request.action === 'configure-channel'
+              ? { ...feature, channel: request.channel }
+              : feature
           : feature),
       },
     },

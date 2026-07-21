@@ -657,7 +657,11 @@ export class InstrumentManager {
         active.producerConfigurationEpoch = result.producerConfigurationEpoch;
         active.capabilities = request.action === 'select-profile'
           ? withSelectedSignalLabProfile(active.capabilities, request.profileId)
-          : withSignalLabChannel(active.capabilities, request.channel);
+          : request.action === 'configure-channel'
+            ? withSignalLabChannel(active.capabilities, request.channel)
+            // Custom-waveform selections change only the descriptor content, not
+            // the capability surface shape; the driver refreshed its own status.
+            : active.capabilities;
       } else if (request.kind === 'rf-generator') {
         if (request.action === 'configure') {
           await this.#acknowledgeRfOutputOff(
@@ -1348,10 +1352,17 @@ function assertFeatureResult(
       || result.profileId !== request.profileId) {
       throw new InstrumentManagerError('driver-contract', 'SignalLab profile result does not match the request');
     }
+  } else if (request.action === 'configure-channel') {
+    if (result.kind !== 'signal-lab-profile-selection'
+      || result.action !== 'configure-channel'
+      || !structuralEqual(result.channel, request.channel)) {
+      throw new InstrumentManagerError('driver-contract', 'SignalLab channel result does not match the request');
+    }
   } else if (result.kind !== 'signal-lab-profile-selection'
-    || result.action !== 'configure-channel'
-    || !structuralEqual(result.channel, request.channel)) {
-    throw new InstrumentManagerError('driver-contract', 'SignalLab channel result does not match the request');
+    || result.action !== 'configure-custom-waveform'
+    || result.standard !== request.standard
+    || !structuralEqual(result.selections, request.selections)) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab custom-waveform result does not match the request');
   }
 }
 

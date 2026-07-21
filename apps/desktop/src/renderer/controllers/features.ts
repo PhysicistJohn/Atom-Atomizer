@@ -46,6 +46,22 @@ export class FeaturesController {
     } catch (value) { k.set({ error: `SignalLab channel configuration failed: ${errorMessage(value)}` }); }
   }
 
+  async configureSignalLabCustomWaveform(standard: 'lte' | 'nr' | 'wifi', selections: Readonly<Record<string, string>>): Promise<void> {
+    const k = this.k;
+    try {
+      await k.acquisition.runInstrumentTransaction('configure-signal-lab-custom-waveform', () => k.acquisition.runWithContinuousPaused(
+        'SignalLab custom waveform configuration',
+        () => k.events.executeInstrumentFeature({
+          kind: 'signal-lab-profile-selection',
+          action: 'configure-custom-waveform',
+          standard,
+          selections,
+        }),
+      ));
+      k.set({ notice: `Custom ${standard.toUpperCase()} waveform configured` });
+    } catch (value) { k.set({ error: `Custom waveform configuration failed: ${errorMessage(value)}` }); }
+  }
+
   configureGeneratorWith(config: GeneratorConfig) {
     return this.k.acquisition.runInstrumentTransaction('configure-rf-generator', () => this.k.acquisition.runWithContinuousPaused(
       'generator configuration',

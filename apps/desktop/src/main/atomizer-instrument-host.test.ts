@@ -791,7 +791,11 @@ class FakeManager {
     }
     if (request.kind !== 'signal-lab-profile-selection') throw new Error('unsupported fixture feature');
     if (this.session.provenance.sourceKind !== 'signal-lab') throw new Error('fixture session is not SignalLab');
-    const epochSuffix = request.action === 'select-profile' ? request.profileId : `channel-${request.channel.seed}`;
+    const epochSuffix = request.action === 'select-profile'
+      ? request.profileId
+      : request.action === 'configure-channel'
+        ? `channel-${request.channel.seed}`
+        : `custom-${request.standard}`;
     const result: InstrumentFeatureResult = {
       ...request,
       sessionId: this.session.sessionId,
@@ -800,7 +804,9 @@ class FakeManager {
     const features = this.session.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
       ? request.action === 'select-profile'
         ? { ...feature, selectedProfileId: request.profileId }
-        : { ...feature, channel: request.channel }
+        : request.action === 'configure-channel'
+          ? { ...feature, channel: request.channel }
+          : feature
       : feature);
     const { configuration: _configuration, ...withoutConfiguration } = this.session;
     this.session = {

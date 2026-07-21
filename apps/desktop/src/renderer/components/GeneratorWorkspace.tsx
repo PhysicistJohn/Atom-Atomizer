@@ -8,7 +8,7 @@ import { EditableParameter, SelectParameter } from './ParameterRow.js';
 type RfGeneratorCapability = Extract<InstrumentFeatureCapability, { kind: 'rf-generator' }>;
 type SignalLabProfileCapability = Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
 
-export function GeneratorWorkspace({ config, capability, signalLabProfiles, selectedSignalLabProfile, selectedSignalLabChannel, output, busy, onChange, onApply, onOutput, onSignalLabProfile, onSignalLabChannel }: {
+export function GeneratorWorkspace({ config, capability, signalLabProfiles, selectedSignalLabProfile, selectedSignalLabChannel, output, busy, onChange, onApply, onOutput, onSignalLabProfile, onSignalLabChannel, onSignalLabCustomWaveform }: {
   config: GeneratorConfig;
   capability?: RfGeneratorCapability;
   signalLabProfiles?: SignalLabProfileCapability;
@@ -21,6 +21,7 @@ export function GeneratorWorkspace({ config, capability, signalLabProfiles, sele
   onOutput(enabled: boolean): void;
   onSignalLabProfile(profileId: string): void;
   onSignalLabChannel?(channel: SignalLabChannelState): void;
+  onSignalLabCustomWaveform?(standard: 'lte' | 'nr' | 'wifi', selections: Readonly<Record<string, string>>): void;
 }) {
   if (signalLabProfiles) return <SignalLabGenerationWorkspace
     capability={signalLabProfiles}
@@ -29,6 +30,7 @@ export function GeneratorWorkspace({ config, capability, signalLabProfiles, sele
     busy={busy}
     onProfile={onSignalLabProfile}
     onChannel={onSignalLabChannel}
+    onCustomWaveform={onSignalLabCustomWaveform}
   />;
 
   const on = output === 'on';
@@ -87,13 +89,14 @@ export function GeneratorWorkspace({ config, capability, signalLabProfiles, sele
   </div>;
 }
 
-function SignalLabGenerationWorkspace({ capability, selectedProfile, selectedChannel, busy, onProfile, onChannel }: {
+function SignalLabGenerationWorkspace({ capability, selectedProfile, selectedChannel, busy, onProfile, onChannel, onCustomWaveform }: {
   capability: SignalLabProfileCapability;
   selectedProfile?: string;
   selectedChannel?: SignalLabChannelState;
   busy: boolean;
   onProfile(profileId: string): void;
   onChannel?(channel: SignalLabChannelState): void;
+  onCustomWaveform?(standard: 'lte' | 'nr' | 'wifi', selections: Readonly<Record<string, string>>): void;
 }) {
   const projection = projectSignalLabStudioStatus(capability, selectedProfile, selectedChannel);
   return <SignalLabStudio
@@ -107,6 +110,7 @@ function SignalLabGenerationWorkspace({ capability, selectedProfile, selectedCha
     agentControlPolicy="human-only"
     onSelectProfile={onProfile}
     onConfigureChannel={(channel) => onChannel?.(channel)}
+    onConfigureCustomWaveform={onCustomWaveform}
   />;
 }
 

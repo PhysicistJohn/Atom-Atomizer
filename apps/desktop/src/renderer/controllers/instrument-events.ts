@@ -217,9 +217,11 @@ export class InstrumentEventsController {
       const active = k.state.instrument.session;
       if (result.action === 'select-profile') {
         if (active) this.initializeSessionSelection(active, result.profileId, k.state.selectedSignalLabChannel);
-      } else {
+      } else if (result.action === 'configure-channel') {
         k.set({ selectedSignalLabChannel: result.channel });
       }
+      // configure-custom-waveform changes only the producer-side descriptor;
+      // the refreshed session status carries the updated waveform.
     }
   }
 
