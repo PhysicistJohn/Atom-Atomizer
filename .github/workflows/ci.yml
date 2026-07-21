@@ -9,22 +9,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # Both real jobs need the private Atom-Classifier sibling. Until the
-  # ATOMOS_CLASSIFIER_READ_TOKEN repo secret exists (fine-grained PAT with
-  # read access to PhysicistJohn/Atom-Classifier), they skip cleanly instead
-  # of failing at checkout on every push. The secrets context is not legal in
-  # a job-level if, so a one-step gate job exports its presence.
-  classifier-token-gate:
-    runs-on: ubuntu-latest
-    outputs:
-      present: ${{ steps.probe.outputs.present }}
-    steps:
-      - id: probe
-        run: echo "present=${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN != '' }}" >> "$GITHUB_OUTPUT"
-
+  # Both jobs check out the Atom-SignalLab and Atom-Classifier siblings. Both
+  # are public, so the default GITHUB_TOKEN covers the checkouts and no PAT
+  # or gate job is needed (a prior ATOMOS_CLASSIFIER_READ_TOKEN gate silently
+  # skipped every run of this workflow from when Atom-Classifier went public
+  # until this comment).
   verify:
-    needs: classifier-token-gate
-    if: needs.classifier-token-gate.outputs.present == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -42,14 +32,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: aa96c11fe3fa2a7c1e91e3c65be8ca61e77f631e
+          ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
+          ref: 2e7f496a43268091f0e1248db5b97bc22753240d
           path: Atom-Classifier
-          token: ${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -79,8 +69,6 @@ jobs:
       - run: npm audit --audit-level=high
 
   signal-lab-interop:
-    needs: classifier-token-gate
-    if: needs.classifier-token-gate.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -93,14 +81,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: aa96c11fe3fa2a7c1e91e3c65be8ca61e77f631e
+          ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
+          ref: 2e7f496a43268091f0e1248db5b97bc22753240d
           path: Atom-Classifier
-          token: ${{ secrets.ATOMOS_CLASSIFIER_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
