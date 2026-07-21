@@ -22,7 +22,7 @@
     "check:firmware-twin": "node tools/smoke-firmware-twin.mjs",
     "train:signal-classifier": "npm --prefix ../Atom-Classifier run train:signal-classifier",
     "check:bayesian-detector": "tsup tools/validate-bayesian-detector.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/validate-bayesian-detector.js",
-    "check": "npm run check:launcher && npm run typecheck && npm run build && npm test",
+    "check": "npm run check:launcher && npm run build && npm run typecheck && npm test",
     "smoke:desktop": "node tools/smoke/desktop-smoke.mjs",
     "smoke:web": "node tools/smoke/web-smoke.mjs"
   },

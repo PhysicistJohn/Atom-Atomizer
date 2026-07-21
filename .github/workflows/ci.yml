@@ -57,14 +57,21 @@ jobs:
           npm --version
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
-      - name: Install SignalLab runtime dependencies
+      - name: Install SignalLab dependencies
         working-directory: Atom-SignalLab
-        run: npm ci --omit=dev --ignore-scripts
+        # NOT --omit=dev: apps/desktop's typecheck compiles SignalLab's .tsx
+        # source directly (cross-repo import), which needs @types/react -- a
+        # SignalLab devDependency.
+        run: npm ci --ignore-scripts
       - name: Install Atomizer
         run: npm ci
       - run: npm run check:launcher
+      - name: Build (workspace packages first)
+        # apps/desktop imports the other @tinysa/* workspace packages as
+        # built output (their package.json "types"/"exports" point at dist/),
+        # so typecheck must run after this, not before.
+        run: npm run build
       - run: npm run typecheck
-      - run: npm run build
       - run: npm test
       - run: npm audit --audit-level=high
 
