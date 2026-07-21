@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
 import { decodeComplexIqChannels, previewComplexIq } from '../complex-iq.js';
 import { classifyIqModulation, recoverIqConstellation, type ModulationClassification, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
+import { useLatchedModulation } from '../latched-modulation.js';
 import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, useStore } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
@@ -37,15 +38,17 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
   // capture is current). Decoding + the zero-dependency embedding forward pass
   // run off the render path, keyed on capture identity; only the compact result
   // crosses into JSX. The last good result is held across a transient failure so
-  // the readout doesn't flicker during a Run.
-  const [modulation, setModulation] = useState<ModulationClassification | undefined>(undefined);
+  // the readout doesn't flicker during a Run. Per-capture results feed a rolling
+  // latch (see below) so the displayed class is the dominant one over ~the last
+  // second, not a jittery frame-by-frame identification.
+  const [rawModulation, setRawModulation] = useState<ModulationClassification | undefined>(undefined);
   // Blind-recovered symbol constellation (equalize + carrier lock), computed
   // from the same decoded prefix. Shown when it resolves distinct symbols.
   const [recovered, setRecovered] = useState<RecoveredConstellation | undefined>(undefined);
   const captureId = capture?.measurementId;
   const captureBandwidthHz = s.iqConfiguration.bandwidthHz;
   useEffect(() => {
-    if (!capture) { setModulation(undefined); setRecovered(undefined); return; }
+    if (!capture) { setRawModulation(undefined); setRecovered(undefined); return; }
     let cancelled = false;
     try {
       // Recovery needs enough symbols to populate a dense high-order grid (256-QAM
@@ -56,12 +59,16 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
       const { re, im } = decodeComplexIqChannels(capture, 16_384);
       try { setRecovered(recoverIqConstellation(re, im)); } catch { /* keep the last recovery */ }
       classifyIqModulation(re.subarray(0, 4_096), im.subarray(0, 4_096), captureBandwidthHz)
-        .then((result) => { if (!cancelled) setModulation(result); })
+        .then((result) => { if (!cancelled) setRawModulation(result); })
         .catch(() => { /* keep the last result through a transient decode/inference error */ });
     } catch { /* keep the last result */ }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureId]);
+
+  // Latch the readout to the dominant class over a rolling ~1s window so a Run
+  // shows a stable identification instead of flickering between frames.
+  const modulation = useLatchedModulation(rawModulation, capture !== undefined);
 
   return <IqWorkspace
     configuration={s.iqConfiguration}
