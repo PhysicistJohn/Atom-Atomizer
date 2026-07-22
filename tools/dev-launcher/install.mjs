@@ -16,7 +16,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 // through a compatibility symlink such as ../TinySA. This keeps logs, Vite
 // source identities, and future reinstalls bound to Atom-Atomizer itself.
 const repoRoot = realpathSync(resolve(here, '..', '..'));
-const sourceApp = join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app');
+// Electron is a dependency of the desktop workspace. npm's pinned workspace
+// layout intentionally installs it below apps/desktop rather than hoisting it
+// to the repository root.
+const sourceApp = join(repoRoot, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'Electron.app');
 const destination = join(homedir(), 'Applications', `${APP_NAME}.app`);
 const plistBuddy = '/usr/libexec/PlistBuddy';
 const launchServices = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';

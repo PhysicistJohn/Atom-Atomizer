@@ -542,7 +542,9 @@ interface PendingIqBuffer {
   readonly id: string;
 }
 
-function mockDeferredSignalLabIqBuffers(): PendingIqBuffer[] {
+function mockDeferredSignalLabIqBuffers(
+  producerConfigurationEpoch: () => string = () => 'producer-epoch:1',
+): PendingIqBuffer[] {
   mockConnectedInstrument(signalLabIqSession);
   const pending: PendingIqBuffer[] = [];
   vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
@@ -556,8 +558,17 @@ function mockDeferredSignalLabIqBuffers(): PendingIqBuffer[] {
     };
   });
   vi.mocked(window.atomizerInstrument.acquire).mockImplementation(() => {
+    if (activeConfiguration.kind === 'swept-spectrum') {
+      return Promise.resolve(signalLabStreamingMeasurement(
+        activeConfiguration,
+        `global-spectrum-${measurementSequence + 1}`,
+        configurationRevision,
+        producerConfigurationEpoch(),
+        true,
+      ));
+    }
     if (activeConfiguration.kind !== 'complex-iq') {
-      return Promise.reject(new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`));
+      return Promise.reject(new Error(`Expected global spectrum or complex-I/Q configuration, received ${activeConfiguration.kind}`));
     }
     const capture = deferred<InstrumentMeasurement>();
     pending.push({
@@ -946,6 +957,11 @@ describe('operator vertical slice', () => {
       kind: 'signal-lab-profile-selection', action: 'configure-channel',
       channel: { ...DEFAULT_REPLAY_CHANNEL, model: 'rayleigh' },
     }));
+    fireEvent.change(screen.getByLabelText('Receiver I/Q impairment'), { target: { value: 'multipath' } });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledWith({
+      kind: 'signal-lab-profile-selection', action: 'configure-channel',
+      channel: { ...DEFAULT_REPLAY_CHANNEL, model: 'rayleigh', receiverImpairment: 'multipath' },
+    }));
     fireEvent.click(within(navigation).getByRole('button', { name: /Spectrum/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
     const selectedFm = signalLabProfiles.find(({ profileId }) => profileId === 'fm')!;
@@ -967,7 +983,7 @@ describe('operator vertical slice', () => {
     }
   });
 
-  it('routes sidebar Single to one bounded I/Q capture without a redundant panel action', async () => {
+  it('routes sidebar Single to one global I/Q and spectrum analysis frame', async () => {
     mockConnectedInstrument(signalLabIqSession);
     vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
       activeConfiguration = structuredClone(configuration);
@@ -975,8 +991,13 @@ describe('operator vertical slice', () => {
       return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
     });
     vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
-      if (activeConfiguration.kind !== 'complex-iq') throw new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`);
-      return complexIqMeasurement(activeConfiguration, configurationRevision, 'iq-single-1');
+      if (activeConfiguration.kind === 'complex-iq') {
+        return complexIqMeasurement(activeConfiguration, configurationRevision, 'iq-single-1');
+      }
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        return signalLabStreamingMeasurement(activeConfiguration, 'spectrum-single-1', configurationRevision, 'producer-epoch:1', true);
+      }
+      throw new Error(`Expected global spectrum or complex-I/Q configuration, received ${activeConfiguration.kind}`);
     });
 
     render(<App/>);
@@ -987,35 +1008,13 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Single$/i }));
 
     await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'complex-iq' })));
-    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Capture iq-single-1/i)).toBeTruthy();
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
   });
 
-  it('runs one backpressured I/Q buffer at a time, stages live edits, and stops after the in-flight buffer', async () => {
-    mockConnectedInstrument(signalLabIqSession);
-    const pending: Array<{
-      readonly capture: ReturnType<typeof deferred<InstrumentMeasurement>>;
-      readonly configuration: Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
-      readonly revision: string;
-      readonly id: string;
-    }> = [];
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
-    });
-    vi.mocked(window.atomizerInstrument.acquire).mockImplementation(() => {
-      if (activeConfiguration.kind !== 'complex-iq') return Promise.reject(new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`));
-      const capture = deferred<InstrumentMeasurement>();
-      pending.push({
-        capture,
-        configuration: structuredClone(activeConfiguration),
-        revision: configurationRevision,
-        id: `iq-buffer-${pending.length + 1}`,
-      });
-      return capture.promise;
-    });
+  it('runs one backpressured global frame at a time, stages live edits, and stops after the in-flight I/Q buffer', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
 
     render(<App/>);
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
@@ -1025,7 +1024,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(pending).toHaveLength(1));
     expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
-    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
 
     const editCenter = screen.getByLabelText('Edit Center frequency');
     expect(editCenter.hasAttribute('disabled')).toBe(false);
@@ -1041,7 +1040,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(pending).toHaveLength(2));
     expect(pending[1]?.configuration.centerHz).toBe(101_000_000);
     expect(document.body.textContent).not.toContain('iq-buffer-1');
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     expect(screen.getByRole('button', { name: /Stopping/i }).hasAttribute('disabled')).toBe(true);
@@ -1051,12 +1050,12 @@ describe('operator vertical slice', () => {
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
     await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
     expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain('iq-buffer-2');
   });
 
-  it('retargets an I/Q Run to a live spectrum stream when the operator leaves the I/Q workspace', async () => {
+  it('keeps the global I/Q and detector run alive when the operator changes workspaces', async () => {
     const pending = mockDeferredSignalLabIqBuffers();
 
     render(<App/>);
@@ -1065,40 +1064,44 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(pending).toHaveLength(1));
-    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
 
-    // Run follows the operator: leaving I/Q drains the in-flight bounded
-    // buffer, then the same Run continues as a live spectrum stream.
+    // Workspaces are projections only. Leaving I/Q must not retarget, stop,
+    // or restart the source-capability-driven global acquisition loop.
     fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
     await act(async () => {
       const first = pending[0]!;
       first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
     });
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
-    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
-    expect(pending).toHaveLength(1);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
+    await act(async () => {
+      const second = pending[1]!;
+      second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
+    });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
   });
 
-  it('retargets a spectrum Run to live bounded I/Q buffers when the operator enters the I/Q workspace', async () => {
+  it('starts the same global I/Q and detector run from the Spectrum workspace', async () => {
     const pending = mockDeferredSignalLabIqBuffers();
 
     render(<App/>);
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
-    expect(screen.getByText(/Running spectrum/i)).toBeTruthy();
-
-    // Run follows the operator: entering I/Q stops the spectrum stream and
-    // continues the same Run as one-at-a-time bounded I/Q buffers.
-    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
     await waitFor(() => expect(pending).toHaveLength(1));
-    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+
+    // Entering I/Q reveals the already-running data; it does not create it.
+    fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
 
     await act(async () => {
       const first = pending[0]!;
@@ -1114,7 +1117,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
   });
 
-  it('retargets an active spectrum Run to live I/Q when Atom navigates to the I/Q workspace', async () => {
+  it('keeps global acquisition unchanged when Atom navigates to the I/Q view', async () => {
     const pending = mockDeferredSignalLabIqBuffers();
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
@@ -1128,7 +1131,7 @@ describe('operator vertical slice', () => {
     render(<App/>);
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
 
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
     fireEvent.change(composer, { target: { value: 'Open and inspect I/Q without stopping Run.' } });
@@ -1147,12 +1150,10 @@ describe('operator vertical slice', () => {
         ]),
       },
     });
-    // Run follows the workspace regardless of who navigated: Atom entering
-    // I/Q retargets the spectrum stream to live bounded I/Q buffers.
-    await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
-    await waitFor(() => expect(pending).toHaveLength(1));
-    expect(screen.getByText(/Running I\/Q/i)).toBeTruthy();
-    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    // Atom navigation is the same read-only projection change as a human tab.
+    expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     await act(async () => {
@@ -1190,8 +1191,13 @@ describe('operator vertical slice', () => {
       return { sessionId: signalLabIqSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
     });
     vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
-      if (activeConfiguration.kind !== 'complex-iq') throw new Error(`Expected complex-I/Q configuration, received ${activeConfiguration.kind}`);
-      return complexIqMeasurement(activeConfiguration, configurationRevision, 'agent-iq-single');
+      if (activeConfiguration.kind === 'complex-iq') {
+        return complexIqMeasurement(activeConfiguration, configurationRevision, 'agent-iq-single');
+      }
+      if (activeConfiguration.kind === 'swept-spectrum') {
+        return signalLabStreamingMeasurement(activeConfiguration, 'agent-spectrum-single', configurationRevision, 'producer-epoch:1', true);
+      }
+      throw new Error(`Expected global spectrum or complex-I/Q configuration, received ${activeConfiguration.kind}`);
     });
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
@@ -1317,32 +1323,17 @@ describe('operator vertical slice', () => {
     expect(await screen.findByRole('button', { name: /^Run$/i })).toBeTruthy();
   });
 
-  it('publishes one advancing global sweep identity across every non-Spectrum Run route', async () => {
-    mockConnectedInstrument(signalLabIqSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return {
-        sessionId: signalLabIqSession.sessionId,
-        configurationRevision,
-        configuration,
-        configuredAt: '2026-07-10T00:00:00.000Z',
-      };
-    });
+  it('publishes advancing global I/Q and detector evidence across every workspace', async () => {
+    const pending = mockDeferredSignalLabIqBuffers();
 
     render(<App/>);
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
-    if (activeConfiguration.kind !== 'swept-spectrum') throw new Error('Expected spectrum Run configuration');
-    const streamingConfiguration = structuredClone(activeConfiguration);
-    const streamingRevision = configurationRevision;
+    await waitFor(() => expect(pending).toHaveLength(1));
     const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
 
-    // I/Q is intentionally absent: entering it retargets a Run to bounded
-    // I/Q buffers, so it is no longer a spectrum-stream route.
-    for (const route of ['Waterfall', 'Channel', 'Device'] as const) {
+    for (const [index, route] of (['Waterfall', 'Channel', 'I/Q', 'Detect', 'Generate', 'Device'] as const).entries()) {
       fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${route.replace('/', '\\/')}$`, 'i') }));
       if (route === 'Waterfall') {
         await screen.findByLabelText(/Measured power by frequency and sweep time/i);
@@ -1350,32 +1341,40 @@ describe('operator vertical slice', () => {
       } else if (route === 'Channel') {
         await screen.findByText(/Channel setup/i);
         expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+      } else if (route === 'I/Q') {
+        await screen.findByRole('region', { name: /Complex I\/Q workspace/i });
+      } else if (route === 'Detect') {
+        await screen.findByText(/Modulation classifier/i);
+      } else if (route === 'Generate') {
+        await screen.findByRole('navigation', { name: /Waveform families/i });
       } else {
         await screen.findByText(/Instrument source/i);
         expect((screen.getByRole('combobox', { name: 'SignalLab profile' }) as HTMLSelectElement).disabled)
           .toBe(false);
       }
-      const measurement = signalLabStreamingMeasurement(
-        streamingConfiguration,
-        `route-${route}`,
-        streamingRevision,
-        'producer-epoch:1',
-        true,
-      );
       await act(async () => {
-        instrumentEventListener?.({ type: 'measurement', measurement });
+        const buffer = pending[index]!;
+        buffer.capture.resolve(complexIqMeasurement(buffer.configuration, buffer.revision, buffer.id));
       });
-      await waitFor(() => expect(acquisition.getAttribute('aria-description')).toBe(
-        `DEV ACQUISITION LANDMARK; controls=Stop; sweepId=${measurement.measurementId}; sequence=${measurement.sequence}`,
-      ));
+      await waitFor(() => expect(acquisition.getAttribute('aria-description')).toMatch(/sweepId=global-spectrum-/));
+      await waitFor(() => expect(pending).toHaveLength(index + 2));
       expect(within(acquisition).getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+      expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+      expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
     }
+
+    fireEvent.click(within(acquisition).getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const buffer = pending.at(-1)!;
+      buffer.capture.resolve(complexIqMeasurement(buffer.configuration, buffer.revision, buffer.id));
+    });
+    await waitFor(() => expect(within(acquisition).getByRole('button', { name: /^Run$/i })).toBeTruthy());
   });
 
   it('pauses bounded I/Q at buffer boundaries for SignalLab profile and channel changes, then resumes', async () => {
-    const pending = mockDeferredSignalLabIqBuffers();
     let featureSession = signalLabIqSession;
     let producerEpoch = 1;
+    const pending = mockDeferredSignalLabIqBuffers(() => `producer-epoch:${producerEpoch}`);
     vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
       if (request.kind !== 'signal-lab-profile-selection') {
         throw new Error(`Feature ${request.kind} not mocked`);
@@ -1419,7 +1418,7 @@ describe('operator vertical slice', () => {
     });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(pending).toHaveLength(3));
-    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(3);
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(5);
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
@@ -1428,7 +1427,7 @@ describe('operator vertical slice', () => {
       third.capture.resolve(complexIqMeasurement(third.configuration, third.revision, third.id));
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
   });
 
   it('admits Stop while an I/Q profile change owns the foreground transaction and never resumes', async () => {
@@ -1520,7 +1519,7 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
 
-    expect(await screen.findByText(/Continuous I\/Q acquisition failed: I\/Q transport failed/i)).toBeTruthy();
+    expect(await screen.findByText(/Global analysis acquisition failed: I\/Q transport failed/i)).toBeTruthy();
     await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
     expect(window.atomizerInstrument.configure).toHaveBeenCalledOnce();
     expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
@@ -1567,7 +1566,7 @@ describe('operator vertical slice', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     fireEvent.click(within(navigation).getByRole('button', { name: navigationName }));
     const profile = activeWorkspace === 'generator'
-      ? await screen.findByRole('button', { name: /^CW carrier/i })
+      ? await screen.findByRole('button', { name: /^Continuous wave \(CW\)/i })
       : await screen.findByRole('combobox', { name: /SignalLab profile/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(profile.closest('[data-agent-control]')).toBeNull();

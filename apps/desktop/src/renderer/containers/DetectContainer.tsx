@@ -1,80 +1,29 @@
-import { useEffect, useState } from 'react';
 import { DetectWorkspace } from '../components/DetectWorkspace.js';
-import { decodeComplexIqChannels } from '../complex-iq.js';
-import { classifyIqModulation, classifyScalarSweep, type ModulationClassification } from '../embedding-classifier-runtime.js';
-import { selectClassificationInput } from '../classification-input-selection.js';
-import { selectBusy, selectDetectedPowerCapability, selectIqCapability, useStore } from '../store.js';
+import { selectBusy, selectDetectedPowerCapability, useStore } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
 /**
- * The Detect panel: the embedding modulation classifier, in whichever flavor the
- * connected instrument supports, plus the shared signal-detector settings and
- * detected-power envelope capture. Complex-I/Q instruments (SDR / SignalLab) get
- * the I/Q flavor off `iqCapture`; scalar analyzers (tinySA) get the magnitude
- * flavor off the swept spectrum + the strongest detected signal. Inference is a
- * dynamic-imported, zero-dependency forward pass, run off the render path in an
- * effect keyed on the input identity so the multi-megabyte payloads never become
- * React props.
+ * Read-only projection of the application-global detector and classification
+ * pipeline. Mounting or unmounting this workspace never starts acquisition,
+ * selects an evidence flavor, or creates classifier work.
  */
 export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
   const s = useStore(runtime.store, (state) => state);
   const { acquisition, kernel } = runtime;
   const connected = s.instrument.session !== undefined;
   const busy = selectBusy(s, kernel.instrumentTransactionOwner.current);
-  const iqCapable = selectIqCapability(s) !== undefined;
-  const capture = s.iqCapture;
-  const sweep = s.sweep;
-  const captureBandwidthHz = s.iqConfiguration.bandwidthHz;
-
-  // The strongest live detection is both the magnitude classifier's target and
-  // the detected-power envelope-capture target (the capture itself auto-resolves
-  // the visible target; this drives the display + the classify input).
   const target = s.detections
-    .filter((d) => d.state !== 'released')
-    .reduce<(typeof s.detections)[number] | undefined>((best, d) => (best && best.peakDbm >= d.peakDbm ? best : d), undefined);
-
-  // The Detect workspace runs scalar sweeps. Prefer a newer sweep over a
-  // retained I/Q capture so Run continuously refreshes its classification;
-  // a newer I/Q acquisition takes priority again when the operator captures it.
-  const { source, key: classifyKey } = selectClassificationInput({
-    iqCapable,
-    capture,
-    sweep,
-    target,
-  });
-
-  const [modulation, setModulation] = useState<ModulationClassification | undefined>(undefined);
-  const [pending, setPending] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    const done = (result?: ModulationClassification) => {
-      if (!cancelled) { setModulation(result); setPending(false); }
-    };
-    if (source === 'iq' && capture) {
-      setPending(true);
-      try {
-        const { re, im } = decodeComplexIqChannels(capture);
-        classifyIqModulation(re, im, captureBandwidthHz).then(done).catch(() => done(undefined));
-      } catch { done(undefined); }
-    } else if (source === 'scalar' && sweep && target) {
-      setPending(true);
-      classifyScalarSweep(sweep.powerDbm, sweep.frequencyHz, target.peakHz, target.bandwidthHz)
-        .then(done)
-        .catch(() => done(undefined));
-    } else {
-      setModulation(undefined);
-      setPending(false);
-    }
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classifyKey]);
+    .filter((detection) => detection.state !== 'released')
+    .reduce<(typeof s.detections)[number] | undefined>((strongest, detection) =>
+      strongest && strongest.peakDbm >= detection.peakDbm ? strongest : detection, undefined);
 
   return <DetectWorkspace
-    modulation={modulation}
-    pending={pending}
-    source={source}
-    sweep={sweep}
+    modulation={s.classification.result}
+    pending={s.classification.pending}
+    source={s.classification.source}
+    live={s.continuous}
+    evidenceLooks={s.classification.evidenceLooks}
+    sweep={s.sweep}
     detectionConfig={s.detectionConfig}
     detectorBusy={busy}
     onDetectionConfig={(config) => kernel.applyDetectionConfiguration(config)}

@@ -1357,7 +1357,18 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .waterfall-console { grid-column: 1; grid-row: 2; }
   .analysis-axis-footer { grid-column: 1; grid-row: 3; padding-left: 52px; border-right: 0; }
   .channel-analysis-view { grid-template-columns: minmax(0, 1fr); }
-  .channel-visual { min-height: 320px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .channel-visual {
+    min-height: 320px;
+    grid-template-rows: minmax(300px, 56dvh) auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .channel-results > div {
+    min-height: 92px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .channel-results > div:last-child { border-bottom: 0; }
 
   /* (The SignalLab channel-model config stacks itself on narrow screens via its
      own module @media rule -- see SignalLabStudio.module.css. No override here.) */

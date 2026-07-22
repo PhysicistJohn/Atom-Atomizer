@@ -563,7 +563,7 @@ describe('instrument boundary contracts', () => {
     const channelRequest = {
       kind: 'signal-lab-profile-selection' as const,
       action: 'configure-channel' as const,
-      channel: { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5 },
+      channel: { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5, receiverImpairment: 'phase-noise' as const },
     };
     expect(instrumentFeatureRequestSchema.parse(channelRequest)).toEqual(channelRequest);
     expect(instrumentFeatureCommandSchema.parse({ ...channelRequest, sessionId: 'session:opaque' }))
@@ -580,6 +580,10 @@ describe('instrument boundary contracts', () => {
     expect(instrumentFeatureRequestSchema.safeParse({
       ...channelRequest,
       channel: { ...channelRequest.channel, noiseFloorDbm: -151 },
+    }).success).toBe(false);
+    expect(instrumentFeatureRequestSchema.safeParse({
+      ...channelRequest,
+      channel: { ...channelRequest.channel, receiverImpairment: 'unbounded-custom-chain' },
     }).success).toBe(false);
     expect(instrumentFeatureResultSchema.safeParse({
       ...request,

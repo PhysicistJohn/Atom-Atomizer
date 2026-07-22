@@ -24,6 +24,7 @@ export function Sidebar({
   output,
   generationAvailable,
   iqAvailable = false,
+  spectrumAvailable = false,
   connected,
   acquisition,
   continuous,
@@ -43,6 +44,7 @@ export function Sidebar({
   output: 'off'|'on'|'unknown';
   generationAvailable: boolean;
   iqAvailable?: boolean;
+  spectrumAvailable?: boolean;
   connected: boolean;
   acquisition: AcquisitionState;
   continuous: boolean;
@@ -59,8 +61,21 @@ export function Sidebar({
 }) {
   const acquiringSingle = !continuous && acquisition === 'acquiring';
   const iqAcquisition = acquisitionMode === 'complex-iq';
+  const globalAnalysisLabel = iqAcquisition
+    ? spectrumAvailable ? 'Global · I/Q + spectrum' : 'Global · I/Q'
+    : 'Global · spectrum';
+  const globalRunTitle = iqAcquisition
+    ? spectrumAvailable
+      ? 'Start global I/Q classification and spectrum detection'
+      : 'Start global I/Q classification'
+    : 'Start global spectrum detection and classification';
+  const globalSingleTitle = iqAcquisition
+    ? spectrumAvailable
+      ? 'Acquire one global I/Q and spectrum analysis frame'
+      : 'Acquire one global I/Q analysis frame'
+    : 'Acquire one global spectrum analysis frame';
   const acquisitionStatus = continuous
-    ? acquisition === 'stopping' ? 'Stopping' : acquisition === 'retuning' ? 'Retuning' : acquisitionMode === 'complex-iq' ? 'Running I/Q' : 'Running spectrum'
+    ? acquisition === 'stopping' ? 'Stopping global analysis' : acquisition === 'retuning' ? 'Retuning global analysis' : globalAnalysisLabel
     : acquiringSingle ? 'Collecting' : acquisition === 'configuring' ? 'Configuring' : connected ? 'Ready' : 'Offline';
   return <aside className="sidebar">
     <nav aria-label="Primary navigation">
@@ -87,10 +102,10 @@ export function Sidebar({
     >
       <div className="sidebar-acquisition-state" aria-live="polite"><i/><span>{acquisitionStatus}</span></div>
       {continuous
-        ? <button type="button" data-agent-control="acquisition.continuous.stop" className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop bounded I/Q buffer acquisition after the in-flight buffer' : 'Stop continuous spectrum acquisition'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>
+        ? <button type="button" data-agent-control="acquisition.continuous.stop" className="sidebar-acquisition-stop stop-acquisition" disabled={acquisition === 'stopping'} title={iqAcquisition ? 'Stop global analysis after the in-flight I/Q buffer' : 'Stop global spectrum analysis'} onClick={onStop}><StopCircle size={13}/><span>{acquisition === 'stopping' ? 'Stopping…' : 'Stop'}</span></button>
         : <div className="sidebar-acquisition-buttons">
-          <button type="button" data-agent-control="acquisition.continuous.start" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Run one-at-a-time bounded I/Q buffers' : 'Start continuous spectrum acquisition'} onClick={onRun}><Repeat2 size={13}/><span>Run</span></button>
-          <button type="button" data-agent-control="acquisition.single" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : iqAcquisition ? 'Acquire one bounded I/Q buffer' : 'Acquire one spectrum sweep'} onClick={onSingle}>{acquisitionBusy ? <LoaderCircle className="spin" size={13}/> : <Play size={13} fill="currentColor"/>}<span>{acquiringSingle ? 'Acquiring…' : 'Single'}</span></button>
+          <button type="button" data-agent-control="acquisition.continuous.start" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : globalRunTitle} onClick={onRun}><Repeat2 size={13}/><span>Run</span></button>
+          <button type="button" data-agent-control="acquisition.single" disabled={acquisitionDisabled} title={acquisitionDisabled ? acquisitionDisabledReason : globalSingleTitle} onClick={onSingle}>{acquisitionBusy ? <LoaderCircle className="spin" size={13}/> : <Play size={13} fill="currentColor"/>}<span>{acquiringSingle ? 'Acquiring…' : 'Single'}</span></button>
         </div>}
     </section>
   </aside>;

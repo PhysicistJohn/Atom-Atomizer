@@ -113,7 +113,7 @@ describe('desktop navigation and compact measurement layout', () => {
     const acquisition = within(view.container).getByRole('region', { name: 'Acquisition controls' });
     expect(acquisition.getAttribute('aria-description'))
       .toBe('DEV ACQUISITION LANDMARK; controls=Stop; sweepId=sweep-42; sequence=42');
-    expect(within(acquisition).getByText('Running spectrum')).toBeTruthy();
+    expect(within(acquisition).getByText('Global · spectrum')).toBeTruthy();
     expect(within(acquisition).queryByRole('button', { name: 'Run' })).toBeNull();
     expect(within(acquisition).queryByRole('button', { name: 'Single' })).toBeNull();
     view.rerender(<Sidebar

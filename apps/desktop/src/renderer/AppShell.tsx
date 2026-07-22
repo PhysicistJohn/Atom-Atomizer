@@ -8,13 +8,14 @@ import { useAtomAgent } from './useAtomAgent.js';
 import { DEVELOPMENT_RENDERER } from './development.js';
 import type { WorkspaceId } from './ui-contracts.js';
 import {
-  acquisitionModeForWorkspace,
+  acquisitionModeForSession,
   createInitialRendererState,
   generatorOutputState,
   selectAcquisitionDisabledReason,
   selectBusy,
   selectGeneratorCapability,
   selectIqCapability,
+  selectSpectrumCapability,
   selectSignalLabProfileCapability,
   AtomizerStore,
 } from './store.js';
@@ -25,6 +26,7 @@ import { AcquisitionController, fitChannelConfigurationToSpan } from './controll
 import { MeasurementController } from './controllers/measurement.js';
 import { FeaturesController } from './controllers/features.js';
 import { AgentExecutor } from './agent-executor.js';
+import { ClassificationController } from './controllers/classification.js';
 import { ConnectionContainer } from './containers/ConnectionContainer.js';
 import { MeasurementActions, MeasurementContainer } from './containers/MeasurementContainer.js';
 import { DetectContainer } from './containers/DetectContainer.js';
@@ -50,6 +52,7 @@ export interface RendererRuntime {
   readonly measurement: MeasurementController;
   readonly features: FeaturesController;
   readonly agent: AgentExecutor;
+  readonly classification: ClassificationController;
 }
 
 export function createRendererRuntime(options: {
@@ -64,6 +67,7 @@ export function createRendererRuntime(options: {
   kernel.measurement = new MeasurementController(kernel);
   kernel.features = new FeaturesController(kernel);
   kernel.agent = new AgentExecutor(kernel);
+  kernel.classification = new ClassificationController(kernel);
   return {
     store,
     kernel,
@@ -73,6 +77,7 @@ export function createRendererRuntime(options: {
     measurement: kernel.measurement,
     features: kernel.features,
     agent: kernel.agent,
+    classification: kernel.classification,
   };
 }
 
@@ -122,6 +127,7 @@ export function App({
     void kernel.events.initialize(generation);
     return () => {
       kernel.initializationGeneration.current++;
+      runtime.classification.dispose();
       if (kernel.continuousRequested.current && kernel.continuousStreamOwnership.current) {
         void window.atomizerInstrument.stopStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
@@ -164,7 +170,7 @@ export function App({
   }, []);
 
   const agent = useAtomAgent({ applicationContext: runtime.agent.applicationContext, execute: runtime.agent.executeAgentTool });
-  const contextualAcquisitionMode = acquisitionModeForWorkspace(workspace, continuousMode);
+  const contextualAcquisitionMode = acquisitionModeForSession(iqCapability !== undefined);
   const acquisitionDisabledReason = selectAcquisitionDisabledReason(state, busy);
   const measurementActions = sweep ? <MeasurementActions runtime={runtime}/> : null;
 
@@ -176,6 +182,7 @@ export function App({
       output={generatorOutput}
       generationAvailable={generatorCapability !== undefined || signalLabProfileCapability !== undefined}
       iqAvailable={iqCapability !== undefined}
+      spectrumAvailable={selectSpectrumCapability(state) !== undefined}
       connected={connected}
       acquisition={acquisition}
       continuous={continuous}

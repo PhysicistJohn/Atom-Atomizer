@@ -651,11 +651,24 @@ export const signalLabWaveformDescriptorSchema = z.object({
   }
 });
 
+export const signalLabReceiverImpairmentPresetSchema = z.enum([
+  'clean',
+  'awgn',
+  'multipath',
+  'carrier-offset',
+  'phase-noise',
+  'iq-imbalance',
+  'dc-offset',
+  'pa-compression',
+  'composite',
+]);
 export const signalLabChannelStateSchema = z.object({
   model: z.enum(['awgn', 'rayleigh']),
   noiseFloorDbm: z.number().finite().min(-150).max(-30),
   seed: z.number().int().min(1).max(0xffff_ffff),
   fadingRateHz: z.number().finite().min(0.1).max(100),
+  /** Complex-I/Q receiver preset; omitted remains compatible with legacy clean state. */
+  receiverImpairment: signalLabReceiverImpairmentPresetSchema.optional(),
 }).strict();
 export type SignalLabChannelState = z.infer<typeof signalLabChannelStateSchema>;
 

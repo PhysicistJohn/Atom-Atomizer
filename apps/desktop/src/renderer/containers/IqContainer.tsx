@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
 import { decodeComplexIqChannels, previewComplexIq } from '../complex-iq.js';
-import { classifyIqModulation, recoverIqConstellation, type ModulationClassification, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
-import { useLatchedModulation } from '../latched-modulation.js';
+import { recoverIqConstellation, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, useStore } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
@@ -32,24 +31,13 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     }
   }, [capture]);
 
-  // Live modulation identification: auto-classify every streamed capture so the
-  // I/Q view reports what modulation is present in real time (this is where the
-  // complex-I/Q stream is actually live — the Detect panel classifies whatever
-  // capture is current). Decoding + the zero-dependency embedding forward pass
-  // run off the render path, keyed on capture identity; only the compact result
-  // crosses into JSX. The last good result is held across a transient failure so
-  // the readout doesn't flicker during a Run. Per-capture results feed a rolling
-  // latch (see below) so the displayed class is the dominant one over ~the last
-  // second, not a jittery frame-by-frame identification.
-  const [rawModulation, setRawModulation] = useState<ModulationClassification | undefined>(undefined);
   // Blind-recovered symbol constellation (equalize + carrier lock), computed
-  // from the same decoded prefix. Shown when it resolves distinct symbols.
+  // only for this visualization. Classification itself is application-global
+  // and continues while this workspace is unmounted.
   const [recovered, setRecovered] = useState<RecoveredConstellation | undefined>(undefined);
   const captureId = capture?.measurementId;
-  const captureBandwidthHz = s.iqConfiguration.bandwidthHz;
   useEffect(() => {
-    if (!capture) { setRawModulation(undefined); setRecovered(undefined); return; }
-    let cancelled = false;
+    if (!capture) { setRecovered(undefined); return; }
     try {
       // Recovery needs enough symbols to populate a dense high-order grid (256-QAM
       // wants ~2k symbols); at ~8 sps that is a 16k-sample prefix. The classifier
@@ -58,17 +46,12 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
       // only costs a linear CMA pass, not a quadratic periodogram.
       const { re, im } = decodeComplexIqChannels(capture, 16_384);
       try { setRecovered(recoverIqConstellation(re, im)); } catch { /* keep the last recovery */ }
-      classifyIqModulation(re.subarray(0, 4_096), im.subarray(0, 4_096), captureBandwidthHz)
-        .then((result) => { if (!cancelled) setRawModulation(result); })
-        .catch(() => { /* keep the last result through a transient decode/inference error */ });
     } catch { /* keep the last result */ }
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureId]);
-
-  // Latch the readout to the dominant class over a rolling ~1s window so a Run
-  // shows a stable identification instead of flickering between frames.
-  const modulation = useLatchedModulation(rawModulation, capture !== undefined);
+  const modulation = s.classification.result?.flavor === 'iq'
+    ? s.classification.result
+    : undefined;
 
   return <IqWorkspace
     configuration={s.iqConfiguration}

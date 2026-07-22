@@ -266,10 +266,11 @@ async function spectrumCenterIs184GHz() {
 async function classificationDetectPanel() {
   await clickOrFail('classification-workspace', 'workspace.classification');
   await pollFor('classification-pipeline', `(() => {
-    const steps = [...document.querySelectorAll('.pipeline-step strong')].map((s) => s.textContent?.trim());
-    return steps.includes('Capture') && steps.includes('Detect');
+    const flavor = document.querySelector('.detect-flavor')?.textContent ?? '';
+    const result = document.querySelector('.detect-result');
+    return Boolean(result) && flavor.includes('COMPLEX I/Q') && /LIVE [1-8] LOOKS?/.test(flavor);
   })()`, 15_000);
-  pass('classification', 'capture/detect pipeline panel renders');
+  pass('classification', 'global complex-I/Q classifier renders its live FIFO projection');
 }
 
 async function stopContinuous() {

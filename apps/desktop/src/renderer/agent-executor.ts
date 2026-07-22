@@ -45,8 +45,7 @@ import {
 } from '@tinysa/agent';
 import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor, assertWorkspaceTransition, type WorkspaceId } from './ui-contracts.js';
 import { agentDetectionResults } from './agent-detection-results.js';
-import { classifyIqModulation, classifyScalarSweep, type ModulationClassification } from './embedding-classifier-runtime.js';
-import { decodeComplexIqChannels } from './complex-iq.js';
+import type { ModulationClassification } from './embedding-classifier-runtime.js';
 import { stageDetectedPowerConfigurationPatch } from './instrument-configuration.js';
 import type { InstrumentScreenPoint } from './components/DeviceWorkspace.js';
 import { instrumentCandidateIsSimulated } from './controllers/connection.js';
@@ -57,7 +56,7 @@ import {
   type RendererKernel,
 } from './controllers/kernel.js';
 import type { AcquisitionState } from './ui-contracts.js';
-import { selectIqCapability, type ContinuousAcquisitionMode } from './store.js';
+import type { ContinuousAcquisitionMode } from './store.js';
 
 export class AgentExecutor {
   constructor(private readonly k: RendererKernel) {}
@@ -203,32 +202,12 @@ export class AgentExecutor {
     };
   };
 
-  /**
-   * Classify what is currently in the store through the embedding classifier
-   * that drives the Detect panel: the complex-I/Q flavor when the connected
-   * instrument advertises I/Q and a capture is present, otherwise the magnitude
-   * flavor over the visible sweep's strongest live detection.
-   */
+  /** Read the application-global classifier projection without creating work. */
   async classifyCurrentCapture() {
-    const state = this.k.state;
-    if (selectIqCapability(state) !== undefined && state.iqCapture) {
-      const { re, im } = decodeComplexIqChannels(state.iqCapture);
-      return projectModulationClassification(
-        await classifyIqModulation(re, im, state.iqConfiguration.bandwidthHz),
-      );
-    }
-    const sweep = state.sweep;
-    const target = state.detections
-      .filter((detection) => detection.state !== 'released')
-      .reduce<(typeof state.detections)[number] | undefined>(
-        (best, detection) => (best && best.peakDbm >= detection.peakDbm ? best : detection),
-        undefined,
-      );
-    if (sweep && target) {
-      const result = await classifyScalarSweep(sweep.powerDbm, sweep.frequencyHz, target.peakHz, target.bandwidthHz);
-      if (result) return projectModulationClassification(result);
-    }
-    return { available: false as const, reason: 'no capture available to classify' } as const;
+    const result = this.k.state.classification.result;
+    return result
+      ? projectModulationClassification(result)
+      : { available: false as const, reason: 'global classification has not produced a look yet' } as const;
   }
 
   applicationContext = (): string => {
@@ -432,36 +411,31 @@ export class AgentExecutor {
         return { patch, scalarConfiguration: this.agentConfigurationContext(next), continuous: k.continuousRequested.current };
       }
       case 'acquire_sweep': {
-        if (k.state.workspace === 'iq') {
-          assertWorkspaceTransition(k.state.workspace, 'iq', k.currentGeneratorOutput());
-          const result = await k.acquisition.acquireIq();
-          k.applyWorkspace('iq');
-          return {
-            acquired: true,
-            acquisitionMode: 'complex-iq',
-            captureId: result.measurementId,
-            sequence: result.sequence,
-            centerHz: result.centerHz,
-            sampleCount: result.sampleCount,
-            sampleRateHz: result.sampleRateHz,
-            qualification: result.qualification,
-          };
-        }
         assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
-        const result = await k.acquisition.acquire();
-        k.applyWorkspace('spectrum');
-        return { acquired: true, acquisitionMode: 'swept-spectrum', sweepId: result.id, sequence: result.sequence, points: result.frequencyHz.length, source: result.source, identity: result.identity };
+        const frame = await k.acquisition.acquireGlobalFrame();
+        return {
+          acquired: true,
+          acquisitionMode: frame.iq ? 'complex-iq' : 'swept-spectrum',
+          ...(frame.iq ? {
+            captureId: frame.iq.measurementId,
+            sequence: frame.iq.sequence,
+            centerHz: frame.iq.centerHz,
+            sampleCount: frame.iq.sampleCount,
+            sampleRateHz: frame.iq.sampleRateHz,
+            qualification: frame.iq.qualification,
+          } : {}),
+          ...(frame.sweep ? {
+            sweepId: frame.sweep.id,
+            sweepSequence: frame.sweep.sequence,
+            points: frame.sweep.frequencyHz.length,
+            source: frame.sweep.source,
+            identity: frame.sweep.identity,
+          } : {}),
+        };
       }
       case 'start_continuous_sweeps': {
-        if (k.state.workspace === 'iq') {
-          assertWorkspaceTransition(k.state.workspace, 'iq', k.currentGeneratorOutput());
-          await k.acquisition.startContinuousIq();
-          k.applyWorkspace('iq');
-        } else {
-          assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
-          await k.acquisition.runInstrumentTransaction('start-continuous-acquisition', () => k.acquisition.startContinuousOwned());
-          k.applyWorkspace('spectrum');
-        }
+        assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
+        await k.acquisition.startContinuous();
         return { streaming: true, continuousMode: k.state.continuousMode, workspace: k.state.workspace };
       }
       case 'stop_continuous_sweeps': await k.acquisition.stopContinuous(); return { streaming: false, continuousMode: k.state.continuousMode, sweepsRetained: k.state.history.length };

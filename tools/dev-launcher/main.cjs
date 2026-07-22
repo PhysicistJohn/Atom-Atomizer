@@ -168,7 +168,7 @@ function loadContract() {
   requirePrivateEnvironmentFile(environmentFile);
   const requiredPaths = [
     'package.json',
-    'node_modules/electron/package.json',
+    'apps/desktop/node_modules/electron/package.json',
     'node_modules/tsup/dist/cli-default.js',
     'node_modules/vite/bin/vite.js',
     'apps/desktop/src/main/main.ts',

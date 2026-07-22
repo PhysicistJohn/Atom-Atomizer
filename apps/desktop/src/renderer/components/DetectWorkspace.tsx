@@ -19,13 +19,15 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
  * candidate distribution, and the fused protocol-leaf guess.
  */
 export function DetectWorkspace({
-  modulation, pending, source,
+  modulation, pending, source, live = false, evidenceLooks = 0,
   sweep, detectionConfig, detectorBusy, onDetectionConfig,
   zeroConfig, zeroCapture, envelope, detectedPowerCapability, captureUnavailableReason, captureTarget, busy, onAcquireZero,
 }: {
   modulation?: ModulationClassification;
   pending: boolean;
   source: 'iq' | 'scalar' | 'none';
+  live?: boolean;
+  evidenceLooks?: number;
   sweep?: Sweep;
   detectionConfig?: SignalDetectionConfig;
   detectorBusy: boolean;
@@ -45,7 +47,10 @@ export function DetectWorkspace({
         <header className="detect-header">
           <div><ScanSearch size={16} /><span><strong>Modulation classifier</strong><small>Metric-embedding · synthetic-trained</small></span></div>
           {modulation && (
-            <span className="detect-flavor">{modulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}</span>
+            <span className="detect-flavor">
+              {modulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}
+              {live ? ` · LIVE ${evidenceLooks} ${evidenceLooks === 1 ? 'LOOK' : 'LOOKS'}` : evidenceLooks > 1 ? ` · ${evidenceLooks} LOOKS` : ''}
+            </span>
           )}
         </header>
 

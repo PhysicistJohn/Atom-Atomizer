@@ -14,7 +14,7 @@ The live system is deliberately split into four independently versioned reposito
 |---|---|---|
 | `Atom-Atomizer` | Operator app, instrument host, normal CDC analyzer/generator sessions outside firmware-update sessions, measurement analysis, Atom policy and approvals | Hosts the active SignalLab and `tinysa-zs407` drivers |
 | `Atom-Firmware` | Pinned executable Renode twin and bridge | Selectable through the `tinysa-zs407` driver |
-| `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic complex-I/Q producer for all 34 closed profiles, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned in-process measurement edge to Atomizer; Firmware stimulus sink remains reserved |
+| `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic clean/receiver-impaired complex-I/Q producer, scalar-classification corpus, visual waveform descriptors, seeded scalar channel and receiver-I/Q models, stimulus intent | Active versioned in-process measurement edge to Atomizer; Firmware stimulus sink remains reserved |
 | `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Safety chain pinned by its own immutable contract test and safety suite; no Atomizer runtime edge |
 
 The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
@@ -98,8 +98,8 @@ npm --prefix ../Atom-SignalLab run dev
 into the main-process build; the packaged app carries no separate `signal-lab`
 resource root.
 
-It owns a 34-profile closed catalog: 12 public canonized scalar-observable
-profiles share the classifier's executable known-scenario source, while 22
+It owns a 42-profile closed catalog: 12 public canonized scalar-observable
+profiles share the classifier's executable known-scenario source, while 30
 remaining visual/standards stimulus profiles stay outside classifier truth. It
 also owns deterministic AWGN/Rayleigh channel configuration, and the separate
 immutable 35-scenario `observable-scalar-corpus-v13` corpus of physics- and
@@ -113,14 +113,16 @@ The retained generated Bayesian model pins that corpus for reproducible
 scalar-observable research. The active in-process measurement service supplies
 swept-spectrum and detected-power observations qualified
 `synthetic-visual-projection` plus bounded deterministic `cf32le` complex-I/Q
-for all 34 closed profiles. CW, AM, and FM captures preserve the producer's
-`analytic-complex-baseband` qualification; the other 31 preserve
+for all 42 closed profiles. CW, AM, FM, and the five constellation-reference
+captures preserve the producer's `analytic-complex-baseband` qualification;
+the other 34 preserve
 `standards-derived-complex-baseband` rather than inheriting the scalar
 projection label. The I/Q method returns at most 65,536 complete samples and
 independently accepts bandwidth from 1 kHz through the requested sample rate.
 SignalLab applies the same deterministic causal one-pole low-pass to I and Q;
 the requested bandwidth is its two-sided steady-state -3 dB span, with edges at
-`±bandwidthHz / 2` about center. It explicitly does not apply the replay channel.
+`±bandwidthHz / 2` about center. Scalar AWGN/Rayleigh replay is not applied to
+I/Q; the separately selected seeded receiver-I/Q preset is applied and declared.
 Standards-labelled results are engineering envelopes, not packet-decodable or
 conformance vectors; framework-generated, independently validated assets remain
 future work. Requests below a wideband profile's catalogued occupied support
@@ -199,7 +201,7 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
 - Selectable physical ZS407 and executable-twin candidates through the `tinysa-zs407` driver, with qualified shipped/OEM provenance and warning-only custom-firmware admission.
 - Analyzer configuration, readback, single/continuous spectrum acquisition, live pause-verify-resume retuning, raw/text transfers, and zero span.
 - Device-observed `scanraw` offset readback and provenance-preserving Q5 decoding.
-- One sidebar group contains the six core routes Spectrum, Waterfall, Channel, Detect, Generate, and Device, plus I/Q only when the active driver advertises complex samples. A persistent sidebar acquisition rail exposes the one global swept-data Run/Single/Stop state from every route; CSV/JSON remain contextual measurement utilities. Channel provides power/PSD/ACP/ACLR/OBW, Spectrum has no second top view-tab bar, and detected-envelope STFT remains a typed non-rendered analysis/Agent capability.
+- One sidebar group contains the six core routes Spectrum, Waterfall, Channel, Detect, Generate, and Device, plus I/Q only when the active driver advertises complex samples. A persistent sidebar acquisition rail exposes one application-global Run/Single/Stop state from every route; changing routes never starts, stops, or retargets acquisition, detection, or classification. CSV/JSON remain contextual measurement utilities. Channel provides power/PSD/ACP/ACLR/OBW, Spectrum has no second top view-tab bar, and detected-envelope STFT remains a typed non-rendered analysis/Agent capability.
 - SignalLab selection turns Generate into the embedded six-family SignalLab Studio with driver-owned profile/channel mutation and no RF-output implication.
 - The capability-gated I/Q workspace configures a driver-neutral complete capture, validates exact format-dependent byte geometry, and renders bounded time-domain I/Q and constellation previews with shared 0.5×–8× zoom and one-click Fit controls, without a symbol-decision claim or a scrolling plot container.
 - The spectrum trace is a live React projection of the current validated sweep and trace state. SVG is only the in-DOM drawing primitive for the current polylines, grid, marker stems, and brackets; it is not a static image or pre-rendered chart asset.
@@ -220,10 +222,19 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
   lacks a capture-ready evidence window; capture
   fails visibly instead.
 - Production local embedding classification for both complete complex-I/Q
-  captures and swept-magnitude regions. Detect and I/Q load only checked-in,
-  content-addressed weights/prototypes from `Atom-Classifier`, return candid
-  unknown results, and report modulation/evidence-equivalence families rather
-  than protocol, emitter, or conformance identity.
+  captures and swept-magnitude regions. A source-capability-driven background
+  loop runs independently of the visible workspace. When complex I/Q is
+  available it is the classifier input, while a paired scalar spectrum look
+  continues to feed the global detector; scalar classification is only the
+  fallback for sources without I/Q. Inference runs in a worker so every route
+  remains interactive. Detect and I/Q are read-only projections of the shared
+  result, load only checked-in content-addressed weights/prototypes from
+  `Atom-Classifier`, return candid unknown results, and report
+  modulation/evidence-equivalence families rather than protocol, emitter, or
+  conformance identity. The loop samples the newest complete evidence every
+  500 ms and reports the mean posterior of an eight-look FIFO; each new look
+  evicts the oldest after the four-second window fills, so the result remains
+  live.
 - A retained experimental Bayesian scalar-observable pipeline over 12 leaves,
   with fitted background/unknown support, detector-frozen evidence windows,
   qualified optional detected-power envelopes, and content-addressed

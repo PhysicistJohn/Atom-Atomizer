@@ -51,6 +51,7 @@ import {
   type WorkspaceId,
 } from './ui-contracts.js';
 import { DEFAULT_COMPLEX_IQ_CONFIGURATION, type ComplexIqConfiguration, type ComplexIqMeasurement } from './complex-iq.js';
+import type { ModulationClassification } from './embedding-classifier-runtime.js';
 
 export const DEFAULT_DETECTION: SignalDetectionConfig = {
   threshold: { strategy: 'noise-relative', marginDb: 10 },
@@ -111,6 +112,13 @@ export function visibleMeasurementView(value: unknown): MeasurementViewId {
 
 export type ContinuousAcquisitionMode = 'spectrum' | 'complex-iq';
 
+export interface GlobalClassificationState {
+  readonly source: 'iq' | 'scalar' | 'none';
+  readonly pending: boolean;
+  readonly evidenceLooks: number;
+  readonly result: ModulationClassification | undefined;
+}
+
 /** The complete reactive renderer state. One frozen record, replaced whole. */
 export interface AtomizerRendererState {
   readonly workspace: WorkspaceId;
@@ -148,6 +156,7 @@ export interface AtomizerRendererState {
   readonly diagnostics: readonly string[];
   readonly screenFrame: InstrumentScreenFrame | undefined;
   readonly iqCapture: ComplexIqMeasurement | undefined;
+  readonly classification: GlobalClassificationState;
   readonly selectedProfile: string | undefined;
   readonly selectedSignalLabChannel: SignalLabChannelState | undefined;
   readonly acquisition: AcquisitionState;
@@ -286,6 +295,7 @@ export function createInitialRendererState(options: {
     diagnostics: [],
     screenFrame: undefined,
     iqCapture: undefined,
+    classification: { source: 'none', pending: false, evidenceLooks: 0, result: undefined },
     selectedProfile: undefined,
     selectedSignalLabChannel: undefined,
     acquisition: 'idle',
@@ -360,13 +370,9 @@ export function generatorOutputState(session: InstrumentSessionSnapshot | undefi
   return 'off';
 }
 
-export function acquisitionModeForWorkspace(
-  workspace: WorkspaceId,
-  fallback: ContinuousAcquisitionMode,
-): ContinuousAcquisitionMode {
-  if (workspace === 'iq') return 'complex-iq';
-  if (workspace === 'spectrum' || workspace === 'classification' || workspace === 'detection') return 'spectrum';
-  return fallback;
+/** Acquisition is source-capability driven. Workspaces are projections only. */
+export function acquisitionModeForSession(iqAvailable: boolean): ContinuousAcquisitionMode {
+  return iqAvailable ? 'complex-iq' : 'spectrum';
 }
 
 export function selectSpectrumCapability(state: AtomizerRendererState) {
@@ -394,14 +400,15 @@ export function selectIqCaptureUnavailableReason(state: AtomizerRendererState): 
 
 /** Streaming is background collection, not a global UI lock; see App shell. */
 export function selectBusy(state: AtomizerRendererState, instrumentTransactionOwner: string | undefined): boolean {
-  const backgroundIqBufferActive = state.continuous
+  const backgroundAnalysisActive = state.continuous
     && state.continuousMode === 'complex-iq'
-    && instrumentTransactionOwner === 'continuous-complex-iq-buffer';
+    && (instrumentTransactionOwner === 'continuous-complex-iq-buffer'
+      || instrumentTransactionOwner === 'continuous-global-spectrum-look');
   const operationBusy = state.acquisition === 'configuring' || state.acquisition === 'retuning'
     || state.acquisition === 'acquiring' || state.acquisition === 'stopping';
   return state.connectionBusy
-    || (operationBusy && !backgroundIqBufferActive)
-    || (state.instrumentTransactionActive && !backgroundIqBufferActive);
+    || (operationBusy && !backgroundAnalysisActive)
+    || (state.instrumentTransactionActive && !backgroundAnalysisActive);
 }
 
 /** A running stream may be paused for one admitted remote tap. Every other
@@ -416,8 +423,8 @@ export function selectAcquisitionDisabledReason(
   busy: boolean,
 ): string | undefined {
   const connected = state.instrument.session !== undefined;
-  const contextualAcquisitionMode = acquisitionModeForWorkspace(state.workspace, state.continuousMode);
   const iqCapability = selectIqCapability(state);
+  const contextualAcquisitionMode = acquisitionModeForSession(iqCapability !== undefined);
   const spectrumCapability = selectSpectrumCapability(state);
   const iqCaptureUnavailableReason = selectIqCaptureUnavailableReason(state);
   const generatorOutput = generatorOutputState(state.instrument.session);

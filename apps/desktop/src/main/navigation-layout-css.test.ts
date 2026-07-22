@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-describe('Detect responsive layout contract', () => {
+describe('Application responsive layout contract', () => {
   it('keeps the grid and its bottom status row non-scrolling at every breakpoint', () => {
     const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
     const detectGridRules = rulesFor(css, '.classification-grid');
@@ -33,6 +33,19 @@ describe('Detect responsive layout contract', () => {
     expect(sidebarRules[0]).toMatch(/min-height:\s*0/);
     expect(acquisitionRailRules[0]).toMatch(/flex:\s*0\s+0\s+auto/);
     for (const rule of acquisitionRailRules) expect(rule).not.toMatch(/position:\s*(?:absolute|fixed)|overflow(?:-x|-y)?:\s*(?:auto|scroll)/);
+  });
+
+  it('gives the compact Channel view content-sized result and setup regions', () => {
+    const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
+    const channelVisualRules = rulesFor(css, '.channel-visual');
+    const channelResultRules = rulesFor(css, '.channel-results > div');
+
+    // Desktop uses a bounded plot/result stage; the final compact override
+    // must replace its fixed 105 px result row so five stacked cards cannot
+    // overlap the setup console below it.
+    expect(channelVisualRules[0]).toMatch(/grid-template-rows:\s*minmax\(0,\s*1fr\)\s*105px/);
+    expect(channelVisualRules.at(-1)).toMatch(/grid-template-rows:\s*minmax\(300px,\s*56dvh\)\s*auto/);
+    expect(channelResultRules.at(-1)).toMatch(/min-height:\s*92px/);
   });
 });
 

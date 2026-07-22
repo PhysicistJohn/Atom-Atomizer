@@ -60,6 +60,16 @@ test('the installer persists the canonical repository path instead of a symlink 
   );
 });
 
+test('the installer and installed launcher follow npm workspace ownership for Electron', () => {
+  const installer = readFileSync(join(here, 'install.mjs'), 'utf8');
+  const launcher = readFileSync(join(here, 'main.cjs'), 'utf8');
+
+  assert.match(installer, /join\(repoRoot, 'apps', 'desktop', 'node_modules', 'electron', 'dist', 'Electron\.app'\)/);
+  assert.match(launcher, /'apps\/desktop\/node_modules\/electron\/package\.json'/);
+  assert.doesNotMatch(installer, /join\(repoRoot, 'node_modules', 'electron'/);
+  assert.doesNotMatch(launcher, /'node_modules\/electron\/package\.json'/);
+});
+
 describe('bounded renderer diagnostics', () => {
   test('retains Electron 43 legacy console text instead of logging only its numeric level', () => {
     assert.deepEqual(
