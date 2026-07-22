@@ -1,5 +1,5 @@
 {
-  "name": "tinysa-desktop",
+  "name": "atomos-atomizer",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -22,19 +22,32 @@
     "check:firmware-twin": "node tools/smoke-firmware-twin.mjs",
     "train:signal-classifier": "npm --prefix ../Atom-Classifier run train:signal-classifier",
     "check:bayesian-detector": "tsup tools/validate-bayesian-detector.ts --format esm --out-dir dist/tools --platform node --silent && node dist/tools/validate-bayesian-detector.js",
+    "audit": "npm audit --audit-level=high",
     "check": "npm run check:launcher && npm run build && npm run typecheck && npm test",
     "smoke:desktop": "node tools/smoke/desktop-smoke.mjs",
     "smoke:web": "node tools/smoke/web-smoke.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.0.13",
-    "typescript": "5.9.2",
+    "@types/node": "22.20.1",
+    "lucide-react": "1.25.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "5.9.3",
     "tsup": "8.5.0",
     "vitest": "4.1.10"
   },
   "engines": {
-    "node": ">=22",
+    "node": "22.23.1",
     "npm": "10.9.8"
+  },
+  "overrides": {
+    "fast-uri": "3.1.4",
+    "postcss": "8.5.10",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-server-dom-webpack": "19.2.8",
+    "sharp": "0.35.0",
+    "vite": "8.1.5"
   },
   "license": "MIT"
 }

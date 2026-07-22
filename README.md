@@ -4,13 +4,17 @@
 
 AtomOS Atomizer is an AI-native Electron instrument host. It owns operator intent, instrument selection and lifecycle, measurement projections, and Atom, the application-layer voice and tool-using RF agent. Its current drivers compose SignalLab and the tinySA Ultra+ ZS407 without flattening synthetic measurements, physical USB, or executable firmware into the same evidence class.
 
+Internal `@tinysa/*`, `tinysa-zs407`, and serialized `TinySA_*` identifiers are
+versioned compatibility names for the device and existing contracts. Product,
+repository, and user-facing names use AtomOS and `Atom-*`.
+
 The live system is deliberately split into four independently versioned repositories:
 
 | Repository | Sole owner | Current edge |
 |---|---|---|
 | `Atom-Atomizer` | Operator app, instrument host, normal CDC analyzer/generator sessions outside firmware-update sessions, measurement analysis, Atom policy and approvals | Hosts the active SignalLab and `tinysa-zs407` drivers |
 | `Atom-Firmware` | Pinned executable Renode twin and bridge | Selectable through the `tinysa-zs407` driver |
-| `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic complex-I/Q producer for all 34 closed profiles, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned NDJSON measurement edge to Atomizer; Firmware stimulus sink remains reserved |
+| `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic complex-I/Q producer for all 34 closed profiles, scalar-classification corpus, visual waveform descriptors, seeded channel models, stimulus intent | Active versioned in-process measurement edge to Atomizer; Firmware stimulus sink remains reserved |
 | `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Safety chain pinned by its own immutable contract test and safety suite; no Atomizer runtime edge |
 
 The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
@@ -31,12 +35,13 @@ Requirements:
 
 - Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
   the package contract and CI).
-- `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and whose corpus is pinned by the Bayesian observable-class model.
+- `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and supplies deterministic training/evaluation stimuli.
+- `../Atom-Classifier`, whose checked-in embedding assets power the deployed local I/Q and swept-magnitude classifier and whose retained Bayesian pipeline supports scalar-observable research.
 - The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
 - `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
 
 ```bash
-npm install
+npm ci
 npm run check
 npm run dev
 ```
@@ -97,8 +102,9 @@ The selectable catalog excludes named test models when SignalLab does not
 reproduce their required power-balanced allocation, per-slot PRB sequence,
 subslot/slot timing, or SBFD spectral partition; a disclosure alone does not
 make an unimplemented standard model selectable.
-Atomizer's generated Bayesian model pins that corpus at build time. The active
-NDJSON bridge supplies swept-spectrum and detected-power observations qualified
+The retained generated Bayesian model pins that corpus for reproducible
+scalar-observable research. The active in-process measurement service supplies
+swept-spectrum and detected-power observations qualified
 `synthetic-visual-projection` plus bounded deterministic `cf32le` complex-I/Q
 for all 34 closed profiles. CW, AM, and FM captures preserve the producer's
 `analytic-complex-baseband` qualification; the other 31 preserve
@@ -206,32 +212,16 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
   substitutes a lower-ranked history-ready row when the rank-0 visible target
   lacks a capture-ready evidence window; capture
   fails visibly instead.
-- Experimental Bayesian observable classification over 12 leaves, including a
-  fitted background/unknown class and view-matched class-conditional inductive
-  synthetic support rejection, from repeated scalar sweeps and optional qualified
-  detected-power zero span. A continuous-valued detector centroid is projected
-  once to the nearest advertised integer-Hz detected-power tune (higher on an
-  exact tie); non-finite or out-of-range tunes are rejected, and the projected
-  value is retained in both the request and capture provenance. Selecting a
-  classification candidate stages that projected tune before capture.
-  Outputs are evidence-equivalence classes such as CW-like, AM-like,
-  FM/angle-like, GSM-like, Wi-Fi-like, Bluetooth-like, and LTE/NR
-  cellular-OFDM ambiguous, not protocol identities or physically calibrated
-  probabilities.
-- Detect presents live-observation names, retains ranked unknown
-  probability and content-addressed model/corpus provenance, binds features to the
-  detector-frozen first-admission region and source sweeps, excludes
-  unqualified physical cadence features, and never reads selected SignalLab
-  state. A provisional frequency-agile 2.4 GHz association retains its broad
-  band and source sweeps as separate provenance; it never overwrites the frozen
-  emission region. A separate regular-spectral-component association records
-  repeated same-sweep comb activity for classification without merging or
-  promoting its independently expiring local tracks. A third
-  `multicomponent-swept-region-v2` association can retain a changing run of four
-  or more independently Bayesian-admitted local components as non-identifying
-  regional history. The UI computes one group result per association while
-  retaining every member's local provenance.
-  Classification does not impose a second 3 dB active-bin admission gate.
+- Production local embedding classification for both complete complex-I/Q
+  captures and swept-magnitude regions. Detect and I/Q load only checked-in,
+  content-addressed weights/prototypes from `Atom-Classifier`, return candid
+  unknown results, and report modulation/evidence-equivalence families rather
+  than protocol, emitter, or conformance identity.
+- A retained experimental Bayesian scalar-observable pipeline over 12 leaves,
+  with fitted background/unknown support, detector-frozen evidence windows,
+  qualified optional detected-power envelopes, and content-addressed
+  model/corpus provenance. It remains research and regression infrastructure;
+  it is not the classifier rendered by the production Detect or I/Q workspaces.
 - Generator frequency, level, path, AM/FM configuration, forced-off apply, RF state, and governed enable.
 - Exact 480×320 RGB565 screen capture, diagnostics, and governed touch.
 - Provenance-preserving CSV/JSON export.
@@ -505,11 +495,11 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 
 ## Part of the AtomOS suite
 
-- [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): this repository, the AtomOS Atomizer operator app.
-- [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): Bayesian RF waveform-classification trainer and independent validator.
-- [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reverse-engineered, LLVM cross-built TinySA firmware and the executable Renode twin bridge.
-- [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): standalone fail-closed firmware flasher.
-- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): Renode digital twin of the NeptuneSDR.
+- [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): AI-native spectrum analyzer application.
+- [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): deployed local embedding classifier plus retained Bayesian RF research pipeline.
+- [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reproducibly built tinySA firmware research and modernization.
+- [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): fail-closed firmware flasher.
+- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): QEMU-backed firmware-executing digital twin of the NeptuneSDR/HAMGEEK P210.
 - [Atom-SignalLab](https://github.com/PhysicistJohn/Atom-SignalLab): 3GPP and reference signal generation.
 - [Atom-TinySA-Twin](https://github.com/PhysicistJohn/Atom-TinySA-Twin): Renode digital twin booting real ZS407 firmware.
 - [Atom-Website](https://github.com/PhysicistJohn/Atom-Website): product site.

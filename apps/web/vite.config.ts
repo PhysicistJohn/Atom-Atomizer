@@ -1,9 +1,26 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import vinext from 'vinext';
 import { defineConfig } from 'vite';
-import hostingConfig from './.openai/hosting.json';
 import { sites } from './build/sites-vite-plugin.js';
 
-const { d1, r2 } = hostingConfig;
+/**
+ * .openai/hosting.json is gitignored (environment-specific hosting metadata,
+ * regenerated per deployment target) so it will not exist on a fresh clone or
+ * in CI. A static JSON import would make that a hard compile-time dependency;
+ * read it defensively at config-eval time instead, falling back to no D1/R2
+ * bindings (this repo's current committed default, since both are unset).
+ */
+function readHostingConfig(): { d1: string | null; r2: string | null } {
+  try {
+    const path = fileURLToPath(new URL('./.openai/hosting.json', import.meta.url));
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return { d1: parsed.d1 ?? null, r2: parsed.r2 ?? null };
+  } catch {
+    return { d1: null, r2: null };
+  }
+}
+const { d1, r2 } = readHostingConfig();
 
 export default defineConfig(async () => {
   process.env.WRANGLER_WRITE_LOGS ??= 'false';

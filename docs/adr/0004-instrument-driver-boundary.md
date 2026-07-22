@@ -67,10 +67,10 @@ Candidate descriptors are a strict discriminated union:
 - `signal-lab` carries only a SignalLab-owned synthetic source identifier; and
 - any future NeptuneSDR source kind must define its own identity and provenance instead of borrowing TinySA fields.
 
-SignalLab is a high-level measurement producer. Atomizer's private
-`@tinysa/signal-lab-driver` workspace package launches the separately built,
-versioned NDJSON bridge and maps admitted scalar spectrum, detected-power, and
-bounded deterministic complex-I/Q results for all closed profiles.
+SignalLab is a high-level measurement producer. Atomizer's shared in-process
+driver bundles the sibling repository's platform-neutral service and versioned
+contract, then maps admitted scalar spectrum, detected-power, and bounded
+deterministic complex-I/Q results for all closed profiles.
 It depends only on contracts and the transport-neutral runtime. It is never a
 `ByteTransport`, never receives TinySA shell commands, and never claims a USB
 identity, firmware version, RF generator, display, or touch surface. Its

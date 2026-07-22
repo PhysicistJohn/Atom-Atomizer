@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "npm run build:main && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "npm run build:main && vite build",
-    "build:main": "tsup src/main/main.ts --format esm --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --out-dir dist/main --external electron",
+    "build:main": "tsup src/main/main.ts --format esm --target node22 --out-dir dist/main --external electron --external serialport && tsup src/main/preload.ts --format cjs --target node22 --out-dir dist/main --external electron",
     "package:prepare": "npm --prefix ../.. run build",
     "package:mac": "npm run package:prepare && electron-builder --mac dmg zip",
     "package:win": "npm run package:prepare && electron-builder --win nsis portable",
@@ -21,25 +21,25 @@
     "@tinysa/device": "*",
     "@tinysa/instrument-runtime": "*",
     "dotenv": "17.4.2",
-    "lucide-react": "1.24.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "ws": "8.21.0",
+    "lucide-react": "1.25.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "ws": "8.21.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@testing-library/react": "16.3.2",
-    "@types/react": "19.2.14",
+    "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/ws": "8.18.1",
-    "@vitejs/plugin-react": "6.0.1",
+    "@vitejs/plugin-react": "6.0.3",
     "concurrently": "^9.2.4",
     "cross-env": "10.1.0",
-    "electron": "43.1.0",
+    "electron": "43.2.0",
     "electron-builder": "26.15.3",
     "jsdom": "29.1.1",
-    "vite": "8.1.4",
-    "wait-on": "9.0.3"
+    "vite": "8.1.5",
+    "wait-on": "9.1.0"
   },
   "build": {
     "appId": "com.physicistjohn.atomizer",
