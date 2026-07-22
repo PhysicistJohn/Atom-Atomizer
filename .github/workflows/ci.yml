@@ -55,6 +55,7 @@ jobs:
             Atom-DSP/package-lock.json
             Atom-Atomizer/package-lock.json
             Atom-SignalLab/package-lock.json
+            Atom-Classifier/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@10.9.8
       - name: Verify exact Node and npm versions
@@ -67,6 +68,9 @@ jobs:
       - name: Build Atom-DSP
         working-directory: Atom-DSP
         run: npm ci && npm run build
+      - name: Install Classifier dependencies
+        working-directory: Atom-Classifier
+        run: npm ci --ignore-scripts
       - name: Install SignalLab dependencies
         working-directory: Atom-SignalLab
         # NOT --omit=dev: apps/desktop's typecheck compiles SignalLab's .tsx
@@ -121,6 +125,7 @@ jobs:
             Atom-DSP/package-lock.json
             Atom-Atomizer/package-lock.json
             Atom-SignalLab/package-lock.json
+            Atom-Classifier/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@10.9.8
       - name: Verify exact Node and npm versions
@@ -131,6 +136,9 @@ jobs:
       - name: Build Atom-DSP
         working-directory: Atom-DSP
         run: npm ci && npm run build
+      - name: Install Classifier dependencies
+        working-directory: Atom-Classifier
+        run: npm ci --ignore-scripts
       - name: Install SignalLab
         working-directory: Atom-SignalLab
         run: npm ci
