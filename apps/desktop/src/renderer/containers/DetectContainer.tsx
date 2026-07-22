@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { DetectWorkspace } from '../components/DetectWorkspace.js';
 import { decodeComplexIqChannels } from '../complex-iq.js';
 import { classifyIqModulation, classifyScalarSweep, type ModulationClassification } from '../embedding-classifier-runtime.js';
+import { selectClassificationInput } from '../classification-input-selection.js';
 import { selectBusy, selectDetectedPowerCapability, selectIqCapability, useStore } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
@@ -32,17 +33,15 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
     .filter((d) => d.state !== 'released')
     .reduce<(typeof s.detections)[number] | undefined>((best, d) => (best && best.peakDbm >= d.peakDbm ? best : d), undefined);
 
-  const source: 'iq' | 'scalar' | 'none' =
-    iqCapable && capture ? 'iq' : !iqCapable && sweep && target ? 'scalar' : 'none';
-
-  // Re-classify only when the actual classification input changes — the I/Q
-  // flavor depends solely on the capture, so it must not re-run on every sweep
-  // during a spectrum Run (that just re-classifies the same frozen capture).
-  const classifyKey = source === 'iq'
-    ? `iq:${capture?.measurementId}`
-    : source === 'scalar'
-      ? `scalar:${sweep?.id}:${target?.id}`
-      : 'none';
+  // The Detect workspace runs scalar sweeps. Prefer a newer sweep over a
+  // retained I/Q capture so Run continuously refreshes its classification;
+  // a newer I/Q acquisition takes priority again when the operator captures it.
+  const { source, key: classifyKey } = selectClassificationInput({
+    iqCapable,
+    capture,
+    sweep,
+    target,
+  });
 
   const [modulation, setModulation] = useState<ModulationClassification | undefined>(undefined);
   const [pending, setPending] = useState(false);
