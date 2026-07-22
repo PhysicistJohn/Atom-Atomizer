@@ -1,7 +1,7 @@
+import { decodeComplexSample } from '@atomos/dsp';
 import {
   complexIqConfigurationSchema,
   complexIqPayloadByteLength,
-  type ComplexIqSampleFormat,
   type InstrumentAcquisitionCapability,
   type InstrumentConfiguration,
   type InstrumentMeasurement,
@@ -150,7 +150,7 @@ export function previewComplexIq(
     const sampleIndex = inspectedSampleCount === 1
       ? 0
       : Math.round(previewIndex * (capture.sampleCount - 1) / (inspectedSampleCount - 1));
-    const [i, q] = decodeSample(view, sampleIndex, capture.sampleFormat);
+    const [i, q] = decodeComplexSample(view, sampleIndex, capture.sampleFormat);
     if (!Number.isFinite(i) || !Number.isFinite(q)) {
       throw new RangeError(`I/Q preview encountered a non-finite component at complex sample ${sampleIndex}`);
     }
@@ -194,32 +194,11 @@ export function decodeComplexIqChannels(
   const re = new Float64Array(n);
   const im = new Float64Array(n);
   for (let k = 0; k < n; k++) {
-    const [i, q] = decodeSample(view, k, capture.sampleFormat);
+    const [i, q] = decodeComplexSample(view, k, capture.sampleFormat);
     re[k] = i;
     im[k] = q;
   }
   return { re, im };
-}
-
-function decodeSample(view: DataView, sampleIndex: number, format: ComplexIqSampleFormat): readonly [number, number] {
-  switch (format) {
-    case 'cf32le': {
-      const offset = sampleIndex * 8;
-      return [view.getFloat32(offset, true), view.getFloat32(offset + 4, true)];
-    }
-    case 'ci16le': {
-      const offset = sampleIndex * 4;
-      return [view.getInt16(offset, true) / 32_768, view.getInt16(offset + 2, true) / 32_768];
-    }
-    case 'ci8': {
-      const offset = sampleIndex * 2;
-      return [view.getInt8(offset) / 128, view.getInt8(offset + 1) / 128];
-    }
-    case 'cu8': {
-      const offset = sampleIndex * 2;
-      return [(view.getUint8(offset) - 127.5) / 127.5, (view.getUint8(offset + 1) - 127.5) / 127.5];
-    }
-  }
 }
 
 function requireRange(value: number, range: NumericRange, label: string): void {

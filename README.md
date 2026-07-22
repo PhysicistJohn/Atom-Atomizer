@@ -19,6 +19,10 @@ The live system is deliberately split into four independently versioned reposito
 
 The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
+[Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP) is a shared numerical
+implementation dependency, not a source, transport, instrument, or evidence
+class, so it is deliberately outside that runtime-composition contract.
+
 USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while Atom-Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
 
 Composition v4 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
@@ -35,12 +39,15 @@ Requirements:
 
 - Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
   the package contract and CI).
+- `../Atom-DSP`, built before installing Atomizer's local file dependency.
 - `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and supplies deterministic training/evaluation stimuli.
 - `../Atom-Classifier`, whose checked-in embedding assets power the deployed local I/Q and swept-magnitude classifier and whose retained Bayesian pipeline supports scalar-observable research.
 - The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
 - `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
 
 ```bash
+npm --prefix ../Atom-DSP ci
+npm --prefix ../Atom-DSP run build
 npm ci
 npm run check
 npm run dev
@@ -497,6 +504,7 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 
 - [Atom-Atomizer](https://github.com/PhysicistJohn/Atom-Atomizer): AI-native spectrum analyzer application.
 - [Atom-Classifier](https://github.com/PhysicistJohn/Atom-Classifier): deployed local embedding classifier plus retained Bayesian RF research pipeline.
+- [Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP): dependency-free numerical kernels and cross-language conformance vectors.
 - [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reproducibly built tinySA firmware research and modernization.
 - [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): fail-closed firmware flasher.
 - [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): QEMU-backed firmware-executing digital twin of the NeptuneSDR/HAMGEEK P210.

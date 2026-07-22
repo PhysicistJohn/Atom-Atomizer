@@ -15,6 +15,7 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
+    "@atomos/dsp": "file:../../../Atom-DSP",
     "@tinysa/agent": "*",
     "@tinysa/analysis": "*",
     "@tinysa/contracts": "*",

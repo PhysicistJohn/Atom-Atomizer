@@ -9,8 +9,8 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # Both jobs check out the Atom-SignalLab and Atom-Classifier siblings. Both
-  # are public, so the default GITHUB_TOKEN covers the checkouts and no PAT
+  # Both jobs check out the Atom-DSP, Atom-SignalLab, and Atom-Classifier
+  # siblings. All are public, so the default GITHUB_TOKEN covers the checkouts and no PAT
   # or gate job is needed (a prior ATOMOS_CLASSIFIER_READ_TOKEN gate silently
   # skipped every run of this workflow from when Atom-Classifier went public
   # until this comment).
@@ -31,6 +31,12 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: PhysicistJohn/Atom-DSP
+          ref: v0.1.0
+          path: Atom-DSP
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
           repository: PhysicistJohn/Atom-SignalLab
           ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
           path: Atom-SignalLab
@@ -46,6 +52,7 @@ jobs:
           node-version: 22.23.1
           cache: npm
           cache-dependency-path: |
+            Atom-DSP/package-lock.json
             Atom-Atomizer/package-lock.json
             Atom-SignalLab/package-lock.json
       - name: Install exact npm
@@ -57,6 +64,9 @@ jobs:
           npm --version
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
+      - name: Build Atom-DSP
+        working-directory: Atom-DSP
+        run: npm ci && npm run build
       - name: Install SignalLab dependencies
         working-directory: Atom-SignalLab
         # NOT --omit=dev: apps/desktop's typecheck compiles SignalLab's .tsx
@@ -87,6 +97,12 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          repository: PhysicistJohn/Atom-DSP
+          ref: v0.1.0
+          path: Atom-DSP
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
           repository: PhysicistJohn/Atom-SignalLab
           ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
           path: Atom-SignalLab
@@ -102,6 +118,7 @@ jobs:
           node-version: 22.23.1
           cache: npm
           cache-dependency-path: |
+            Atom-DSP/package-lock.json
             Atom-Atomizer/package-lock.json
             Atom-SignalLab/package-lock.json
       - name: Install exact npm
@@ -111,6 +128,9 @@ jobs:
         run: |
           test "$(node --version)" = "v22.23.1"
           test "$(npm --version)" = "10.9.8"
+      - name: Build Atom-DSP
+        working-directory: Atom-DSP
+        run: npm ci && npm run build
       - name: Install SignalLab
         working-directory: Atom-SignalLab
         run: npm ci

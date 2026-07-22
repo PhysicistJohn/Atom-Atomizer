@@ -1,3 +1,4 @@
+import { hannSymmetric, realFftMagnitudesUnscaled } from '@atomos/dsp';
 import type {
   AdjacentChannelMeasurement,
   AnalysisModeDefinition,
@@ -1301,22 +1302,13 @@ export function computeEnvelopeStft(capture: ZeroSpanCapture, input: EnvelopeStf
   const sampleRateHz = 1 / capture.samplePeriodSeconds;
   const frequencyBins = Math.floor(configuration.windowSize / 2) + 1;
   const modulationFrequencyHz = Array.from({ length: frequencyBins }, (_, index) => index * sampleRateHz / configuration.windowSize);
-  const window = Array.from({ length: configuration.windowSize }, (_, index) => 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (configuration.windowSize - 1)));
+  const window = hannSymmetric(configuration.windowSize);
   const rawFrames: Array<{ startSeconds: number; centerSeconds: number; magnitude: number[] }> = [];
   for (let start = 0; start + configuration.windowSize <= capture.powerDbm.length; start += configuration.hopSize) {
     const samples = capture.powerDbm.slice(start, start + configuration.windowSize).map(dbmToMilliwatts);
     const mean = configuration.removeDc ? samples.reduce((sum, value) => sum + value, 0) / samples.length : 0;
-    const magnitude = modulationFrequencyHz.map((_frequency, bin) => {
-      let real = 0;
-      let imaginary = 0;
-      for (let index = 0; index < configuration.windowSize; index++) {
-        const sample = (samples[index]! - mean) * window[index]!;
-        const phase = 2 * Math.PI * bin * index / configuration.windowSize;
-        real += sample * Math.cos(phase);
-        imaginary -= sample * Math.sin(phase);
-      }
-      return Math.hypot(real, imaginary);
-    });
+    const windowed = Float64Array.from(samples, (sample, index) => (sample - mean) * window[index]!);
+    const magnitude = Array.from(realFftMagnitudesUnscaled(windowed));
     if (configuration.removeDc) magnitude[0] = 0;
     rawFrames.push({
       startSeconds: start * capture.samplePeriodSeconds,
