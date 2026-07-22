@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
-import { decodeComplexIqChannels, previewComplexIq } from '../complex-iq.js';
-import { recoverIqConstellation, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
+import { previewComplexIq } from '../complex-iq.js';
+import type { RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
+import { IqRecoveryController } from '../controllers/iq-recovery.js';
 
 const selectIqState = (state: AtomizerRendererState) => ({
   connected: state.instrument.session !== undefined,
@@ -42,23 +43,23 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
   }, [capture]);
 
   // Blind-recovered symbol constellation (equalize + carrier lock), computed
-  // only for this visualization. Classification itself is application-global
-  // and continues while this workspace is unmounted.
+  // in a dedicated latest-wins worker only for this visualization.
+  // Classification itself is application-global and continues while this
+  // workspace is unmounted.
   const [recovered, setRecovered] = useState<RecoveredConstellation | undefined>(undefined);
-  const captureId = capture?.measurementId;
+  const recoveryRef = useRef<IqRecoveryController | undefined>(undefined);
   useEffect(() => {
-    if (!capture) { setRecovered(undefined); return; }
-    try {
-      // Recovery needs enough symbols to populate a dense high-order grid (256-QAM
-      // wants ~2k symbols); at ~8 sps that is a 16k-sample prefix. The classifier
-      // keeps its usual 4k-sample view (a zero-copy prefix) so its behavior is
-      // unchanged. estimateSps caps its own analysis window, so the longer decode
-      // only costs a linear CMA pass, not a quadratic periodogram.
-      const { re, im } = decodeComplexIqChannels(capture, 16_384);
-      try { setRecovered(recoverIqConstellation(re, im)); } catch { /* keep the last recovery */ }
-    } catch { /* keep the last result */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureId]);
+    const controller = new IqRecoveryController(setRecovered);
+    recoveryRef.current = controller;
+    return () => {
+      if (recoveryRef.current === controller) recoveryRef.current = undefined;
+      controller.dispose();
+    };
+  }, []);
+  useEffect(() => {
+    if (capture) recoveryRef.current?.submit(capture);
+    else recoveryRef.current?.reset();
+  }, [capture]);
   const modulation = s.classification.result?.flavor === 'iq'
     ? s.classification.result
     : undefined;

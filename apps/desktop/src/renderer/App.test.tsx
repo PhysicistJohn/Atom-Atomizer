@@ -1039,7 +1039,7 @@ describe('operator vertical slice', () => {
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
   });
 
-  it('paces scalar display frames at 20 Hz between bounded I/Q looks, stages live edits, and stops cleanly', async () => {
+  it('paces complete I/Q buffers independently of classification, stages live edits, and stops cleanly', async () => {
     const acquisitionKinds: InstrumentConfiguration['kind'][] = [];
     const pending = mockDeferredSignalLabIqBuffers(() => 'producer-epoch:1', acquisitionKinds);
 
@@ -1068,10 +1068,10 @@ describe('operator vertical slice', () => {
       first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
       await flushMicrotasks();
     });
-    await act(async () => { await vi.advanceTimersByTimeAsync(499); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(16); });
     expect(pending).toHaveLength(1);
     expect(acquisitionKinds.filter((kind) => kind === 'complex-iq')).toHaveLength(1);
-    expect(acquisitionKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(10);
+    expect(acquisitionKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(1);
     const configuredKinds = vi.mocked(window.atomizerInstrument.configure).mock.calls
       .map(([configuration]) => configuration.kind);
     expect(configuredKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(1);
@@ -1080,7 +1080,7 @@ describe('operator vertical slice', () => {
     expect(pending).toHaveLength(2);
     expect(pending[1]?.configuration.centerHz).toBe(101_000_000);
     expect(document.body.textContent).not.toContain('iq-buffer-1');
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(12);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     expect(screen.getByRole('button', { name: /Stopping/i }).hasAttribute('disabled')).toBe(true);
@@ -1091,7 +1091,7 @@ describe('operator vertical slice', () => {
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(12);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
     expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain('iq-buffer-2');
   });
@@ -1135,6 +1135,15 @@ describe('operator vertical slice', () => {
         true,
       ));
     });
+    await waitFor(() => expect(pendingIq).toHaveLength(2));
+    await act(async () => {
+      const nextIq = pendingIq[1]!;
+      nextIq.capture.resolve(complexIqMeasurement(
+        nextIq.configuration,
+        nextIq.revision,
+        nextIq.id,
+      ));
+    });
     await waitFor(() => expect(pendingSpectrum).toHaveLength(2));
     const replacement = pendingSpectrum[1]!;
     const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
@@ -1154,14 +1163,14 @@ describe('operator vertical slice', () => {
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
     expect(acquisition.getAttribute('aria-description')).toContain(replacement.id);
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
 
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(pendingIq).toHaveLength(2));
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
+    await waitFor(() => expect(pendingIq).toHaveLength(3));
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     await act(async () => {
-      const replacementRunIq = pendingIq[1]!;
+      const replacementRunIq = pendingIq[2]!;
       replacementRunIq.capture.resolve(complexIqMeasurement(
         replacementRunIq.configuration,
         replacementRunIq.revision,
@@ -1169,7 +1178,7 @@ describe('operator vertical slice', () => {
       ));
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
   });
 
   it('waits for an in-flight scalar look before applying a SignalLab profile transaction', async () => {
@@ -1236,6 +1245,21 @@ describe('operator vertical slice', () => {
         `producer-epoch:${producerEpoch}`,
       ));
     });
+    await waitFor(() => expect(
+      pendingSpectrum.length === 2 || pendingIq.length === 3,
+    ).toBe(true));
+    if (pendingSpectrum.length < 2) {
+      await act(async () => {
+        const nextIq = pendingIq[2]!;
+        nextIq.capture.resolve(complexIqMeasurement(
+          nextIq.configuration,
+          nextIq.revision,
+          nextIq.id,
+          signalLabIqSession.sessionId,
+          `producer-epoch:${producerEpoch}`,
+        ));
+      });
+    }
     await waitFor(() => expect(pendingSpectrum).toHaveLength(2));
     const resumedSpectrum = pendingSpectrum[1]!;
     expect((resumedSpectrum.configuration.startHz + resumedSpectrum.configuration.stopHz) / 2)

@@ -34,7 +34,6 @@ import {
 import { resolveVisibleClassificationTargetSelection } from '../classification-target-selection.js';
 import { resolveRuntimeAdmittedCaptureTarget } from './classification-helpers.js';
 import { acquisitionModeForSession, HISTORY_LIMIT, selectIqCapability } from '../store.js';
-import { GLOBAL_CLASSIFICATION_INTERVAL_MS } from './classification.js';
 import {
   CONTINUOUS_GLOBAL_SPECTRUM_TRANSACTION,
   CONTINUOUS_IQ_TRANSACTION,
@@ -49,6 +48,18 @@ import {
 } from './kernel.js';
 
 const MAXIMUM_GLOBAL_DISPLAY_HZ = 60;
+
+/** Pace complete I/Q buffers to their admitted capture duration without
+ * producing frames faster than the browser can present them. Classification
+ * samples the latest published buffer on its own, deliberately slower clock. */
+export function continuousIqFramePeriodMilliseconds(
+  configuration: Pick<ComplexIqConfiguration, 'sampleCount' | 'sampleRateHz'>,
+): number {
+  return Math.max(
+    1_000 / MAXIMUM_GLOBAL_DISPLAY_HZ,
+    configuration.sampleCount / configuration.sampleRateHz * 1_000,
+  );
+}
 
 /** Backpressure a projected spectrum to its admitted sweep duration without
  * producing frames faster than the browser can present them. */
@@ -844,7 +855,6 @@ export class AcquisitionController {
       const iqDue = performance.now() >= nextIqCaptureAt;
       if (iqDue) {
         const iqStartedAt = performance.now();
-        nextIqCaptureAt = iqStartedAt + GLOBAL_CLASSIFICATION_INTERVAL_MS;
         const iqTask = this.runInstrumentTransaction(CONTINUOUS_IQ_TRANSACTION, async () => {
           const ownership = await this.ensureContinuousIqConfiguration(generation);
           return this.acquireConfiguredIq(ownership.configured, () =>
@@ -856,6 +866,7 @@ export class AcquisitionController {
         k.continuousGlobalAcquisitionTask.current = iqTask;
         try {
           const measurement = await iqTask;
+          nextIqCaptureAt = iqStartedAt + continuousIqFramePeriodMilliseconds(measurement);
           latestIqSource = {
             sessionId: measurement.sessionId,
             ...(measurement.producerConfigurationEpoch === undefined

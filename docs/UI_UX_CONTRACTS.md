@@ -74,7 +74,7 @@ speaking, and error states; a redundant microphone connection button is absent.
 | Generate | WS-GEN | Operate the embedded SignalLab Studio for a SignalLab source, or configure and deliberately enable RF output for a generator-capable source | Studio core; physical-generator qualification pending |
 | Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical diagnostics/capture accepted, touch qualification pending |
 
-Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source each 500 ms global frame obtains one bounded complex-I/Q buffer for worker classification and one scalar spectrum for detection/history; a source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
+Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source the global scheduler obtains bounded complex-I/Q buffers at complete-buffer cadence and scalar spectra at admitted sweep cadence, with both capped at display rate and serialized through one instrument transaction. The classifier independently samples the newest published evidence every 500 ms; it never sets acquisition cadence. A source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
 
 Workspace availability and controls are derived from the active session's declared capabilities. SignalLab supports swept spectrum, detected power, its typed profile/channel feature, and bounded deterministic complex-I/Q for all 42 closed profiles. CW, AM, FM, and the five constellation references are analytic laboratory envelopes; the other 34 catalog entries are standards-derived engineering envelopes. It does not expose an RF generator, firmware screen/touch, or TinySA diagnostics. The physical ZS407 and Firmware twin expose only the features proved by their admitted capability profile. A route that has no meaningful capability for the active source shows a specific unavailable state and source-switch action; it never sends a TinySA-only request to SignalLab or fabricates a generic setting.
 
@@ -249,18 +249,23 @@ idle -> configuring -> acquiring -> complete
 - The route exists only while the active session advertises `complex-iq`.
 - Configuration is reconciled to the driver's center, rate, bandwidth, count,
   format, and optional bandwidth-coupling constraints before admission.
-- One driver operation returns one complete buffer. The application may run
-  those operations one at a time in its global backpressured 500 ms loop;
-  partial buffers, overlapping requests, and a hardware-streaming claim remain
-  forbidden in v1.
+- One driver operation returns one complete buffer. The application runs those
+  operations one at a time in its global backpressured scheduler, paced by the
+  admitted buffer duration and a 60 Hz display ceiling. Classification samples
+  the newest complete buffer on its separate 500 ms clock. Partial buffers,
+  overlapping requests, and a hardware-streaming claim remain forbidden in v1.
 - The renderer validates the measurement session/revision, format-dependent
   byte geometry, and finite preview samples before replacing the last capture.
 - The evidence footer preserves the measurement's exact qualification. A
   SignalLab laboratory buffer reads `analytic-complex-baseband`; a
   standards-labelled buffer reads `standards-derived-complex-baseband`. Neither
   is relabeled as a scalar visual projection or conformance vector.
-- Plotting is bounded to 16,384 evenly sampled preview points; full-payload
-  retention and transport remain governed by the measurement contract.
+- Plotting is bounded to 16,384 evenly sampled preview points and retained
+  canvases paint the newest available preview at animation-frame cadence. Blind
+  constellation recovery runs in a dedicated worker with one job in flight and
+  one replaceable newest input; it cannot throttle raw capture or classification.
+  Full-payload retention and transport remain governed by the measurement
+  contract.
 - The constellation is Q versus I only and makes no symbol-decision,
   modulation, EVM, protocol, calibration, or conformance claim.
 - SignalLab advertises independent bandwidth from 1 kHz through the requested
