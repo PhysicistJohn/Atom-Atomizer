@@ -193,6 +193,26 @@ function makeSweep(overrides: Partial<Sweep> = {}): Sweep {
   };
 }
 
+function makeSeparatedSignalSweep(sequence: number): Sweep {
+  const points = 101;
+  const startHz = 100;
+  const stopHz = 10_100;
+  const frequencyHz = Array.from({ length: points }, (_, index) => startHz + index * 100);
+  const powerDbm = frequencyHz.map((_frequency, index) =>
+    (index >= 20 && index <= 22) || (index >= 70 && index <= 72) ? -45 : -110);
+  return makeSweep({
+    id: `separated-signals-${sequence}`,
+    sequence,
+    capturedAt: new Date(Date.UTC(2026, 0, 1) + sequence * 50).toISOString(),
+    frequencyHz,
+    powerDbm,
+    requested: admittedSpectrum({ ...analyzer, startHz, stopHz, points }),
+    actualStartHz: startHz,
+    actualStopHz: stopHz,
+    actualRbwHz: 100,
+  });
+}
+
 describe('signal analysis', () => {
   it('detects contiguous bins above a robust adaptive floor', () => {
     const results = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 }).analyze(makeSweep());
@@ -230,6 +250,26 @@ describe('signal analysis', () => {
     expect(detection.classificationRegionStopHz).toBeGreaterThanOrEqual(detection.stopHz);
     expect(detection.classificationRegionStopHz).toBeGreaterThanOrEqual(detection.bayesianEvidence.testedRegionStopHz);
     expect(detection.classificationRegionSweepIds).toEqual([sweep.id]);
+  });
+
+  it('shares one immutable compact detector sweep across every candidate in the same look', () => {
+    const sweep = makeSeparatedSignalSweep(1);
+    const candidates = new SignalDetector({ ...detectionConfig, minimumConsecutiveSweeps: 1 })
+      .analyze(sweep);
+
+    expect(candidates).toHaveLength(2);
+    const sourceSweeps = candidates.map((candidate) =>
+      candidate.classificationRegionObservation!.sourceSweep);
+    expect(sourceSweeps[0]).toBe(sourceSweeps[1]);
+    expect(sourceSweeps[0]).not.toBe(sweep);
+    expect(Object.isFrozen(candidates[0]!.classificationRegionObservation)).toBe(true);
+    expect(Object.isFrozen(sourceSweeps[0])).toBe(true);
+    expect(Object.isFrozen(sourceSweeps[0]!.frequencyHz)).toBe(true);
+    expect(Object.isFrozen(sourceSweeps[0]!.powerDbm)).toBe(true);
+    const retainedPower = sourceSweeps[0]!.powerDbm[20];
+    (sweep.powerDbm as number[])[20] = -1;
+    expect(sourceSweeps[0]!.powerDbm[20]).toBe(retainedPower);
+    expect(Reflect.set(sourceSweeps[0]!.powerDbm, '20', -1)).toBe(false);
   });
 
   it('does not call an interior emission censored when only its wider Bayesian test region reaches a boundary', () => {
@@ -1854,6 +1894,59 @@ describe('signal analysis', () => {
       .toEqual([firstSweep.id, secondSweep.id]);
     expect(updated.localClassificationObservations?.at(-1)?.sourceSweep.powerDbm)
       .toEqual(secondSweep.powerDbm);
+  });
+
+  it('shares only immutable retained provenance while isolating mutable tracker output state', () => {
+    const config = { ...detectionConfig, minimumConsecutiveSweeps: 1 };
+    const detector = new SignalDetector(config);
+    const leftTracker = new SignalTracker(config);
+    const rightTracker = new SignalTracker(config);
+    const leftFirstSweep = makeSeparatedSignalSweep(1);
+    const rightFirstSweep = structuredClone(leftFirstSweep);
+    const leftCandidates = detector.analyze(leftFirstSweep);
+    const rightCandidates = detector.analyze(rightFirstSweep);
+    const leftFirst = leftTracker.update(leftFirstSweep, leftCandidates);
+    const rightFirst = rightTracker.update(rightFirstSweep, rightCandidates);
+
+    expect(JSON.stringify(leftFirst)).toBe(JSON.stringify(rightFirst));
+    expect(leftFirst).toHaveLength(2);
+    const firstSourceSweeps = leftFirst.map((track) =>
+      track.localClassificationObservations![0]!.sourceSweep);
+    expect(new Set(firstSourceSweeps).size).toBe(1);
+    expect(firstSourceSweeps[0]).not.toBe(
+      leftCandidates[0]!.classificationRegionObservation!.sourceSweep,
+    );
+    expect(Object.isFrozen(leftFirst[0]!.localClassificationObservations)).toBe(true);
+    expect(Object.isFrozen(leftFirst[0]!.localClassificationObservations![0])).toBe(true);
+    expect(Object.isFrozen(
+      leftFirst[0]!.localClassificationObservations![0]!.localBayesianEvidence,
+    )).toBe(true);
+    expect(Object.isFrozen(firstSourceSweeps[0])).toBe(true);
+
+    const retainedPower = firstSourceSweeps[0]!.powerDbm[20];
+    (leftFirstSweep.powerDbm as number[])[20] = -1;
+    expect(firstSourceSweeps[0]!.powerDbm[20]).toBe(retainedPower);
+    expect(Reflect.set(firstSourceSweeps[0]!.powerDbm, '20', -1)).toBe(false);
+
+    // Ordinary output state remains a caller-owned copy and cannot alter the
+    // next update's internal posterior, configuration, or quality flags.
+    leftFirst[0]!.bayesianEvidence.posteriorSignalProbability = 0;
+    leftFirst[0]!.detectorConfig.threshold = { strategy: 'absolute', levelDbm: -1 };
+    (leftFirst[0]!.qualityFlags as DetectedSignal['qualityFlags'][number][]).push('single-bin');
+    leftFirst[0]!.localClassificationObservations = [];
+
+    const leftSecondSweep = makeSeparatedSignalSweep(2);
+    const rightSecondSweep = structuredClone(leftSecondSweep);
+    const leftSecond = leftTracker.update(leftSecondSweep, detector.analyze(leftSecondSweep));
+    const rightSecond = rightTracker.update(rightSecondSweep, detector.analyze(rightSecondSweep));
+    expect(JSON.stringify(leftSecond)).toBe(JSON.stringify(rightSecond));
+
+    const retainedSources = leftSecond.flatMap((track) =>
+      track.localClassificationObservations!.map((observation) => observation.sourceSweep));
+    expect(retainedSources).toHaveLength(4);
+    expect(new Set(retainedSources).size).toBe(2);
+    expect(retainedSources.filter((sourceSweep) => sourceSweep.id === leftFirstSweep.id)[0])
+      .toBe(firstSourceSweeps[0]);
   });
 
   it('promotes only Bayesian multi-look 2.4 GHz activity without inflating local detector evidence', () => {

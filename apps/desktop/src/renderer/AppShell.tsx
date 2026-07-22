@@ -1,23 +1,18 @@
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { CircleAlert } from 'lucide-react';
-import { useSyncExternalStore } from 'react';
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
-import { Sidebar } from './components/Sidebar.js';
-import { TopBar } from './components/TopBar.js';
 import { useAtomAgent } from './useAtomAgent.js';
 import { DEVELOPMENT_RENDERER } from './development.js';
 import type { WorkspaceId } from './ui-contracts.js';
 import {
-  acquisitionModeForSession,
   createInitialRendererState,
-  generatorOutputState,
-  selectAcquisitionDisabledReason,
-  selectBusy,
   selectGeneratorCapability,
   selectIqCapability,
-  selectSpectrumCapability,
   selectSignalLabProfileCapability,
+  shallowEqual,
+  useStore,
   AtomizerStore,
+  type AtomizerRendererState,
 } from './store.js';
 import { RendererKernel } from './controllers/kernel.js';
 import { InstrumentEventsController } from './controllers/instrument-events.js';
@@ -33,6 +28,8 @@ import { DetectContainer } from './containers/DetectContainer.js';
 import { IqContainer } from './containers/IqContainer.js';
 import { GeneratorContainer } from './containers/GeneratorContainer.js';
 import { DeviceContainer } from './containers/DeviceContainer.js';
+import { SidebarContainer } from './containers/SidebarContainer.js';
+import { TopBarContainer } from './containers/TopBarContainer.js';
 
 // Pinned-spec re-exports (formerly exported from App.tsx).
 export { parseStoredDetection } from './store.js';
@@ -88,30 +85,49 @@ export interface AppProps {
   readonly initialAgentOpen?: boolean;
 }
 
+const selectAppShellState = (state: AtomizerRendererState) => ({
+  workspace: state.workspace,
+  agentOpen: state.agentOpen,
+  error: state.error,
+  notice: state.notice,
+  analyzerStartHz: state.analyzer.startHz,
+  analyzerStopHz: state.analyzer.stopHz,
+  hasSweep: state.sweep !== undefined,
+  connected: state.instrument.session !== undefined,
+  iqAvailable: selectIqCapability(state) !== undefined,
+  generationAvailable: selectGeneratorCapability(state) !== undefined
+    || selectSignalLabProfileCapability(state) !== undefined,
+  sessionExecution: state.instrument.session?.provenance.execution,
+});
+
+/**
+ * The controller gate must observe every store revision, including revisions
+ * whose selected UI slice is unchanged. Keeping that subscription in a
+ * zero-DOM leaf preserves commit-await semantics without invalidating App.
+ */
+export function RenderCommitPublisher({ runtime }: { runtime: RendererRuntime }) {
+  const renderedRevision = useSyncExternalStore(
+    runtime.store.subscribe,
+    () => runtime.store.revision,
+    () => runtime.store.revision,
+  );
+  useLayoutEffect(() => {
+    runtime.kernel.renderCommit.publish(renderedRevision);
+  }, [runtime, renderedRevision]);
+  return null;
+}
+
 export function App({
   initialWorkspace = 'spectrum',
   initialAgentOpen = true,
 }: AppProps = {}) {
   const [runtime] = useState(() => createRendererRuntime({ initialWorkspace, initialAgentOpen }));
   const { store, kernel } = runtime;
-  const state = useSyncExternalStore(store.subscribe, () => store.get());
+  const state = useStore(store, selectAppShellState, shallowEqual);
   const {
-    workspace, measurementView, agentOpen, instrument, acquisition,
-    continuous, continuousMode, error, notice, sweep,
+    workspace, agentOpen, error, notice, analyzerStartHz, analyzerStopHz,
+    hasSweep, connected, iqAvailable, generationAvailable, sessionExecution,
   } = state;
-
-  const session = instrument.session;
-  const generatorOutput = generatorOutputState(session);
-  const connected = session !== undefined;
-  const busy = selectBusy(state, kernel.instrumentTransactionOwner.current);
-  const iqCapability = selectIqCapability(state);
-  const generatorCapability = selectGeneratorCapability(state);
-  const signalLabProfileCapability = selectSignalLabProfileCapability(state);
-
-  const renderedControllerRevision = store.revision;
-  useLayoutEffect(() => {
-    kernel.renderCommit.publish(renderedControllerRevision);
-  });
 
   useEffect(() => {
     kernel.rendererMounted.current = true;
@@ -142,14 +158,14 @@ export function App({
   // quarantined key's restored default is written back to storage.
   useEffect(() => { store.persistAll(); }, []);
   useEffect(() => {
-    store.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, state.analyzer.startHz, state.analyzer.stopHz));
-  }, [state.analyzer.startHz, state.analyzer.stopHz]);
+    store.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, analyzerStartHz, analyzerStopHz));
+  }, [analyzerStartHz, analyzerStopHz]);
   useEffect(() => {
-    if (session && !generatorCapability && !signalLabProfileCapability && workspace === 'generator') store.set({ workspace: 'spectrum' });
-  }, [session, generatorCapability, signalLabProfileCapability, workspace]);
+    if (connected && !generationAvailable && workspace === 'generator') store.set({ workspace: 'spectrum' });
+  }, [connected, generationAvailable, workspace]);
   useEffect(() => {
-    if (session && !iqCapability && workspace === 'iq') store.set({ workspace: 'spectrum' });
-  }, [session, iqCapability, workspace]);
+    if (connected && !iqAvailable && workspace === 'iq') store.set({ workspace: 'spectrum' });
+  }, [connected, iqAvailable, workspace]);
   useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => store.set({ notice: undefined }), 4_000);
@@ -170,33 +186,13 @@ export function App({
   }, []);
 
   const agent = useAtomAgent({ applicationContext: runtime.agent.applicationContext, execute: runtime.agent.executeAgentTool });
-  const contextualAcquisitionMode = acquisitionModeForSession(iqCapability !== undefined);
-  const acquisitionDisabledReason = selectAcquisitionDisabledReason(state, busy);
-  const measurementActions = sweep ? <MeasurementActions runtime={runtime}/> : null;
+  const availableMeasurementActions = useMemo(() => <MeasurementActions runtime={runtime}/>, [runtime]);
+  const measurementActions = hasSweep ? availableMeasurementActions : null;
 
   return <main className={`app-shell ${agentOpen ? 'ai-open' : ''}`}>
-    <TopBar instrument={instrument} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)} onConnection={() => store.set({ connectionOpen: true })} onAgent={() => store.setKey('agentOpen', (value) => !value)}/>
-    <Sidebar
-      active={workspace}
-      measurementView={measurementView}
-      output={generatorOutput}
-      generationAvailable={generatorCapability !== undefined || signalLabProfileCapability !== undefined}
-      iqAvailable={iqCapability !== undefined}
-      spectrumAvailable={selectSpectrumCapability(state) !== undefined}
-      connected={connected}
-      acquisition={acquisition}
-      continuous={continuous}
-      acquisitionMode={continuous ? continuousMode : contextualAcquisitionMode}
-      acquisitionBusy={busy}
-      acquisitionDisabled={acquisitionDisabledReason !== undefined}
-      acquisitionDisabledReason={acquisitionDisabledReason}
-      latestSweep={sweep ? { id: sweep.id, sequence: sweep.sequence } : undefined}
-      onSelect={(next) => kernel.changeWorkspace(next)}
-      onMeasurementView={(view) => runtime.measurement.changeMeasurementView(view)}
-      onRun={() => void runtime.acquisition.startContinuousFromUi()}
-      onSingle={() => void runtime.acquisition.acquireFromUi()}
-      onStop={() => void runtime.acquisition.stopContinuousFromUi()}
-    />
+    <RenderCommitPublisher runtime={runtime}/>
+    <TopBarContainer runtime={runtime} agentOpen={agentOpen} agentConfigured={Boolean(agent.status?.configured)}/>
+    <SidebarContainer runtime={runtime}/>
     <section className={`workspace-shell ${workspace === 'spectrum' ? 'spectrum-workspace' : ''} ${workspace === 'classification' || workspace === 'detection' ? 'classification-workspace' : ''}`}>
       {(workspace === 'classification' || workspace === 'detection') && measurementActions && <div className="workspace-command-row">{measurementActions}</div>}
       {error && <div className="global-error" role="alert"><CircleAlert size={16}/><span>{error}</span><button data-agent-control="error.dismiss" onClick={() => store.set({ error: undefined })}>Dismiss</button></div>}
@@ -207,7 +203,7 @@ export function App({
       {workspace === 'generator' && <GeneratorContainer runtime={runtime}/>}
       {workspace === 'device' && <DeviceContainer runtime={runtime}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={session?.provenance.execution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => store.set({ agentOpen: false })} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={sessionExecution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => store.set({ agentOpen: false })} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     <ConnectionContainer runtime={runtime}/>
   </main>;
 }

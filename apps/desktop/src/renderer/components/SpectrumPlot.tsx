@@ -1,5 +1,5 @@
 import { Activity, Orbit } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { DetectedSignal, FirmwareTraceFrame, FirmwareTraceId, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
 import { formatFrequency, formatLevel } from '../format.js';
@@ -34,6 +34,10 @@ export interface SpectrumPlotProps {
 }
 
 const DEFAULT_DISPLAY: SpectrumDisplayConfiguration = { referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 };
+const EMPTY_FIRMWARE_TRACES: readonly FirmwareTraceFrame[] = [];
+const EMPTY_FIRMWARE_TRACE_IDS: readonly FirmwareTraceId[] = [];
+const EMPTY_MARKERS: readonly MarkerReading[] = [];
+const EMPTY_DETECTIONS: readonly DetectedSignal[] = [];
 const PLOT_WIDTH = 1200;
 const PLOT_HEIGHT = 430;
 const ATOM_MARKER_REQUEST_PROPERTY = '__tinysaAtomMarkerRequestV1';
@@ -124,49 +128,109 @@ function projectTraceIntoScratch(
   return count < 2 ? undefined : count;
 }
 
-export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwareTraceIds = [], activeTraceId = 1, markers = [], activeMarkerId, detections = [], detectionOverlay = false, selectedDetectionId, display = DEFAULT_DISPLAY, busy, onMarkerPlace }: SpectrumPlotProps) {
-  const sweepDomainRenderable = typeof sweep === 'object'
-    && sweep !== null
-    && isFiniteNumber(sweep.actualStartHz)
-    && isFiniteNumber(sweep.actualStopHz);
-  const sweepPointCount = sweep && Array.isArray(sweep.frequencyHz)
-    ? sweep.frequencyHz.length
-    : undefined;
-  const effectiveDisplay = validSpectrumDisplay(display) ? display : DEFAULT_DISPLAY;
-  const maximumDbm = effectiveDisplay.referenceLevelDbm;
-  const minimumDbm = maximumDbm - effectiveDisplay.decibelsPerDivision * effectiveDisplay.divisions;
-  const visibleTraces: readonly TraceFrame[] = (traces === undefined
-    ? sweep ? [{
-      traceId: 1,
-      mode: 'clear-write',
-      frequencyHz: sweep.frequencyHz,
-      powerDbm: sweep.powerDbm,
-      actualRbwHz: sweep.actualRbwHz,
-      ...(sweep.resolutionBandwidthQualification === undefined
-        ? {}
-        : { resolutionBandwidthQualification: sweep.resolutionBandwidthQualification }),
-      sweepCount: 1,
-      sourceSweepId: sweep.id,
-      evidence: 'host-derived',
-    }] : []
-    : traces).filter(isRenderableHostTrace);
-  const visibleFirmwareIds = new Set(visibleFirmwareTraceIds);
-  const firmwareOverlays = firmwareTraces.filter(isRenderableFirmwareTrace)
-    .filter((trace) => trace.traceId !== 1 && visibleFirmwareIds.has(trace.traceId));
-  const paintOrder = [...visibleTraces].sort((left, right) => Number(left.traceId === activeTraceId) - Number(right.traceId === activeTraceId));
-  const renderableMarkers = markers.filter(isRenderableMarker);
-  const renderableDetections = detections.filter(isRenderableDetection);
-  const activeMarker = renderableMarkers.find((marker) => marker.markerId === activeMarkerId);
-  const hostTraceLegend = sweep
-    ? paintOrder
-      .filter((trace) => projectTraceIntoScratch(trace, sweep, PLOT_WIDTH, PLOT_HEIGHT, minimumDbm, maximumDbm) !== undefined)
-      .sort((left, right) => left.traceId - right.traceId)
-    : [];
-  const firmwareTraceLegend = sweep
-    ? firmwareOverlays
-      .filter((trace) => projectTraceIntoScratch(trace, sweep, PLOT_WIDTH, PLOT_HEIGHT, minimumDbm, maximumDbm) !== undefined)
-      .sort((left, right) => left.traceId - right.traceId)
-    : [];
+export function SpectrumPlot({
+  sweep,
+  traces,
+  firmwareTraces = EMPTY_FIRMWARE_TRACES,
+  visibleFirmwareTraceIds = EMPTY_FIRMWARE_TRACE_IDS,
+  activeTraceId = 1,
+  markers = EMPTY_MARKERS,
+  activeMarkerId,
+  detections = EMPTY_DETECTIONS,
+  detectionOverlay = false,
+  selectedDetectionId,
+  display = DEFAULT_DISPLAY,
+  busy,
+  onMarkerPlace,
+}: SpectrumPlotProps) {
+  // Filtering, sorting, validation, and logical projection for the legends are
+  // tied to evidence identities, not incidental parent renders (busy state,
+  // overlays elsewhere in the workspace, or agent activity).
+  const renderModel = useMemo(() => {
+    const sweepDomainRenderable = typeof sweep === 'object'
+      && sweep !== null
+      && isFiniteNumber(sweep.actualStartHz)
+      && isFiniteNumber(sweep.actualStopHz);
+    const sweepPointCount = sweep && Array.isArray(sweep.frequencyHz)
+      ? sweep.frequencyHz.length
+      : undefined;
+    const effectiveDisplay = validSpectrumDisplay(display) ? display : DEFAULT_DISPLAY;
+    const maximumDbm = effectiveDisplay.referenceLevelDbm;
+    const minimumDbm = maximumDbm - effectiveDisplay.decibelsPerDivision * effectiveDisplay.divisions;
+    const visibleTraces: readonly TraceFrame[] = (traces === undefined
+      ? sweep ? [{
+        traceId: 1,
+        mode: 'clear-write',
+        frequencyHz: sweep.frequencyHz,
+        powerDbm: sweep.powerDbm,
+        actualRbwHz: sweep.actualRbwHz,
+        ...(sweep.resolutionBandwidthQualification === undefined
+          ? {}
+          : { resolutionBandwidthQualification: sweep.resolutionBandwidthQualification }),
+        sweepCount: 1,
+        sourceSweepId: sweep.id,
+        evidence: 'host-derived',
+      }] : []
+      : traces).filter(isRenderableHostTrace);
+    const visibleFirmwareIds = new Set(visibleFirmwareTraceIds);
+    const firmwareOverlays = firmwareTraces.filter(isRenderableFirmwareTrace)
+      .filter((trace) => trace.traceId !== 1 && visibleFirmwareIds.has(trace.traceId));
+    const paintOrder = [...visibleTraces]
+      .sort((left, right) => Number(left.traceId === activeTraceId) - Number(right.traceId === activeTraceId));
+    const renderableMarkers = markers.filter(isRenderableMarker);
+    const renderableDetections = detections.filter(isRenderableDetection);
+    const activeMarker = renderableMarkers.find((marker) => marker.markerId === activeMarkerId);
+    const hostTraceLegend = sweep
+      ? paintOrder
+        .filter((trace) => projectTraceIntoScratch(trace, sweep, PLOT_WIDTH, PLOT_HEIGHT, minimumDbm, maximumDbm) !== undefined)
+        .sort((left, right) => left.traceId - right.traceId)
+      : [];
+    const firmwareTraceLegend = sweep
+      ? firmwareOverlays
+        .filter((trace) => projectTraceIntoScratch(trace, sweep, PLOT_WIDTH, PLOT_HEIGHT, minimumDbm, maximumDbm) !== undefined)
+        .sort((left, right) => left.traceId - right.traceId)
+      : [];
+    const drawState: DrawState | undefined = sweep ? {
+      sweep,
+      paintOrder,
+      fillTrace: visibleTraces[0],
+      firmwareOverlays,
+      renderableMarkers,
+      renderableDetections,
+      detectionOverlay,
+      selectedDetectionId,
+      activeTraceId,
+      activeMarker,
+      minimumDbm,
+      maximumDbm,
+    } : undefined;
+    return {
+      sweepDomainRenderable,
+      sweepPointCount,
+      effectiveDisplay,
+      maximumDbm,
+      minimumDbm,
+      renderableMarkers,
+      renderableDetections,
+      activeMarker,
+      hostTraceLegend,
+      firmwareTraceLegend,
+      drawState,
+    };
+  }, [sweep, traces, firmwareTraces, visibleFirmwareTraceIds, activeTraceId, markers, activeMarkerId,
+    detections, detectionOverlay, selectedDetectionId, display]);
+  const {
+    sweepDomainRenderable,
+    sweepPointCount,
+    effectiveDisplay,
+    maximumDbm,
+    minimumDbm,
+    renderableMarkers,
+    renderableDetections,
+    activeMarker,
+    hostTraceLegend,
+    firmwareTraceLegend,
+  } = renderModel;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const themeRef = useRef<PlotTheme | undefined>(undefined);
@@ -174,20 +238,7 @@ export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwa
   const sizeRef = useRef<{ width: number; height: number; dpr: number }>({ width: PLOT_WIDTH, height: PLOT_HEIGHT, dpr: 1 });
   const frameRef = useRef<number | undefined>(undefined);
   const drawStateRef = useRef<DrawState | undefined>(undefined);
-  drawStateRef.current = sweep ? {
-    sweep,
-    paintOrder,
-    fillTrace: visibleTraces[0],
-    firmwareOverlays,
-    renderableMarkers,
-    renderableDetections,
-    detectionOverlay,
-    selectedDetectionId,
-    activeTraceId,
-    activeMarker,
-    minimumDbm,
-    maximumDbm,
-  } : undefined;
+  drawStateRef.current = renderModel.drawState;
 
   // DPR-aware backing-store sizing on resize only; the 2d context and canvas
   // are retained for the component lifetime and never recreated per sweep.
@@ -381,7 +432,7 @@ export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwa
   useLayoutEffect(() => {
     measureBackingStore();
     scheduleDraw();
-  });
+  }, [renderModel]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -485,7 +536,7 @@ export function SpectrumPlot({ sweep, traces, firmwareTraces = [], visibleFirmwa
           aria-label={`M${marker.markerId} ${markerCenterLabel(marker)}`}
         ><span>M{marker.markerId}</span><i className="marker-diamond" data-testid={`marker-m${marker.markerId}-diamond`}/></div>;
       })}</div></div>}
-      {sweepDomainRenderable && <div className="x-labels"><span>{formatFrequency(sweep.actualStartHz)}</span><span>{formatFrequency(sweep.actualStartHz + (sweep.actualStopHz - sweep.actualStartHz) / 2)}</span><span>{formatFrequency(sweep.actualStopHz)}</span></div>}
+      {sweepDomainRenderable && sweep && <div className="x-labels"><span>{formatFrequency(sweep.actualStartHz)}</span><span>{formatFrequency(sweep.actualStartHz + (sweep.actualStopHz - sweep.actualStartHz) / 2)}</span><span>{formatFrequency(sweep.actualStopHz)}</span></div>}
     </div>
   </section>;
 }

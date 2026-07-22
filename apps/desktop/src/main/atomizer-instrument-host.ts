@@ -107,7 +107,7 @@ type HostLifecycle = 'open' | 'closing' | 'closed';
 export class AtomizerInstrumentHost {
   readonly #listeners = new Set<(event: AtomizerInstrumentEvent) => void>();
   readonly #unsubscribeManager: () => void;
-  #lastPublishedMeasurement: { sessionId: string; configurationRevision: string; sequence: number } | undefined;
+  #lastAcceptedMeasurement: { sessionId: string; configurationRevision: string; sequence: number } | undefined;
   readonly #normalOperations: ScheduledHostOperation[] = [];
   #safetyOperation: ScheduledHostOperation | undefined;
   #operationRunning = false;
@@ -184,7 +184,7 @@ export class AtomizerInstrumentHost {
     this.#requireSessionWorkAvailable('Manual acquisition');
     return this.#serializeSessionOpen(async () => {
       if (this.#streamRun) throw new Error('Manual acquisition is unavailable while continuous acquisition is running');
-      return this.#acquireAndPublish();
+      return this.#acquireAndMaybePublish(false);
     });
   }
 
@@ -401,7 +401,7 @@ export class AtomizerInstrumentHost {
       while (!run.stopRequested && this.#streamRun === run) {
         const startedAt = this.#monotonicMilliseconds();
         await this.#serializeOpen(async () => {
-          if (!run.stopRequested && this.#streamRun === run) await this.#acquireAndPublish();
+          if (!run.stopRequested && this.#streamRun === run) await this.#acquireAndMaybePublish(true);
         });
         if (!run.stopRequested && this.#streamRun === run) {
           const elapsed = Math.max(0, this.#monotonicMilliseconds() - startedAt);
@@ -435,7 +435,7 @@ export class AtomizerInstrumentHost {
     return value;
   }
 
-  async #acquireAndPublish(): Promise<InstrumentMeasurement> {
+  async #acquireAndMaybePublish(publishMeasurement: boolean): Promise<InstrumentMeasurement> {
     if (this.#pendingAcquisition) throw new Error('Instrument host acquisition transaction re-entered');
     const pending: { eventSequence?: number } = {};
     this.#pendingAcquisition = pending;
@@ -444,7 +444,7 @@ export class AtomizerInstrumentHost {
       if (pending.eventSequence !== undefined && pending.eventSequence !== measurement.sequence) {
         throw new Error('Instrument manager measurement event and acquisition return disagree');
       }
-      this.#emitMeasurementOnce(measurement, true);
+      this.#acceptMeasurementOnce(measurement, true, publishMeasurement);
       return measurement;
     } finally {
       if (this.#pendingAcquisition === pending) this.#pendingAcquisition = undefined;
@@ -461,7 +461,7 @@ export class AtomizerInstrumentHost {
         }
         this.#pendingAcquisition.eventSequence = event.measurement.sequence;
       } else {
-        this.#emitMeasurementOnce(event.measurement, false);
+        this.#acceptMeasurementOnce(event.measurement, false, false);
       }
     } else {
       if ((event.type === 'status' && event.status === 'faulted') || event.type === 'error') {
@@ -470,15 +470,19 @@ export class AtomizerInstrumentHost {
       this.#emit(event);
     }
     if (event.type === 'disconnected') {
-      this.#lastPublishedMeasurement = undefined;
+      this.#lastAcceptedMeasurement = undefined;
     }
   }
 
-  #emitMeasurementOnce(measurement: InstrumentMeasurement, allowNovel: boolean): void {
+  #acceptMeasurementOnce(
+    measurement: InstrumentMeasurement,
+    allowNovel: boolean,
+    publishMeasurement: boolean,
+  ): void {
     // The manager already polices sequence monotonicity and content identity;
-    // the host only needs once-only publication when the same measurement is
+    // the host only needs once-only acceptance when the same measurement is
     // delivered through both the manager event and the acquisition return.
-    const last = this.#lastPublishedMeasurement;
+    const last = this.#lastAcceptedMeasurement;
     if (last
       && last.sessionId === measurement.sessionId
       && last.configurationRevision === measurement.configurationRevision
@@ -490,12 +494,16 @@ export class AtomizerInstrumentHost {
       this.#faultActiveStream(message);
       throw new Error(message);
     }
-    this.#lastPublishedMeasurement = {
+    this.#lastAcceptedMeasurement = {
       sessionId: measurement.sessionId,
       configurationRevision: measurement.configurationRevision,
       sequence: measurement.sequence,
     };
-    this.#emit({ type: 'measurement', measurement });
+    // Manual callers already receive this (potentially large) object as the
+    // acquire() return. Only the continuous pump needs a second delivery as a
+    // renderer event; suppressing it here avoids an otherwise redundant
+    // schema walk and structuredClone, especially for future large payloads.
+    if (publishMeasurement) this.#emit({ type: 'measurement', measurement });
   }
 
   async #executeFeatureAndSnapshot(request: InstrumentFeatureRequest): Promise<AtomizerInstrumentFeatureExecution> {

@@ -204,6 +204,13 @@ export class InstrumentEventsController {
     const k = this.k;
     const active = k.state.instrument.session;
     if (!active || active.sessionId !== configuration.sessionId) return;
+    const current = active.configuration;
+    if (current?.configurationRevision === configuration.configurationRevision) {
+      if (!sameStructuredValue(current, configuration)) {
+        throw new Error(`Instrument configuration revision ${configuration.configurationRevision} changed after admission`);
+      }
+      return;
+    }
     this.acceptInstrumentState({ ...k.state.instrument, session: { ...active, configuration } });
   }
 

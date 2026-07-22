@@ -202,7 +202,7 @@ describe('AtomizerInstrumentHost startup', () => {
 });
 
 describe('AtomizerInstrumentHost acquisition ownership', () => {
-  it('serializes continuous acquisition and publishes one event when manager event and return represent the same measurement', async () => {
+  it('publishes continuous measurements once while returning manual measurements without cloning them into events', async () => {
     const manager = new FakeManager();
     manager.session = sessionFixture(configurationFixture());
     manager.echoMeasurementEvent = true;
@@ -219,8 +219,8 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     expect(measurements[0]?.measurementId).toBe('measurement:1');
     expect(host.state().streaming).toEqual({ status: 'stopped' });
 
-    await host.acquire();
-    expect(measurements.map((measurement) => measurement.measurementId)).toEqual(['measurement:1', 'measurement:2']);
+    await expect(host.acquire()).resolves.toMatchObject({ measurementId: 'measurement:2' });
+    expect(measurements.map((measurement) => measurement.measurementId)).toEqual(['measurement:1']);
     expect(manager.acquireCalls).toBe(2);
   });
 
@@ -385,7 +385,7 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
 
     manager.measurementQueue.push(measurementFixture(2));
     await expect(host.acquire()).resolves.toMatchObject({ measurementId: 'measurement:2' });
-    expect(measurements.map((measurement) => measurement.measurementId)).toEqual(['measurement:2']);
+    expect(measurements).toHaveLength(0);
   });
 
   it('uses collision-safe measurement tuples even when opaque IDs contain delimiters', async () => {
@@ -399,8 +399,12 @@ describe('AtomizerInstrumentHost acquisition ownership', () => {
     const measurements: InstrumentMeasurement[] = [];
     host.subscribe((event) => { if (event.type === 'measurement') measurements.push(event.measurement); });
 
-    await host.acquire();
-    await host.acquire();
+    await host.startStreaming();
+    await until(() => manager.acquireCalls === 1);
+    await host.stopStreaming();
+    await host.startStreaming();
+    await until(() => manager.acquireCalls === 2);
+    await host.stopStreaming();
     expect(measurements.map((measurement) => measurement.measurementId)).toEqual(['first', 'second']);
   });
 

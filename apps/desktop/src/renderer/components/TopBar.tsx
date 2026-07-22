@@ -3,7 +3,7 @@ import type { AtomizerInstrumentState, InstrumentSessionSnapshot } from '@tinysa
 import { AtomicMark } from './AtomicMark.js';
 
 export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, onAgent }: {
-  instrument: AtomizerInstrumentState;
+  instrument: Pick<AtomizerInstrumentState, 'startup' | 'session'>;
   agentOpen: boolean;
   agentConfigured: boolean;
   onConnection(): void;

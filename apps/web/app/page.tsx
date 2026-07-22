@@ -24,20 +24,23 @@ export default function AtomizerWebPage() {
     let active = true;
     const signalLab = location.hostname === 'signal.radio-lab.app';
     if (signalLab) document.title = 'SignalLab — AtomOS';
+    const appModule = import('../../desktop/src/renderer/AppShell.js');
 
     void (async () => {
       // SignalLab is the factory-default source on every browser host, so
       // connect it at startup the way the desktop app auto-connects its
       // preferred candidate — the operator should not have to open the
       // chooser to get a working session.
-      try {
-        const discovery = await window.atomizerInstrument.discover();
-        const candidate = discovery.candidates.find((value) => value.sourceKind === 'signal-lab');
-        if (candidate) await window.atomizerInstrument.connect(candidate);
-      } catch (error) {
-        console.error('[Atomizer Web] automatic SignalLab connection failed', error);
-      }
-      const { App } = await import('../../desktop/src/renderer/AppShell.js');
+      const autoConnect = (async () => {
+        try {
+          const discovery = await window.atomizerInstrument.discover();
+          const candidate = discovery.candidates.find((value) => value.sourceKind === 'signal-lab');
+          if (candidate) await window.atomizerInstrument.connect(candidate);
+        } catch (error) {
+          console.error('[Atomizer Web] automatic SignalLab connection failed', error);
+        }
+      })();
+      const [{ App }] = await Promise.all([appModule, autoConnect]);
       if (active) setLaunch({ App, signalLab });
     })();
     return () => { active = false; };

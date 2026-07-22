@@ -6,12 +6,16 @@ import {
   type AtomizerInstrumentEvent,
   type InstrumentCandidate,
 } from '@tinysa/contracts';
+import { InProcessSignalLabDriver } from '../../desktop/src/shared/in-process-signal-lab-driver.js';
 import { createBrowserInstrumentApi } from './web-bridge.js';
 
 const SYNTHETIC_CONTROLS = { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' } as const;
 
 async function connectSignalLab() {
-  const api = createBrowserInstrumentApi();
+  // jsdom has no real Worker. Production uses BrowserSignalLabWorkerDriver;
+  // inject the same underlying driver here to retain the full bridge contract
+  // suite, while the worker transport has its own focused loopback tests.
+  const api = createBrowserInstrumentApi(new InProcessSignalLabDriver());
   const discovery = await api.discover();
   const candidate: InstrumentCandidate = discovery.candidates[0]!;
   const session = await api.connect(candidate);

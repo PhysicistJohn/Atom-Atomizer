@@ -6,25 +6,25 @@ import {
   type SweepExportRequest,
 } from '@tinysa/contracts';
 import { createBrowserAtomAgent } from './atom-realtime-client.js';
-import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
+import { InstrumentDriverRegistry, InstrumentManager, type InstrumentDriver } from '@tinysa/instrument-runtime';
 import {
   AtomizerInstrumentHost,
   type AtomizerInstrumentPreferencePort,
 } from '../../desktop/src/main/atomizer-instrument-host.js';
 import type { LoadedInstrumentPreference } from '../../desktop/src/main/instrument-preference.js';
 import {
-  InProcessSignalLabDriver,
-  SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
-  SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
-} from '../../desktop/src/shared/in-process-signal-lab-driver.js';
+  BrowserSignalLabWorkerDriver,
+  BROWSER_SIGNAL_LAB_CANDIDATE_ID,
+  BROWSER_SIGNAL_LAB_DRIVER_ID,
+} from './browser-signal-lab-driver.js';
 
 const PREF_KEY = 'atomizer:web:instrument-preference';
 
 const FACTORY_PREFERENCE = {
   schemaVersion: 1,
-  driverId: SIGNAL_LAB_INSTRUMENT_DRIVER_ID,
+  driverId: BROWSER_SIGNAL_LAB_DRIVER_ID,
   candidateKind: 'signal-lab',
-  candidateId: SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID,
+  candidateId: BROWSER_SIGNAL_LAB_CANDIDATE_ID,
   updatedAt: '2026-01-01T00:00:00.000Z',
 } as const;
 
@@ -67,13 +67,16 @@ const browserPreferencePort: AtomizerInstrumentPreferencePort = {
 
 /**
  * The browser edition runs the same InstrumentManager + AtomizerInstrumentHost
- * stack — and the same in-process SignalLab driver — as the desktop main
- * process; only this thin window-API adapter differs. Contract enforcement,
- * streaming, event ordering, and measurement reconciliation are therefore
- * shared, not reimplemented.
+ * stack as the desktop main process. SignalLab itself lives in a dedicated
+ * module worker so waveform generation, hashing, and I/Q decoding never block
+ * the page; only this transport driver and thin window-API adapter differ.
+ * Contract enforcement, streaming, event ordering, and measurement
+ * reconciliation remain shared rather than reimplemented.
  */
-function createBrowserInstrumentApi(): AtomizerInstrumentApiV1 {
-  const manager = new InstrumentManager(new InstrumentDriverRegistry([new InProcessSignalLabDriver()]));
+function createBrowserInstrumentApi(
+  driver: InstrumentDriver = new BrowserSignalLabWorkerDriver(),
+): AtomizerInstrumentApiV1 {
+  const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]));
   const host = new AtomizerInstrumentHost(manager, browserPreferencePort);
   return {
     version: ATOMIZER_INSTRUMENT_API_VERSION,

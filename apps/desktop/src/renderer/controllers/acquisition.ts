@@ -530,15 +530,28 @@ export class AcquisitionController {
     }
     k.analysisSequence.current++;
     const nextHistory = [next, ...k.state.history].slice(0, HISTORY_LIMIT);
-    k.set({
+    const nextTraceFrames = k.traceAccumulator.current.update(next);
+    const basePatch = {
       sweep: next,
       history: nextHistory,
-      traceFrames: k.traceAccumulator.current.update(next),
+      traceFrames: nextTraceFrames,
       firmwareTraceFrames: next.firmwareTraces ?? [],
+    };
+    let trackerRows: readonly DetectedSignal[];
+    try {
+      const candidates = k.detector.current.analyze(next);
+      trackerRows = k.tracker.current.update(next, candidates);
+    } catch (value) {
+      // Trace accumulation is stateful. Publish the sweep whose trace was
+      // already admitted so a later successful sweep cannot include hidden
+      // evidence that is absent from the visible sweep history.
+      k.set(basePatch);
+      throw value;
+    }
+    k.set({
+      ...basePatch,
+      detections: trackerRows,
     });
-    const candidates = k.detector.current.analyze(next);
-    const trackerRows = k.tracker.current.update(next, candidates);
-    k.set({ detections: trackerRows });
     if (selectIqCapability(k.state) === undefined) {
       const target = trackerRows
         .filter((signal) => signal.state !== 'released')

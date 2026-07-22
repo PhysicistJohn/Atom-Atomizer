@@ -44,6 +44,7 @@ import {
   analyzeBayesianSweep,
   bayesianDetectionEvidenceMatches,
   compactBayesianEvidenceSweep,
+  freezeRetainedBayesianEvidence,
 } from './bayesian-signal-detector.js';
 export { BAYESIAN_DETECTOR_MODEL } from './bayesian-signal-detector.js';
 import {
@@ -174,6 +175,11 @@ export class SignalTracker {
 
   update(sweep: Sweep, candidates: readonly DetectedSignal[]): readonly DetectedSignal[] {
     validateSweep(sweep);
+    let retainedSourceSweep: Sweep | undefined;
+    const sourceSweep = (): Sweep => {
+      retainedSourceSweep ??= compactBayesianEvidenceSweep(sweep);
+      return retainedSourceSweep;
+    };
     const previousAgileOpportunity = this.#frequencyAgileActivity?.opportunities.at(-1)?.sweep;
     if (previousAgileOpportunity
       && frequencyAgileSweepEligible(sweep)
@@ -199,6 +205,7 @@ export class SignalTracker {
         track.signal,
         candidates[match.candidateIndex]!,
         sweep,
+        sourceSweep(),
         this.config,
         track.consecutiveDetectionSweeps,
       );
@@ -211,7 +218,7 @@ export class SignalTracker {
     candidates.forEach((candidate, index) => {
       if (usedCandidates.has(index)) return;
       const id = `signal-${String(this.#nextId++).padStart(4, '0')}`;
-      const admissionObservation = localClassificationAdmissionObservation(candidate, sweep);
+      const admissionObservation = localClassificationAdmissionObservation(candidate, sourceSweep());
       this.#tracks.set(id, {
         released: false,
         consecutiveDetectionSweeps: 1,
@@ -222,7 +229,7 @@ export class SignalTracker {
           detectorConfig: structuredClone(this.config),
           classificationRegionSweepIds: [sweep.id],
           classificationRegionObservation: admissionObservation,
-          localClassificationObservations: [admissionObservation],
+          localClassificationObservations: freezeRetainedBayesianEvidence([admissionObservation]),
         },
       });
       candidateTrackIds.set(index, id);
@@ -289,7 +296,7 @@ export class SignalTracker {
         association,
         candidates,
         candidateTrackIds,
-        sweep,
+        sourceSweep(),
       );
       if (!associationObservation) continue;
       if (memberTracks.some((track) =>
@@ -334,13 +341,13 @@ export class SignalTracker {
             sweep.actualRbwHz,
             multicomponentSweepBinWidthHz(sweep),
           ));
-      const regularComponentAssociationObservations = [
+      const regularComponentAssociationObservations = freezeRetainedBayesianEvidence([
         ...retainedAssociationObservations,
         associationObservation,
       // The production classifier consumes exactly eight association looks.
       // Retaining that complete replay window avoids quadratic revalidation
       // of older looks that can never enter a classification.
-      ].slice(-8);
+      ].slice(-8));
       const associationRegionSweepIds = regularComponentAssociationObservations.map(
         (observation) => observation.sourceSweep.id,
       );
@@ -445,7 +452,7 @@ export class SignalTracker {
     }
 
     this.#updateFrequencyAgileActivity(sweep, candidates, candidateTrackIds);
-    const result = [...this.#tracks.values()].map((track) => structuredClone(track.signal));
+    const result = [...this.#tracks.values()].map((track) => cloneTrackedSignal(track.signal));
     const frequencyAgileRepresentative = this.#frequencyAgileRepresentative();
     if (frequencyAgileRepresentative) result.push(frequencyAgileRepresentative);
     for (const [trackId, track] of this.#tracks) if (track.released) this.#tracks.delete(trackId);
@@ -594,6 +601,40 @@ export class SignalTracker {
       associationMissedSweeps: associationOpportunities.length - latestPositiveOpportunityIndex - 1,
     };
   }
+}
+
+/**
+ * Keep mutable tracker state behind a clone boundary while reusing the large,
+ * authority-owned provenance graphs that were deeply frozen on admission.
+ * Replacing the retained fields with `undefined` before cloning preserves the
+ * serialized property order without traversing their sweep vectors.
+ */
+function cloneTrackedSignal(signal: DetectedSignal): DetectedSignal {
+  const classificationRegionObservation = signal.classificationRegionObservation;
+  const localClassificationObservations = signal.localClassificationObservations;
+  const regularComponentAssociationObservations = signal.regularComponentAssociationObservations;
+  const snapshot = structuredClone({
+    ...signal,
+    classificationRegionObservation: undefined,
+    localClassificationObservations: undefined,
+    regularComponentAssociationObservations: undefined,
+  }) as DetectedSignal;
+  if (classificationRegionObservation === undefined) {
+    delete snapshot.classificationRegionObservation;
+  } else {
+    snapshot.classificationRegionObservation = classificationRegionObservation;
+  }
+  if (localClassificationObservations === undefined) {
+    delete snapshot.localClassificationObservations;
+  } else {
+    snapshot.localClassificationObservations = localClassificationObservations;
+  }
+  if (regularComponentAssociationObservations === undefined) {
+    delete snapshot.regularComponentAssociationObservations;
+  } else {
+    snapshot.regularComponentAssociationObservations = regularComponentAssociationObservations;
+  }
+  return snapshot;
 }
 
 /**
@@ -1693,6 +1734,7 @@ function mergeSignal(
   previous: DetectedSignal,
   candidate: DetectedSignal,
   sweep: Sweep,
+  sourceSweep: Sweep,
   config: SignalDetectionConfig,
   consecutiveDetectionSweeps: number,
 ): DetectedSignal {
@@ -1705,7 +1747,7 @@ function mergeSignal(
     : undefined;
   const classificationRegionStartHz = previous.classificationRegionStartHz ?? previous.bayesianEvidence.testedRegionStartHz;
   const classificationRegionStopHz = previous.classificationRegionStopHz ?? previous.bayesianEvidence.testedRegionStopHz;
-  const admissionObservation = localClassificationAdmissionObservation(candidate, sweep);
+  const admissionObservation = localClassificationAdmissionObservation(candidate, sourceSweep);
   const frozenObservation = previous.classificationRegionObservation;
   const compatibleLegacyAdmissionObservations: readonly LocalClassificationRegionObservation[] =
     previous.sweepIds.length === 1
@@ -1732,11 +1774,11 @@ function mergeSignal(
     classificationRegionStopHz,
     classificationRegionSweepIds: previous.classificationRegionSweepIds ?? [previous.sweepIds[0]!],
     classificationRegionObservation: previous.classificationRegionObservation
-      ?? candidate.classificationRegionObservation,
-    localClassificationObservations: [
+      ?? admissionObservation,
+    localClassificationObservations: freezeRetainedBayesianEvidence([
       ...previousAdmissionObservations,
       admissionObservation,
-    ].slice(-64),
+    ].slice(-64)),
     qualityFlags: previous.qualityFlags,
     associationMode: staticRegionAssociation ?? 'frequency-local',
     ...(staticRegionAssociation ? {
@@ -1772,26 +1814,26 @@ function mergeSignal(
 
 function localClassificationAdmissionObservation(
   candidate: DetectedSignal,
-  sweep: Sweep,
+  sourceSweep: Sweep,
 ): LocalClassificationRegionObservation {
-  return {
+  return freezeRetainedBayesianEvidence({
     // Bind the ledger to the actual tracker input, never to a caller-supplied
     // embedded sweep. Extraction independently replays the claimed candidate
     // and therefore fails closed if candidate fields or evidence were forged.
-    sourceSweep: compactBayesianEvidenceSweep(sweep),
+    sourceSweep,
     startHz: candidate.startHz,
     stopHz: candidate.stopHz,
     peakHz: candidate.peakHz,
     detectorId: candidate.detectorId,
     localBayesianEvidence: structuredClone(candidate.bayesianEvidence),
-  };
+  });
 }
 
 function regularComponentAssociationObservation(
   association: RegularSpectralComponentAssociation,
   candidates: readonly DetectedSignal[],
   candidateTrackIds: ReadonlyMap<number, string>,
-  sweep: Sweep,
+  sourceSweep: Sweep,
 ): RegularSpectralComponentAssociationObservation | undefined {
   const members = association.candidateIndices.map((candidateIndex) => {
     const candidate = candidates[candidateIndex];
@@ -1807,8 +1849,8 @@ function regularComponentAssociationObservation(
     };
   });
   if (members.some((member) => member === undefined)) return undefined;
-  return {
-    sourceSweep: compactBayesianEvidenceSweep(sweep),
+  return freezeRetainedBayesianEvidence({
+    sourceSweep,
     observedRegionStartHz: association.startHz,
     observedRegionStopHz: association.stopHz,
     spacingHz: association.spacingHz,
@@ -1816,7 +1858,7 @@ function regularComponentAssociationObservation(
     members: members
       .filter((member): member is NonNullable<typeof member> => member !== undefined)
       .sort((left, right) => left.trackId.localeCompare(right.trackId)),
-  };
+  });
 }
 
 function multicomponentAssociationObservation(

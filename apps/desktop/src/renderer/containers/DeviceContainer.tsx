@@ -1,17 +1,36 @@
 import { DeviceWorkspace } from '../components/DeviceWorkspace.js';
-import { selectBusy, selectTouchBusy, useStore } from '../store.js';
+import { sameSessionWithoutConfiguration, selectBusy, selectTouchBusy, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
+const selectDeviceState = (state: AtomizerRendererState) => ({
+  session: state.instrument.session,
+  diagnostics: state.diagnostics,
+  screenFrame: state.screenFrame,
+  selectedProfile: state.selectedProfile,
+});
+
+type DeviceState = ReturnType<typeof selectDeviceState> & { readonly busy: boolean; readonly touchBusy: boolean };
+const sameDeviceState = (left: DeviceState, right: DeviceState) =>
+  sameSessionWithoutConfiguration(left.session, right.session)
+  && Object.is(left.diagnostics, right.diagnostics)
+  && Object.is(left.screenFrame, right.screenFrame)
+  && left.selectedProfile === right.selectedProfile
+  && left.busy === right.busy
+  && left.touchBusy === right.touchBusy;
+
 export function DeviceContainer({ runtime }: { runtime: RendererRuntime }) {
-  const s = useStore(runtime.store, (state) => state);
   const { features } = runtime;
-  const busy = selectBusy(s, runtime.kernel.instrumentTransactionOwner.current);
+  const s = useStore(runtime.store, (state) => ({
+    ...selectDeviceState(state),
+    busy: selectBusy(state, runtime.kernel.instrumentTransactionOwner.current),
+    touchBusy: selectTouchBusy(state),
+  }), sameDeviceState);
   return <DeviceWorkspace
-    session={s.instrument.session}
+    session={s.session}
     diagnostics={s.diagnostics}
     frame={s.screenFrame}
-    busy={busy}
-    touchBusy={selectTouchBusy(s)}
+    busy={s.busy}
+    touchBusy={s.touchBusy}
     selectedProfile={s.selectedProfile}
     onProfile={(profileId) => void features.selectSignalLabProfile(profileId)}
     onRefresh={() => void features.refreshDiagnosticsFromUi()}

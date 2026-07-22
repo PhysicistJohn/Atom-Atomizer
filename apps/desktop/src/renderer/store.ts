@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import {
   channelMeasurementConfigurationSchema,
   analyzerConfigSchema,
@@ -309,8 +309,66 @@ export function createInitialRendererState(options: {
   };
 }
 
-export function useStore<T>(store: AtomizerStore, selector: (state: AtomizerRendererState) => T): T {
-  return useSyncExternalStore(store.subscribe, () => selector(store.get()));
+export type StoreEquality<T> = (left: T, right: T) => boolean;
+
+/** Object.is comparison for every own enumerable field of a selected record. */
+export function shallowEqual<T>(left: T, right: T): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(rightRecord, key) && Object.is(leftRecord[key], rightRecord[key]));
+}
+
+/**
+ * React selector binding with cached snapshots and optional result equality.
+ * `useSyncExternalStore` requires a stable snapshot identity; retaining the
+ * previous selected value when it remains equal prevents unrelated global
+ * state writes from scheduling a component render. The per-selector memo is
+ * recreated when an inline selector changes identity, while the committed
+ * selection instance preserves equality across that transition.
+ */
+export function useStore<T>(
+  store: AtomizerStore,
+  selector: (state: AtomizerRendererState) => T,
+  isEqual: StoreEquality<T> = Object.is,
+): T {
+  const instanceRef = useRef<{ hasValue: boolean; value: T | undefined } | undefined>(undefined);
+  const instance = instanceRef.current ??= { hasValue: false, value: undefined };
+  const getSelection = useMemo(() => {
+    let hasMemo = false;
+    let memoizedSnapshot: AtomizerRendererState;
+    let memoizedSelection: T;
+    return () => {
+      const snapshot = store.get();
+      if (!hasMemo) {
+        hasMemo = true;
+        memoizedSnapshot = snapshot;
+        const nextSelection = selector(snapshot);
+        if (instance.hasValue && isEqual(instance.value as T, nextSelection)) {
+          memoizedSelection = instance.value as T;
+          return memoizedSelection;
+        }
+        memoizedSelection = nextSelection;
+        return nextSelection;
+      }
+      if (Object.is(memoizedSnapshot, snapshot)) return memoizedSelection;
+      const nextSelection = selector(snapshot);
+      memoizedSnapshot = snapshot;
+      if (isEqual(memoizedSelection, nextSelection)) return memoizedSelection;
+      memoizedSelection = nextSelection;
+      return nextSelection;
+    };
+  }, [store, selector, isEqual, instance]);
+  const selection = useSyncExternalStore(store.subscribe, getSelection, getSelection);
+  useEffect(() => {
+    instance.hasValue = true;
+    instance.value = selection;
+  }, [instance, selection]);
+  return selection;
 }
 
 function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
@@ -370,27 +428,53 @@ export function generatorOutputState(session: InstrumentSessionSnapshot | undefi
   return 'off';
 }
 
+/** Configuration revisions are acquisition bookkeeping, not presentation
+ * input for session identity/capability views such as TopBar and Device. */
+export function sameSessionWithoutConfiguration(
+  left: InstrumentSessionSnapshot | undefined,
+  right: InstrumentSessionSnapshot | undefined,
+): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right) return false;
+  return left.sessionId === right.sessionId
+    && left.driverId === right.driverId
+    && Object.is(left.candidate, right.candidate)
+    && Object.is(left.provenance, right.provenance)
+    && Object.is(left.capabilities, right.capabilities)
+    && left.rfOutput === right.rfOutput
+    && left.rfOutputQualification === right.rfOutputQualification
+    && Object.is(left.receiveOnlySafety, right.receiveOnlySafety)
+    && Object.is(left.fault, right.fault);
+}
+
 /** Acquisition is source-capability driven. Workspaces are projections only. */
 export function acquisitionModeForSession(iqAvailable: boolean): ContinuousAcquisitionMode {
   return iqAvailable ? 'complex-iq' : 'spectrum';
 }
 
-export function selectSpectrumCapability(state: AtomizerRendererState) {
+type InstrumentStateSlice = Pick<AtomizerRendererState, 'instrument'>;
+type IqAvailabilityStateSlice = InstrumentStateSlice & Pick<AtomizerRendererState, 'selectedProfile'>;
+type BusyStateSlice = Pick<AtomizerRendererState,
+  'connectionBusy' | 'continuous' | 'continuousMode' | 'acquisition' | 'instrumentTransactionActive'>;
+type TouchBusyStateSlice = Pick<AtomizerRendererState,
+  'connectionBusy' | 'instrumentTransactionActive' | 'remoteGestureActive' | 'acquisition'>;
+
+export function selectSpectrumCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
 }
-export function selectDetectedPowerCapability(state: AtomizerRendererState) {
+export function selectDetectedPowerCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
 }
-export function selectIqCapability(state: AtomizerRendererState) {
+export function selectIqCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
 }
-export function selectGeneratorCapability(state: AtomizerRendererState) {
+export function selectGeneratorCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
 }
-export function selectSignalLabProfileCapability(state: AtomizerRendererState) {
+export function selectSignalLabProfileCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.features.find((capability) => capability.kind === 'signal-lab-profile-selection');
 }
-export function selectIqCaptureUnavailableReason(state: AtomizerRendererState): string | undefined {
+export function selectIqCaptureUnavailableReason(state: IqAvailabilityStateSlice): string | undefined {
   const signalLabProfileCapability = selectSignalLabProfileCapability(state);
   return signalLabProfileCapability?.iqProfileIds !== undefined
     && (state.selectedProfile === undefined || !signalLabProfileCapability.iqProfileIds.includes(state.selectedProfile))
@@ -399,7 +483,7 @@ export function selectIqCaptureUnavailableReason(state: AtomizerRendererState): 
 }
 
 /** Streaming is background collection, not a global UI lock; see App shell. */
-export function selectBusy(state: AtomizerRendererState, instrumentTransactionOwner: string | undefined): boolean {
+export function selectBusy(state: BusyStateSlice, instrumentTransactionOwner: string | undefined): boolean {
   const backgroundAnalysisActive = state.continuous
     && state.continuousMode === 'complex-iq'
     && (instrumentTransactionOwner === 'continuous-complex-iq-buffer'
@@ -413,13 +497,13 @@ export function selectBusy(state: AtomizerRendererState, instrumentTransactionOw
 
 /** A running stream may be paused for one admitted remote tap. Every other
  * compound operation, and the tap itself, closes touch admission. */
-export function selectTouchBusy(state: AtomizerRendererState): boolean {
+export function selectTouchBusy(state: TouchBusyStateSlice): boolean {
   return state.connectionBusy || state.instrumentTransactionActive || state.remoteGestureActive
     || state.acquisition === 'configuring' || state.acquisition === 'retuning' || state.acquisition === 'acquiring';
 }
 
 export function selectAcquisitionDisabledReason(
-  state: AtomizerRendererState,
+  state: IqAvailabilityStateSlice,
   busy: boolean,
 ): string | undefined {
   const connected = state.instrument.session !== undefined;

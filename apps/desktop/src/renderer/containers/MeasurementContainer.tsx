@@ -2,8 +2,30 @@ import { useMemo, type ReactNode } from 'react';
 import { Download } from 'lucide-react';
 import { readMarkers } from '@tinysa/analysis';
 import { MeasurementWorkspace } from '../components/MeasurementWorkspace.js';
-import { selectBusy, selectSpectrumCapability, useStore } from '../store.js';
+import { selectBusy, selectSpectrumCapability, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
+
+const selectMeasurementState = (state: AtomizerRendererState) => ({
+  measurementView: state.measurementView,
+  spectrumCapability: selectSpectrumCapability(state),
+  analyzer: state.analyzer,
+  sweep: state.sweep,
+  history: state.history,
+  detections: state.detections,
+  acquisition: state.acquisition,
+  continuous: state.continuous,
+  traceConfiguration: state.traceConfiguration,
+  traceFrames: state.traceFrames,
+  firmwareTraceFrames: state.firmwareTraceFrames,
+  visibleFirmwareTraceIds: state.visibleFirmwareTraceIds,
+  activeTraceId: state.activeTraceId,
+  markers: state.markers,
+  activeMarkerId: state.activeMarkerId,
+  markerSearchConfiguration: state.markerSearchConfiguration,
+  displayConfiguration: state.displayConfiguration,
+  waterfallConfiguration: state.waterfallConfiguration,
+  channelConfiguration: state.channelConfiguration,
+});
 
 /** Export CSV / `{ }` JSON command block (rendered only when a sweep exists). */
 export function MeasurementActions({ runtime }: { runtime: RendererRuntime }) {
@@ -18,9 +40,11 @@ export function MeasurementContainer({ runtime, measurementActions }: {
   runtime: RendererRuntime;
   measurementActions: ReactNode;
 }) {
-  const s = useStore(runtime.store, (state) => state);
   const { acquisition, measurement, kernel } = runtime;
-  const busy = selectBusy(s, kernel.instrumentTransactionOwner.current);
+  const s = useStore(runtime.store, (state) => ({
+    ...selectMeasurementState(state),
+    busy: selectBusy(state, kernel.instrumentTransactionOwner.current),
+  }), shallowEqual);
   const markerReadings = useMemo(
     () => readMarkers(s.markers, s.traceFrames, s.detections),
     [s.markers, s.traceFrames, s.detections],
@@ -28,7 +52,7 @@ export function MeasurementContainer({ runtime, measurementActions }: {
   return <MeasurementWorkspace
     measurementActions={measurementActions}
     view={s.measurementView}
-    analyzer={s.analyzer} spectrumCapability={selectSpectrumCapability(s)} busy={busy} streaming={s.continuous} onAnalyzer={(configuration) => void acquisition.updateAnalyzerFromUi(configuration)}
+    analyzer={s.analyzer} spectrumCapability={s.spectrumCapability} busy={s.busy} streaming={s.continuous} onAnalyzer={(configuration) => void acquisition.updateAnalyzerFromUi(configuration)}
     sweep={s.sweep} history={s.history} detections={s.detections} acquisition={s.acquisition}
     traces={s.traceConfiguration} frames={s.traceFrames} firmwareFrames={s.firmwareTraceFrames} visibleFirmwareTraceIds={s.visibleFirmwareTraceIds} onFirmwareTraceVisibility={(traceId, visible) => measurement.configureFirmwareTraceVisibility(traceId, visible)} activeTraceId={s.activeTraceId} onActiveTrace={(traceId) => runtime.store.set({ activeTraceId: traceId })} markers={s.markers} readings={markerReadings}
     activeMarkerId={s.activeMarkerId} markerSearch={s.markerSearchConfiguration} display={s.displayConfiguration}

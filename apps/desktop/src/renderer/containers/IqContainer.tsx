@@ -2,13 +2,23 @@ import { useEffect, useMemo, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
 import { decodeComplexIqChannels, previewComplexIq } from '../complex-iq.js';
 import { recoverIqConstellation, type RecoveredConstellation } from '../embedding-classifier-runtime.js';
-import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, useStore } from '../store.js';
+import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
+const selectIqState = (state: AtomizerRendererState) => ({
+  connected: state.instrument.session !== undefined,
+  capability: selectIqCapability(state),
+  captureUnavailableReason: selectIqCaptureUnavailableReason(state),
+  iqCapture: state.iqCapture,
+  iqConfiguration: state.iqConfiguration,
+  classification: state.classification,
+});
+
 export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
-  const s = useStore(runtime.store, (state) => state);
-  const connected = s.instrument.session !== undefined;
-  const busy = selectBusy(s, runtime.kernel.instrumentTransactionOwner.current);
+  const s = useStore(runtime.store, (state) => ({
+    ...selectIqState(state),
+    busy: selectBusy(state, runtime.kernel.instrumentTransactionOwner.current),
+  }), shallowEqual);
   // The raw capture (a multi-megabyte sample payload) must never become a
   // React prop: React's dev-build performance instrumentation deep-walks
   // props on every commit, which held the main thread ~83% busy during an
@@ -55,14 +65,14 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
 
   return <IqWorkspace
     configuration={s.iqConfiguration}
-    capability={selectIqCapability(s)}
+    capability={s.capability}
     preview={preview}
     previewError={previewError}
     captureMeta={captureMeta}
     modulation={modulation}
     recovered={recovered}
-    busy={!connected || busy}
-    captureUnavailableReason={selectIqCaptureUnavailableReason(s)}
+    busy={!s.connected || s.busy}
+    captureUnavailableReason={s.captureUnavailableReason}
     onChange={(configuration) => runtime.acquisition.stageIqConfiguration(configuration)}
   />;
 }

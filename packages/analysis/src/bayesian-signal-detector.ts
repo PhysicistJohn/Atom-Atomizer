@@ -44,6 +44,11 @@ export function analyzeBayesianSweep(
   }
   const testedWidths = bayesianRegionWidths(sweep);
   const multiplicityAdjustedTests = Math.max(1, sweep.powerDbm.length * testedWidths.length);
+  let retainedSourceSweep: Sweep | undefined;
+  const sourceSweep = (): Sweep => {
+    retainedSourceSweep ??= compactBayesianEvidenceSweep(sweep);
+    return retainedSourceSweep;
+  };
   return groups.flatMap(({ start: first, end: last }, index) => {
     let peak = first;
     for (let cursor = first + 1; cursor <= last; cursor++) {
@@ -91,14 +96,14 @@ export function analyzeBayesianSweep(
       classificationRegionStartHz,
       classificationRegionStopHz,
       classificationRegionSweepIds: [sweep.id],
-      classificationRegionObservation: {
-        sourceSweep: compactBayesianEvidenceSweep(sweep),
+      classificationRegionObservation: freezeRetainedBayesianEvidence({
+        sourceSweep: sourceSweep(),
         startHz,
         stopHz,
         peakHz: sweep.frequencyHz[peak]!,
         detectorId: BAYESIAN_DETECTOR_MODEL.id,
         localBayesianEvidence: structuredClone(bayesianEvidence),
-      },
+      }),
       associationMode: 'frequency-local',
       qualityFlags,
     } satisfies DetectedSignal];
@@ -147,7 +152,16 @@ export function validateBayesianDetectorSweep(sweep: Sweep): void {
 export function compactBayesianEvidenceSweep(sweep: Sweep): Sweep {
   const clone = structuredClone(sweep);
   delete (clone as { firmwareTraces?: unknown }).firmwareTraces;
-  return clone;
+  return freezeRetainedBayesianEvidence(clone);
+}
+
+/** Deep-freeze authority-owned Bayesian provenance before it is structurally shared. */
+export function freezeRetainedBayesianEvidence<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    freezeRetainedBayesianEvidence(child);
+  }
+  return Object.freeze(value) as T;
 }
 
 function bridgeShortGaps(mask: boolean[], maximumGapBins: number): void {

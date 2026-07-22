@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Clock3, Crosshair, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
 import type {
@@ -114,7 +114,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
 }
 
 function MetricStrip({ sweep, detections, acquisition, historyCount }: { sweep?: Sweep; detections: number; acquisition: AcquisitionState; historyCount: number }) {
-  const metrics = safeSweepMetrics(sweep);
+  const metrics = useMemo(() => safeSweepMetrics(sweep), [sweep]);
   const elapsedMilliseconds = sweep && Number.isFinite(sweep.elapsedMilliseconds)
     ? sweep.elapsedMilliseconds
     : undefined;
