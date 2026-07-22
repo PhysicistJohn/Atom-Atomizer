@@ -849,10 +849,22 @@ export class AcquisitionController {
     let nextSpectrumFrameAt = Number.NEGATIVE_INFINITY;
     let spectrumOwnership: ContinuousSpectrumConfigurationOwnership | undefined;
     let latestIqSource: ContinuousSourceIdentity | undefined;
+    let lastCompletedKind: 'iq' | 'spectrum' | undefined;
     while (this.isCurrentContinuousIqRun(generation)) {
       if (!await this.waitForContinuousIqAdmission(generation)) break;
 
-      const iqDue = performance.now() >= nextIqCaptureAt;
+      const loopStartedAt = performance.now();
+      const sourceBeforeIq = continuousSourceIdentity(k.requireConnected());
+      const spectrumAvailableBeforeIq = k.state.instrument.session?.capabilities.acquisitions
+        .some((candidate) => candidate.kind === 'swept-spectrum') === true;
+      // When both independent display deadlines have expired, preserve the
+      // scalar frame's 20 Hz reservation once I/Q has established current
+      // source identity. Initial and post-profile frames still begin with I/Q.
+      const currentSpectrumDue = spectrumAvailableBeforeIq
+        && loopStartedAt >= nextSpectrumFrameAt
+        && sameContinuousSourceIdentity(latestIqSource, sourceBeforeIq);
+      const iqDue = loopStartedAt >= nextIqCaptureAt
+        && (!currentSpectrumDue || lastCompletedKind !== 'iq');
       if (iqDue) {
         const iqStartedAt = performance.now();
         const iqTask = this.runInstrumentTransaction(CONTINUOUS_IQ_TRANSACTION, async () => {
@@ -867,6 +879,7 @@ export class AcquisitionController {
         try {
           const measurement = await iqTask;
           nextIqCaptureAt = iqStartedAt + continuousIqFramePeriodMilliseconds(measurement);
+          lastCompletedKind = 'iq';
           latestIqSource = {
             sessionId: measurement.sessionId,
             ...(measurement.producerConfigurationEpoch === undefined
@@ -949,6 +962,7 @@ export class AcquisitionController {
           }
         }
         spectrumOwnership = result.publish ? result.ownership : undefined;
+        lastCompletedKind = 'spectrum';
         nextSpectrumFrameAt = result.publish
           ? spectrumStartedAt + continuousSpectrumFramePeriodMilliseconds(result.sweep.requested)
           : Number.NEGATIVE_INFINITY;

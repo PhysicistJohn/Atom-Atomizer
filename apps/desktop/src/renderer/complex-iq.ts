@@ -15,14 +15,15 @@ export type ComplexIqMeasurement = Extract<InstrumentMeasurement, { kind: 'compl
 // bandwidth). This is wide enough to represent the single-carrier reference
 // waveforms (7 Msym/s => 8 samples/symbol) and any real signal an operator points
 // at; a connected driver with a narrower lattice reconciles this down to its own
-// capability. The prior 2 MHz default could not even represent a 7 MHz-symbol
-// reference (symbol rate exceeded the sample rate).
+// capability. The complete 16K buffer is also the largest prefix consumed by
+// recovery; synthesizing the former 64K default discarded three quarters of each
+// buffer before display. Operators can still stage larger driver-admitted buffers.
 export const DEFAULT_COMPLEX_IQ_CONFIGURATION: ComplexIqConfiguration = {
   kind: 'complex-iq',
   centerHz: 100_000_000,
   sampleRateHz: 56_000_000,
   bandwidthHz: 40_000_000,
-  sampleCount: 65_536,
+  sampleCount: 16_384,
   sampleFormat: 'cf32le',
 };
 

@@ -25,7 +25,7 @@ describe('driver-neutral complex I/Q staging', () => {
       centerHz: 100_000_000,
       sampleRateHz: 20_000_000,
       bandwidthHz: 16_000_000,
-      sampleCount: 65_536,
+      sampleCount: 16_384,
       sampleFormat: 'ci16le',
     });
   });

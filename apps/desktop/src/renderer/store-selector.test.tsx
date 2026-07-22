@@ -22,6 +22,28 @@ function createStore() {
 }
 
 describe('renderer store selectors', () => {
+  it('migrates the old oversized I/Q preference to the display-sized default', () => {
+    localStorage.setItem('atomizer:v2:complex-iq', JSON.stringify({
+      kind: 'complex-iq', centerHz: 433_920_000, sampleRateHz: 8_000_000,
+      bandwidthHz: 4_000_000, sampleCount: 65_536, sampleFormat: 'cf32le',
+    }));
+
+    const store = createStore();
+    expect(store.get().iqConfiguration).toMatchObject({
+      centerHz: 433_920_000,
+      sampleRateHz: 8_000_000,
+      bandwidthHz: 4_000_000,
+      sampleCount: 16_384,
+    });
+    store.persistAll();
+    expect(JSON.parse(localStorage.getItem('atomizer:v2:complex-iq-v2') ?? '{}')).toMatchObject({
+      centerHz: 433_920_000,
+      sampleRateHz: 8_000_000,
+      bandwidthHz: 4_000_000,
+      sampleCount: 16_384,
+    });
+  });
+
   it('retains an equal selected record across unrelated global writes', () => {
     const store = createStore();
     let renders = 0;

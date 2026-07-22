@@ -254,6 +254,10 @@ idle -> configuring -> acquiring -> complete
   admitted buffer duration and a 60 Hz display ceiling. Classification samples
   the newest complete buffer on its separate 500 ms clock. Partial buffers,
   overlapping requests, and a hardware-streaming claim remain forbidden in v1.
+- The factory I/Q configuration requests 16,384 samples: the largest prefix
+  consumed by constellation recovery and four times the plotted preview budget.
+  Larger capability-admitted buffers remain an explicit operator choice rather
+  than paying producer cost for samples every built-in consumer discards.
 - The renderer validates the measurement session/revision, format-dependent
   byte geometry, and finite preview samples before replacing the last capture.
 - The evidence footer preserves the measurement's exact qualification. A

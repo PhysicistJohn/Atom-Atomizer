@@ -1096,6 +1096,62 @@ describe('operator vertical slice', () => {
     expect(document.body.textContent).toContain('iq-buffer-2');
   });
 
+  it('alternates I/Q and scalar work when both serialized deadlines remain overdue', async () => {
+    const acquisitionKinds: InstrumentConfiguration['kind'][] = [];
+    const pendingSpectrum: PendingSpectrumLook[] = [];
+    const pendingIq = mockDeferredSignalLabIqBuffers(
+      () => 'producer-epoch:1',
+      acquisitionKinds,
+      pendingSpectrum,
+    );
+
+    render(<App/>);
+    await screen.findByText('SIGNALLAB SIMULATION');
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await act(async () => { await flushMicrotasks(); });
+    expect(pendingIq).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+      const iq = pendingIq[0]!;
+      iq.capture.resolve(complexIqMeasurement(iq.configuration, iq.revision, iq.id));
+      await flushMicrotasks();
+    });
+    expect(pendingSpectrum).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+      const spectrum = pendingSpectrum[0]!;
+      spectrum.capture.resolve(signalLabStreamingMeasurement(
+        spectrum.configuration, spectrum.id, spectrum.revision, 'producer-epoch:1', true,
+      ));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(pendingIq).toHaveLength(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+      const iq = pendingIq[1]!;
+      iq.capture.resolve(complexIqMeasurement(iq.configuration, iq.revision, iq.id));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(pendingSpectrum).toHaveLength(2);
+    expect(acquisitionKinds).toEqual(['complex-iq', 'swept-spectrum', 'complex-iq', 'swept-spectrum']);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const spectrum = pendingSpectrum[1]!;
+      spectrum.capture.resolve(signalLabStreamingMeasurement(
+        spectrum.configuration, spectrum.id, spectrum.revision, 'producer-epoch:1', true,
+      ));
+      await flushMicrotasks();
+    });
+    expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
+  });
+
   it('drops a superseded scalar look, drains Stop during scalar work, and restarts one clean generation', async () => {
     const pendingSpectrum: PendingSpectrumLook[] = [];
     const pendingIq = mockDeferredSignalLabIqBuffers(

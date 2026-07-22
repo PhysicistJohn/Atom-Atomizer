@@ -170,11 +170,12 @@ export interface AtomizerRendererState {
 }
 
 /** localStorage-persisted keys (`atomizer:v2:<name>`), written through on change. */
+const COMPLEX_IQ_PREFERENCE_NAME = 'complex-iq-v2';
 const PERSISTED_KEYS = {
   measurementView: 'measurement-view',
   analyzer: 'analyzer',
   generator: 'generator',
-  iqConfiguration: 'complex-iq',
+  iqConfiguration: COMPLEX_IQ_PREFERENCE_NAME,
   detectionConfig: 'detector',
   zeroConfig: 'zero-span',
   traceConfiguration: 'traces',
@@ -271,7 +272,18 @@ export function createInitialRendererState(options: {
     connectionBusy: false,
     analyzer: loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER),
     generator: loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR),
-    iqConfiguration: loadStored('complex-iq', complexIqConfigurationSchema.parse, DEFAULT_COMPLEX_IQ_CONFIGURATION),
+    iqConfiguration: loadStored(
+      COMPLEX_IQ_PREFERENCE_NAME,
+      complexIqConfigurationSchema.parse,
+      DEFAULT_COMPLEX_IQ_CONFIGURATION,
+      {
+        legacyName: 'complex-iq',
+        migrate: (legacy) => ({
+          ...legacy,
+          sampleCount: Math.min(legacy.sampleCount, DEFAULT_COMPLEX_IQ_CONFIGURATION.sampleCount),
+        }),
+      },
+    ),
     detectionConfig: loadStored('detector', parseStoredDetection, DEFAULT_DETECTION),
     zeroConfig: loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN),
     traceConfiguration: loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES),
@@ -371,19 +383,31 @@ export function useStore<T>(
   return selection;
 }
 
-function loadStored<T>(name: string, parse: (value: unknown) => T, initial: T): T {
-  const key = `atomizer:v2:${name}`;
+function loadStored<T>(
+  name: string,
+  parse: (value: unknown) => T,
+  initial: T,
+  legacy?: { readonly legacyName: string; readonly migrate: (value: T) => T },
+): T {
+  let selectedName = name;
+  let key = `atomizer:v2:${selectedName}`;
   try {
-    const raw = localStorage.getItem(key);
+    let raw = localStorage.getItem(key);
+    if (raw === null && legacy) {
+      selectedName = legacy.legacyName;
+      key = `atomizer:v2:${selectedName}`;
+      raw = localStorage.getItem(key);
+      if (raw !== null) return legacy.migrate(parse(JSON.parse(raw)));
+    }
     return raw === null ? structuredClone(initial) : parse(JSON.parse(raw));
   } catch (failure) {
     // UI preferences are never evidence authority. A stale/corrupt value must
     // not make an otherwise healthy instrument renderer unrecoverable after a
     // reload; quarantine only the bad key and retain an explicit diagnostic.
-    console.warn(`[Preferences] quarantined invalid ${name} state and restored its default`, failure);
+    console.warn(`[Preferences] quarantined invalid ${selectedName} state and restored its default`, failure);
     try { localStorage.removeItem(key); }
     catch (cleanupFailure) {
-      console.warn(`[Preferences] could not remove invalid ${name} state`, cleanupFailure);
+      console.warn(`[Preferences] could not remove invalid ${selectedName} state`, cleanupFailure);
     }
     return structuredClone(initial);
   }
