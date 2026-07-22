@@ -1163,50 +1163,58 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .connection-pill > span:nth-of-type(2) { overflow: hidden; }
   .connection-pill strong, .connection-pill small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* Sidebar -> horizontal nav strip under the topbar. */
+  /* Sidebar -> two deliberate compact rows under the topbar. The first row is
+     a horizontally scrollable view rail; the second is a global acquisition
+     rail. Controls never float over, obscure, or participate in tab scrolling. */
   .sidebar {
     grid-row: 2;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    overflow: visible;
+  }
+  .sidebar nav {
+    width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    gap: 6px;
+    padding: 6px 10px;
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
   }
-  .sidebar::-webkit-scrollbar { display: none; }
-  .sidebar nav { flex-direction: row; gap: 6px; }
+  .sidebar nav::-webkit-scrollbar { display: none; }
   .nav-item { flex-direction: row; gap: 6px; min-width: max-content; padding: 7px 10px; }
   .nav-item .nav-icon svg { width: 15px; height: 15px; }
   .sidebar-acquisition {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-left: auto;
-    padding: 0 2px 0 12px;
-    border-top: 0;
-    /* Run/Single stay reachable while the nav strip scrolls beneath them.
-       An opaque backdrop and a hard left edge tuck scrolled nav items away
-       cleanly instead of ghosting them under a translucent button. */
-    position: sticky;
-    right: -10px;
-    z-index: 1;
-    background: var(--bg);
-    box-shadow: -12px 0 12px -6px var(--bg);
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    min-height: 45px;
+    margin: 0;
+    padding: 5px 10px 7px;
+    border-top: 1px solid rgba(255,255,255,.045);
+    position: static;
+    background: linear-gradient(180deg, rgba(255,255,255,.018), rgba(255,255,255,.008));
+    box-shadow: none;
   }
-  .sidebar-acquisition::before {
-    content: '';
-    position: absolute;
-    left: -1px; top: 6px; bottom: 6px;
-    width: 1px;
-    background: var(--line);
+  .sidebar-acquisition::before { display: none; }
+  .sidebar-acquisition-state {
+    min-width: 0;
+    min-height: 0;
+    justify-content: flex-start;
+    margin: 0;
+    font-size: 7px;
   }
-  /* Run/Single already signal acquisition state; the lone dot is noise here. */
-  .sidebar-acquisition-state { display: none; }
-  .sidebar-acquisition-buttons { display: flex; gap: 6px; }
+  .sidebar-acquisition-state span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-acquisition-buttons { display: flex; flex: 0 0 auto; gap: 6px; }
   .sidebar-acquisition button { min-height: 34px; flex-direction: row; gap: 5px; padding: 4px 10px; }
+  .sidebar-acquisition .sidebar-acquisition-stop { width: auto; margin-left: auto; padding-inline: 14px; }
 
   /* MOBILE LAYOUT MODEL (applied uniformly to every workspace below).
      On desktop the workspace-shell is a fixed-height cell and each panel fills

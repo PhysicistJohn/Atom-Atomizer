@@ -35,6 +35,21 @@ describe('Application responsive layout contract', () => {
     for (const rule of acquisitionRailRules) expect(rule).not.toMatch(/position:\s*(?:absolute|fixed)|overflow(?:-x|-y)?:\s*(?:auto|scroll)/);
   });
 
+  it('separates compact workspace navigation from the global acquisition rail', () => {
+    const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
+    const sidebarRules = rulesFor(css, '.sidebar');
+    const navigationRules = rulesFor(css, '.sidebar nav');
+    const acquisitionRailRules = rulesFor(css, '.sidebar-acquisition');
+    const acquisitionStateRules = rulesFor(css, '.sidebar-acquisition-state');
+
+    expect(sidebarRules.at(-1)).toMatch(/flex-direction:\s*column/);
+    expect(sidebarRules.at(-1)).toMatch(/overflow:\s*visible/);
+    expect(navigationRules.at(-1)).toMatch(/overflow-x:\s*auto/);
+    expect(acquisitionRailRules.at(-1)).toMatch(/position:\s*static/);
+    expect(acquisitionRailRules.at(-1)).not.toMatch(/position:\s*sticky/);
+    expect(acquisitionStateRules.at(-1)).toMatch(/justify-content:\s*flex-start/);
+  });
+
   it('gives the compact Channel view content-sized result and setup regions', () => {
     const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
     const channelVisualRules = rulesFor(css, '.channel-visual');

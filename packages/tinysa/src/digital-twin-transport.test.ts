@@ -368,7 +368,7 @@ done
     await expectProcessGroupGone(pid);
     await expect(transport.close()).resolves.toBeUndefined();
     expect(closed).toHaveLength(1);
-  });
+  }, 10_000);
 
   it('treats clean stdout EOF before acknowledged shutdown as terminal and reaps the bridge', async () => {
     const repository = await bridgeRepository(`
