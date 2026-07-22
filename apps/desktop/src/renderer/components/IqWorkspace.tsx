@@ -312,9 +312,10 @@ function formatPlotZoom(zoom: number): string {
 
 /**
  * Compact live modulation readout: auto-identifies the modulation from the
- * streaming complex baseband and updates on every capture. The full candidate
- * breakdown and detector controls live in the Detect panel; this is the
- * at-a-glance "what am I looking at" monitor beside the plots.
+ * streaming complex baseband and updates whenever an instantaneous capture
+ * classification completes. The full rolling-trend candidate breakdown and
+ * detector controls live in the Detect panel; this is the at-a-glance "what am
+ * I looking at" monitor beside the plots.
  */
 function LiveModulationBar({ modulation, hasCapture }: { modulation?: ModulationClassification; hasCapture: boolean }) {
   const runners = modulation?.candidates.filter((candidate) => candidate.label !== modulation.candidates[0]?.label).slice(0, 2) ?? [];

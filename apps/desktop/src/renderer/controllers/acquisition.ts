@@ -50,8 +50,8 @@ import {
 const MAXIMUM_GLOBAL_DISPLAY_HZ = 60;
 
 /** Pace complete I/Q buffers to their admitted capture duration without
- * producing frames faster than the browser can present them. Classification
- * samples the latest published buffer on its own, deliberately slower clock. */
+ * producing frames faster than the browser can present them. Each published
+ * buffer is independently offered to the latest-wins classification worker. */
 export function continuousIqFramePeriodMilliseconds(
   configuration: Pick<ComplexIqConfiguration, 'sampleCount' | 'sampleRateHz'>,
 ): number {

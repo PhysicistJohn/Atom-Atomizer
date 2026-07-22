@@ -40,12 +40,12 @@ describe('DetectWorkspace', () => {
         pending={false}
         modulation={iqResult}
         live
-        evidenceLooks={7}
+        sampleCount={17}
         detectionConfig={DEFAULT_DETECTION}
         zeroConfig={DEFAULT_ZERO_SPAN}
       />,
     );
-    expect(screen.getByText('COMPLEX I/Q · LIVE 7 LOOKS')).toBeDefined();
+    expect(screen.getByText('COMPLEX I/Q · LIVE · 500 MS TREND · 17 SAMPLES')).toBeDefined();
     expect(document.querySelector('.detect-label')?.textContent).toBe('FM');
     expect(screen.getByText('Detection')).toBeDefined();
     expect(screen.getByText('Capture envelope')).toBeDefined();

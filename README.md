@@ -231,10 +231,13 @@ Atom’s AI surface is contract version 9; it executes against Atomizer applicat
   result, load only checked-in content-addressed weights/prototypes from
   `Atom-Classifier`, return candid unknown results, and report
   modulation/evidence-equivalence families rather than protocol, emitter, or
-  conformance identity. The loop samples the newest complete evidence every
-  500 ms and reports the mean posterior of an eight-look FIFO; each new look
-  evicts the oldest after the four-second window fills, so the result remains
-  live.
+  conformance identity. Every complete capture is immediately offered for
+  instantaneous classification, and every successful result becomes one sample.
+  Inference runs continuously with one worker job and one replaceable newest
+  pending capture, so slow clients drop stale queued work instead of building
+  latency. The displayed trend is the mean complete posterior of all successful
+  samples completed within the trailing 500 ms; completion timestamps, not a
+  fixed sample count, evict old evidence.
 - A retained experimental Bayesian scalar-observable pipeline over 12 leaves,
   with fitted background/unknown support, detector-frozen evidence windows,
   qualified optional detected-power envelopes, and content-addressed

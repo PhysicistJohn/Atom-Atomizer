@@ -5,7 +5,7 @@ import {
 } from './acquisition.js';
 
 describe('global acquisition cadence', () => {
-  it('uses complete-buffer duration for I/Q independently of classification cadence', () => {
+  it('uses complete-buffer duration for I/Q without an analysis throttle', () => {
     expect(continuousIqFramePeriodMilliseconds({ sampleCount: 65_536, sampleRateHz: 56_000_000 }))
       .toBeCloseTo(1_000 / 60);
     expect(continuousIqFramePeriodMilliseconds({ sampleCount: 65_536, sampleRateHz: 2_000_000 }))

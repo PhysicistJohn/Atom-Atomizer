@@ -1,8 +1,10 @@
-import { decodeComplexIqChannels, type ComplexIqMeasurement } from '../complex-iq.js';
+import {
+  COMPLEX_IQ_RECOVERY_SAMPLE_LIMIT,
+  decodeComplexIqChannels,
+  type ComplexIqMeasurement,
+} from '../complex-iq.js';
 import type { RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import type { IqRecoveryWorkerRequest, IqRecoveryWorkerResponse } from '../iq-recovery-worker-protocol.js';
-
-const RECOVERY_SAMPLE_LIMIT = 16_384;
 
 export interface IqRecoveryExecutor {
   recover(capture: ComplexIqMeasurement): Promise<RecoveredConstellation>;
@@ -115,7 +117,7 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
   }>();
 
   async recover(capture: ComplexIqMeasurement): Promise<RecoveredConstellation> {
-    const { re: real, im: imaginary } = decodeComplexIqChannels(capture, RECOVERY_SAMPLE_LIMIT);
+    const { re: real, im: imaginary } = decodeComplexIqChannels(capture, COMPLEX_IQ_RECOVERY_SAMPLE_LIMIT);
     const request: IqRecoveryWorkerRequest = { id: ++this.nextId, real, imaginary };
     const worker = this.requireWorker();
     return new Promise((resolve, reject) => {
@@ -163,7 +165,7 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
 
 class InlineIqRecoveryExecutor implements IqRecoveryExecutor {
   async recover(capture: ComplexIqMeasurement): Promise<RecoveredConstellation> {
-    const { re, im } = decodeComplexIqChannels(capture, RECOVERY_SAMPLE_LIMIT);
+    const { re, im } = decodeComplexIqChannels(capture, COMPLEX_IQ_RECOVERY_SAMPLE_LIMIT);
     const { recoverIqConstellation } = await import('../embedding-classifier-runtime.js');
     return recoverIqConstellation(re, im);
   }

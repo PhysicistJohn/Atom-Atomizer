@@ -91,6 +91,8 @@ export interface ModulationClassification {
   family: string;
   confidence: number;
   isUnknown: boolean;
+  /** Complete family posterior retained for temporal integration. */
+  readonly posterior?: Readonly<Record<string, number>>;
   /** Top posterior candidates (family distribution). */
   candidates: readonly { label: string; confidence: number }[];
   /** Measured occupied fractional bandwidth. */
@@ -156,6 +158,7 @@ function toModulation(result: EmbeddingLikeResult, flavor: 'iq' | 'magnitude'): 
     family: c.label,
     confidence: c.confidence,
     isUnknown: c.isUnknown,
+    posterior: c.posterior,
     candidates,
     bwFraction: result.bw,
     topLeaf: top && top.probability > 0.2 ? { label: top.label, probability: top.probability } : undefined,

@@ -74,7 +74,7 @@ speaking, and error states; a redundant microphone connection button is absent.
 | Generate | WS-GEN | Operate the embedded SignalLab Studio for a SignalLab source, or configure and deliberately enable RF output for a generator-capable source | Studio core; physical-generator qualification pending |
 | Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical diagnostics/capture accepted, touch qualification pending |
 
-Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source the global scheduler obtains bounded complex-I/Q buffers at complete-buffer cadence and scalar spectra at admitted sweep cadence, with both capped at display rate and serialized through one instrument transaction. The classifier independently samples the newest published evidence every 500 ms; it never sets acquisition cadence. A source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
+Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source the global scheduler obtains bounded complex-I/Q buffers at complete-buffer cadence and scalar spectra at admitted sweep cadence, with both capped at display rate and serialized through one instrument transaction. Every complete classifiable capture is immediately offered to a dedicated worker; every successful instantaneous result becomes one trend sample. The worker continuously evaluates with one in-flight job and one replaceable newest pending capture. The displayed trend integrates successful posteriors whose classifications completed within the trailing 500 ms and never sets acquisition cadence. A source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
 
 Workspace availability and controls are derived from the active session's declared capabilities. SignalLab supports swept spectrum, detected power, its typed profile/channel feature, and bounded deterministic complex-I/Q for all 42 closed profiles. CW, AM, FM, and the five constellation references are analytic laboratory envelopes; the other 34 catalog entries are standards-derived engineering envelopes. It does not expose an RF generator, firmware screen/touch, or TinySA diagnostics. The physical ZS407 and Firmware twin expose only the features proved by their admitted capability profile. A route that has no meaningful capability for the active source shows a specific unavailable state and source-switch action; it never sends a TinySA-only request to SignalLab or fabricates a generic setting.
 
@@ -251,11 +251,14 @@ idle -> configuring -> acquiring -> complete
   format, and optional bandwidth-coupling constraints before admission.
 - One driver operation returns one complete buffer. The application runs those
   operations one at a time in its global backpressured scheduler, paced by the
-  admitted buffer duration and a 60 Hz display ceiling. Classification samples
-  the newest complete buffer on its separate 500 ms clock. Partial buffers,
-  overlapping requests, and a hardware-streaming claim remain forbidden in v1.
+  admitted buffer duration and a 60 Hz display ceiling. Each complete buffer is
+  immediately offered for instantaneous classification; every successful result
+  becomes one trend sample, while worker backpressure retains only the newest
+  waiting buffer. Partial buffers, overlapping requests, and a hardware-streaming
+  claim remain forbidden in v1.
 - The factory I/Q configuration requests 16,384 samples: the largest prefix
-  consumed by constellation recovery and four times the plotted preview budget.
+  consumed by constellation recovery and four times the trained classifier and
+  plotted-preview budgets.
   Larger capability-admitted buffers remain an explicit operator choice rather
   than paying producer cost for samples every built-in consumer discards.
 - The renderer validates the measurement session/revision, format-dependent
@@ -541,13 +544,19 @@ The application-global production embedding classifier is live during Run,
 regardless of the visible workspace. On sources that advertise complex I/Q it
 classifies I/Q in a dedicated worker; only sources without I/Q use the scalar
 region fallback. Detect and I/Q render the shared result and never initiate
-classification. The classifier samples the newest complete classifiable
-evidence at a backpressured 500 ms cadence and projects the mean posterior of
-the newest eight successful looks. The FIFO
-resets when the instrument session, producer configuration, evidence flavor, or
-physical target changes; after it fills, every new look evicts the oldest. A
-faster sweep stream never cancels an in-flight inference, and Stop retains the
-last live result.
+classification. Each complete classifiable capture is immediately offered for
+inference, and each successful instantaneous result becomes one sample. The
+controller keeps one inference in flight, replaces any waiting input with the
+newest capture, and immediately continues when the worker becomes free. Its
+trend projects the equal-sample mean of complete family posteriors whose
+classifications completed within the trailing 500 ms; the window has no fixed
+sample-count ceiling. It resets when the instrument session, producer
+configuration, receiver geometry,
+evidence flavor, or physical target changes. A faster input stream never cancels
+an in-flight inference or builds a backlog, and Stop retains the final trend.
+For a known trend, confidence is the integrated winning-family posterior; for an
+unknown trend, it is the fraction of retained samples admitted by the open-set
+unknown gate. Candidate bars remain the integrated conditional family posterior.
 
 Classification comprises four explicitly separated evidence levels:
 
@@ -1103,11 +1112,13 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
   padded-IoU/shared-center history, and local-only zero span. UI history may
   reconnect only inside release hysteresis and cannot revive an expired lineage; it makes no
   simultaneity, common-process, or emitter-identity claim.
-- **CLS-22:** Detect Run samples at most one newest complete input every 500 ms,
-  never overlaps or cancels inference merely because faster sweeps arrive, and
-  renders the mean posterior of the newest eight successful looks as a live
-  FIFO. Session, producer-configuration, flavor, or target changes reset it;
-  Stop preserves the final projection.
+- **CLS-22:** Detect Run immediately offers every complete classifiable input as
+  an instantaneous classification candidate. It keeps at most one inference in
+  flight and one replaceable newest pending input, starts that pending work
+  without an added cadence delay, and renders the mean complete posterior of
+  every successful sample whose classification completed within the trailing
+  500 ms. Session, producer configuration, receiver geometry, flavor, or target
+  changes reset the window; Stop preserves the final projection.
 
 ### Generator
 

@@ -11,22 +11,22 @@ afterEach(() => {
 });
 
 describe('DetectContainer global analysis view', () => {
-  it('renders advancing shared FIFO state without creating classifier work', () => {
+  it('renders the advancing shared 500 ms trend without creating classifier work', () => {
     const runtime = createRendererRuntime({ initialWorkspace: 'classification', initialAgentOpen: false });
     runtime.store.set({
       continuous: true,
       continuousMode: 'complex-iq',
-      classification: { source: 'iq', pending: false, evidenceLooks: 1, result: result('dsss', 0.9) },
+      classification: { source: 'iq', pending: false, sampleCount: 1, result: result('dsss', 0.9) },
     });
 
     render(<DetectContainer runtime={runtime}/>);
-    expect(screen.getByText('COMPLEX I/Q · LIVE 1 LOOK')).toBeDefined();
+    expect(screen.getByText('COMPLEX I/Q · LIVE · 500 MS TREND · 1 SAMPLE')).toBeDefined();
     expect(document.querySelector('.detect-label')?.textContent).toBe('DSSS');
 
     act(() => runtime.store.set({
-      classification: { source: 'iq', pending: false, evidenceLooks: 2, result: result('ofdm', 0.8) },
+      classification: { source: 'iq', pending: false, sampleCount: 12, result: result('ofdm', 0.8) },
     }));
-    expect(screen.getByText('COMPLEX I/Q · LIVE 2 LOOKS')).toBeDefined();
+    expect(screen.getByText('COMPLEX I/Q · LIVE · 500 MS TREND · 12 SAMPLES')).toBeDefined();
     expect(document.querySelector('.detect-label')?.textContent).toBe('OFDM');
   });
 });

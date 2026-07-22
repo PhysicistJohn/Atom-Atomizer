@@ -45,6 +45,7 @@ import {
 } from '@tinysa/agent';
 import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor, assertWorkspaceTransition, type WorkspaceId } from './ui-contracts.js';
 import { agentDetectionResults } from './agent-detection-results.js';
+import { DETECT_CONSENSUS_WINDOW_MS } from './classification-consensus.js';
 import type { ModulationClassification } from './embedding-classifier-runtime.js';
 import { stageDetectedPowerConfigurationPatch } from './instrument-configuration.js';
 import type { InstrumentScreenPoint } from './components/DeviceWorkspace.js';
@@ -204,10 +205,15 @@ export class AgentExecutor {
 
   /** Read the application-global classifier projection without creating work. */
   async classifyCurrentCapture() {
-    const result = this.k.state.classification.result;
+    const { result, sampleCount } = this.k.state.classification;
     return result
-      ? projectModulationClassification(result)
-      : { available: false as const, reason: 'global classification has not produced a look yet' } as const;
+      ? {
+          ...projectModulationClassification(result),
+          projection: 'rolling-posterior-trend' as const,
+          windowMilliseconds: DETECT_CONSENSUS_WINDOW_MS,
+          sampleCount,
+        }
+      : { available: false as const, reason: 'global classification has not produced a sample yet' } as const;
   }
 
   applicationContext = (): string => {
@@ -612,7 +618,7 @@ export function semanticControlRequiresCoordinates(control: AgentSemanticControl
 function projectModulationClassification(result: ModulationClassification) {
   return {
     available: true as const,
-    contract: 'capture-modulation-classification-v1' as const,
+    contract: 'rolling-modulation-classification-v1' as const,
     flavor: result.flavor,
     family: result.family,
     modulation: result.modulation,

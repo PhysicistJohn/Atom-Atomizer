@@ -2,6 +2,7 @@ import { Cpu, ScanSearch } from 'lucide-react';
 import type { EnvelopeClassification } from '@tinysa/analysis';
 import type { DetectedSignal, SignalDetectionConfig, Sweep, ZeroSpanCapture, ZeroSpanConfig } from '@tinysa/contracts';
 import type { ModulationClassification } from '../embedding-classifier-runtime.js';
+import { DETECT_CONSENSUS_WINDOW_MS } from '../classification-consensus.js';
 import { CaptureEvidenceStrip, DetectionSettings, type DetectedPowerCapability } from './DetectorControls.js';
 
 const MODULATION_LABELS: Record<string, string> = {
@@ -19,7 +20,7 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
  * candidate distribution, and the fused protocol-leaf guess.
  */
 export function DetectWorkspace({
-  modulation, pending, source, live = false, evidenceLooks = 0,
+  modulation, pending, source, live = false, sampleCount = 0,
   sweep, detectionConfig, detectorBusy, onDetectionConfig,
   zeroConfig, zeroCapture, envelope, detectedPowerCapability, captureUnavailableReason, captureTarget, busy, onAcquireZero,
 }: {
@@ -27,7 +28,7 @@ export function DetectWorkspace({
   pending: boolean;
   source: 'iq' | 'scalar' | 'none';
   live?: boolean;
-  evidenceLooks?: number;
+  sampleCount?: number;
   sweep?: Sweep;
   detectionConfig?: SignalDetectionConfig;
   detectorBusy: boolean;
@@ -49,7 +50,9 @@ export function DetectWorkspace({
           {modulation && (
             <span className="detect-flavor">
               {modulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}
-              {live ? ` · LIVE ${evidenceLooks} ${evidenceLooks === 1 ? 'LOOK' : 'LOOKS'}` : evidenceLooks > 1 ? ` · ${evidenceLooks} LOOKS` : ''}
+              {sampleCount > 0
+                ? ` · ${live ? 'LIVE · ' : ''}${DETECT_CONSENSUS_WINDOW_MS} MS TREND · ${sampleCount} ${sampleCount === 1 ? 'SAMPLE' : 'SAMPLES'}`
+                : ''}
             </span>
           )}
         </header>

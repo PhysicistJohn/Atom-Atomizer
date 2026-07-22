@@ -114,8 +114,9 @@ export type ContinuousAcquisitionMode = 'spectrum' | 'complex-iq';
 
 export interface GlobalClassificationState {
   readonly source: 'iq' | 'scalar' | 'none';
+  /** True only while the current scope is waiting for its first usable sample. */
   readonly pending: boolean;
-  readonly evidenceLooks: number;
+  readonly sampleCount: number;
   readonly result: ModulationClassification | undefined;
 }
 
@@ -307,7 +308,7 @@ export function createInitialRendererState(options: {
     diagnostics: [],
     screenFrame: undefined,
     iqCapture: undefined,
-    classification: { source: 'none', pending: false, evidenceLooks: 0, result: undefined },
+    classification: { source: 'none', pending: false, sampleCount: 0, result: undefined },
     selectedProfile: undefined,
     selectedSignalLabChannel: undefined,
     acquisition: 'idle',

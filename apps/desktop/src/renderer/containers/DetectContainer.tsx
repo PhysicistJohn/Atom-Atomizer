@@ -38,7 +38,7 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
     pending={s.classification.pending}
     source={s.classification.source}
     live={s.continuous}
-    evidenceLooks={s.classification.evidenceLooks}
+    sampleCount={s.classification.sampleCount}
     sweep={s.sweep}
     detectionConfig={s.detectionConfig}
     detectorBusy={s.busy}

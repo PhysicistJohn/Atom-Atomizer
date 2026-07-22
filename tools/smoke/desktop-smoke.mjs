@@ -268,9 +268,9 @@ async function classificationDetectPanel() {
   await pollFor('classification-pipeline', `(() => {
     const flavor = document.querySelector('.detect-flavor')?.textContent ?? '';
     const result = document.querySelector('.detect-result');
-    return Boolean(result) && flavor.includes('COMPLEX I/Q') && /LIVE [1-8] LOOKS?/.test(flavor);
+    return Boolean(result) && flavor.includes('COMPLEX I/Q') && /LIVE · 500 MS TREND · [1-9][0-9]* SAMPLES?/.test(flavor);
   })()`, 15_000);
-  pass('classification', 'global complex-I/Q classifier renders its live FIFO projection');
+  pass('classification', 'global complex-I/Q classifier renders its live 500 ms trend');
 }
 
 async function stopContinuous() {
