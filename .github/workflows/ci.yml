@@ -38,13 +38,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
+          ref: 5e0e6dd807cfc3465698d84e5154c572766014d2
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
-          ref: 2e7f496a43268091f0e1248db5b97bc22753240d
+          ref: a60f4e6bb4ebca11cfa85ee9f8456ea029803541
           path: Atom-Classifier
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -104,13 +104,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: a4e49b5ff3f77ea707a5d33962a4a3a58e46a62b
+          ref: 5e0e6dd807cfc3465698d84e5154c572766014d2
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
-          ref: 2e7f496a43268091f0e1248db5b97bc22753240d
+          ref: a60f4e6bb4ebca11cfa85ee9f8456ea029803541
           path: Atom-Classifier
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -145,17 +145,17 @@ jobs:
         shell: bash
         # SignalLab's own npm ci (just above) already primed Electron's shared download
         # cache -- Atomizer's npm ci then extracts from that warm cache
-        # instead of downloading, which has been silently leaving
-        # node_modules/electron/dist empty on this job. Self-heal by forcing
-        # electron's own postinstall to run again, with diagnostics if it
+        # instead of downloading, which can silently leave the desktop
+        # workspace's electron/dist empty on this job. Self-heal by forcing
+        # Electron's own postinstall to run again, with diagnostics if it
         # still doesn't land.
         run: |
-          if [ ! -e node_modules/electron/dist/electron ]; then
+          if [ ! -e apps/desktop/node_modules/electron/dist/electron ]; then
             echo "Electron binary missing after npm ci; forcing its install script"
-            ls -la node_modules/electron/dist 2>&1 || echo "node_modules/electron/dist does not exist"
-            node node_modules/electron/install.js
+            ls -la apps/desktop/node_modules/electron/dist 2>&1 || echo "apps/desktop/node_modules/electron/dist does not exist"
+            node apps/desktop/node_modules/electron/install.js
           fi
-          test -e node_modules/electron/dist/electron
+          test -e apps/desktop/node_modules/electron/dist/electron
       - name: Validate the Bayesian detector
         working-directory: Atom-Atomizer
         run: npm run check:bayesian-detector
