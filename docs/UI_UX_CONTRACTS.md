@@ -132,7 +132,10 @@ surfaces:
    or displaces the measurement canvas. It exposes a large selected field,
    touch-sized decimal keypad, bounds, and explicit Apply/Cancel actions. Focus
    stays inside the panel and returns to the originating row on commit, Cancel,
-   outside-click dismissal, or Escape.
+   outside-click dismissal, or Escape. Numeric fields declare the in-app keypad
+   as their virtual input mode, suppressing a redundant operating-system keyboard
+   while retaining the real editable input for hardware keyboards and assistive
+   technology; free-form text fields continue to request the system keyboard.
 3. Frequency entry is stored and validated as integer Hz. The panel selects a
    readable current scale and exposes `GHz`, `MHz`, `kHz`, and `Hz` unit
    terminators. Choosing a terminator converts, validates, commits once, and

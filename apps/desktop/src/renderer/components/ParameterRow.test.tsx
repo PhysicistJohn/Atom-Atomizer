@@ -17,10 +17,18 @@ describe('parameter-row contract', () => {
     const dialog = screen.getByRole('dialog', { name: /Center numeric entry/i });
     const input = within(dialog).getByRole('textbox', { name: 'Center' }) as HTMLInputElement;
     expect(input.value).toBe('98');
+    expect(input.getAttribute('inputmode')).toBe('none');
+    expect(input.readOnly).toBe(false);
     fireEvent.change(input, { target: { value: '100' } });
     fireEvent.click(within(dialog).getByRole('button', { name: /^Apply MHz$/i }));
     expect(commit).toHaveBeenCalledWith('100000000');
     expect(details?.open).toBe(false);
+  });
+
+  it('retains the system keyboard hint for free-form text entry', () => {
+    render(<EditableParameter label="Label" value="custom" type="text" onCommit={vi.fn()}/>);
+    fireEvent.click(screen.getByLabelText('Edit Label'));
+    expect(screen.getByRole('textbox', { name: 'Label' }).getAttribute('inputmode')).toBe('text');
   });
 
   it('supports X-Series-style digit entry terminated by a frequency unit', () => {

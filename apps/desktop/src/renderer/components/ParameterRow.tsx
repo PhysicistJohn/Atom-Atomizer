@@ -147,7 +147,7 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
       }}>
         <header><span><small>ACTIVE FUNCTION</small><strong>{label}</strong></span><button type="button" aria-label={`Cancel ${label} entry`} onClick={closeEditor}><X size={16}/></button></header>
         <div className="numeric-entry-display">
-          <input ref={input} aria-label={label} aria-invalid={Boolean(error)} type="text" inputMode={type === 'number' ? 'decimal' : 'text'} value={draft} onFocus={(event) => event.currentTarget.select()} onChange={(event) => { setDraft(event.target.value); setReplaceOnDigit(false); setError(undefined); }}/>
+          <input ref={input} aria-label={label} aria-invalid={Boolean(error)} type="text" inputMode={type === 'number' ? 'none' : 'text'} value={draft} onFocus={(event) => event.currentTarget.select()} onChange={(event) => { setDraft(event.target.value); setReplaceOnDigit(false); setError(undefined); }}/>
           {activeUnit.label !== 'Enter' && <span>{activeUnit.label}</span>}
         </div>
         <div className="numeric-entry-context"><span>{minimum === undefined ? 'NO LOWER BOUND' : `MIN ${formatBound(minimum, unit)}`}</span><span>{maximum === undefined ? 'NO UPPER BOUND' : `MAX ${formatBound(maximum, unit)}`}</span></div>
