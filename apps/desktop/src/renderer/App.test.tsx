@@ -265,6 +265,7 @@ function complexIqMeasurement(
   revision: string,
   id: string,
   sessionId = signalLabIqSession.sessionId,
+  producerConfigurationEpoch = 'producer-epoch:1',
 ): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> {
   return {
     schemaVersion: 1,
@@ -272,7 +273,7 @@ function complexIqMeasurement(
     measurementId: id,
     sessionId,
     configurationRevision: revision,
-    producerConfigurationEpoch: 'producer-epoch:1',
+    producerConfigurationEpoch,
     sequence: ++measurementSequence,
     capturedAt: '2026-07-10T00:00:01.000Z',
     elapsedMilliseconds: 4,
@@ -542,8 +543,21 @@ interface PendingIqBuffer {
   readonly id: string;
 }
 
+interface PendingSpectrumLook {
+  readonly capture: ReturnType<typeof deferred<InstrumentMeasurement>>;
+  readonly configuration: Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>;
+  readonly revision: string;
+  readonly id: string;
+}
+
+async function flushMicrotasks(turns = 20): Promise<void> {
+  for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+}
+
 function mockDeferredSignalLabIqBuffers(
   producerConfigurationEpoch: () => string = () => 'producer-epoch:1',
+  acquisitionKinds?: InstrumentConfiguration['kind'][],
+  pendingSpectrumLooks?: PendingSpectrumLook[],
 ): PendingIqBuffer[] {
   mockConnectedInstrument(signalLabIqSession);
   const pending: PendingIqBuffer[] = [];
@@ -558,10 +572,22 @@ function mockDeferredSignalLabIqBuffers(
     };
   });
   vi.mocked(window.atomizerInstrument.acquire).mockImplementation(() => {
+    acquisitionKinds?.push(activeConfiguration.kind);
     if (activeConfiguration.kind === 'swept-spectrum') {
+      const id = `global-spectrum-${measurementSequence + 1}`;
+      if (pendingSpectrumLooks) {
+        const capture = deferred<InstrumentMeasurement>();
+        pendingSpectrumLooks.push({
+          capture,
+          configuration: structuredClone(activeConfiguration),
+          revision: configurationRevision,
+          id,
+        });
+        return capture.promise;
+      }
       return Promise.resolve(signalLabStreamingMeasurement(
         activeConfiguration,
-        `global-spectrum-${measurementSequence + 1}`,
+        id,
         configurationRevision,
         producerConfigurationEpoch(),
         true,
@@ -621,7 +647,7 @@ function signalLabFeatureExecution(
   };
 }
 
-afterEach(() => { cleanup(); localStorage.clear(); });
+afterEach(() => { vi.useRealTimers(); cleanup(); localStorage.clear(); });
 
 beforeEach(() => {
   configuredAnalyzer = structuredClone(requested);
@@ -1013,15 +1039,18 @@ describe('operator vertical slice', () => {
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
   });
 
-  it('runs one backpressured global frame at a time, stages live edits, and stops after the in-flight I/Q buffer', async () => {
-    const pending = mockDeferredSignalLabIqBuffers();
+  it('paces scalar display frames at 20 Hz between bounded I/Q looks, stages live edits, and stops cleanly', async () => {
+    const acquisitionKinds: InstrumentConfiguration['kind'][] = [];
+    const pending = mockDeferredSignalLabIqBuffers(() => 'producer-epoch:1', acquisitionKinds);
 
     render(<App/>);
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(within(navigation).getByRole('button', { name: /^I\/Q$/i }));
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => { await flushMicrotasks(); });
+    expect(pending).toHaveLength(1);
     expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
     expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
@@ -1032,27 +1061,199 @@ describe('operator vertical slice', () => {
     const editor = screen.getByRole('dialog', { name: /Center frequency numeric entry/i });
     fireEvent.change(within(editor).getByRole('textbox', { name: 'Center frequency' }), { target: { value: '101' } });
     fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
+    expect(screen.getByLabelText('Edit Center frequency').textContent).toContain('101 MHz');
 
     await act(async () => {
       const first = pending[0]!;
       first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+      await flushMicrotasks();
     });
-    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => { await vi.advanceTimersByTimeAsync(499); });
+    expect(pending).toHaveLength(1);
+    expect(acquisitionKinds.filter((kind) => kind === 'complex-iq')).toHaveLength(1);
+    expect(acquisitionKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(10);
+    const configuredKinds = vi.mocked(window.atomizerInstrument.configure).mock.calls
+      .map(([configuration]) => configuration.kind);
+    expect(configuredKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(pending).toHaveLength(2);
     expect(pending[1]?.configuration.centerHz).toBe(101_000_000);
     expect(document.body.textContent).not.toContain('iq-buffer-1');
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(12);
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     expect(screen.getByRole('button', { name: /Stopping/i }).hasAttribute('disabled')).toBe(true);
     await act(async () => {
       const second = pending[1]!;
       second.capture.resolve(complexIqMeasurement(second.configuration, second.revision, second.id));
+      await flushMicrotasks();
     });
-    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    await act(async () => { await new Promise<void>((resolve) => window.setTimeout(resolve, 5)); });
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(12);
     expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain('iq-buffer-2');
+  });
+
+  it('drops a superseded scalar look, drains Stop during scalar work, and restarts one clean generation', async () => {
+    const pendingSpectrum: PendingSpectrumLook[] = [];
+    const pendingIq = mockDeferredSignalLabIqBuffers(
+      () => 'producer-epoch:1',
+      undefined,
+      pendingSpectrum,
+    );
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Sweep setup/i }));
+    await screen.findByLabelText('Edit Center frequency');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pendingIq).toHaveLength(1));
+
+    await act(async () => {
+      const firstIq = pendingIq[0]!;
+      firstIq.capture.resolve(complexIqMeasurement(firstIq.configuration, firstIq.revision, firstIq.id));
+    });
+    await waitFor(() => expect(pendingSpectrum).toHaveLength(1));
+
+    fireEvent.click(screen.getByLabelText('Edit Center frequency'));
+    const editor = screen.getByRole('dialog', { name: /Center frequency numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Center frequency' }), { target: { value: '101' } });
+    fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
+    expect(screen.getByLabelText('Edit Center frequency').textContent).toContain('101 MHz');
+
+    await act(async () => {
+      const stale = pendingSpectrum[0]!;
+      stale.capture.resolve(signalLabStreamingMeasurement(
+        stale.configuration,
+        stale.id,
+        stale.revision,
+        'producer-epoch:1',
+        true,
+      ));
+    });
+    await waitFor(() => expect(pendingSpectrum).toHaveLength(2));
+    const replacement = pendingSpectrum[1]!;
+    const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
+    expect((replacement.configuration.startHz + replacement.configuration.stopHz) / 2).toBe(101_000_000);
+    expect(acquisition.getAttribute('aria-description') ?? '').not.toContain(pendingSpectrum[0]!.id);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    expect(screen.getByRole('button', { name: /Stopping/i })).toBeTruthy();
+    await act(async () => {
+      replacement.capture.resolve(signalLabStreamingMeasurement(
+        replacement.configuration,
+        replacement.id,
+        replacement.revision,
+        'producer-epoch:1',
+        true,
+      ));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(acquisition.getAttribute('aria-description')).toContain(replacement.id);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(3);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pendingIq).toHaveLength(2));
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const replacementRunIq = pendingIq[1]!;
+      replacementRunIq.capture.resolve(complexIqMeasurement(
+        replacementRunIq.configuration,
+        replacementRunIq.revision,
+        replacementRunIq.id,
+      ));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
+  });
+
+  it('waits for an in-flight scalar look before applying a SignalLab profile transaction', async () => {
+    let featureSession = signalLabIqSession;
+    let producerEpoch = 1;
+    const pendingSpectrum: PendingSpectrumLook[] = [];
+    const pendingIq = mockDeferredSignalLabIqBuffers(
+      () => `producer-epoch:${producerEpoch}`,
+      undefined,
+      pendingSpectrum,
+    );
+    vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
+      if (request.kind !== 'signal-lab-profile-selection') {
+        throw new Error(`Feature ${request.kind} not mocked`);
+      }
+      const execution = signalLabFeatureExecution(
+        request,
+        featureSession,
+        `producer-epoch:${++producerEpoch}`,
+      );
+      featureSession = execution.session;
+      emitInvalidatingFeatureExecution(
+        execution,
+        request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed',
+      );
+      return execution;
+    });
+
+    render(<App/>);
+    const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
+    await screen.findByText('SIGNALLAB SIMULATION');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => expect(pendingIq).toHaveLength(1));
+    await act(async () => {
+      const iq = pendingIq[0]!;
+      iq.capture.resolve(complexIqMeasurement(iq.configuration, iq.revision, iq.id));
+    });
+    await waitFor(() => expect(pendingSpectrum).toHaveLength(1));
+
+    fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
+
+    const firstSpectrum = pendingSpectrum[0]!;
+    await act(async () => {
+      firstSpectrum.capture.resolve(signalLabStreamingMeasurement(
+        firstSpectrum.configuration,
+        firstSpectrum.id,
+        firstSpectrum.revision,
+        'producer-epoch:1',
+        true,
+      ));
+    });
+    await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pendingIq).toHaveLength(2));
+    expect(pendingSpectrum).toHaveLength(1);
+    const resumedIq = pendingIq[1]!;
+    await act(async () => {
+      resumedIq.capture.resolve(complexIqMeasurement(
+        resumedIq.configuration,
+        resumedIq.revision,
+        resumedIq.id,
+        signalLabIqSession.sessionId,
+        `producer-epoch:${producerEpoch}`,
+      ));
+    });
+    await waitFor(() => expect(pendingSpectrum).toHaveLength(2));
+    const resumedSpectrum = pendingSpectrum[1]!;
+    expect((resumedSpectrum.configuration.startHz + resumedSpectrum.configuration.stopHz) / 2)
+      .toBe(waveformDescriptor('fm').centerHz);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      resumedSpectrum.capture.resolve(signalLabStreamingMeasurement(
+        resumedSpectrum.configuration,
+        resumedSpectrum.id,
+        resumedSpectrum.revision,
+        `producer-epoch:${producerEpoch}`,
+        true,
+      ));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(window.atomizerInstrument.stopStreaming).not.toHaveBeenCalled();
   });
 
   it('keeps the global I/Q and detector run alive when the operator changes workspaces', async () => {
@@ -1418,16 +1619,17 @@ describe('operator vertical slice', () => {
     });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(pending).toHaveLength(3));
-    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(5);
+    expect(window.atomizerInstrument.configure).toHaveBeenCalledTimes(3);
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
 
+    const acquisitionCountAtStop = vi.mocked(window.atomizerInstrument.acquire).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     await act(async () => {
       const third = pending[2]!;
       third.capture.resolve(complexIqMeasurement(third.configuration, third.revision, third.id));
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(acquisitionCountAtStop);
   });
 
   it('admits Stop while an I/Q profile change owns the foreground transaction and never resumes', async () => {

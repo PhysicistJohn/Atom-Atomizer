@@ -37,6 +37,7 @@ import type { ClassificationController } from './classification.js';
 export const CONFIGURATION_REVISION_LIMIT = HISTORY_LIMIT + 32;
 export const INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS = 2_000;
 export const CONTINUOUS_IQ_TRANSACTION = 'continuous-complex-iq-buffer';
+export const CONTINUOUS_GLOBAL_SPECTRUM_TRANSACTION = 'continuous-global-spectrum-look';
 
 export type RendererConfigurationRevision =
   | { readonly kind: 'swept-spectrum'; readonly admitted: SweptSpectrumConfiguration }
@@ -50,6 +51,7 @@ export interface ContinuousStreamOwnership {
 }
 
 export interface ContinuousIqConfigurationOwnership {
+  readonly generation: number;
   readonly sessionId: string;
   readonly stagedRevision: number;
   readonly configuration: ComplexIqConfiguration;
@@ -127,9 +129,10 @@ export class RendererKernel {
   readonly continuousStreamOwnership = ref<ContinuousStreamOwnership | undefined>(undefined);
   readonly continuousIqTask = ref<Promise<void> | undefined>(undefined);
   readonly continuousIqGeneration = ref(0);
-  readonly continuousIqBufferTask = ref<Promise<unknown> | undefined>(undefined);
+  readonly continuousGlobalAcquisitionTask = ref<Promise<unknown> | undefined>(undefined);
   readonly continuousIqPauseDepth = ref(0);
   readonly continuousIqResumeWaiters = ref(new Set<() => void>());
+  readonly continuousIqCadenceWake = ref<(() => void) | undefined>(undefined);
   readonly continuousIqConfigurationOwnership = ref<ContinuousIqConfigurationOwnership | undefined>(undefined);
   readonly iqConfigurationRevision = ref(0);
   readonly pendingInvalidatingFeatureReceipt = ref<InvalidatingFeatureReceipt | undefined>(undefined);
