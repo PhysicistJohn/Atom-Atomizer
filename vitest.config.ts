@@ -23,6 +23,14 @@ export default defineConfig({
   test: {
     setupFiles: ['./vitest.setup.ts'],
     include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'apps/**/*.test.tsx'],
+    // The default 5 s timeout and an uncapped worker pool make the suite
+    // machine-dependent: on a normal laptop the slower DSP/analysis and
+    // renderer tests time out under contention even though every one of them
+    // passes when run alone. Pin both so the default gate is deterministic.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
+    minWorkers: 1,
+    maxWorkers: 4,
     coverage: { provider: 'v8', reporter: ['text', 'html'] }
   }
 });

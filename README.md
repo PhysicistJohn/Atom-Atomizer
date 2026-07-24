@@ -2,6 +2,58 @@
 
 # AtomOS Atomizer
 
+## Run
+
+Requirements:
+
+- Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
+  the package contract and CI).
+- `../Atom-DSP`, built before installing Atomizer's local file dependency.
+- `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and supplies deterministic training/evaluation stimuli.
+- `../Atom-Classifier`, whose checked-in embedding assets power the deployed local I/Q and swept-magnitude classifier and whose retained Bayesian pipeline supports scalar-observable research.
+- The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
+- `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
+
+Clone the three required siblings next to this checkout, at the exact refs CI
+pins, then install in the same order CI installs them:
+
+```bash
+git clone https://github.com/PhysicistJohn/Atom-DSP.git ../Atom-DSP
+git -C ../Atom-DSP checkout v0.1.0
+git clone https://github.com/PhysicistJohn/Atom-SignalLab.git ../Atom-SignalLab
+git -C ../Atom-SignalLab checkout c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+git clone https://github.com/PhysicistJohn/Atom-Classifier.git ../Atom-Classifier
+git -C ../Atom-Classifier checkout a60f4e6bb4ebca11cfa85ee9f8456ea029803541
+
+npm --prefix ../Atom-DSP ci
+npm --prefix ../Atom-DSP run build
+npm --prefix ../Atom-Classifier ci --ignore-scripts
+# Not optional, and not `--omit=dev`: apps/desktop's typecheck compiles
+# SignalLab's .tsx source directly across repositories, so it needs
+# `@types/react`, a SignalLab devDependency.
+npm --prefix ../Atom-SignalLab ci --ignore-scripts
+npm ci
+npm run check
+npm run dev
+```
+
+## Contents
+
+- [Run](#run)
+- [Overview](#overview)
+- [Startup admission](#startup-admission)
+- [SignalLab](#signallab)
+- [Atom](#atom)
+- [Implemented instrument surface](#implemented-instrument-surface)
+- [Safety and evidence boundary](#safety-and-evidence-boundary)
+- [Release gates](#release-gates)
+- [Workspace map](#workspace-map)
+- [macOS live development app](#macos-live-development-app)
+- [Normative contracts](#normative-contracts)
+- [Part of the AtomOS suite](#part-of-the-atomos-suite)
+
+## Overview
+
 AtomOS Atomizer is an AI-native Electron instrument host. It owns operator intent, instrument selection and lifecycle, measurement projections, and Atom, the application-layer voice and tool-using RF agent. Its current drivers compose SignalLab and the tinySA Ultra+ ZS407 without flattening synthetic measurements, physical USB, or executable firmware into the same evidence class.
 
 Internal `@tinysa/*`, `tinysa-zs407`, and serialized `TinySA_*` identifiers are
@@ -33,25 +85,7 @@ different picker directory only after the selected manifest passes Flasher's
 normal admission. That convenience grants no authority to the source checkout,
 does not attest an image, and creates no Atomizer runtime dependency or edge.
 
-## Run
-
-Requirements:
-
-- Node.js 22.23.1 (pinned by `.node-version` and CI) and npm 10.9.8 (pinned by
-  the package contract and CI).
-- `../Atom-DSP`, built before installing Atomizer's local file dependency.
-- `../Atom-SignalLab`, whose bundled in-process measurement service is the factory-default instrument source and supplies deterministic training/evaluation stimuli.
-- `../Atom-Classifier`, whose checked-in embedding assets power the deployed local I/Q and swept-magnitude classifier and whose retained Bayesian pipeline supports scalar-observable research.
-- The sibling Firmware repository at `../Atom-Firmware`, plus Renode and its pinned twin dependencies, when selecting the executable twin.
-- `../Atom-Flasher` and its declared prerequisites only when performing a physical firmware update; they are not Atomizer runtime dependencies.
-
-```bash
-npm --prefix ../Atom-DSP ci
-npm --prefix ../Atom-DSP run build
-npm ci
-npm run check
-npm run dev
-```
+## Startup admission
 
 Startup follows one closed admission rule across the static driver registry:
 
