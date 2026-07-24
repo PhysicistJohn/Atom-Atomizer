@@ -106,7 +106,11 @@ describe('SpectrumPlot sustained live rendering', () => {
       expect(gutter?.nextElementSibling?.classList.contains('plot-canvas')).toBe(true);
       priorPoints = points;
     }
-  }, 20_000);
+    // Generous budget: this sustained-rendering sweep runs ~3s on macOS but the
+    // Windows CI runner is several times slower at jsdom canvas reconciliation,
+    // where 20s was not enough. Kept explicit rather than inheriting the global
+    // testTimeout so the outlier stays visible.
+  }, 60_000);
 
   it('quarantines malformed updates, removes stale geometry, and recovers on the next valid frame', () => {
     useSynchronousDraws();
