@@ -21,7 +21,7 @@ pins, then install in the same order CI installs them:
 git clone https://github.com/PhysicistJohn/Atom-DSP.git ../Atom-DSP
 git -C ../Atom-DSP checkout v0.1.0
 git clone https://github.com/PhysicistJohn/Atom-SignalLab.git ../Atom-SignalLab
-git -C ../Atom-SignalLab checkout df571f12667eb0a508a64cda68404f875ab85aa3
+git -C ../Atom-SignalLab checkout 98114b100a15ad84875908be5210aae1b2dc7274
 git clone https://github.com/PhysicistJohn/Atom-Classifier.git ../Atom-Classifier
 git -C ../Atom-Classifier checkout a60f4e6bb4ebca11cfa85ee9f8456ea029803541
 
