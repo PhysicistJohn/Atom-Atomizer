@@ -199,11 +199,11 @@ pretend that the scalar instrument can always force the primary result to
 holdout: finite local detector/tracker fragments may be CW-like or FM-like, so
 its only defensible accepted set is CW-like, FM-like, or `unknown`.
 
-The separate SignalLab repository exposes a 34-profile closed catalog. Twelve
+The separate SignalLab repository exposes a 42-profile closed catalog. Twelve
 public observable profiles share the corpus's executable known-scenario source;
-the other 22 visual/standards profiles remain stimulus fixtures.
-Those profiles are UI fixtures, not physical training truth and not the v8
-posterior taxonomy. Named test models whose required allocation, PRB sequence,
+the other 30 remain outside classifier truth irrespective of any separate
+digital-I/Q qualification. Those profiles are not physical training truth and
+not the v8 posterior taxonomy. Named test models whose required allocation, PRB sequence,
 timing, or spectral partition is not implemented are excluded from selection;
 their absence is unsupported capability, not negative family evidence. The v8
 model is generated reproducibly from a pinned subset

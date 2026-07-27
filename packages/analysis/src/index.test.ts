@@ -102,10 +102,10 @@ const signalLabIdentity: InstrumentMeasurementIdentity = {
     verifiedAt: '2026-01-01T00:00:00.000Z',
     producerConfigurationEpoch: 'producer-epoch:1',
     contractId: 'tinysa-signal-lab-atomizer-measurement',
-    contractVersion: 1,
+    contractVersion: 2,
     contractSha256: 'a'.repeat(64),
     catalogSha256: 'b'.repeat(64),
-    generatorSha256: 'c'.repeat(64),
+    generatorContractBindingSha256: 'c'.repeat(64),
     claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
   },
 };

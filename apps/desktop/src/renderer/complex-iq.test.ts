@@ -5,6 +5,8 @@ import {
   complexIqConfigurationFor,
   previewComplexIq,
   reconcileComplexIqConfiguration,
+  reconcileSignalLabProfileComplexIqConfiguration,
+  reconcileSignalLabTransportComplexIqConfiguration,
 } from './complex-iq.js';
 
 const capability: Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }> = {
@@ -81,7 +83,96 @@ describe('driver-neutral complex I/Q staging', () => {
     expect(() => complexIqConfigurationFor(equalRate, { ...reconciled, bandwidthHz: 8_000_000 }))
       .toThrow(/must equal sample rate/i);
   });
+
+  it('stages a fixed SignalLab profile at native geometry while keeping RF center independently tunable', () => {
+    const wide = signalLabCapability();
+    const profile = {
+      profileId: 'nr-n78-tdd-100m',
+      nativeSampleRateHz: 122_880_000,
+      signalBandwidthHz: 100_000_000,
+      profileReferenceCenterHz: 3_500_010_000,
+      nativeCarrierOffsetHz: 0,
+      nativeMinimumCaptureBandwidthHz: 100_000_000,
+      replay: 'cyclic' as const,
+      nativePeriodSamples: 2_457_600,
+      derivedTransportSupported: true,
+    };
+    const native = reconcileSignalLabProfileComplexIqConfiguration(
+      wide,
+      profile,
+      DEFAULT_COMPLEX_IQ_CONFIGURATION,
+    );
+    expect(native).toMatchObject({
+      centerHz: 3_500_010_000,
+      sampleRateHz: 122_880_000,
+      bandwidthHz: 100_000_000,
+    });
+
+    const translated = reconcileSignalLabTransportComplexIqConfiguration(wide, profile, {
+      ...native,
+      centerHz: 3_450_000_000,
+      sampleRateHz: 120_000_000,
+    });
+    expect(translated.centerHz).toBe(3_450_000_000);
+    expect(translated.sampleRateHz).toBe(120_000_000);
+    expect(translated.bandwidthHz).toBe(100_000_000);
+
+    const upsampled = reconcileSignalLabTransportComplexIqConfiguration(wide, profile, {
+      ...native,
+      sampleRateHz: 130_000_000,
+    });
+    expect(upsampled.sampleRateHz).toBe(130_000_000);
+    expect(upsampled.bandwidthHz).toBe(100_000_000);
+  });
+
+  // Bluetooth LE sits at -15 MHz inside its 80 Msps artifact, so a symmetric
+  // capture that keeps the carrier there costs 2 * 15 + 1 = 31 MHz. Staging the
+  // bare 1 MHz signal bandwidth would silently ask for translated derived bytes.
+  it('scales native-domain Bluetooth one-shot limits into the output-rate domain', () => {
+    const wide = signalLabCapability();
+    const ble = {
+      profileId: 'bluetooth-le-advertising',
+      nativeSampleRateHz: 80_000_000,
+      signalBandwidthHz: 1_000_000,
+      profileReferenceCenterHz: 2_426_000_000,
+      nativeCarrierOffsetHz: -15_000_000,
+      nativeMinimumCaptureBandwidthHz: 31_000_000,
+      replay: 'one-shot' as const,
+      maxOneShotSamples: 12_160,
+      derivedTransportSupported: true,
+    };
+    const native = reconcileSignalLabProfileComplexIqConfiguration(
+      wide,
+      ble,
+      { ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleCount: 65_536 },
+    );
+    expect(native.sampleCount).toBe(12_160);
+    expect(native).toMatchObject({
+      centerHz: 2_426_000_000,
+      sampleRateHz: 80_000_000,
+      bandwidthHz: 31_000_000,
+    });
+
+    const derived = reconcileSignalLabTransportComplexIqConfiguration(wide, ble, {
+      ...native,
+      sampleRateHz: 40_000_000,
+      sampleCount: 12_160,
+    });
+    expect(derived.sampleCount).toBe(6_080);
+  });
 });
+
+function signalLabCapability(): Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }> {
+  return {
+    kind: 'complex-iq',
+    centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 },
+    sampleRateHz: { min: 1_000, max: 491_520_000, step: 1 },
+    bandwidthHz: { min: 1, max: 491_520_000, step: 1 },
+    bandwidthMode: 'independent',
+    sampleCount: { min: 1, max: 65_536, step: 1 },
+    sampleFormat: 'cf32le',
+  };
+}
 
 describe('bounded complex I/Q preview decoding', () => {
   it('decodes cf32le samples and computes preview metrics', () => {

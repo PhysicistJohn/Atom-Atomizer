@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+          ref: df571f12667eb0a508a64cda68404f875ab85aa3
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+          ref: df571f12667eb0a508a64cda68404f875ab85aa3
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

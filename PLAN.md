@@ -1,9 +1,9 @@
 # Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 9, application contract 6, trio composition 4
-Updated: 2026-07-17
-Physical firmware baseline: source revision `c97938697b6c7485e7cab50bca9af76996b7d671`; executable-twin release identity is pinned separately by trio composition v4
+Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 9, application contract 6, SignalLab measurement bridge 2, trio composition 5
+Updated: 2026-07-27
+Physical firmware baseline: source revision `c97938697b6c7485e7cab50bca9af76996b7d671`; executable-twin release identity is pinned separately by trio composition v5
 
 ## Outcome
 
@@ -56,12 +56,12 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command, exact Node/npm CI matrix on macOS/Windows/Linux | signed and platform-qualified release artifacts |
-| Contracts | strict `AtomizerInstrumentApiV1`, TinySA protocol v3, Atom surface v9, application contract v6, byte-identical trio composition v4, source/provenance unions, physical/OEM firmware provenance, instrument/device/sweep/detected-power/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict `AtomizerInstrumentApiV1`, SignalLab measurement bridge v2, TinySA protocol v3, Atom surface v9, application contract v6, byte-identical trio composition v5, source/provenance unions, physical/OEM firmware provenance, instrument/device/sweep/detected-power/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
 | Executable Firmware twin | selectable `tinysa-zs407` source; pinned Renode boot evidence; firmware-executed sweeps, RGB565 screen, touch, generator; USB explicitly unmodeled | sustained soak and platform packaging of Renode dependencies |
-| SignalLab | active high-level in-process measurement driver; exact `signal-lab:default` factory candidate with no fallback; deterministic complete-buffer `cf32le` I/Q for all 34 closed profiles: 3 analytic laboratory envelopes and 31 standards-derived engineering envelopes that are neither packet-decodable nor conformance vectors; seeded AWGN/Rayleigh; selected profile excluded from measurement/classifier evidence; separately versioned stimulus intent | framework-generated independently validated standards assets remain future; Firmware-owned stimulus sink remains reserved-not-connected until a coordinated future trio contract activates it |
+| SignalLab | active strict-v2 in-process measurement driver; exact `signal-lab:default` factory candidate with no fallback; deterministic complete-buffer `cf32le` I/Q for all 42 closed profiles: 31 content-addressed independently verified fixed digital artifacts, eight rate-flexible analytic lab/reference generators, and three custom standards builders; exact native/derived/impaired qualification, per-profile geometry/replay limits, payload SHA-256, and transform receipts; seeded scalar AWGN/Rayleigh and explicit receiver-I/Q impairment; selected profile excluded from measurement/classifier evidence | RF emission, antenna behavior, regulatory/product certification, and the Firmware-owned stimulus sink remain outside this digital measurement edge; sink activation requires a coordinated future trio contract |
 | Instrument host and TinySA service | static registry, independent discovery, persisted explicit preference, serialized lifecycle, capability/evidence validation; main-owned RF state with command-acknowledged physical and firmware-executed-twin qualification; atomic event/return measurement reconciliation; bounded exact-VID/PID serial lifecycle; TinySA-only shipped/OEM/custom revision registry, analyzer readback, text/raw sweeps, diagnostics, screen/touch and safe generator | complete physical timing, fault, touch, RF and recovery qualification matrices |
 | Electron bridge | `AtomizerInstrumentApiV1` handlers, runtime validation, event subscription, export dialog, sandbox; no firmware-installation IPC | CSP hardening audit and IPC abuse suite |
 | Spectrum measurements | one no-scroll shared stage selected by first-class Spectrum/Waterfall/Channel sidebar destinations with no top view tabs; live React-derived SVG trace geometry; analyzer/trigger controls; four traces; eight markers with narrow sampled-peak/local-3 dB and bounded-broad centroid/component-OBW semantics; amplitude scaling; coherent waterfall; RBW-normalized CHP/PSD/ACP/ACLR/OBW; non-rendered detected-envelope STFT API; single/continuous sweeps; 50-sweep history; CSV/JSON | complete keyboard marker workflow, limit lines/emission masks, multi-sweep harmonic orchestration, sustained physical/RF validation |

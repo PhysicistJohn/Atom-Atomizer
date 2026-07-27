@@ -49,7 +49,7 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
     expect(signalLab.profiles.length).toBeGreaterThan(10);
     expect(signalLab.profiles[0]).toEqual(expect.objectContaining({ profileId: 'cw', label: expect.any(String) }));
     expect(signalLab.channel).toEqual(expect.objectContaining({ model: 'awgn' }));
-    expect(signalLab.iqProfileIds).toContain('nr-n78-tdd-100m');
+    expect(signalLab.iqProfiles.map(({ profileId }) => profileId)).toContain('nr-n78-tdd-100m');
 
     await api.configure({
       kind: 'swept-spectrum',
@@ -101,9 +101,9 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
     await api.executeFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'nr-n78-tdd-100m' });
     await api.configure({
       kind: 'complex-iq',
-      centerHz: 3_500_000_000,
-      sampleRateHz: 2_000_000,
-      bandwidthHz: 1_500_000,
+      centerHz: 3_500_010_000,
+      sampleRateHz: 122_880_000,
+      bandwidthHz: 100_000_000,
       sampleCount: 1_024,
       sampleFormat: 'cf32le',
     });
@@ -142,9 +142,6 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
     if (signalLab?.kind !== 'signal-lab-profile-selection') throw new Error('SignalLab feature missing');
     const firstPerFamily = new Map<string, (typeof signalLab.profiles)[number]>();
     for (const profile of signalLab.profiles) {
-      // The capability schema also admits bare profile geometry; this session
-      // must advertise complete catalog descriptors.
-      if (!('family' in profile)) throw new Error(`SignalLab profile ${profile.profileId} lost its catalog descriptor`);
       if (!firstPerFamily.has(profile.family)) firstPerFamily.set(profile.family, profile);
     }
     expect(firstPerFamily.size).toBeGreaterThanOrEqual(6);

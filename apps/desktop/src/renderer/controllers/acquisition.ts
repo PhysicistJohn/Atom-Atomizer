@@ -27,6 +27,7 @@ import {
 import {
   complexIqConfigurationFor,
   reconcileComplexIqConfiguration,
+  reconcileSignalLabTransportComplexIqConfiguration,
   sameComplexIqConfiguration,
   type ComplexIqConfiguration,
   type ComplexIqMeasurement,
@@ -474,8 +475,7 @@ export class AcquisitionController {
     if (iq?.kind !== 'complex-iq') throw new Error('The active session no longer advertises complex-I/Q acquisition');
     const profile = session.capabilities.features.find((candidate) => candidate.kind === 'signal-lab-profile-selection');
     if (profile?.kind === 'signal-lab-profile-selection'
-      && profile.iqProfileIds !== undefined
-      && !profile.iqProfileIds.includes(profile.selectedProfileId)) {
+      && !profile.iqProfiles.some((candidate) => candidate.profileId === profile.selectedProfileId)) {
       throw new Error(`SignalLab profile ${profile.selectedProfileId} is not admitted for complex-I/Q acquisition`);
     }
   }
@@ -703,8 +703,16 @@ export class AcquisitionController {
     const k = this.k;
     try {
       const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
+      const signalLab = k.state.instrument.session?.capabilities.features.find(
+        (candidate) => candidate.kind === 'signal-lab-profile-selection',
+      );
+      const profile = signalLab?.kind === 'signal-lab-profile-selection'
+        ? signalLab.iqProfiles.find((candidate) => candidate.profileId === signalLab.selectedProfileId)
+        : undefined;
       const next = capability?.kind === 'complex-iq'
-        ? reconcileComplexIqConfiguration(capability, input)
+        ? profile
+          ? reconcileSignalLabTransportComplexIqConfiguration(capability, profile, input)
+          : reconcileComplexIqConfiguration(capability, input)
         : complexIqConfigurationSchema.parse(input);
       if (sameComplexIqConfiguration(next, k.state.iqConfiguration)) return;
       k.iqConfigurationRevision.current++;

@@ -160,14 +160,16 @@ export function validateInstrumentSession(
   }
   try { instrumentOpaqueIdSchema.parse(session.sessionId); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session without a valid opaque session ID`, { cause: error }); }
-  let capabilities: InstrumentCapabilities;
-  try { capabilities = instrumentCapabilitiesSchema.parse(session.capabilities); }
-  catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session with invalid capabilities`, { cause: error }); }
+  const capabilities = validateSessionCapabilities(
+    driver,
+    candidate,
+    session.capabilities,
+    'opened a session with invalid capabilities',
+  );
   let provenance: InstrumentSessionProvenance;
   try { provenance = instrumentSessionProvenanceSchema.parse(session.provenance); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session with invalid provenance`, { cause: error }); }
   assertProvenanceBinding(candidate, provenance, driver.driverId);
-  assertCapabilitySourceBinding(candidate, capabilities, driver.driverId);
   let rfOutput: InstrumentRfOutputState;
   try { rfOutput = instrumentRfOutputStateSchema.parse(session.rfOutput); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session without valid RF output state`, { cause: error }); }
@@ -188,7 +190,14 @@ export function validateInstrumentSession(
     driverId: session.driverId,
     candidate: sessionCandidate,
     provenance,
-    capabilities,
+    get capabilities(): InstrumentCapabilities {
+      return validateSessionCapabilities(
+        driver,
+        candidate,
+        session.capabilities,
+        'exposed invalid dynamic capabilities',
+      );
+    },
     rfOutput,
     get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
       return validateReceiveOnlySafetyState(
@@ -205,6 +214,24 @@ export function validateInstrumentSession(
     disconnect: () => session.disconnect(),
     subscribe: (listener: (event: InstrumentSessionEvent) => void) => session.subscribe(listener),
   });
+}
+
+function validateSessionCapabilities(
+  driver: InstrumentDriver,
+  candidate: InstrumentCandidate,
+  value: unknown,
+  context: string,
+): InstrumentCapabilities {
+  let capabilities: InstrumentCapabilities;
+  try { capabilities = instrumentCapabilitiesSchema.parse(value); }
+  catch (error) {
+    throw new InstrumentDriverContractError(
+      `Driver ${driver.driverId} ${context}`,
+      { cause: error },
+    );
+  }
+  assertCapabilitySourceBinding(candidate, capabilities, driver.driverId);
+  return capabilities;
 }
 
 function validateReceiveOnlySafetyState(

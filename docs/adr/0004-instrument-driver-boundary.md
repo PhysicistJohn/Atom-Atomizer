@@ -2,10 +2,11 @@
 
 - Status: accepted
 - Date: 2026-07-14
+- Amended: 2026-07-27 for the in-process SignalLab v2 contract
 
 ## Context
 
-Atomizer originally composed `TinySaDeviceService` directly in Electron main. That made the physical ZS407 protocol, application startup, and operator UI one implicit device contract. It also encouraged a synthetic source to masquerade as a serial port or firmware device. SignalLab is now a live high-level measurement source with synthetic scalar measurements and bounded deterministic complex I/Q for all 34 closed profiles: three analytic laboratory envelopes and 31 standards-derived engineering envelopes. A future NeptuneSDR integration would add materially different hardware identity, configuration, native formats, and streaming semantics. The application needs one boundary that admits present and future sources without erasing what each one can honestly prove.
+Atomizer originally composed `TinySaDeviceService` directly in Electron main. That made the physical ZS407 protocol, application startup, and operator UI one implicit device contract. It also encouraged a synthetic source to masquerade as a serial port or firmware device. SignalLab is now a live high-level measurement source with synthetic scalar measurements and bounded deterministic complex I/Q for all 42 closed profiles: 31 content-addressed fixed digital artifacts, eight analytic lab/reference generators, and three custom standards builders. A future NeptuneSDR integration would add materially different hardware identity, configuration, native formats, and streaming semantics. The application needs one boundary that admits present and future sources without erasing what each one can honestly prove.
 
 ## Decision
 
@@ -16,9 +17,10 @@ The transport-neutral lifecycle code lives in
 registry, serialized manager, and measurement fingerprinting and depends only
 on `@tinysa/contracts` and Zod. It imports no adapter, but it is contract-aware
 and enforces the current closed source/provenance and SignalLab feature
-variants. `@tinysa/signal-lab-driver` depends only on that runtime and the
-contracts and owns the SignalLab adapter and bridge client; it has no TinySA or
-`serialport` dependency. `@tinysa/device` separately owns the `tinysa-zs407`
+variants. `apps/desktop/src/shared/in-process-signal-lab-driver.ts` depends only
+on that runtime, the contracts, and sibling SignalLab's platform-neutral
+service; it has no TinySA or `serialport` dependency. `@tinysa/device`
+separately owns the `tinysa-zs407`
 adapter plus TinySA-specific serial, Renode, parser, scheduler, and
 device-service code. Its old generic module paths and runtime re-export are
 removed; host and driver code imports the runtime and each source adapter
@@ -41,7 +43,7 @@ dependency merely to participate in the lifecycle.
 - requires acknowledged RF output-off before disconnecting an RF-capable session; and
 - isolates driver and consumer event failures from lifecycle state.
 
-Electron main owns the registry, manager, startup preference, IPC adapter, and child-process lifetime. The sandboxed renderer receives only `AtomizerInstrumentApiV1`. It receives runtime-validated candidate descriptors, capabilities, status, and measurement values, never serial or child-process handles or a generic IPC primitive.
+Electron main owns the registry, manager, startup preference, IPC adapter, and any source process lifetime. The sandboxed renderer receives only `AtomizerInstrumentApiV1`. It receives runtime-validated candidate descriptors, capabilities, status, and measurement values, never serial or process handles or a generic IPC primitive.
 
 ## Pre-session connection ownership is explicit
 
@@ -54,7 +56,7 @@ Connection ownership changes through explicit handoff phases:
 - Public `InstrumentManager.disconnect()` is the atomic aggregate teardown. It first disconnects the admitted session, then retries any manager-owned rejected-session lease, then invokes pending-connection cleanup on every statically registered driver. It attempts every registered driver cleanup even if another pending cleanup fails. A failure remains visible and the next disconnect/quit retries the same order.
 - Electron's before-quit gate remains intercepted until that compound manager teardown succeeds. Synchronous `dispose()` is not a substitute for confirmed asynchronous connection cleanup.
 
-Today `tinysa-zs407` forwards the required hook to `TinySaDeviceService`, which retains its scheduler, transport, and acknowledged RF-off teardown state across a failed connect/close. `signal-lab` retains either its boot-process lease or its unadmitted bridge client until child exit is confirmed. Thus the registry aggregate covers both current drivers; it is not a TinySA-only application callback.
+Today `tinysa-zs407` forwards the required hook to `TinySaDeviceService`, which retains its scheduler, transport, and acknowledged RF-off teardown state across a failed connect/close. The in-process `signal-lab` source owns no external transport or child process, but still supplies the required idempotent cleanup hook. Thus the registry aggregate covers both current drivers; it is not a TinySA-only application callback.
 
 This rule is mandatory for every future resource-owning driver. Registering NeptuneSDR, for example, requires its driver to retain and clean any USB/network/native-library resource opened before session admission and to participate automatically in the manager's aggregate disconnect and quit gate. The current TinySA and SignalLab hooks do not, and cannot be interpreted to, cover NeptuneSDR or any other later driver. Its composition tests must force failure before session return, failure of the first cleanup attempt, and success of a later disconnect/quit retry without leaking the resource or bypassing an admitted session.
 
@@ -75,9 +77,13 @@ It depends only on contracts and the transport-neutral runtime. It is never a
 `ByteTransport`, never receives TinySA shell commands, and never claims a USB
 identity, firmware version, RF generator, display, or touch surface. Its
 complex-I/Q capability is explicitly simulation-native and is not hardware
-evidence. CW, AM, and FM are qualified analytic laboratory envelopes; the
-standards-labelled results are qualified engineering envelopes, not
-packet-decodable or conformance vectors.
+evidence. Thirty-one fixed profiles bind content-addressed independently
+verified digital artifacts and per-profile native geometry/replay policy; eight
+lab/reference profiles are analytic generators and three custom profiles are
+standards-derived builders. Exact native, clean-derived, and impaired results
+retain distinct qualifications and an exact transform receipt. Those claims
+cover digital bytes and lineage, not RF emission, antenna behavior,
+interoperability, regulatory approval, or product certification.
 
 Within Atomizer, TinySA's driver is the sole adapter allowed to know the ZS407 shell, USB admission, executable-twin bridge, firmware identity, screen/touch behavior, or generator safety semantics. The existing low-level TinySA service remains internal to that driver.
 
@@ -86,7 +92,7 @@ Physical serial discovery admits only exact `0483:5740` endpoints and bounds enu
 Every physical open requests the platform serial library's exclusive native
 lock. A lock denial is a failed connection, never permission to share a CDC
 stream with TinySA Flasher or another process. This is deliberately narrower
-than a cross-application lease: composition v4 contains no Atomizer↔Flasher
+than a cross-application lease: composition v5 contains no Atomizer↔Flasher
 runtime edge, so current ownership handoff remains an explicit local-human
 disconnect/finish action. A durable or automatic handoff requires a newly
 versioned contract implemented and tested by both applications; port absence,
@@ -114,11 +120,11 @@ Admission is independently bounded at each asynchronous ownership layer:
 - Electron main shares one 32-operation pending cap across all privileged instrument, file, AI, and computer handlers;
 - `AtomizerInstrumentHost` and `InstrumentManager` each admit at most 64 normal pending operations and reserve one coalesced RF-safe teardown slot, which runs immediately after active work and ahead of queued normal work;
 - the TinySA command scheduler admits at most 64 active-plus-queued commands in addition to its byte-buffer ceiling; and
-- SignalLab bridge input pauses at 33 total reply obligations, with malformed, duplicate, oversized, overloaded, and final unterminated lines charged to the same 10,000-line process budget. One additional valid shutdown line is reserved. Before the normal budget is consumed, Atomizer closes and joins that child, then starts a verified replacement from the exact same session ID, producer configuration epoch, profile, channel, and next sequence. Any continuity or identity mismatch is terminal; child generations never overlap.
+- SignalLab is invoked synchronously in-process and has no independent input queue or child generation. Host/manager operation ceilings bound calls, while strict producer and consumer schemas bound every returned vector, string, catalog, and I/Q payload.
 
 Overflow is an explicit failure, never a retry, fallback, hidden queue, or reason to skip output-off/disconnect. The separately reserved teardown slots exist only for idempotently coalesced RF-safe cleanup. Text sweep export v1 admits at most 100,000 points and emits at most 8 MiB after complete strict provenance/vector validation. Development-launcher diagnostics retain one 4 MiB log plus one bounded rotation and truncate any single process-output append above 64 KiB.
 
-Continuous scalar acquisition is one-in-flight and completion-paced to at most 10 acquisitions per second by default. Stop interrupts the pending cadence slot immediately and waits only for a currently executing acquisition. This keeps synthetic generation from becoming an unbounded main/renderer producer while allowing a bounded bridge process to renew indefinitely at explicit, joined generation boundaries.
+Continuous scalar acquisition is one-in-flight and completion-paced to at most 10 acquisitions per second by default. Stop interrupts the pending cadence slot immediately and waits only for a currently executing acquisition. This keeps in-process synthetic generation from becoming an unbounded main/renderer producer.
 
 ## Scalar configuration truth and v1 evolution
 
@@ -137,7 +143,7 @@ Detected-power configuration is a real prepare phase. It turns RF output off, en
 
 The manager's successful configuration response is the authoritative admitted configuration. The renderer retains that returned value by its opaque revision and projects it into `Sweep.requested` or `ZeroSpanCapture.requested`; it never reattaches staged UI intent. Configuration acknowledgements that differ from the request are rejected. Persisted UI staging is reconciled visibly to every active receiver range, step, automatic-mode declaration, enum set, and trigger range before first configuration. Atom receives admitted state and explicitly labelled staging; under SignalLab, receiver-only staged values are omitted and marked not applicable. Profile IDs remain session capability/status only and never enter configuration, measurement, detector, classifier, or export evidence.
 
-Source provenance also constrains capability truth in v1. SignalLab may expose synthetic scalar spectrum/detected-power acquisition, profile/channel selection, and bounded deterministic complex I/Q for all 34 explicitly advertised closed profiles; CW/AM/FM results retain `analytic-complex-baseband`, while the 31 standards-labelled results retain `standards-derived-complex-baseband`. RF generator, screen, touch, diagnostics, and receiver controls remain rejected at session admission. Serial and firmware-twin scalar acquisitions require receiver controls. Export admission mirrors this binding, binds the complete requested closed/half-open frequency grid to samples, and uses generic instrument ceilings rather than TinySA frequency limits. JSON preserves the full admitted request, and CSV carries it in `requested_configuration_json`.
+Source provenance also constrains capability truth in v1. SignalLab may expose synthetic scalar spectrum/detected-power acquisition, profile/channel selection, and bounded deterministic complex I/Q for all 42 explicitly advertised closed profiles. Eight lab/reference generators retain `analytic-complex-baseband`; three custom builders retain `standards-derived-complex-baseband`; 31 fixed artifacts distinguish exact native `independently-verified-digital-baseband`, clean `derived-from-independently-verified-digital-baseband`, and explicit receiver-impaired output. RF generator, screen, touch, diagnostics, and receiver controls remain rejected at session admission. Serial and firmware-twin scalar acquisitions require receiver controls. Export admission mirrors this binding, binds the complete requested closed/half-open frequency grid to samples, and uses generic instrument ceilings rather than TinySA frequency limits. JSON preserves the full admitted request, and CSV carries it in `requested_configuration_json`.
 
 Instrument v1's source-provenance union remains closed to `serial-port`,
 `tinysa-firmware-twin`, and `signal-lab`. The renderer has capability-gated
@@ -147,11 +153,11 @@ A truthful first-class Neptune transport/provenance variant and hardware-specifi
 configuration/export evolution are required; it must not be smuggled through a
 false existing source or projected into scalar controls.
 
-The paired SignalLab bridge v1 is still pre-publication. Its current exact schema includes the reserved shutdown budget and a required safe-integer detected-power center with an advertised 1 Hz tuning lattice. Coordinated pre-publication changes alter the exact contract hash, so an older strict Atomizer build rejects the producer before dispatch. Once this boundary has a stable external release, a wire-field or semantic change requires a new bridge contract version rather than mutation of v1.
+The paired SignalLab measurement bridge v2 is still pre-publication. Its exact in-process schema includes per-profile governance, native/output I/Q geometry, cyclic/one-shot replay, explicit receiver impairment, payload SHA-256, and transform receipts, plus a required safe-integer detected-power center on an advertised 1 Hz tuning lattice. The producer contract, catalog, and domain-separated contract binding are hash-bound; the binding is explicitly not generator-code identity. An older strict Atomizer build rejects the producer before dispatch. Once this boundary has a stable external release, a wire-field or semantic change requires a new bridge contract version rather than mutation of v2.
 
 ## Capability growth and NeptuneSDR
 
-The base contract contains common acquisition variants—swept scalar spectrum, uniformly sampled detected power, and a complete single-buffer complex-I/Q shape capped at 64 MiB—and narrowly typed optional features. Continuous complex-IQ acquisition is rejected; chunking, continuation, backpressure, or long-lived streaming requires a new contract version. SignalLab advertises a narrower complete-buffer `cf32le` capability for all 34 closed profiles, with analytic-laboratory versus standards-derived-engineering qualification; `tinysa-zs407` advertises none. The UI and agent surface derive availability from those declarations. Framework-generated independently validated standards assets are a future qualification tier, not a property of the current engineering buffers.
+The base contract contains common acquisition variants, swept scalar spectrum, uniformly sampled detected power, and a complete single-buffer complex-I/Q shape capped at 64 MiB, plus narrowly typed optional features. Continuous complex-IQ acquisition is rejected; chunking, continuation, backpressure, or long-lived streaming requires a new contract version. SignalLab advertises bounded complete-buffer `cf32le` for all 42 closed profiles, including exact per-profile geometry, transport derivation, replay bounds, and qualification; `tinysa-zs407` advertises none. The UI and agent surface derive availability from those declarations.
 
 New common semantics require a versioned contract addition with manager validation and at least two credible consumers; they are not placed in an untyped options bag. A truly source-specific operation would require a driver-owned, separately versioned extension contract and would remain unavailable to other drivers; instrument v1 has no generic extension hook. NeptuneSDR is not registered or supported today. The transport-neutral runtime package solves only driver lifecycle coupling; it does not make source registration open-ended. Adding NeptuneSDR still requires a distinct driver/source identity, truthful hardware capabilities and provenance, native-format export and configuration paths, consumers, contract tests, pre-session lease cleanup through the required driver hook, and a coordinated trio-contract revision. Long-lived I/Q additionally requires a versioned streaming contract for chunking, ordering, backpressure, cancellation, and bounded retention; the existing complete single-buffer I/Q value and renderer are not a streaming protocol or hardware admission.
 
@@ -166,4 +172,4 @@ New common semantics require a versioned contract addition with manager validati
 - Generic acquisition configuration cannot silently discard requested source-specific controls; an adapter must either implement, explicitly translate, or reject them.
 - Driver, manager, IPC, and producer contracts are versioned and tested independently, with real producer/consumer interoperation required for a SignalLab release.
 - Release regenerates the deterministic Bayesian classifier model and requires byte identity with both checked-in generated assets; validating a stale but internally consistent asset is insufficient.
-- Trio composition v4 records the active SignalLab measurement edge, selectable TinySA physical/twin sources, factory-default/no-fallback rule, reserved SignalLab stimulus edge, and Atom-Flasher exclusive-ownership boundary.
+- Trio composition v5 records the active in-process SignalLab v2 measurement edge, selectable TinySA physical/twin sources, factory-default/no-fallback rule, reserved SignalLab stimulus edge, and Atom-Flasher exclusive-ownership boundary.

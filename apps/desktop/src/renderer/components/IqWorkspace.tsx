@@ -22,7 +22,9 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
 // its multi-megabyte sample payload) deliberately never crosses into props —
 // see IqContainer.
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
-  'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
+  'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'
+  | 'profileReferenceCenterHz' | 'rfReferenceCenterHz' | 'nativeCarrierOffsetHz' | 'rfPlacement'
+  | 'outputCarrierOffsetHz' | 'rfTuneCenterHz' | 'signalBandwidthHz' | 'nativeSampleRateHz' | 'payloadKind'> {}
 
 export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, recovered, busy, captureUnavailableReason, onChange }: {
   configuration: ComplexIqConfiguration;
@@ -93,6 +95,23 @@ export function IqWorkspace({ configuration, capability, preview, previewError, 
       <div className="iq-driver-facts">
         <span><small>Wire format</small><strong>{capability?.sampleFormat ?? '—'}</strong></span>
         <span><small>Capture bytes</small><strong>{formatBytes(configuration.sampleCount * bytesPerSample(configuration.sampleFormat))}</strong></span>
+        {capture?.payloadKind && <span><small>Payload lineage</small><strong>{capture.payloadKind.replaceAll('-', ' ')}</strong></span>}
+        {capture?.profileReferenceCenterHz !== undefined && <span>
+          <small>Profile signal center</small>
+          <strong>{formatExactFrequency(capture.profileReferenceCenterHz)} · {capture.rfPlacement?.replaceAll('-', ' ')}</strong>
+        </span>}
+        {capture?.rfReferenceCenterHz !== undefined && <span>
+          <small>Native RF reference</small>
+          <strong>{formatExactFrequency(capture.rfReferenceCenterHz)}</strong>
+        </span>}
+        {capture?.nativeCarrierOffsetHz !== undefined && <span>
+          <small>Carrier offset · native / output</small>
+          <strong>{formatSignedFrequency(capture.nativeCarrierOffsetHz)} / {formatSignedFrequency(capture.outputCarrierOffsetHz!)}</strong>
+        </span>}
+        {capture?.rfTuneCenterHz !== undefined && <span>
+          <small>Output RF tune center</small>
+          <strong>{formatExactFrequency(capture.rfTuneCenterHz)}</strong>
+        </span>}
       </div>
       {captureUnavailableReason && <div className="inline-error" role="status">{captureUnavailableReason}</div>}
       <div className="channel-contract-note"><Activity size={14}/><p>Use sidebar Single for one bounded buffer or Run for one-at-a-time, backpressured buffers. Atomizer preserves native encoding and validates exact byte geometry.</p></div>
@@ -300,6 +319,10 @@ function formatDuration(seconds: number): string {
   if (seconds < .001) return `${(seconds * 1e6).toFixed(1)} µs`;
   if (seconds < 1) return `${(seconds * 1e3).toFixed(2)} ms`;
   return `${seconds.toFixed(3)} s`;
+}
+
+function formatSignedFrequency(hertz: number): string {
+  return `${hertz < 0 ? '−' : hertz > 0 ? '+' : ''}${formatFrequency(Math.abs(hertz))}`;
 }
 
 function formatDbfs(linear: number): string {

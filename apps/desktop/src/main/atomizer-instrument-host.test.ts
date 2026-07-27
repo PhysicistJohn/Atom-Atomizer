@@ -857,8 +857,8 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
       execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge',
       qualification: 'synthetic-visual-projection', verifiedAt: NOW,
       producerConfigurationEpoch: 'producer-epoch:cw',
-      contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1,
-      contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorSha256: 'c'.repeat(64),
+      contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
+      contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
     },
     capabilities: {
@@ -875,19 +875,100 @@ function sessionFixture(configuration?: InstrumentConfigurationState): Instrumen
         sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
         controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' },
         powerUnit: 'dBm', timing: 'uniform',
+      }, {
+        kind: 'complex-iq',
+        centerFrequencyHz: { min: 1, max: 1_000_000_000, step: 1 },
+        sampleRateHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthMode: 'independent',
+        sampleCount: { min: 1, max: 65_536, step: 1 },
+        sampleFormat: 'cf32le',
       }],
       features: [{
         kind: 'signal-lab-profile-selection',
         profiles: [
-          { profileId: 'cw', centerFrequencyHz: 100, recommendedSpanHz: 200 },
-          { profileId: 'fm', centerFrequencyHz: 200, recommendedSpanHz: 100 },
+          signalLabProfileFixture('cw', 100, 200),
+          signalLabProfileFixture('fm', 200, 100),
         ],
         selectedProfileId: 'cw',
+        channel: {
+          model: 'awgn',
+          noiseFloorDbm: -108,
+          seed: 407,
+          fadingRateHz: 2,
+          receiverImpairment: 'clean',
+        },
+        iqProfiles: [{
+          profileId: 'cw', nativeSampleRateHz: null, signalBandwidthHz: 1,
+          profileReferenceCenterHz: 100, nativeCarrierOffsetHz: 0,
+          nativeMinimumCaptureBandwidthHz: null,
+          replay: 'continuous', derivedTransportSupported: false,
+        }, {
+          profileId: 'fm', nativeSampleRateHz: null, signalBandwidthHz: 1,
+          profileReferenceCenterHz: 200, nativeCarrierOffsetHz: 0,
+          nativeMinimumCaptureBandwidthHz: null,
+          replay: 'continuous', derivedTransportSupported: false,
+        }],
       }],
     },
     rfOutput: 'not-supported',
     rfOutputQualification: 'not-applicable',
     ...(configuration ? { configuration } : {}),
+  };
+}
+
+function signalLabProfileFixture(profileId: string, centerFrequencyHz: number, recommendedSpanHz: number) {
+  return {
+    profileId,
+    label: profileId.toUpperCase(),
+    family: 'tone' as const,
+    model: 'deterministic-fixture',
+    qualification: 'visual' as const,
+    centerFrequencyHz,
+    occupiedBandwidthHz: 1,
+    recommendedSpanHz,
+    projection: { allocation: 'carrier' as const, modulation: 'unmodulated' as const, timing: 'continuous' as const },
+    source: {
+      organization: 'TinySA SignalLab' as const,
+      references: [{
+        specification: 'SignalLab fixture',
+        clause: profileId,
+        revision: '1',
+        url: `https://example.test/signal-lab/${encodeURIComponent(profileId)}`,
+      }],
+    },
+    governance: {
+      schemaVersion: 1 as const,
+      profileId,
+      signalKind: 'mathematical-lab-reference' as const,
+      governingOrganizations: ['TinySA SignalLab' as const],
+      governingBodies: [{
+        organization: 'TinySA SignalLab' as const,
+        technicalBody: 'TinySA SignalLab project' as const,
+        authorityScope: 'Deterministic mathematical laboratory reference.',
+      }],
+      normativeReferences: [],
+      applicability: {
+        status: 'not-applicable' as const,
+        reason: 'A mathematical fixture has no external radio-standard applicability.',
+      },
+      implementedQualificationState: 'mathematical-reference' as const,
+      testedClaimScope: {
+        kind: 'deterministic-mathematical-reference' as const,
+        statement: 'Fixture verifies the declared deterministic SignalLab boundary.',
+        testLocations: ['src/main/atomizer-instrument-host.test.ts'],
+      },
+      claims: {
+        standardsCompliance: 'not-claimed' as const,
+        digitalStandardsAdherence: 'not-applicable' as const,
+        digitalQualification: 'not-qualified' as const,
+        rfConformance: 'not-qualified' as const,
+      },
+      digitalQualificationEvidence: null,
+      qualificationBlockers: ['Fixture carries no independent digital-baseband qualification evidence.'],
+      reason: 'Host fixture declares only its directly tested deterministic scope.',
+    },
+    disclosure: 'Deterministic contract fixture profile.',
   };
 }
 
