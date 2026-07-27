@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: 98114b100a15ad84875908be5210aae1b2dc7274
+          ref: 02846e21863a5f50130139ffa1e42fc022bdaec2
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -90,15 +90,7 @@ jobs:
       - run: npm run audit
 
   signal-lab-interop:
-    # This job runs SignalLab's own check, and SignalLab's standards provider
-    # pins the exact cf64le bytes of a float64 LTE E-TM1.1 reference frame.
-    # libm last-ulp rounding differs by architecture, so on x86_64 the provider
-    # fails closed at module load. The pins were authored on arm64 and are bound
-    # by srsRAN oracle evidence, so they cannot be re-pinned without a provider
-    # recipe revision backed by a re-run oracle. Run the interop check on the
-    # architecture where those identities hold. SignalLab's own CI is likewise
-    # macos-only for this reason.
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
       SIGNAL_LAB_INTEGRATION_REQUIRED: '1'
@@ -116,7 +108,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: 98114b100a15ad84875908be5210aae1b2dc7274
+          ref: 02846e21863a5f50130139ffa1e42fc022bdaec2
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
