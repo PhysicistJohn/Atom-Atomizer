@@ -98,6 +98,36 @@ describe('complex I/Q workspace', () => {
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
   });
 
+  it('displays output placement separately from canonical profile lineage', () => {
+    const props = captureProps();
+    render(<IqWorkspace
+      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, centerHz: 3_450_000_000 }}
+      capability={capability}
+      preview={props.preview}
+      captureMeta={{
+        ...props.captureMeta,
+        centerHz: 3_450_000_000,
+        profileReferenceCenterHz: 3_500_010_000,
+        rfReferenceCenterHz: 3_500_010_000,
+        nativeCarrierOffsetHz: 0,
+        rfPlacement: 'operator-translated',
+        outputCarrierOffsetHz: 0,
+        rfTuneCenterHz: 3_450_000_000,
+        signalBandwidthHz: 100_000_000,
+        nativeSampleRateHz: 122_880_000,
+        payloadKind: 'derived-hardware-ready',
+        qualification: 'derived-from-independently-verified-digital-baseband',
+      }}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+    expect(screen.getByText('derived hardware ready')).toBeTruthy();
+    expect(screen.getByText(/3\.50001 GHz · operator translated/i)).toBeTruthy();
+    expect(screen.getByText('Profile signal center')).toBeTruthy();
+    expect(screen.getByText('Native RF reference')).toBeTruthy();
+    expect(screen.getByText('Output RF tune center')).toBeTruthy();
+  });
+
   it('fits both plots by default and provides bounded keyboard-accessible zoom and reset controls', () => {
     const view = render(<IqWorkspace
       configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}

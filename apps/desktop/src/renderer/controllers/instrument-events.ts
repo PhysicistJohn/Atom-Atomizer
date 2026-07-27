@@ -14,7 +14,11 @@ import {
   reconcileAnalyzerConfiguration,
   reconcileDetectedPowerConfiguration,
 } from '../instrument-configuration.js';
-import { reconcileComplexIqConfiguration, sameComplexIqConfiguration } from '../complex-iq.js';
+import {
+  reconcileComplexIqConfiguration,
+  reconcileSignalLabProfileComplexIqConfiguration,
+  sameComplexIqConfiguration,
+} from '../complex-iq.js';
 import {
   errorMessage,
   featureResultAcknowledgesRequest,
@@ -185,7 +189,7 @@ export class InstrumentEventsController {
           contractVersion: provenance.contractVersion,
           contractSha256: provenance.contractSha256,
           catalogSha256: provenance.catalogSha256,
-          generatorSha256: provenance.generatorSha256,
+          generatorContractBindingSha256: provenance.generatorContractBindingSha256,
           claims: provenance.claims,
         },
       })}`);
@@ -226,9 +230,16 @@ export class InstrumentEventsController {
         if (active) this.initializeSessionSelection(active, result.profileId, k.state.selectedSignalLabChannel);
       } else if (result.action === 'configure-channel') {
         k.set({ selectedSignalLabChannel: result.channel });
+      } else if (active) {
+        // A custom build republishes both the `custom-${standard}` descriptor
+        // and its matching I/Q transport, so occupied bandwidth, recommended
+        // span, signal bandwidth, and the profile reference center can all move
+        // together. Reconcile the staged analyzer/zero-span/I/Q geometry and the
+        // Studio view against the refreshed capability, exactly as a profile
+        // switch does. The operator's own profile selection and channel state
+        // are not what this action changes, so both are carried across.
+        this.initializeSessionSelection(active, k.state.selectedProfile, k.state.selectedSignalLabChannel);
       }
-      // configure-custom-waveform changes only the producer-side descriptor;
-      // the refreshed session status carries the updated waveform.
     }
   }
 
@@ -415,10 +426,19 @@ export class InstrumentEventsController {
     }
     const iq = next.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
     if (iq?.kind === 'complex-iq') {
-      const staged = selectedProfileEntry
-        ? { ...k.state.iqConfiguration, centerHz: selectedProfileEntry.centerFrequencyHz }
-        : k.state.iqConfiguration;
-      const reconciled = reconcileComplexIqConfiguration(iq, staged);
+      const iqProfile = profileCapability?.iqProfiles.find((profile) => profile.profileId === profileId);
+      const reconciled = selectedProfileEntry && iqProfile
+        ? reconcileSignalLabProfileComplexIqConfiguration(
+            iq,
+            iqProfile,
+            k.state.iqConfiguration,
+          )
+        : reconcileComplexIqConfiguration(
+            iq,
+            selectedProfileEntry
+              ? { ...k.state.iqConfiguration, centerHz: selectedProfileEntry.centerFrequencyHz }
+              : k.state.iqConfiguration,
+          );
       if (!sameComplexIqConfiguration(reconciled, k.state.iqConfiguration)) {
         k.iqConfigurationRevision.current++;
         k.set({ iqConfiguration: reconciled });

@@ -3,6 +3,8 @@ import {
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
   instrumentSessionProvenanceSchema,
+  signalLabMinimumDerivedSampleRateHz,
+  signalLabOutputOneShotSampleLimit,
   type InstrumentCandidate,
   type InstrumentCandidateDescriptor,
   type InstrumentCapabilities,
@@ -23,9 +25,14 @@ import {
   type InstrumentSession,
 } from '@tinysa/instrument-runtime';
 import { AtomizerMeasurementService } from '../../../../../Atom-SignalLab/src/measurement-service.js';
-import { type MeasurementSourceStatus } from '../../../../../Atom-SignalLab/src/measurement-contract.js';
+import {
+  complexIqCapabilitySchema,
+  complexIqMeasurementSchema,
+  measurementBridgeContractDocumentSchema,
+  type MeasurementSourceStatus,
+} from '../../../../../Atom-SignalLab/src/measurement-contract.js';
 import { base64ToBytes, sha256HexOfBytes } from '../../../../../Atom-SignalLab/src/platform-bytes.js';
-import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v1.json' with { type: 'json' };
+import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v2.json' with { type: 'json' };
 
 export const SIGNAL_LAB_INSTRUMENT_DRIVER_ID = 'signal-lab' as const;
 export const SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID = 'signal-lab:default' as const;
@@ -46,13 +53,29 @@ const SYNTHETIC_CONTROLS = {
  * byte-identically on desktop and web. (This is a hash of the parsed
  * document's JSON serialization, not of the on-disk file bytes: with the
  * bridge subprocess gone, nothing independently re-reads the file, and JSON
- * bundling deterministically preserves member order.) The generator IS the
- * app bundle itself, so its hash is a deterministic domain-separated
- * derivation that identifies "the in-process generator admitted for this
- * contract" without claiming any shipped-artifact identity.
+ * bundling deterministically preserves member order.) The domain-separated
+ * generator/contract binding below identifies the generator role admitted by
+ * these contract bytes. It is explicitly not a hash of shipped implementation
+ * bytes.
  */
-const CONTRACT_SHA256 = sha256HexOfBytes(JSON.stringify(contractDocument));
-const IN_PROCESS_GENERATOR_SHA256 = sha256HexOfBytes(`atomizer-in-process-generator\0${CONTRACT_SHA256}`);
+export function admitInProcessSignalLabContractDocument(value: unknown): {
+  readonly contractSha256: string;
+  readonly generatorContractBindingSha256: string;
+} {
+  const admittedDocument = measurementBridgeContractDocumentSchema.parse(value);
+  const contractSha256 = sha256HexOfBytes(JSON.stringify(admittedDocument));
+  return Object.freeze({
+    contractSha256,
+    generatorContractBindingSha256: sha256HexOfBytes(
+      `atomizer-in-process-generator\0${contractSha256}`,
+    ),
+  });
+}
+
+const {
+  contractSha256: CONTRACT_SHA256,
+  generatorContractBindingSha256: GENERATOR_CONTRACT_BINDING_SHA256,
+} = admitInProcessSignalLabContractDocument(contractDocument);
 
 const CANDIDATE_DESCRIPTOR: InstrumentCandidateDescriptor = {
   schemaVersion: 1,
@@ -94,7 +117,7 @@ export class InProcessSignalLabDriver implements InstrumentDriver {
     }
     const service = new AtomizerMeasurementService({
       contractSha256: CONTRACT_SHA256,
-      generatorSha256: IN_PROCESS_GENERATOR_SHA256,
+      generatorContractBindingSha256: GENERATOR_CONTRACT_BINDING_SHA256,
     });
     return new InProcessSignalLabSession(candidate, service);
   }
@@ -146,9 +169,8 @@ class InProcessSignalLabSession implements InstrumentSession {
       if (iqCapability?.kind !== 'complex-iq' || sourceState?.kind !== 'signal-lab-profile-selection') {
         throw new Error('SignalLab complex-I/Q capability disappeared');
       }
-      if (!sourceState.iqProfileIds?.includes(this.#status.profile)) {
-        throw new RangeError(`SignalLab profile ${this.#status.profile} has no admitted complex-I/Q generator`);
-      }
+      const profile = sourceState.iqProfiles.find((candidate) => candidate.profileId === this.#status.profile);
+      if (!profile) throw new RangeError(`SignalLab profile ${this.#status.profile} has no admitted complex-I/Q transport`);
       requireInteger(configuration.centerHz, iqCapability.centerFrequencyHz.min, iqCapability.centerFrequencyHz.max, 'SignalLab I/Q center');
       requireInteger(configuration.sampleRateHz, iqCapability.sampleRateHz.min, iqCapability.sampleRateHz.max, 'SignalLab I/Q sample rate');
       requireInteger(configuration.bandwidthHz, iqCapability.bandwidthHz.min, iqCapability.bandwidthHz.max, 'SignalLab I/Q bandwidth');
@@ -158,6 +180,37 @@ class InProcessSignalLabSession implements InstrumentSession {
       requireInteger(configuration.sampleCount, iqCapability.sampleCount.min, iqCapability.sampleCount.max, 'SignalLab I/Q samples');
       if (configuration.sampleFormat !== iqCapability.sampleFormat) {
         throw new RangeError(`SignalLab I/Q sample format must be ${iqCapability.sampleFormat}`);
+      }
+      if (profile) {
+        if (configuration.sampleRateHz < profile.signalBandwidthHz) {
+          throw new RangeError(
+            `SignalLab output rate cannot represent the ${profile.signalBandwidthHz} Hz profile signal bandwidth`,
+          );
+        }
+        if (configuration.bandwidthHz < profile.signalBandwidthHz) {
+          throw new RangeError(
+            `SignalLab capture bandwidth cannot exclude part of the ${profile.signalBandwidthHz} Hz profile signal support`,
+          );
+        }
+        if (profile.nativeSampleRateHz !== null
+          && configuration.sampleRateHz !== profile.nativeSampleRateHz
+          && !profile.derivedTransportSupported) {
+          throw new RangeError(`SignalLab profile ${profile.profileId} does not support derived I/Q transport`);
+        }
+        if (profile.nativeSampleRateHz !== null
+          && configuration.sampleRateHz !== profile.nativeSampleRateHz
+          && configuration.sampleRateHz < profile.nativeSampleRateHz
+          && configuration.sampleRateHz < signalLabMinimumDerivedSampleRateHz(profile.signalBandwidthHz)) {
+          throw new RangeError(
+            `SignalLab derived output rate must be at least ${signalLabMinimumDerivedSampleRateHz(profile.signalBandwidthHz)} samples/s to preserve anti-alias support`,
+          );
+        }
+        const outputLimit = signalLabOutputOneShotSampleLimit(profile, configuration.sampleRateHz);
+        if (outputLimit !== undefined && configuration.sampleCount > outputLimit) {
+          throw new RangeError(
+            `SignalLab profile ${profile.profileId} permits at most ${outputLimit} output samples at ${configuration.sampleRateHz} samples/s`,
+          );
+        }
       }
     } else {
       if (configuration.controls.model !== 'synthetic-scalar'
@@ -268,13 +321,7 @@ class InProcessSignalLabSession implements InstrumentSession {
   async disconnect(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#service.dispatch({
-      type: 'request',
-      contractVersion: 1,
-      requestId: 'in-process-session-shutdown',
-      method: 'shutdown',
-      params: {},
-    });
+    this.#service.shutdown();
     this.#listeners.clear();
   }
 
@@ -286,17 +333,17 @@ class InProcessSignalLabSession implements InstrumentSession {
   #acquireConfigured(binding: ConfigurationBinding): InstrumentMeasurement {
     const configuration = binding.command.configuration;
     if (configuration.kind === 'complex-iq') {
-      const source = this.#service.acquireIq({
+      const source = complexIqMeasurementSchema.parse(this.#service.acquireIq({
         centerHz: configuration.centerHz,
         sampleRateHz: configuration.sampleRateHz,
-        bandwidthHz: configuration.bandwidthHz,
+        captureBandwidthHz: configuration.bandwidthHz,
         sampleCount: configuration.sampleCount,
         sampleFormat: configuration.sampleFormat,
-      });
+      }));
       const samples = base64ToBytes(source.samplesBase64);
       if (source.centerHz !== configuration.centerHz
         || source.sampleRateHz !== configuration.sampleRateHz
-        || source.bandwidthHz !== configuration.bandwidthHz
+        || source.captureBandwidthHz !== configuration.bandwidthHz
         || source.sampleCount !== configuration.sampleCount
         || samples.byteLength !== configuration.sampleCount * 8) {
         throw new Error('SignalLab complex-I/Q result geometry does not match the admitted configuration');
@@ -306,10 +353,25 @@ class InProcessSignalLabSession implements InstrumentSession {
         ...this.#measurementBase(binding, source),
         kind: 'complex-iq',
         centerHz: source.centerHz,
+        profileReferenceCenterHz: source.profileReferenceCenterHz,
+        rfReferenceCenterHz: source.rfReferenceCenterHz,
+        nativeCarrierOffsetHz: source.nativeCarrierOffsetHz,
+        rfPlacement: source.rfPlacement,
+        outputCarrierOffsetHz: source.outputCarrierOffsetHz,
+        rfTuneCenterHz: source.rfTuneCenterHz,
         sampleRateHz: source.sampleRateHz,
-        bandwidthHz: source.bandwidthHz,
+        bandwidthHz: source.captureBandwidthHz,
+        signalBandwidthHz: source.signalBandwidthHz,
+        nativeSampleRateHz: source.nativeSampleRateHz,
         sampleFormat: source.sampleFormat,
         sampleCount: source.sampleCount,
+        payloadKind: source.payloadKind,
+        canonicalArtifactSha256: source.canonicalArtifactSha256,
+        transformReceipt: source.transformReceipt,
+        representation: source.representation,
+        normalization: source.normalization,
+        receiverImpairment: source.receiverImpairment,
+        channelApplication: source.channelApplication,
         samples,
       });
     }
@@ -388,7 +450,7 @@ class InProcessSignalLabSession implements InstrumentSession {
       contractVersion: identity.contractVersion,
       contractSha256: identity.contractSha256,
       catalogSha256: identity.catalogSha256,
-      generatorSha256: identity.generatorSha256,
+      generatorContractBindingSha256: identity.generatorContractBindingSha256,
       claims: identity.claims,
     });
   }
@@ -396,8 +458,9 @@ class InProcessSignalLabSession implements InstrumentSession {
   #buildCapabilities(): InstrumentCapabilities {
     const spectrum = this.#spectrumCapability();
     const detected = this.#detectedPowerCapability();
-    const iq = this.#status.capabilities.find((capability) => capability.kind === 'complex-iq');
-    if (iq?.kind !== 'complex-iq') throw new Error('SignalLab status omitted its admitted complex-I/Q capability');
+    const iq = complexIqCapabilitySchema.parse(
+      this.#status.capabilities.find((capability) => capability.kind === 'complex-iq'),
+    );
     const profileCapabilities = this.#status.profiles.map((profileId) => {
       const waveform = this.#status.catalog.find((entry) => entry.id === profileId);
       if (!waveform) throw new Error(`SignalLab status omitted catalog evidence for profile ${profileId}`);
@@ -412,6 +475,7 @@ class InProcessSignalLabSession implements InstrumentSession {
         recommendedSpanHz: waveform.recommendedSpanHz,
         projection: waveform.projection,
         source: waveform.source,
+        governance: waveform.governance,
         disclosure: waveform.disclosure,
         ...(waveform.assetSha256 === undefined ? {} : { assetSha256: waveform.assetSha256 }),
       };
@@ -451,7 +515,7 @@ class InProcessSignalLabSession implements InstrumentSession {
         profiles: profileCapabilities,
         selectedProfileId: this.#status.profile,
         channel: this.#status.channel,
-        iqProfileIds: iq.profiles,
+        iqProfiles: iq.iqProfiles,
       }],
     });
   }

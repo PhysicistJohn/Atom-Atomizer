@@ -35,6 +35,15 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
       sampleRateHz: capture.sampleRateHz,
       sampleFormat: capture.sampleFormat,
       qualification: capture.qualification,
+      profileReferenceCenterHz: capture.profileReferenceCenterHz,
+      rfReferenceCenterHz: capture.rfReferenceCenterHz,
+      nativeCarrierOffsetHz: capture.nativeCarrierOffsetHz,
+      rfPlacement: capture.rfPlacement,
+      outputCarrierOffsetHz: capture.outputCarrierOffsetHz,
+      rfTuneCenterHz: capture.rfTuneCenterHz,
+      signalBandwidthHz: capture.signalBandwidthHz,
+      nativeSampleRateHz: capture.nativeSampleRateHz,
+      payloadKind: capture.payloadKind,
     };
     try { return { preview: previewComplexIq(capture), previewError: undefined, captureMeta: meta }; }
     catch (error) {

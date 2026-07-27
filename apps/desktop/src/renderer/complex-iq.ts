@@ -2,9 +2,12 @@ import { decodeComplexSample } from '@atomos/dsp';
 import {
   complexIqConfigurationSchema,
   complexIqPayloadByteLength,
+  signalLabMinimumDerivedSampleRateHz,
+  signalLabOutputOneShotSampleLimit,
   type InstrumentAcquisitionCapability,
   type InstrumentConfiguration,
   type InstrumentMeasurement,
+  type SignalLabIqProfileCapability,
 } from '@tinysa/contracts';
 
 export type ComplexIqCapability = Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }>;
@@ -82,6 +85,124 @@ export function reconcileComplexIqConfiguration(
     sampleCount: reconcileRangeValue(staged.sampleCount, capability.sampleCount),
     sampleFormat: capability.sampleFormat,
   });
+}
+
+/**
+ * Smallest capture bandwidth that still yields exact native bytes.
+ *
+ * Capture bandwidth is a symmetric passband about the RF tune center, so
+ * keeping an artifact's native carrier offset costs `2 * |offset| + signal`.
+ * Bluetooth BR sits at -31 MHz inside its 80 Msps artifact and therefore needs
+ * 63 MHz; Bluetooth LE sits at -15 MHz and needs 31 MHz. Every zero-offset
+ * artifact reduces to its plain signal bandwidth. Rate-flexible generators have
+ * no native artifact, so their floor is the signal bandwidth too.
+ */
+export function signalLabExactNativeCaptureBandwidthHz(
+  profile: Pick<
+    SignalLabIqProfileCapability,
+    'nativeMinimumCaptureBandwidthHz' | 'signalBandwidthHz'
+  >,
+): number {
+  return profile.nativeMinimumCaptureBandwidthHz ?? profile.signalBandwidthHz;
+}
+
+/**
+ * Stage the selected SignalLab profile at its canonical digital interface.
+ * The I/Q transport's profile reference is the profile signal center; it may
+ * intentionally differ from the aggregate scalar/catalog reference (Bluetooth
+ * is centered at 2.441 GHz while its packet signals are at 2.410/2.426 GHz).
+ * Operators may retune centerHz later without changing the source waveform.
+ *
+ * Capture bandwidth is staged at the exact-native floor rather than the bare
+ * signal bandwidth, so an offset artifact such as Bluetooth defaults to bytes
+ * that are still the independently verified native ones. A narrower operator
+ * request stays legal; it just translates the carrier to DC and downgrades to
+ * derived qualification.
+ */
+export function reconcileSignalLabProfileComplexIqConfiguration(
+  capability: ComplexIqCapability,
+  profile: SignalLabIqProfileCapability,
+  staged: ComplexIqConfiguration,
+): ComplexIqConfiguration {
+  const base = reconcileComplexIqConfiguration(capability, {
+    ...staged,
+    centerHz: profile.profileReferenceCenterHz,
+  });
+  const sampleRateHz = profile.nativeSampleRateHz ?? base.sampleRateHz;
+  const bandwidthHz = reconcileRangeValue(
+    Math.min(signalLabExactNativeCaptureBandwidthHz(profile), sampleRateHz),
+    capability.bandwidthHz,
+  );
+  const outputLimit = signalLabOutputOneShotSampleLimit(profile, sampleRateHz);
+  const sampleCount = outputLimit === undefined
+    ? base.sampleCount
+    : reconcileRangeValue(Math.min(base.sampleCount, outputLimit), capability.sampleCount);
+  const native = complexIqConfigurationSchema.parse({
+    ...base,
+    sampleRateHz,
+    bandwidthHz,
+    sampleCount,
+  });
+  return reconcileSignalLabTransportComplexIqConfiguration(capability, profile, native);
+}
+
+/** Reconcile operator-selected output transport while respecting the selected
+ * profile's transform support and output-domain one-shot duration. */
+export function reconcileSignalLabTransportComplexIqConfiguration(
+  capability: ComplexIqCapability,
+  profile: SignalLabIqProfileCapability,
+  staged: ComplexIqConfiguration,
+): ComplexIqConfiguration {
+  const base = reconcileComplexIqConfiguration(capability, staged);
+  let sampleRateHz = profile.nativeSampleRateHz !== null
+    && base.sampleRateHz !== profile.nativeSampleRateHz
+    && !profile.derivedTransportSupported
+      ? profile.nativeSampleRateHz
+      : base.sampleRateHz;
+  if (sampleRateHz < profile.signalBandwidthHz) {
+    const supportedRate = leastAdmittedAtLeast(capability.sampleRateHz, profile.signalBandwidthHz);
+    if (supportedRate === undefined) {
+      throw new RangeError(`Complex-I/Q output cannot represent the ${profile.signalBandwidthHz} Hz profile signal bandwidth`);
+    }
+    sampleRateHz = supportedRate;
+  }
+  if (profile.nativeSampleRateHz !== null
+    && sampleRateHz !== profile.nativeSampleRateHz
+    && sampleRateHz < profile.nativeSampleRateHz) {
+    const minimumDerivedRate = signalLabMinimumDerivedSampleRateHz(profile.signalBandwidthHz);
+    if (sampleRateHz < minimumDerivedRate) {
+      const supportedRate = leastAdmittedAtLeast(capability.sampleRateHz, minimumDerivedRate);
+      if (supportedRate === undefined) {
+        throw new RangeError(`Complex-I/Q output cannot preserve the ${profile.signalBandwidthHz} Hz profile anti-alias support`);
+      }
+      sampleRateHz = supportedRate;
+    }
+  }
+  let bandwidthHz = base.bandwidthHz;
+  if (bandwidthHz < profile.signalBandwidthHz) {
+    const supportedBandwidth = leastAdmittedAtLeast(capability.bandwidthHz, profile.signalBandwidthHz);
+    if (supportedBandwidth === undefined) {
+      throw new RangeError(`Complex-I/Q capture cannot include the ${profile.signalBandwidthHz} Hz profile signal bandwidth`);
+    }
+    bandwidthHz = supportedBandwidth;
+  }
+  if (bandwidthHz > sampleRateHz) {
+    const supportedRate = leastAdmittedAtLeast(capability.sampleRateHz, bandwidthHz);
+    if (supportedRate === undefined) {
+      throw new RangeError('Complex-I/Q capability cannot represent the selected capture bandwidth');
+    }
+    sampleRateHz = supportedRate;
+  }
+  const outputLimit = signalLabOutputOneShotSampleLimit(profile, sampleRateHz);
+  const sampleCount = outputLimit === undefined
+    ? base.sampleCount
+    : reconcileRangeValue(Math.min(base.sampleCount, outputLimit), capability.sampleCount);
+  return complexIqConfigurationFor(capability, complexIqConfigurationSchema.parse({
+    ...base,
+    sampleRateHz,
+    bandwidthHz,
+    sampleCount,
+  }));
 }
 
 /** Build and independently range-check the exact I/Q request sent to a driver. */

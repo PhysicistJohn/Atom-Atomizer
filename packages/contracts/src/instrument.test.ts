@@ -29,6 +29,7 @@ import {
   instrumentSessionProvenanceSchema,
   instrumentSessionSnapshotSchema,
   receiveOnlySafetyReceiptSchema,
+  signalLabIqTransformReceiptSchema,
   signalLabProfileSelectionCapabilitySchema,
 } from './instrument.js';
 import {
@@ -176,10 +177,28 @@ describe('instrument boundary contracts', () => {
         {
           kind: 'signal-lab-profile-selection',
           profiles: [
-            { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 },
-            { profileId: 'fm', centerFrequencyHz: 101_000_000, recommendedSpanHz: 500_000 },
+            fixtureVisualProfile('cw', 100_000_000, 1, 2_000_000),
+            fixtureVisualProfile('fm', 101_000_000, 200_000, 500_000),
           ],
           selectedProfileId: 'cw',
+          channel: {
+            model: 'awgn', noiseFloorDbm: -108, seed: 407, fadingRateHz: 2,
+            receiverImpairment: 'clean',
+          },
+          iqProfiles: [
+            {
+              profileId: 'cw', nativeSampleRateHz: null, signalBandwidthHz: 1,
+              profileReferenceCenterHz: 100_000_000, nativeCarrierOffsetHz: 0,
+              nativeMinimumCaptureBandwidthHz: null,
+              replay: 'continuous', derivedTransportSupported: false,
+            },
+            {
+              profileId: 'fm', nativeSampleRateHz: null, signalBandwidthHz: 200_000,
+              profileReferenceCenterHz: 101_000_000, nativeCarrierOffsetHz: 0,
+              nativeMinimumCaptureBandwidthHz: null,
+              replay: 'continuous', derivedTransportSupported: false,
+            },
+          ],
         },
       ],
     });
@@ -407,15 +426,31 @@ describe('instrument boundary contracts', () => {
           url: 'https://www.3gpp.org/dynareport/36141.htm',
         }],
       },
+      governance: fixtureGovernance('lte-etm1.1', '3GPP'),
       disclosure: 'Standards-derived deterministic baseband projection.',
     };
-    const channel = { model: 'awgn' as const, noiseFloorDbm: -100, seed: 1, fadingRateHz: 1 };
+    const channel = {
+      model: 'awgn' as const,
+      noiseFloorDbm: -100,
+      seed: 1,
+      fadingRateHz: 1,
+      receiverImpairment: 'clean' as const,
+    };
     const capability = {
       kind: 'signal-lab-profile-selection' as const,
       profiles: [descriptor],
       selectedProfileId: descriptor.profileId,
       channel,
-      iqProfileIds: [descriptor.profileId],
+      iqProfiles: [{
+        profileId: descriptor.profileId,
+        nativeSampleRateHz: null,
+        signalBandwidthHz: descriptor.occupiedBandwidthHz,
+        profileReferenceCenterHz: descriptor.centerFrequencyHz,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous' as const,
+        derivedTransportSupported: false,
+      }],
     };
 
     expect(signalLabProfileSelectionCapabilitySchema.parse(capability)).toEqual(capability);
@@ -442,11 +477,44 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
     expect(signalLabProfileSelectionCapabilitySchema.safeParse({
       ...capability,
-      iqProfileIds: ['missing-profile'],
+      iqProfiles: [{ ...capability.iqProfiles[0], profileId: 'missing-profile' }],
     }).success).toBe(false);
     expect(signalLabProfileSelectionCapabilitySchema.safeParse({
       ...capability,
-      iqProfileIds: [descriptor.profileId, descriptor.profileId],
+      iqProfiles: [capability.iqProfiles[0], capability.iqProfiles[0]],
+    }).success).toBe(false);
+  });
+
+  it('admits transform receipts whose native FIR support exceeds the output chunk', () => {
+    const receipt = {
+      receiptVersion: 1,
+      sourceArtifactSha256: 'a'.repeat(64),
+      sourceStartSample: -34,
+      sourceSampleCount: 131_139,
+      sourceBoundaryPolicy: 'one-shot-zero-extended',
+      sourcePeriodSamples: null,
+      outputStartSourceSampleNumerator: '0',
+      outputStartSourceSampleDenominator: '1',
+      sourceSampleRateHz: 80_000_000,
+      outputSampleRateHz: 40_000_000,
+      sourceCarrierOffsetHz: 0,
+      outputCarrierOffsetHz: 0,
+      outputSampleCount: 65_536,
+      sourceSamplesSha256: 'b'.repeat(64),
+      outputSamplesSha256: 'c'.repeat(64),
+      operations: [{
+        kind: 'resample',
+        algorithm: 'blackman-windowed-sinc-v1',
+        sourceSampleRateHz: 80_000_000,
+        outputSampleRateHz: 40_000_000,
+        antiAliasCutoffHz: 19_000_000,
+        zeroCrossings: 16,
+      }],
+    } as const;
+    expect(signalLabIqTransformReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(signalLabIqTransformReceiptSchema.safeParse({
+      ...receipt,
+      sourceSampleCount: receipt.sourceSampleCount - 1,
     }).success).toBe(false);
   });
 
@@ -601,10 +669,10 @@ describe('instrument boundary contracts', () => {
       verifiedAt: '2026-07-14T18:00:00.000Z',
       producerConfigurationEpoch: 'producer-epoch:1',
       contractId: 'tinysa-signal-lab-atomizer-measurement' as const,
-      contractVersion: 1 as const,
+      contractVersion: 2 as const,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
-      generatorSha256: 'c'.repeat(64),
+      generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false as const, firmwareExecuted: false as const, rfEmitted: false as const },
     };
     expect(instrumentSessionProvenanceSchema.parse(provenance)).toEqual(provenance);
@@ -904,22 +972,8 @@ describe('instrument boundary contracts', () => {
   it('enforces the complete SignalLab source boundary in the public snapshot schema', () => {
     const snapshot = signalLabSnapshot();
     expect(instrumentSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
-    expect(instrumentSessionSnapshotSchema.safeParse({
-      ...snapshot,
-      capabilities: {
-        ...snapshot.capabilities,
-        acquisitions: [...snapshot.capabilities.acquisitions, {
-          kind: 'complex-iq',
-          centerFrequencyHz: { min: 0, max: 6_000_000_000 },
-          sampleRateHz: { min: 48_000, max: 20_000_000 },
-          bandwidthHz: { min: 10_000, max: 20_000_000 },
-          bandwidthMode: 'equal-to-sample-rate',
-          sampleCount: { min: 1, max: 1_024 },
-          sampleFormat: 'cf32le',
-        }],
-        features: snapshot.capabilities.features.map((feature) => ({ ...feature, iqProfileIds: ['fm'] })),
-      },
-    }).success).toBe(true);
+    expect(snapshot.capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')).toBe(true);
+    expect(snapshot.capabilities.features[0]?.iqProfiles?.map(({ profileId }) => profileId)).toEqual(['fm']);
     expect(instrumentSessionSnapshotSchema.safeParse({
       ...snapshot,
       capabilities: { ...snapshot.capabilities, features: [] },
@@ -1453,10 +1507,10 @@ function signalLabSnapshot() {
       verifiedAt: '2026-07-14T18:00:00.000Z',
       producerConfigurationEpoch: 'producer-epoch:1',
       contractId: 'tinysa-signal-lab-atomizer-measurement' as const,
-      contractVersion: 1 as const,
+      contractVersion: 2 as const,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
-      generatorSha256: 'c'.repeat(64),
+      generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false as const, firmwareExecuted: false as const, rfEmitted: false as const },
     },
     capabilities: {
@@ -1476,15 +1530,125 @@ function signalLabSnapshot() {
         controls: syntheticScalarControls(),
         powerUnit: 'dBm' as const,
         timing: 'uniform' as const,
+      }, {
+        kind: 'complex-iq' as const,
+        centerFrequencyHz: { min: 1, max: 1_000, step: 1 },
+        sampleRateHz: { min: 1, max: 1_000, step: 1 },
+        bandwidthHz: { min: 1, max: 1_000, step: 1 },
+        bandwidthMode: 'independent' as const,
+        sampleCount: { min: 1, max: 1_024, step: 1 },
+        sampleFormat: 'cf32le' as const,
       }],
       features: [{
         kind: 'signal-lab-profile-selection' as const,
-        profiles: [{ profileId: 'fm', centerFrequencyHz: 100, recommendedSpanHz: 200 }],
+        profiles: [fixtureVisualProfile('fm', 100, 200, 200)],
         selectedProfileId: 'fm',
+        channel: {
+          model: 'awgn' as const,
+          noiseFloorDbm: -108,
+          seed: 407,
+          fadingRateHz: 2,
+          receiverImpairment: 'clean' as const,
+        },
+        iqProfiles: [{
+          profileId: 'fm',
+          nativeSampleRateHz: null,
+          signalBandwidthHz: 200,
+          profileReferenceCenterHz: 100,
+          nativeCarrierOffsetHz: 0,
+          nativeMinimumCaptureBandwidthHz: null,
+          replay: 'continuous' as const,
+          derivedTransportSupported: false,
+        }],
       }],
     },
     rfOutput: 'not-supported' as const,
     rfOutputQualification: 'not-applicable' as const,
+  };
+}
+
+function fixtureVisualProfile(
+  profileId: string,
+  centerFrequencyHz: number,
+  occupiedBandwidthHz: number,
+  recommendedSpanHz: number,
+) {
+  return {
+    profileId,
+    label: profileId.toUpperCase(),
+    family: 'tone' as const,
+    model: 'deterministic-fixture',
+    qualification: 'visual' as const,
+    centerFrequencyHz,
+    occupiedBandwidthHz,
+    recommendedSpanHz,
+    projection: {
+      allocation: 'carrier' as const,
+      modulation: 'unmodulated' as const,
+      timing: 'continuous' as const,
+    },
+    source: {
+      organization: 'TinySA SignalLab' as const,
+      references: [{
+        specification: 'SignalLab fixture',
+        clause: profileId,
+        revision: '1',
+        url: `https://example.test/signal-lab/${encodeURIComponent(profileId)}`,
+      }],
+    },
+    governance: fixtureGovernance(profileId, 'TinySA SignalLab'),
+    disclosure: 'Deterministic mathematical fixture profile.',
+  };
+}
+
+function fixtureGovernance(profileId: string, organization: '3GPP' | 'TinySA SignalLab') {
+  const standardsDerived = organization === '3GPP';
+  return {
+    schemaVersion: 1 as const,
+    profileId,
+    signalKind: standardsDerived
+      ? 'standards-derived-engineering-profile' as const
+      : 'mathematical-lab-reference' as const,
+    governingOrganizations: [organization],
+    governingBodies: [{
+      organization,
+      technicalBody: standardsDerived ? '3GPP TSG RAN' as const : 'TinySA SignalLab project' as const,
+      authorityScope: standardsDerived
+        ? 'LTE waveform definition and test-model configuration.'
+        : 'Deterministic mathematical laboratory reference.',
+    }],
+    normativeReferences: standardsDerived ? [{
+      organization: '3GPP' as const,
+      documentId: '3GPP TS 36.141',
+      revision: 'Release 18',
+      clauses: ['6.1'],
+      url: 'https://www.3gpp.org/dynareport/36141.htm',
+    }] : [],
+    applicability: {
+      status: standardsDerived ? 'applicable' as const : 'not-applicable' as const,
+      reason: standardsDerived
+        ? 'The engineering projection is governed by the cited LTE test-model specification.'
+        : 'A mathematical tone has no external radio-standard applicability.',
+    },
+    implementedQualificationState: standardsDerived
+      ? 'standards-derived-engineering-projection' as const
+      : 'mathematical-reference' as const,
+    testedClaimScope: {
+      kind: standardsDerived
+        ? 'deterministic-engineering-projection' as const
+        : 'deterministic-mathematical-reference' as const,
+      statement: 'Fixture verifies the declared deterministic SignalLab profile boundary.',
+      testLocations: ['src/instrument.test.ts'],
+    },
+    claims: {
+      standardsCompliance: 'not-claimed' as const,
+      digitalStandardsAdherence: standardsDerived ? 'not-verified' as const : 'not-applicable' as const,
+      digitalQualification: 'not-qualified' as const,
+      rfConformance: 'not-qualified' as const,
+    },
+    digitalQualificationEvidence: null,
+    qualificationBlockers: ['Fixture carries no independent digital-baseband qualification evidence.'],
+    reason: 'Contract fixture declares only its directly tested deterministic scope.',
   };
 }
 

@@ -76,7 +76,7 @@ speaking, and error states; a redundant microphone connection button is absent.
 
 Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source the global scheduler obtains bounded complex-I/Q buffers at complete-buffer cadence and scalar spectra at admitted sweep cadence, with both capped at display rate and serialized through one instrument transaction. Every complete classifiable capture is immediately offered to a dedicated worker; every successful instantaneous result becomes one trend sample. The worker continuously evaluates with one in-flight job and one replaceable newest pending capture. The displayed trend integrates successful posteriors whose classifications completed within the trailing 500 ms and never sets acquisition cadence. A source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
 
-Workspace availability and controls are derived from the active session's declared capabilities. SignalLab supports swept spectrum, detected power, its typed profile/channel feature, and bounded deterministic complex-I/Q for all 42 closed profiles. CW, AM, FM, and the five constellation references are analytic laboratory envelopes; the other 34 catalog entries are standards-derived engineering envelopes. It does not expose an RF generator, firmware screen/touch, or TinySA diagnostics. The physical ZS407 and Firmware twin expose only the features proved by their admitted capability profile. A route that has no meaningful capability for the active source shows a specific unavailable state and source-switch action; it never sends a TinySA-only request to SignalLab or fabricates a generic setting.
+Workspace availability and controls are derived from the active session's declared capabilities. SignalLab supports swept spectrum, detected power, its typed profile/channel feature, and bounded deterministic complex-I/Q for all 42 closed profiles. CW, AM, FM, and the five constellation references are rate-flexible analytic laboratory generators; three custom profiles are standards-derived builders; the remaining 31 are content-addressed fixed digital artifacts with per-profile native geometry and replay policy. It does not expose an RF generator, firmware screen/touch, or TinySA diagnostics. The physical ZS407 and Firmware twin expose only the features proved by their admitted capability profile. A route that has no meaningful capability for the active source shows a specific unavailable state and source-switch action; it never sends a TinySA-only request to SignalLab or fabricates a generic setting.
 
 Generated Bayesian classifier assets are optional at desktop startup. When the
 asset pair is absent or rejected by its runtime contract, Detect shows
@@ -90,9 +90,9 @@ independent source-capability boundaries.
 
 Atomizer discovers each statically registered driver independently and retains driver-scoped failures. Main loads an owner-only version-1 preference; every new write persists `{driverId,candidateKind,candidateId}`. When no preference file exists, the exact `signal-lab:default` candidate is the explicit factory default. Legacy v1 broad records remain readable but fail on ambiguity, while a stale exact candidate ID fails closed. The connection surface identifies every candidate by driver, source kind, display name, and truthful capability summary. It connects exactly one preferred match. A corrupt preference, no match, ambiguity, discovery/identity/bridge/evidence failure, or connection failure is actionable and never falls through to a different driver, source kind, or candidate. Changing the default is an explicit operator action after safe disconnection.
 
-SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-1 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. Selecting Generate mounts the shared controlled SignalLab Studio with `LAB`, `GSM`, `LTE`, `5G NR`, `WI-FI`, and `BLUETOOTH` tabs, complete admitted descriptor/source disclosures, AWGN/Rayleigh scalar replay controls, and the closed receiver-I/Q impairment selector. The Atomizer driver remains the state owner; the shared component has no independent transport or preload access. Studio source-truth controls are human-only and do not silently extend Atom's tool authority.
+SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-2 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. Selecting Generate mounts the shared controlled SignalLab Studio with `LAB`, `GSM`, `LTE`, `5G NR`, `WI-FI`, and `BLUETOOTH` tabs, complete admitted descriptor/governance/source disclosures, AWGN/Rayleigh scalar replay controls, and the closed receiver-I/Q impairment selector. The Atomizer driver remains the state owner; the shared component has no independent transport or preload access. Studio source-truth controls are human-only and do not silently extend Atom's tool authority.
 
-SignalLab's selected profile is visible source status, not classifier truth: it never appears in a scalar measurement, detector input, classifier input, result rationale, or exported observation provenance. Profile or channel changes invalidate the admitted acquisition configuration before the next acquisition. Service or contract failure is visible and cannot activate hardware or the twin. SignalLab advertises I/Q for all 42 closed profiles. Laboratory captures retain `analytic-complex-baseband`; standards-labelled captures retain `standards-derived-complex-baseband` and must be presented as engineering envelopes, not packet-decodable or conformance vectors.
+SignalLab's selected profile is visible source status, not classifier truth: it never appears in a scalar measurement, detector input, classifier input, result rationale, or exported observation provenance. Profile or channel changes invalidate the admitted acquisition configuration before the next acquisition. Service or contract failure is visible and cannot activate hardware or the twin. SignalLab advertises I/Q for all 42 closed profiles. Laboratory/reference captures retain `analytic-complex-baseband`; custom builders retain `standards-derived-complex-baseband`; exact clean fixed-profile native bytes retain `independently-verified-digital-baseband`; clean transport transforms retain `derived-from-independently-verified-digital-baseband`; and any non-clean receiver preset is `receiver-impaired-complex-baseband`. The UI presents these as digital bytes and lineage, never as RF emission, antenna qualification, packet identity, regulatory approval, or product certification.
 
 The `tinysa-zs407` driver exposes physical ZS407 and executable-twin candidates as separate source kinds. Neither suppresses nor substitutes for the other. A physical candidate must pass exact USB, cross-response ZS407, parseable firmware version/revision, and command-catalog admission. Only an exact registered OEM version/revision/full-source-commit mapping receives supported-OEM provenance; a syntactically valid unknown revision is shown persistently as `CUSTOM FW · UNQUALIFIED`, with no invented source commit or qualification. The separate exact frozen custom receiver record is shown as `CUSTOM FW · RECEIVE ONLY`, displays its full-source mapping and persistent unattested-binary/non-OEM warning, and exposes no RF-output status or Generator authority. The twin boots the sibling Firmware repository's pinned Renode image. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. The initial physical receive-only evidence remains characterization, not RF calibration or general hardware qualification.
 
@@ -266,10 +266,12 @@ idle -> configuring -> acquiring -> complete
   than paying producer cost for samples every built-in consumer discards.
 - The renderer validates the measurement session/revision, format-dependent
   byte geometry, and finite preview samples before replacing the last capture.
-- The evidence footer preserves the measurement's exact qualification. A
-  SignalLab laboratory buffer reads `analytic-complex-baseband`; a
-  standards-labelled buffer reads `standards-derived-complex-baseband`. Neither
-  is relabeled as a scalar visual projection or conformance vector.
+- The evidence footer preserves the measurement's exact qualification:
+  `analytic-complex-baseband`, `standards-derived-complex-baseband`,
+  `independently-verified-digital-baseband`,
+  `derived-from-independently-verified-digital-baseband`, or
+  `receiver-impaired-complex-baseband`. It never relabels I/Q as a scalar visual
+  projection or upgrades digital bytes into an RF/product-conformance claim.
 - Plotting is bounded to 16,384 evenly sampled preview points and retained
   canvases paint the newest available preview at animation-frame cadence. Blind
   constellation recovery runs in a dedicated worker with one job in flight and
@@ -278,15 +280,14 @@ idle -> configuring -> acquiring -> complete
   contract.
 - The constellation is Q versus I only and makes no symbol-decision,
   modulation, EVM, protocol, calibration, or conformance claim.
-- SignalLab advertises independent bandwidth from 1 kHz through the requested
-  sample rate and admits all 42 closed profile IDs. Its causal
-  one-pole complex-baseband response has two-sided steady-state -3 dB edges at
-  `±bandwidthHz / 2`; I and Q use the same real coefficient, the first output is
-  initialized from the first analytic sample. Scalar AWGN/Rayleigh replay is
-  not applied to the I/Q buffer; the separately selected deterministic receiver
-  impairment preset is applied and declared in its result. Standards-labelled buffers are deterministic
-  engineering projections, not packet-decodable I/Q or conformance vectors;
-  framework-generated independently validated assets remain future work.
+- SignalLab admits all 42 closed profile IDs. Each capability row distinguishes
+  signal bandwidth from capture bandwidth, profile signal center from canonical
+  RF reference and tune center, and native artifact geometry from output
+  geometry. Cyclic and one-shot limits are profile-specific. Every result binds
+  its exact bytes and any resampling, fractional-delay, frequency-translation,
+  or receiver-impairment operations in a transform receipt. Scalar
+  AWGN/Rayleigh replay is not applied to I/Q; the separately selected
+  deterministic receiver impairment is applied only when declared.
 - I/Q controls are capability-gated UI operations; they are not Atom tools until
   separately admitted by the AI-native contract.
 
@@ -1145,7 +1146,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **IQ-03:** Mismatched session/revision, kind, format, count, or byte geometry is rejected without replacing the last valid capture.
 - **IQ-04:** Preview work is bounded and rejects non-finite sampled components.
 - **IQ-05:** Time and constellation plots make no decoding, EVM, protocol, calibration, or compliance claim.
-- **IQ-06:** SignalLab exposes deterministic I/Q for all 42 closed profiles, preserves analytic-laboratory versus standards-derived-engineering qualification, and makes no packet-decoding or conformance claim for standards-labelled buffers.
+- **IQ-06:** SignalLab exposes deterministic I/Q for all 42 closed profiles, preserves analytic/custom/native-qualified/derived/impaired qualification and exact transform lineage, and never upgrades digital-baseband evidence into packet identity, RF/antenna, regulatory, or product-conformance evidence.
 - **IQ-07:** The global Run loop owns one backpressured complete-buffer request at a time; complete-buffer v1 never presents itself as chunked streaming or continuous hardware support.
 - **IQ-08:** Time and constellation previews share bounded 0.5×–8× zoom and explicit Fit reset controls; every control is keyboard accessible and no breakpoint turns the plot grid into a scrolling container.
 
@@ -1198,7 +1199,7 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Navigation/global RF | `components/Sidebar.tsx` |
 | Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
 | Execution admission | `packages/instrument-runtime/src/instrument-driver-registry.ts`, `packages/instrument-runtime/src/instrument-manager.ts`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa/src/tinysa-instrument-driver.ts`, `apps/desktop/src/main/atomizer-instrument-host.ts` |
-| Trio/driver/SignalLab topology | `contracts/trio-composition-v4.json`, `packages/contracts/src/instrument.ts`, `packages/agent/src/index.ts` |
+| Trio/driver/SignalLab topology | `contracts/trio-composition-v5.json`, `packages/contracts/src/instrument.ts`, `packages/agent/src/index.ts` |
 | Detection and classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
 | Complex I/Q | `components/IqWorkspace.tsx`, `apps/desktop/src/renderer/complex-iq.ts`, `packages/contracts/src/instrument.ts` |
 | Generator / embedded SignalLab Studio | `components/GeneratorWorkspace.tsx`, `apps/desktop/src/renderer/signal-lab-studio.ts`, `../Atom-SignalLab/src/SignalLabStudio.tsx`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa` |

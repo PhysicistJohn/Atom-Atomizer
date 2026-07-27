@@ -145,35 +145,38 @@ const signalLabProfiles = (['cw', 'fm'] as const).map((profileId) => {
     recommendedSpanHz: descriptor.recommendedSpanHz,
     projection: descriptor.projection,
     source: descriptor.source,
+    governance: descriptor.governance,
     disclosure: descriptor.disclosure,
     ...(descriptor.assetSha256 === undefined ? {} : { assetSha256: descriptor.assetSha256 }),
   };
 });
-const signalLabSession: InstrumentSessionSnapshot = {
-  sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
-  provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1, contractSha256: HASH, catalogSha256: HASH, generatorSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
-  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }], features: [{ kind: 'signal-lab-profile-selection', profiles: signalLabProfiles, selectedProfileId: 'cw', channel: DEFAULT_REPLAY_CHANNEL }] },
-  rfOutput: 'not-supported',
-  rfOutputQualification: 'not-applicable',
-};
 const testComplexIqCapability = {
   kind: 'complex-iq' as const,
   centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 },
   sampleRateHz: { min: 2_000_000, max: 2_000_000, step: 1 },
-  bandwidthHz: { min: 1_000_000, max: 2_000_000, step: 1 },
+  bandwidthHz: { min: 1, max: 2_000_000, step: 1 },
+  bandwidthMode: 'independent' as const,
   sampleCount: { min: 2, max: 2, step: 1 },
   sampleFormat: 'cf32le' as const,
 };
-const signalLabIqSession: InstrumentSessionSnapshot = {
-  ...signalLabSession,
-  capabilities: {
-    ...signalLabSession.capabilities,
-    acquisitions: [...signalLabSession.capabilities.acquisitions, testComplexIqCapability],
-    features: signalLabSession.capabilities.features.map((feature) => feature.kind === 'signal-lab-profile-selection'
-      ? { ...feature, iqProfileIds: signalLabProfiles.map(({ profileId }) => profileId) }
-      : feature),
-  },
+const signalLabIqProfiles = signalLabProfiles.map((profile) => ({
+  profileId: profile.profileId,
+  nativeSampleRateHz: null,
+  signalBandwidthHz: profile.occupiedBandwidthHz,
+  profileReferenceCenterHz: profile.centerFrequencyHz,
+  nativeCarrierOffsetHz: 0,
+  nativeMinimumCaptureBandwidthHz: null,
+  replay: 'continuous' as const,
+  derivedTransportSupported: false,
+}));
+const signalLabSession: InstrumentSessionSnapshot = {
+  sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
+  provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2, contractSha256: HASH, catalogSha256: HASH, generatorContractBindingSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }, testComplexIqCapability], features: [{ kind: 'signal-lab-profile-selection', profiles: signalLabProfiles, selectedProfileId: 'cw', channel: DEFAULT_REPLAY_CHANNEL, iqProfiles: signalLabIqProfiles }] },
+  rfOutput: 'not-supported',
+  rfOutputQualification: 'not-applicable',
 };
+const signalLabIqSession: InstrumentSessionSnapshot = signalLabSession;
 const requested: AnalyzerConfig = { startHz: 88e6, stopHz: 108e6, points: 450, acquisitionFormat: 'raw', rbwKhz: 'auto', attenuationDb: 'auto', sweepTimeSeconds: 'auto', detector: 'sample', spurRejection: 'auto', lna: 'off', avoidSpurs: 'auto', trigger: { mode: 'auto' } };
 function receiverSpectrumCapability() {
   return {
@@ -457,6 +460,13 @@ function mockSignalLabCwSource(peakIndices: readonly number[] = [225]) {
   let acquisitionCount = 0;
   vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
     const configuration = activeConfiguration;
+    if (configuration.kind === 'complex-iq') {
+      return complexIqMeasurement(
+        configuration,
+        configurationRevision,
+        `signal-cw-iq-${acquisitionCount + 1}`,
+      );
+    }
     if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
     const frequencyHz = Array.from({ length: configuration.points }, (_value, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
     const peakIndex = peakIndices[acquisitionCount % peakIndices.length]!;
@@ -494,6 +504,9 @@ function mockSignalLabWidebandSource(profile: 'lte-etm3.1') {
   const rawPeakHz: number[] = [];
   vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
     const configuration = activeConfiguration;
+    if (configuration.kind === 'complex-iq') {
+      return complexIqMeasurement(configuration, configurationRevision, 'signal-lte-tm31-iq-1');
+    }
     if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
     const frequencyHz = Array.from({ length: configuration.points }, (_value, index) =>
       configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
@@ -930,6 +943,15 @@ describe('operator vertical slice', () => {
     });
     vi.mocked(window.atomizerInstrument.acquire).mockImplementation(async () => {
       const configuration = activeConfiguration;
+      if (configuration.kind === 'complex-iq') {
+        return complexIqMeasurement(
+          configuration,
+          configurationRevision,
+          'signal-live-iq-1',
+          signalLabSession.sessionId,
+          'producer-epoch:2',
+        );
+      }
       if (configuration.kind !== 'swept-spectrum') throw new Error('Expected SignalLab spectrum configuration');
       const frequencyHz = Array.from({ length: configuration.points }, (_value, index) => configuration.startHz + (configuration.stopHz - configuration.startHz) * index / (configuration.points - 1));
       return {
@@ -960,10 +982,10 @@ describe('operator vertical slice', () => {
         transport: 'signal-lab-measurement-bridge',
         qualification: 'synthetic-visual-projection',
         contractId: 'tinysa-signal-lab-atomizer-measurement',
-        contractVersion: 1,
+        contractVersion: 2,
         contractSha256: HASH,
         catalogSha256: HASH,
-        generatorSha256: HASH,
+        generatorContractBindingSha256: HASH,
         claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
       },
     });
@@ -973,7 +995,7 @@ describe('operator vertical slice', () => {
     expect(within(navigation).getByRole('button', { name: /Generate/i }).hasAttribute('disabled')).toBe(false);
     fireEvent.click(within(navigation).getByRole('button', { name: /Generate/i }));
     expect(await screen.findByRole('navigation', { name: /Waveform families/i })).toBeTruthy();
-    const profile = screen.getByRole('button', { name: /^FM/i });
+    const profile = screen.getByRole('button', { name: /Single-tone FM lab stimulus/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(profile.closest('[data-agent-control]')).toBeNull();
     fireEvent.click(profile);
@@ -999,7 +1021,7 @@ describe('operator vertical slice', () => {
       controls: { schemaVersion: 1 as const, model: 'synthetic-scalar' as const, timingQualification: 'simulation-exact' as const },
     };
     await waitFor(() => expect(window.atomizerInstrument.configure).toHaveBeenLastCalledWith(admitted));
-    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
+    await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole('button', { name: 'Export JSON' }));
     await waitFor(() => expect(window.atomizerFiles.exportSweep).toHaveBeenCalledWith({
       format: 'json', sweep: expect.objectContaining({ requested: admitted }),
@@ -1275,7 +1297,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(pendingSpectrum).toHaveLength(1));
 
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
     expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
 
     const firstSpectrum = pendingSpectrum[0]!;
@@ -1445,7 +1467,7 @@ describe('operator vertical slice', () => {
   });
 
   it('rejects typed I/Q navigation when the connected source has no complex-I/Q capability', async () => {
-    mockConnectedInstrument(signalLabSession);
+    mockConnectedInstrument(ready);
     vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
     vi.mocked(window.atomAgent.agentTurn)
       .mockResolvedValueOnce({ conversationId: 'iq-capability-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'iq-capability-load', name: 'load_atom_tools', arguments: '{"toolNames":["navigate_workspace"]}' }] })
@@ -1453,7 +1475,7 @@ describe('operator vertical slice', () => {
       .mockResolvedValueOnce({ conversationId: 'iq-capability-2', transport: 'realtime-websocket', text: 'I/Q is unavailable on this source.', toolCalls: [] });
 
     render(<App/>);
-    await screen.findByText('SIGNALLAB SIMULATION');
+    await screen.findByText('tinySA Ultra+ ZS407');
     const composer = await screen.findByPlaceholderText(/Ask Atom/i);
     fireEvent.change(composer, { target: { value: 'Open I/Q.' } });
     fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
@@ -1521,7 +1543,7 @@ describe('operator vertical slice', () => {
           centerHz: expect.any(Number),
           sampleCount: 2,
           sampleRateHz: 2_000_000,
-          bandwidthHz: 2_000_000,
+          bandwidthHz: 2_000,
           sampleFormat: 'cf32le',
           timing: {
             capturedAt: '2026-07-10T00:00:01.000Z',
@@ -1681,7 +1703,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(pending).toHaveLength(1));
 
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
     expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
     await act(async () => {
       const first = pending[0]!;
@@ -1729,7 +1751,7 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(pending).toHaveLength(1));
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
 
     await act(async () => {
       const first = pending[0]!;
@@ -1848,7 +1870,7 @@ describe('operator vertical slice', () => {
     const navigation = screen.getByRole('navigation', { name: /Primary navigation/i });
     fireEvent.click(within(navigation).getByRole('button', { name: navigationName }));
     const profile = activeWorkspace === 'generator'
-      ? await screen.findByRole('button', { name: /^Continuous wave \(CW\)/i })
+      ? await screen.findByRole('button', { name: /Continuous-wave analytic lab tone/i })
       : await screen.findByRole('combobox', { name: /SignalLab profile/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(profile.closest('[data-agent-control]')).toBeNull();
@@ -2561,12 +2583,7 @@ describe('operator vertical slice', () => {
   });
 
   it('waits for late invalidation events before reserving and resuming a SignalLab profile change', async () => {
-    mockConnectedInstrument(signalLabSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
-    });
+    const pending = mockDeferredSignalLabIqBuffers();
     let deliverLifecycle: (() => void) | undefined;
     vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
       if (request.kind !== 'signal-lab-profile-selection') throw new Error(`Unexpected feature ${request.kind}`);
@@ -2582,29 +2599,41 @@ describe('operator vertical slice', () => {
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
+    expect(window.atomizerInstrument.executeFeature).not.toHaveBeenCalled();
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
     await act(async () => { await Promise.resolve(); });
 
-    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
-    expect(screen.getByText(/Pausing continuous acquisition/i)).toBeTruthy();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(1);
     await act(async () => { deliverLifecycle?.(); });
 
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pending).toHaveLength(2));
     expect(document.body.textContent).not.toContain('Revision-cache reservation was invalidated');
     expect(screen.queryByText(/SignalLab profile selection failed/i)).toBeNull();
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
+    await act(async () => {
+      const second = pending[1]!;
+      second.capture.resolve(complexIqMeasurement(
+        second.configuration,
+        second.revision,
+        second.id,
+        signalLabIqSession.sessionId,
+        'producer-epoch:2',
+      ));
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
   });
 
   it('fails closed on a mismatched invalidation receipt and clears the stale pause notice', async () => {
-    mockConnectedInstrument(signalLabSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
-    });
+    const pending = mockDeferredSignalLabIqBuffers();
     let deliverMismatch: (() => void) | undefined;
     vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation(async (request) => {
       if (request.kind !== 'signal-lab-profile-selection') throw new Error(`Unexpected feature ${request.kind}`);
@@ -2625,25 +2654,24 @@ describe('operator vertical slice', () => {
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
     await act(async () => { deliverMismatch?.(); });
 
     expect(await screen.findByText(/expected source-profile-changed/i)).toBeTruthy();
     expect(screen.queryByText(/Pausing continuous acquisition/i)).toBeNull();
-    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy();
   });
 
   it('admits Stop during a paused profile transaction and never resumes after the stop intent', async () => {
-    mockConnectedInstrument(signalLabSession);
-    vi.mocked(window.atomizerInstrument.configure).mockImplementation(async (configuration) => {
-      activeConfiguration = structuredClone(configuration);
-      configurationRevision = `configuration-${++revisionSequence}`;
-      return { sessionId: signalLabSession.sessionId, configurationRevision, configuration, configuredAt: '2026-07-10T00:00:00.000Z' };
-    });
+    const pending = mockDeferredSignalLabIqBuffers();
     const feature = deferred<AtomizerInstrumentFeatureExecution>();
     vi.mocked(window.atomizerInstrument.executeFeature).mockImplementation((request) => {
       if (request.kind !== 'signal-lab-profile-selection') return Promise.reject(new Error(`Unexpected feature ${request.kind}`));
@@ -2654,9 +2682,13 @@ describe('operator vertical slice', () => {
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
+    await waitFor(() => expect(pending).toHaveLength(1));
     fireEvent.click(within(navigation).getByRole('button', { name: /^Generate$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^FM/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Single-tone FM lab stimulus/i }));
+    await act(async () => {
+      const first = pending[0]!;
+      first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
+    });
     await waitFor(() => expect(window.atomizerInstrument.executeFeature).toHaveBeenCalledOnce());
 
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
@@ -2669,7 +2701,8 @@ describe('operator vertical slice', () => {
     });
 
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce();
+    expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain('Revision-cache reservation was invalidated');
   });
 
@@ -3116,7 +3149,7 @@ describe('operator vertical slice', () => {
 
     await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(ATOM_REALTIME_TOOL_CALL_LIMIT + 2));
     expect(source.acquisitionCount()).toBe(cycleCount);
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(cycleCount);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(cycleCount * 2);
     const peakFrequencies = vi.mocked(window.atomAgent.agentTurn).mock.calls
       .flatMap(([request]) => request.toolOutputs ?? [])
       .map(({ output }) => JSON.parse(output) as { ok?: boolean; output?: { action?: string; frequencyHz?: number } })

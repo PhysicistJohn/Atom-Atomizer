@@ -121,7 +121,7 @@ describe('InstrumentManager discovery and selection', () => {
           features: [{
             kind: 'signal-lab-profile-selection', profiles, selectedProfileId: 'profile:0',
           }],
-        } as InstrumentCapabilities);
+        } as unknown as InstrumentCapabilities);
         return session;
       },
     );
@@ -153,8 +153,15 @@ describe('InstrumentManager discovery and selection', () => {
         ...validSignalLab,
         features: [{
           kind: 'signal-lab-profile-selection',
-          profiles: [{ profileId: 'outside', centerFrequencyHz: 6_000_000_001, recommendedSpanHz: 1_000_000 }],
+          profiles: [signalLabFixtureProfile('outside', 6_000_000_001, 1_000_000)],
           selectedProfileId: 'outside',
+          channel: signalLabFixtureChannel(),
+          iqProfiles: [{
+            profileId: 'outside', nativeSampleRateHz: null, signalBandwidthHz: 1,
+            profileReferenceCenterHz: 6_000_000_001, nativeCarrierOffsetHz: 0,
+            nativeMinimumCaptureBandwidthHz: null,
+            replay: 'continuous', derivedTransportSupported: false,
+          }],
         }],
       },
       signalLabCapabilities([generatorCapability()]),
@@ -1043,6 +1050,38 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       qualification: 'analytic-complex-baseband',
       complete: true,
       ...requested,
+      profileReferenceCenterHz: 100_000_000,
+      rfReferenceCenterHz: 100_000_000,
+      nativeCarrierOffsetHz: 0,
+      rfPlacement: 'profile-reference',
+      outputCarrierOffsetHz: 0,
+      rfTuneCenterHz: 100_000_000,
+      signalBandwidthHz: 1,
+      nativeSampleRateHz: requested.sampleRateHz,
+      payloadKind: 'generated-at-output-rate',
+      canonicalArtifactSha256: null,
+      transformReceipt: {
+        receiptVersion: 1,
+        sourceArtifactSha256: null,
+        sourceStartSample: 0,
+        sourceSampleCount: requested.sampleCount,
+        sourceBoundaryPolicy: 'continuous-session-origin-zero-extended',
+        sourcePeriodSamples: null,
+        outputStartSourceSampleNumerator: '0',
+        outputStartSourceSampleDenominator: '1',
+        sourceSampleRateHz: requested.sampleRateHz,
+        outputSampleRateHz: requested.sampleRateHz,
+        sourceCarrierOffsetHz: 0,
+        outputCarrierOffsetHz: 0,
+        outputSampleCount: requested.sampleCount,
+        sourceSamplesSha256: '66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+        outputSamplesSha256: '66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+        operations: [],
+      },
+      representation: 'normalized-complex-envelope',
+      normalization: 'unit-peak',
+      receiverImpairment: 'clean',
+      channelApplication: 'not-applied',
       samples: new Uint8Array(32),
     });
     session!.onAcquire = async () => measurement();
@@ -1050,6 +1089,22 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       kind: 'complex-iq', qualification: 'analytic-complex-baseband',
     });
 
+    const tampered = await manager.configure(requested);
+    const tamperedSamples = new Uint8Array(32);
+    tamperedSamples[0] = 1;
+    session!.onAcquire = async () => ({
+      ...measurement(),
+      configurationRevision: tampered.configurationRevision,
+      measurementId: 'measurement:signal-lab:iq:tampered-output',
+      samples: tamperedSamples,
+    });
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'driver-contract',
+      message: expect.stringMatching(/output hash does not match the received sample bytes/i),
+    });
+
+    await manager.disconnect();
+    await manager.connect(candidate);
     const next = await manager.configure(requested);
     session!.onAcquire = async () => ({
       ...measurement(),
@@ -1072,9 +1127,9 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     await manager.connect((await manager.discover()).candidates[0]!);
     const requested = {
       kind: 'complex-iq' as const,
-      centerHz: 100_000_000,
-      sampleRateHz: 2_000_000,
-      bandwidthHz: 2_000_000,
+      centerHz: 1_842_500_000,
+      sampleRateHz: 10_000_000,
+      bandwidthHz: 10_000_000,
       sampleCount: 4,
       sampleFormat: 'cf32le' as const,
     };
@@ -1093,6 +1148,38 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
       qualification,
       complete: true as const,
       ...requested,
+      profileReferenceCenterHz: 1_842_500_000,
+      rfReferenceCenterHz: 1_842_500_000,
+      nativeCarrierOffsetHz: 0,
+      rfPlacement: 'profile-reference' as const,
+      outputCarrierOffsetHz: 0,
+      rfTuneCenterHz: 1_842_500_000,
+      signalBandwidthHz: 9_000_000,
+      nativeSampleRateHz: requested.sampleRateHz,
+      payloadKind: 'generated-at-output-rate' as const,
+      canonicalArtifactSha256: null,
+      transformReceipt: {
+        receiptVersion: 1 as const,
+        sourceArtifactSha256: null,
+        sourceStartSample: 0,
+        sourceSampleCount: requested.sampleCount,
+        sourceBoundaryPolicy: 'continuous-session-origin-zero-extended' as const,
+        sourcePeriodSamples: null,
+        outputStartSourceSampleNumerator: '0',
+        outputStartSourceSampleDenominator: '1',
+        sourceSampleRateHz: requested.sampleRateHz,
+        outputSampleRateHz: requested.sampleRateHz,
+        sourceCarrierOffsetHz: 0,
+        outputCarrierOffsetHz: 0,
+        outputSampleCount: requested.sampleCount,
+        sourceSamplesSha256: '66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+        outputSamplesSha256: '66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+        operations: [],
+      },
+      representation: 'normalized-complex-envelope' as const,
+      normalization: 'unit-peak' as const,
+      receiverImpairment: 'clean' as const,
+      channelApplication: 'not-applied' as const,
       samples: new Uint8Array(32),
     });
     session!.onAcquire = async () => measurement('standards-derived-complex-baseband');
@@ -1104,6 +1191,137 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     session!.onAcquire = async () => measurement('analytic-complex-baseband');
     await expect(manager.acquire()).rejects.toMatchObject({
       code: 'driver-contract', message: expect.stringMatching(/qualification does not match/i),
+    });
+  });
+
+  // Capture bandwidth is a symmetric passband about the RF tune center, so an
+  // output carrier left at a nonzero offset costs `2 * |offset|` of it on top of
+  // the signal bandwidth. A driver that reports an offset carrier inside a
+  // capture too narrow to hold that span is describing impossible geometry, and
+  // below the native span it must have translated the carrier to DC instead.
+  it('rejects an offset SignalLab carrier that cannot fit inside the reported symmetric capture', async () => {
+    const OFFSET_HZ = -31_000_000;
+    const SIGNAL_BANDWIDTH_HZ = 1_000_000;
+    const NATIVE_MINIMUM_CAPTURE_BANDWIDTH_HZ = 2 * Math.abs(OFFSET_HZ) + SIGNAL_BANDWIDTH_HZ;
+    const PROFILE_REFERENCE_CENTER_HZ = 2_410_000_000;
+    const ZERO_32_SHA256 = '66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925';
+    let session: StubSession;
+    const capabilities = signalLabCapabilities([{
+      kind: 'signal-lab-profile-selection',
+      profiles: [{
+        ...signalLabFixtureProfile('offset-artifact', PROFILE_REFERENCE_CENTER_HZ, 4_000_000),
+        family: 'nr',
+        qualification: 'standards-derived',
+        occupiedBandwidthHz: SIGNAL_BANDWIDTH_HZ,
+        source: {
+          organization: '3GPP',
+          references: [{
+            specification: '3GPP TS 38.141-1',
+            clause: '4.9.2',
+            revision: 'Release 18',
+            url: 'https://www.3gpp.org/dynareport/38141-1.htm',
+          }],
+        },
+        governance: signalLabFixtureGovernance('offset-artifact', '3GPP'),
+      }],
+      selectedProfileId: 'offset-artifact',
+      iqProfiles: [{
+        profileId: 'offset-artifact',
+        nativeSampleRateHz: 80_000_000,
+        signalBandwidthHz: SIGNAL_BANDWIDTH_HZ,
+        profileReferenceCenterHz: PROFILE_REFERENCE_CENTER_HZ,
+        nativeCarrierOffsetHz: OFFSET_HZ,
+        nativeMinimumCaptureBandwidthHz: NATIVE_MINIMUM_CAPTURE_BANDWIDTH_HZ,
+        replay: 'cyclic',
+        nativePeriodSamples: 80_000,
+        derivedTransportSupported: true,
+      }],
+    }]);
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, capabilities)),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+    const requested = (bandwidthHz: number) => ({
+      kind: 'complex-iq' as const,
+      centerHz: PROFILE_REFERENCE_CENTER_HZ,
+      sampleRateHz: 80_000_000,
+      bandwidthHz,
+      sampleCount: 4,
+      sampleFormat: 'cf32le' as const,
+    });
+    const offsetMeasurement = (
+      configurationRevision: string,
+      bandwidthHz: number,
+    ) => ({
+      schemaVersion: 1 as const,
+      measurementId: `measurement:signal-lab:iq:offset:${bandwidthHz}`,
+      sessionId: session!.sessionId,
+      configurationRevision,
+      producerConfigurationEpoch: 'producer-epoch:1',
+      sequence: 1,
+      capturedAt: CAPTURED_AT,
+      elapsedMilliseconds: 1,
+      resolutionBandwidthHz: null,
+      attenuationDb: null,
+      qualification: 'standards-derived-complex-baseband' as const,
+      complete: true as const,
+      ...requested(bandwidthHz),
+      profileReferenceCenterHz: PROFILE_REFERENCE_CENTER_HZ,
+      rfReferenceCenterHz: PROFILE_REFERENCE_CENTER_HZ - OFFSET_HZ,
+      nativeCarrierOffsetHz: OFFSET_HZ,
+      rfPlacement: 'profile-reference' as const,
+      outputCarrierOffsetHz: OFFSET_HZ,
+      rfTuneCenterHz: PROFILE_REFERENCE_CENTER_HZ - OFFSET_HZ,
+      signalBandwidthHz: SIGNAL_BANDWIDTH_HZ,
+      nativeSampleRateHz: 80_000_000,
+      payloadKind: 'native-canonical' as const,
+      canonicalArtifactSha256: ZERO_32_SHA256,
+      transformReceipt: {
+        receiptVersion: 1 as const,
+        sourceArtifactSha256: ZERO_32_SHA256,
+        sourceStartSample: 0,
+        sourceSampleCount: 4,
+        sourceBoundaryPolicy: 'cyclic-modular' as const,
+        sourcePeriodSamples: 80_000,
+        outputStartSourceSampleNumerator: '0',
+        outputStartSourceSampleDenominator: '1',
+        sourceSampleRateHz: 80_000_000,
+        outputSampleRateHz: 80_000_000,
+        sourceCarrierOffsetHz: OFFSET_HZ,
+        outputCarrierOffsetHz: OFFSET_HZ,
+        outputSampleCount: 4,
+        sourceSamplesSha256: ZERO_32_SHA256,
+        outputSamplesSha256: ZERO_32_SHA256,
+        operations: [],
+      },
+      representation: 'source-preserved-complex-envelope' as const,
+      normalization: 'none' as const,
+      receiverImpairment: 'clean' as const,
+      channelApplication: 'not-applied' as const,
+      samples: new Uint8Array(32),
+    });
+
+    const narrow = await manager.configure(requested(SIGNAL_BANDWIDTH_HZ));
+    session!.onAcquire = async () =>
+      offsetMeasurement(narrow.configurationRevision, SIGNAL_BANDWIDTH_HZ);
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'driver-contract',
+      message: expect.stringMatching(/cannot symmetrically contain a -31000000 Hz carrier offset/i),
+    });
+
+    await manager.disconnect();
+    await manager.connect(candidate);
+    const wide = await manager.configure(requested(NATIVE_MINIMUM_CAPTURE_BANDWIDTH_HZ));
+    session!.onAcquire = async () =>
+      offsetMeasurement(wide.configurationRevision, NATIVE_MINIMUM_CAPTURE_BANDWIDTH_HZ);
+    await expect(manager.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq',
+      bandwidthHz: NATIVE_MINIMUM_CAPTURE_BANDWIDTH_HZ,
+      outputCarrierOffsetHz: OFFSET_HZ,
+      payloadKind: 'native-canonical',
     });
   });
 
@@ -1668,7 +1886,7 @@ describe('InstrumentManager feature boundary', () => {
 
   it('selects only an advertised profile on a SignalLab candidate', async () => {
     let session: StubSession;
-    const features: InstrumentFeatureCapability[] = [
+    const features: SignalLabFeatureInput[] = [
       {
         kind: 'signal-lab-profile-selection',
         profiles: [
@@ -1719,9 +1937,9 @@ describe('InstrumentManager feature boundary', () => {
 
   it('configures only an advertised SignalLab channel and publishes the new producer state', async () => {
     let session: StubSession;
-    const channel = { model: 'awgn' as const, noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 };
-    const updatedChannel = { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5 };
-    const feature: InstrumentFeatureCapability = {
+    const channel = { model: 'awgn' as const, noiseFloorDbm: -110, seed: 1, fadingRateHz: 1, receiverImpairment: 'clean' as const };
+    const updatedChannel = { model: 'rayleigh' as const, noiseFloorDbm: -104, seed: 42, fadingRateHz: 3.5, receiverImpairment: 'clean' as const };
+    const feature: SignalLabFeatureInput = {
       kind: 'signal-lab-profile-selection',
       profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
       selectedProfileId: 'cw',
@@ -1754,31 +1972,468 @@ describe('InstrumentManager feature boundary', () => {
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'not-configured' });
   });
 
-  it('rejects SignalLab channel mutation when the source did not advertise channel control', async () => {
+  it('admits refreshed custom-waveform geometry and uses it for the next I/Q configuration', async () => {
     let session: StubSession;
-    const feature: InstrumentFeatureCapability = {
-      kind: 'signal-lab-profile-selection',
-      profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
-      selectedProfileId: 'cw',
+    const customNr = {
+      ...signalLabFixtureProfile('custom-nr', 3_500_000_000, 50_000_000),
+      family: 'nr' as const,
+      model: 'Custom NR FR1 · 40 MHz',
+      qualification: 'standards-derived' as const,
+      occupiedBandwidthHz: 38_160_000,
+      projection: {
+        allocation: 'full' as const,
+        modulation: 'ofdm-mixed' as const,
+        timing: 'tdd-frame' as const,
+        duplex: 'tdd' as const,
+        subcarrierSpacingHz: 30_000,
+        nominalResourceBlocks: 106,
+      },
+      source: {
+        organization: '3GPP' as const,
+        references: [{
+          specification: '3GPP TS 38.141-1',
+          clause: '4.9.2',
+          revision: 'Release 18',
+          url: 'https://www.3gpp.org/dynareport/38141-1.htm',
+        }],
+      },
+      governance: signalLabFixtureGovernance('custom-nr', '3GPP'),
     };
+    const initial = signalLabCapabilities([{
+      kind: 'signal-lab-profile-selection',
+      profiles: [customNr],
+      selectedProfileId: 'custom-nr',
+      iqProfiles: [{
+        profileId: 'custom-nr',
+        nativeSampleRateHz: null,
+        signalBandwidthHz: customNr.occupiedBandwidthHz,
+        profileReferenceCenterHz: customNr.centerFrequencyHz,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous',
+        derivedTransportSupported: false,
+      }],
+    }]);
     const driver = new StubDriver(
       'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
-      async (candidate) => (session = new StubSession(candidate, signalLabCapabilities([feature]))),
+      async (candidate) => {
+        session = new StubSession(candidate, initial);
+        session.onFeature = async (command) => {
+          const expandedSignalBandwidthHz = 380_160_000;
+          // The v2 complex-I/Q ceiling is a fixed 491.52 MHz, wide enough for the
+          // largest legal custom NR build (FR2 / 120 kHz SCS / 400 MHz = 264 RB
+          // = 380.16 MHz occupied). A custom build therefore republishes only
+          // its own descriptor and I/Q transport; acquisitions do not move.
+          session.capabilities = {
+            ...initial,
+            features: initial.features.map((feature) =>
+              feature.kind === 'signal-lab-profile-selection'
+                ? {
+                    ...feature,
+                    profiles: feature.profiles.map((profile) =>
+                      profile.profileId === 'custom-nr'
+                        ? {
+                            ...profile,
+                            model: 'Custom NR FR2 · 400 MHz',
+                            occupiedBandwidthHz: expandedSignalBandwidthHz,
+                            recommendedSpanHz: 400_000_000,
+                            projection: {
+                              ...profile.projection,
+                              subcarrierSpacingHz: 120_000,
+                              nominalResourceBlocks: 264,
+                            },
+                          }
+                        : profile),
+                    iqProfiles: feature.iqProfiles.map((profile) =>
+                      profile.profileId === 'custom-nr'
+                        ? { ...profile, signalBandwidthHz: expandedSignalBandwidthHz }
+                        : profile),
+                  }
+                : feature),
+          };
+          return defaultFeatureResult(session, command);
+        };
+        return session;
+      },
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const events: InstrumentManagerEvent[] = [];
+    manager.subscribe((event) => events.push(event));
+    await manager.connect((await manager.discover()).candidates[0]!);
+    events.length = 0;
+
+    await expect(manager.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'configure-custom-waveform',
+      standard: 'nr',
+      selections: {
+        frequencyRange: 'FR2',
+        operatingBand: 'n257',
+        subcarrierSpacingKHz: '120',
+        channelBandwidthMHz: '400',
+      },
+    })).resolves.toMatchObject({ action: 'configure-custom-waveform', standard: 'nr' });
+
+    const refreshed = manager.snapshot()!;
+    expect(refreshed.capabilities.acquisitions).toEqual(initial.acquisitions);
+    expect(refreshed.capabilities.acquisitions).toContainEqual(expect.objectContaining({
+      kind: 'complex-iq',
+      sampleRateHz: expect.objectContaining({ max: 491_520_000 }),
+      bandwidthHz: expect.objectContaining({ max: 491_520_000 }),
+    }));
+    expect(refreshed.capabilities.features).toContainEqual(expect.objectContaining({
+      kind: 'signal-lab-profile-selection',
+      profiles: expect.arrayContaining([
+        expect.objectContaining({ profileId: 'custom-nr', occupiedBandwidthHz: 380_160_000 }),
+      ]),
+      iqProfiles: expect.arrayContaining([
+        expect.objectContaining({ profileId: 'custom-nr', signalBandwidthHz: 380_160_000 }),
+      ]),
+    }));
+    expect(events[0]).toMatchObject({
+      type: 'feature-result',
+      session: {
+        capabilities: {
+          acquisitions: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'complex-iq',
+              sampleRateHz: expect.objectContaining({ max: 491_520_000 }),
+            }),
+          ]),
+        },
+      },
+    });
+    await expect(manager.configure({
+      kind: 'complex-iq',
+      centerHz: 3_500_000_000,
+      sampleRateHz: 491_520_000,
+      bandwidthHz: 400_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    })).resolves.toMatchObject({
+      configuration: {
+        sampleRateHz: 491_520_000,
+        bandwidthHz: 400_000_000,
+      },
+    });
+  });
+
+  // A custom build is the one feature call that lets an untrusted driver hand
+  // back a whole replacement capability. Everything except the configured
+  // `custom-${standard}` descriptor and its matching I/Q transport must survive
+  // the transition byte for byte, so each of these drivers tries to smuggle one
+  // unrelated change through that door.
+  describe('custom-waveform capability smuggling', () => {
+    const customNrDescriptor = () => ({
+      ...signalLabFixtureProfile('custom-nr', 3_500_000_000, 50_000_000),
+      family: 'nr' as const,
+      qualification: 'standards-derived' as const,
+      occupiedBandwidthHz: 38_160_000,
+      source: {
+        organization: '3GPP' as const,
+        references: [{
+          specification: '3GPP TS 38.141-1',
+          clause: '4.9.2',
+          revision: 'Release 18',
+          url: 'https://www.3gpp.org/dynareport/38141-1.htm',
+        }],
+      },
+      governance: signalLabFixtureGovernance('custom-nr', '3GPP'),
+    });
+
+    function smugglingCapabilities(): InstrumentCapabilities {
+      return signalLabCapabilities([{
+        kind: 'signal-lab-profile-selection',
+        profiles: [
+          customNrDescriptor(),
+          signalLabFixtureProfile('cw', 100_000_000, 2_000_000),
+        ],
+        selectedProfileId: 'cw',
+      }]);
+    }
+
+    function withSource(
+      capabilities: InstrumentCapabilities,
+      mutate: (feature: SignalLabFeature) => SignalLabFeature,
+    ): InstrumentCapabilities {
+      return {
+        ...capabilities,
+        features: capabilities.features.map((feature) =>
+          feature.kind === 'signal-lab-profile-selection' ? mutate(feature) : feature),
+      };
+    }
+
+    async function admitRefreshed(
+      initial: InstrumentCapabilities,
+      refreshed: InstrumentCapabilities,
+    ): Promise<InstrumentManager> {
+      let session: StubSession;
+      const driver = new StubDriver(
+        'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+        async (candidate) => {
+          session = new StubSession(candidate, initial);
+          session.onFeature = async (command) => {
+            session.capabilities = refreshed;
+            return defaultFeatureResult(session, command);
+          };
+          return session;
+        },
+      );
+      const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+      await manager.connect((await manager.discover()).candidates[0]!);
+      return manager;
+    }
+
+    const configureCustomNr = (manager: InstrumentManager) => manager.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'configure-custom-waveform',
+      standard: 'nr',
+      selections: { subcarrierSpacingKHz: '30', channelBandwidthMHz: '40' },
+    });
+
+    it.each([
+      [
+        'widens the complex-I/Q acquisition ceiling',
+        (initial: InstrumentCapabilities) => ({
+          ...initial,
+          acquisitions: initial.acquisitions.map((capability) =>
+            capability.kind === 'complex-iq'
+              ? { ...capability, sampleRateHz: { ...capability.sampleRateHz, max: 10_000_000_000 } }
+              : capability),
+        }),
+        /changed acquisition capabilities/i,
+      ],
+      [
+        'moves the selected profile',
+        (initial: InstrumentCapabilities) =>
+          withSource(initial, (feature) => ({ ...feature, selectedProfileId: 'custom-nr' })),
+        /changed the selected profile/i,
+      ],
+      [
+        'rewrites channel state',
+        (initial: InstrumentCapabilities) => withSource(initial, (feature) => ({
+          ...feature,
+          channel: { ...feature.channel, receiverImpairment: 'awgn' as const },
+        })),
+        /changed channel state/i,
+      ],
+      [
+        'rewrites an unrelated descriptor',
+        (initial: InstrumentCapabilities) => withSource(initial, (feature) => ({
+          ...feature,
+          profiles: feature.profiles.map((profile) => profile.profileId === 'cw'
+            ? { ...profile, recommendedSpanHz: 40_000_000, disclosure: 'Rewritten by the driver.' }
+            : profile),
+        })),
+        /changed the unrelated cw descriptor/i,
+      ],
+      [
+        'rewrites an unrelated I/Q transport',
+        (initial: InstrumentCapabilities) => withSource(initial, (feature) => ({
+          ...feature,
+          iqProfiles: feature.iqProfiles.map((profile) => profile.profileId === 'cw'
+            ? { ...profile, signalBandwidthHz: 20_000_000 }
+            : profile),
+        })),
+        /changed the unrelated cw I\/Q transport/i,
+      ],
+      [
+        'adds a profile to the governed catalog',
+        (initial: InstrumentCapabilities) => withSource(initial, (feature) => ({
+          ...feature,
+          profiles: [...feature.profiles, signalLabFixtureProfile('smuggled', 900_000_000, 1_000_000)],
+          iqProfiles: [...feature.iqProfiles, {
+            profileId: 'smuggled',
+            nativeSampleRateHz: null,
+            signalBandwidthHz: 1,
+            profileReferenceCenterHz: 900_000_000,
+            nativeCarrierOffsetHz: 0,
+            nativeMinimumCaptureBandwidthHz: null,
+            replay: 'continuous' as const,
+            derivedTransportSupported: false,
+          }],
+        })),
+        /changed the size of the governed catalog/i,
+      ],
+      [
+        'reorders the governed catalog',
+        (initial: InstrumentCapabilities) => withSource(initial, (feature) => ({
+          ...feature,
+          profiles: [...feature.profiles].reverse(),
+          iqProfiles: [...feature.iqProfiles].reverse(),
+        })),
+        /reordered or renamed the governed catalog/i,
+      ],
+      // A SignalLab source binding admits exactly one feature, the
+      // profile-selection one, so the driver boundary's own dynamic-capability
+      // validator catches feature-set tampering before the custom-waveform
+      // admission runs. Both layers must hold, so assert the outcome here too.
+      [
+        'appends a feature its source kind may not advertise',
+        (initial: InstrumentCapabilities) => ({
+          ...initial,
+          features: [
+            ...initial.features,
+            { kind: 'diagnostics' as const, reports: ['identity' as const] },
+          ],
+        }),
+        /must advertise exactly one profile-selection feature/i,
+      ],
+      [
+        'drops the SignalLab feature entirely',
+        (initial: InstrumentCapabilities) => ({
+          ...initial,
+          features: initial.features.filter(
+            (feature) => feature.kind !== 'signal-lab-profile-selection',
+          ),
+        }),
+        /must advertise exactly one profile-selection feature/i,
+      ],
+    ])('faults when the refreshed capability %s', async (_label, mutate, expected) => {
+      const initial = smugglingCapabilities();
+      const manager = await admitRefreshed(initial, mutate(initial));
+
+      await expect(configureCustomNr(manager)).rejects.toMatchObject({
+        code: 'driver-contract',
+        message: expect.stringMatching(expected),
+      });
+      expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract' } });
+    });
+
+    it('keeps every unrelated entry byte-identical while admitting the rebuilt custom entry', async () => {
+      const initial = smugglingCapabilities();
+      const refreshed = withSource(initial, (feature) => ({
+        ...feature,
+        profiles: feature.profiles.map((profile) => profile.profileId === 'custom-nr'
+          ? { ...profile, occupiedBandwidthHz: 380_160_000, recommendedSpanHz: 400_000_000 }
+          : profile),
+        iqProfiles: feature.iqProfiles.map((profile) => profile.profileId === 'custom-nr'
+          ? { ...profile, signalBandwidthHz: 380_160_000 }
+          : profile),
+      }));
+      const manager = await admitRefreshed(initial, refreshed);
+
+      await expect(configureCustomNr(manager)).resolves.toMatchObject({
+        action: 'configure-custom-waveform',
+        standard: 'nr',
+      });
+      const admitted = manager.snapshot()!.capabilities;
+      const initialSource = initial.features.find(
+        (feature) => feature.kind === 'signal-lab-profile-selection',
+      );
+      const admittedSource = admitted.features.find(
+        (feature) => feature.kind === 'signal-lab-profile-selection',
+      );
+      if (initialSource?.kind !== 'signal-lab-profile-selection'
+        || admittedSource?.kind !== 'signal-lab-profile-selection') {
+        throw new Error('Expected an admitted SignalLab profile-selection capability');
+      }
+      expect(admitted.acquisitions).toEqual(initial.acquisitions);
+      expect(admittedSource.selectedProfileId).toBe('cw');
+      expect(admittedSource.channel).toEqual(initialSource.channel);
+      expect(admittedSource.profiles.find((profile) => profile.profileId === 'cw'))
+        .toEqual(initialSource.profiles.find((profile) => profile.profileId === 'cw'));
+      expect(admittedSource.iqProfiles.find((profile) => profile.profileId === 'cw'))
+        .toEqual(initialSource.iqProfiles.find((profile) => profile.profileId === 'cw'));
+      expect(admittedSource.profiles.map(({ profileId }) => profileId))
+        .toEqual(initialSource.profiles.map(({ profileId }) => profileId));
+      expect(admittedSource.profiles.find((profile) => profile.profileId === 'custom-nr'))
+        .toMatchObject({ occupiedBandwidthHz: 380_160_000, recommendedSpanHz: 400_000_000 });
+      expect(admittedSource.iqProfiles.find((profile) => profile.profileId === 'custom-nr'))
+        .toMatchObject({ signalBandwidthHz: 380_160_000 });
+    });
+
+    it('rejects a custom-waveform standard that is not an advertised profile', async () => {
+      const initial = smugglingCapabilities();
+      const manager = await admitRefreshed(initial, initial);
+
+      await expect(manager.executeFeature({
+        kind: 'signal-lab-profile-selection',
+        action: 'configure-custom-waveform',
+        standard: 'wifi',
+        selections: { standardVariant: 'be', channelBandwidthMHz: '80' },
+      })).rejects.toMatchObject({
+        code: 'driver-contract',
+        message: expect.stringMatching(/custom-wifi, which is not an advertised profile/i),
+      });
+    });
+  });
+
+  it('rejects malformed dynamic capabilities returned after a custom-waveform mutation', async () => {
+    let session: StubSession;
+    const initial = signalLabCapabilities([{
+      kind: 'signal-lab-profile-selection',
+      profiles: [{
+        ...signalLabFixtureProfile('custom-nr', 3_500_000_000, 50_000_000),
+        family: 'nr',
+        qualification: 'standards-derived',
+        source: {
+          organization: '3GPP',
+          references: [{
+            specification: '3GPP TS 38.141-1',
+            clause: '4.9.2',
+            revision: 'Release 18',
+            url: 'https://www.3gpp.org/dynareport/38141-1.htm',
+          }],
+        },
+        governance: signalLabFixtureGovernance('custom-nr', '3GPP'),
+      }],
+      selectedProfileId: 'custom-nr',
+    }]);
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => {
+        session = new StubSession(candidate, initial);
+        session.onFeature = async (command) => {
+          session.capabilities = {
+            ...initial,
+            undeclaredDynamicField: true,
+          } as unknown as InstrumentCapabilities;
+          return defaultFeatureResult(session, command);
+        };
+        return session;
+      },
     );
     const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
     await manager.connect((await manager.discover()).candidates[0]!);
 
     await expect(manager.executeFeature({
-      kind: 'signal-lab-profile-selection', action: 'configure-channel',
-      channel: { model: 'awgn', noiseFloorDbm: -110, seed: 1, fadingRateHz: 1 },
-    })).rejects.toMatchObject({ code: 'unsupported-capability' });
-    expect(session!.featureCalls).toHaveLength(0);
+      kind: 'signal-lab-profile-selection',
+      action: 'configure-custom-waveform',
+      standard: 'nr',
+      selections: { subcarrierSpacingKHz: '30', channelBandwidthMHz: '40' },
+    })).rejects.toMatchObject({
+      code: 'driver-contract',
+      message: expect.stringMatching(/invalid dynamic capabilities/i),
+    });
+    expect(manager.snapshot()).toMatchObject({ fault: { code: 'driver-contract' } });
+  });
+
+  it('rejects a v2 SignalLab session that omits its explicit channel state', async () => {
+    let session: StubSession;
+    const complete = signalLabCapabilities([]);
+    const invalid = {
+      ...complete,
+      features: complete.features.map((feature) => {
+        if (feature.kind !== 'signal-lab-profile-selection') return feature;
+        const { channel: _channel, ...withoutChannel } = feature;
+        return withoutChannel;
+      }),
+    };
+    const driver = new StubDriver(
+      'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+      async (candidate) => (session = new StubSession(candidate, invalid as unknown as InstrumentCapabilities)),
+    );
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    await expect(manager.connect((await manager.discover()).candidates[0]!))
+      .rejects.toMatchObject({ code: 'driver-contract' });
+    expect(session!.disconnectCalls).toBe(1);
   });
 
   it('faults after uncertain profile mutation, blocks operations, and reconnects cleanly', async () => {
     let session: StubSession;
     let manager: InstrumentManager;
-    const profileFeature: InstrumentFeatureCapability = {
+    const profileFeature: SignalLabFeatureInput = {
       kind: 'signal-lab-profile-selection',
       profiles: [
         { profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 },
@@ -1849,11 +2504,7 @@ describe('InstrumentManager feature boundary', () => {
     const invalidDriver = new StubDriver(
       'tinysa-zs407', ['serial-port'], async () => [serialDescriptor()],
       async (candidate) => new StubSession(candidate, analyzerCapabilities([
-        {
-          kind: 'signal-lab-profile-selection',
-          profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
-          selectedProfileId: 'cw',
-        },
+        signalLabCapabilities([]).features[0]!,
       ])),
     );
     const invalidManager = new InstrumentManager(new InstrumentDriverRegistry([invalidDriver]), deterministicRuntime());
@@ -2097,6 +2748,7 @@ class StubSession implements InstrumentSession {
   readonly driverId: InstrumentDriverId;
   readonly provenance: InstrumentSessionProvenance;
   readonly rfOutput: 'off' | 'not-supported';
+  capabilities: InstrumentCapabilities;
   readonly configureCalls: InstrumentConfigurationCommand[] = [];
   readonly featureCalls: InstrumentFeatureCommand[] = [];
   disconnectCalls = 0;
@@ -2119,9 +2771,10 @@ class StubSession implements InstrumentSession {
 
   constructor(
     readonly candidate: InstrumentCandidate,
-    readonly capabilities: InstrumentCapabilities,
+    capabilities: InstrumentCapabilities,
     receiveOnlySafety: boolean | 'uuid-only' = false,
   ) {
+    this.capabilities = capabilities;
     this.driverId = candidate.driverId;
     this.sessionId = receiveOnlySafety
       ? '70000000-0000-4000-8000-000000000001'
@@ -2255,12 +2908,53 @@ function complexIqCapabilities(): InstrumentCapabilities {
   };
 }
 
-function signalLabCapabilities(features: readonly InstrumentFeatureCapability[]): InstrumentCapabilities {
-  const admittedFeatures: readonly InstrumentFeatureCapability[] = features.length > 0 ? features : [{
+type SignalLabFeature = Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
+type SignalLabProfileInput = SignalLabFeature['profiles'][number] | {
+  readonly profileId: string;
+  readonly centerFrequencyHz: number;
+  readonly recommendedSpanHz: number;
+};
+type SignalLabFeatureInput = Omit<SignalLabFeature, 'profiles' | 'channel' | 'iqProfiles'> & {
+  readonly profiles: readonly SignalLabProfileInput[];
+  readonly channel?: SignalLabFeature['channel'];
+  readonly iqProfiles?: SignalLabFeature['iqProfiles'];
+};
+type InstrumentFeatureInput =
+  | Exclude<InstrumentFeatureCapability, SignalLabFeature>
+  | SignalLabFeatureInput;
+
+function signalLabCapabilities(features: readonly InstrumentFeatureInput[]): InstrumentCapabilities {
+  const requestedFeatures: readonly InstrumentFeatureInput[] = features.length > 0 ? features : [{
     kind: 'signal-lab-profile-selection',
     profiles: [{ profileId: 'cw', centerFrequencyHz: 100_000_000, recommendedSpanHz: 2_000_000 }],
     selectedProfileId: 'cw',
   }];
+  const admittedFeatures: readonly InstrumentFeatureCapability[] = requestedFeatures.map((feature) => {
+    if (feature.kind !== 'signal-lab-profile-selection') return feature;
+    const profiles = feature.profiles.map((profile) =>
+      'governance' in profile
+        ? profile
+        : signalLabFixtureProfile(
+            profile.profileId,
+            profile.centerFrequencyHz,
+            profile.recommendedSpanHz,
+          ));
+    return {
+      ...feature,
+      profiles,
+      channel: feature.channel ?? signalLabFixtureChannel(),
+      iqProfiles: feature.iqProfiles ?? profiles.map((profile) => ({
+        profileId: profile.profileId,
+        nativeSampleRateHz: null,
+        signalBandwidthHz: profile.occupiedBandwidthHz,
+        profileReferenceCenterHz: profile.centerFrequencyHz,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous' as const,
+        derivedTransportSupported: false,
+      })),
+    };
+  });
   return {
     schemaVersion: 1,
     acquisitions: [
@@ -2276,6 +2970,15 @@ function signalLabCapabilities(features: readonly InstrumentFeatureCapability[])
         sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
         controls: syntheticScalarCapability(),
         powerUnit: 'dBm', timing: 'uniform',
+      },
+      {
+        kind: 'complex-iq',
+        centerFrequencyHz: { min: 1, max: 6_000_000_000, step: 1 },
+        sampleRateHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthMode: 'independent',
+        sampleCount: { min: 1, max: 65_536, step: 1 },
+        sampleFormat: 'cf32le',
       },
     ],
     features: admittedFeatures,
@@ -2297,6 +3000,7 @@ function signalLabIqCapabilities(selectedProfileId: 'cw' | 'lte-etm1.1' = 'cw'):
             url: 'https://example.test/signal-lab/cw',
           }],
         },
+        governance: signalLabFixtureGovernance('cw', 'TinySA SignalLab'),
         disclosure: 'Analytic fixture profile.',
       },
       {
@@ -2314,23 +3018,122 @@ function signalLabIqCapabilities(selectedProfileId: 'cw' | 'lte-etm1.1' = 'cw'):
             url: 'https://www.3gpp.org/dynareport/36141.htm',
           }],
         },
+        governance: signalLabFixtureGovernance('lte-etm1.1', '3GPP'),
         disclosure: 'Standards-derived deterministic fixture projection.',
       },
     ],
     selectedProfileId,
-    iqProfileIds: ['cw', 'lte-etm1.1'],
+    iqProfiles: [
+      {
+        profileId: 'cw', nativeSampleRateHz: null, signalBandwidthHz: 1,
+        profileReferenceCenterHz: 100_000_000, nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous', derivedTransportSupported: false,
+      },
+      {
+        profileId: 'lte-etm1.1', nativeSampleRateHz: null, signalBandwidthHz: 9_000_000,
+        profileReferenceCenterHz: 1_842_500_000, nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous', derivedTransportSupported: false,
+      },
+    ],
   }]);
   return {
     ...scalar,
-    acquisitions: [...scalar.acquisitions, {
-      kind: 'complex-iq',
-      centerFrequencyHz: { min: 1, max: 6_000_000_000, step: 1 },
-      sampleRateHz: { min: 1_000_000, max: 245_760_000, step: 1 },
-      bandwidthHz: { min: 1_000, max: 245_760_000, step: 1 },
-      bandwidthMode: 'independent',
-      sampleCount: { min: 1, max: 65_536, step: 1 },
-      sampleFormat: 'cf32le',
+    acquisitions: scalar.acquisitions,
+  };
+}
+
+function signalLabFixtureChannel(): SignalLabFeature['channel'] {
+  return {
+    model: 'awgn',
+    noiseFloorDbm: -108,
+    seed: 407,
+    fadingRateHz: 2,
+    receiverImpairment: 'clean',
+  };
+}
+
+function signalLabFixtureProfile(
+  profileId: string,
+  centerFrequencyHz: number,
+  recommendedSpanHz: number,
+): SignalLabFeature['profiles'][number] {
+  return {
+    profileId,
+    label: profileId,
+    family: 'tone',
+    model: 'deterministic-fixture',
+    qualification: 'visual',
+    centerFrequencyHz,
+    occupiedBandwidthHz: 1,
+    recommendedSpanHz,
+    projection: { allocation: 'carrier', modulation: 'unmodulated', timing: 'continuous' },
+    source: {
+      organization: 'TinySA SignalLab',
+      references: [{
+        specification: 'SignalLab fixture',
+        clause: profileId,
+        revision: '1',
+        url: `https://example.test/signal-lab/${encodeURIComponent(profileId)}`,
+      }],
+    },
+    governance: signalLabFixtureGovernance(profileId, 'TinySA SignalLab'),
+    disclosure: 'Deterministic contract fixture profile.',
+  };
+}
+
+function signalLabFixtureGovernance(
+  profileId: string,
+  organization: '3GPP' | 'TinySA SignalLab',
+): SignalLabFeature['profiles'][number]['governance'] {
+  const standardsDerived = organization === '3GPP';
+  return {
+    schemaVersion: 1,
+    profileId,
+    signalKind: standardsDerived
+      ? 'standards-derived-engineering-profile'
+      : 'mathematical-lab-reference',
+    governingOrganizations: [organization],
+    governingBodies: [{
+      organization,
+      technicalBody: standardsDerived ? '3GPP TSG RAN' : 'TinySA SignalLab project',
+      authorityScope: standardsDerived
+        ? 'LTE waveform definition and deterministic test-model configuration.'
+        : 'Deterministic mathematical laboratory reference.',
     }],
+    normativeReferences: standardsDerived ? [{
+      organization: '3GPP',
+      documentId: '3GPP TS 36.141',
+      revision: 'Release 18',
+      clauses: ['6.1'],
+      url: 'https://www.3gpp.org/dynareport/36141.htm',
+    }] : [],
+    applicability: {
+      status: standardsDerived ? 'applicable' : 'not-applicable',
+      reason: standardsDerived
+        ? 'The engineering fixture is governed by the cited LTE test-model specification.'
+        : 'A mathematical fixture has no external radio-standard applicability.',
+    },
+    implementedQualificationState: standardsDerived
+      ? 'standards-derived-engineering-projection'
+      : 'mathematical-reference',
+    testedClaimScope: {
+      kind: standardsDerived
+        ? 'deterministic-engineering-projection'
+        : 'deterministic-mathematical-reference',
+      statement: 'Fixture verifies the declared deterministic SignalLab boundary.',
+      testLocations: ['src/instrument-manager.test.ts'],
+    },
+    claims: {
+      standardsCompliance: 'not-claimed',
+      digitalStandardsAdherence: standardsDerived ? 'not-verified' : 'not-applicable',
+      digitalQualification: 'not-qualified',
+      rfConformance: 'not-qualified',
+    },
+    digitalQualificationEvidence: null,
+    qualificationBlockers: ['Fixture carries no independent digital-baseband qualification evidence.'],
+    reason: 'Runtime fixture declares only its directly tested deterministic scope.',
   };
 }
 
@@ -2525,8 +3328,8 @@ function provenanceFor(candidate: InstrumentCandidate): InstrumentSessionProvena
     execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge',
     qualification: 'synthetic-visual-projection', verifiedAt: CAPTURED_AT,
     producerConfigurationEpoch: 'producer-epoch:1',
-    contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 1,
-    contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorSha256: 'c'.repeat(64),
+    contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
+    contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
     claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
   };
 }

@@ -12,6 +12,7 @@ import type {
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
 import { GeneratorWorkspace } from './GeneratorWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
+import { waveformDescriptor } from '../../../../../../Atom-SignalLab/src/waveforms.js';
 
 afterEach(cleanup);
 
@@ -59,29 +60,39 @@ describe('renderer component fault boundaries', () => {
   });
 
   it('keeps a stale SignalLab profile explicit and permits recovery to an advertised profile', () => {
+    const descriptor = waveformDescriptor('cw');
     const capability = {
       kind: 'signal-lab-profile-selection',
       profiles: [{
-        profileId: 'cw',
-        label: 'Continuous wave replay',
-        family: 'tone',
-        model: 'Analytic carrier',
-        qualification: 'visual',
-        centerFrequencyHz: 100_000_000,
-        occupiedBandwidthHz: 1,
-        recommendedSpanHz: 2_000_000,
-        projection: { allocation: 'carrier', modulation: 'unmodulated', timing: 'continuous' },
-        source: {
-          organization: 'TinySA SignalLab',
-          references: [{
-            specification: 'SignalLab analytic scalar model', clause: 'CW projection', revision: '1',
-            url: 'https://github.com/physicistjohn/Atom-SignalLab/blob/main/src/waveforms.ts',
-          }],
-        },
-        disclosure: 'Analytic visualization only.',
+        profileId: descriptor.id,
+        label: descriptor.label,
+        family: descriptor.family,
+        model: descriptor.model,
+        qualification: descriptor.qualification,
+        centerFrequencyHz: descriptor.centerHz,
+        occupiedBandwidthHz: descriptor.occupiedBandwidthHz,
+        recommendedSpanHz: descriptor.recommendedSpanHz,
+        projection: descriptor.projection,
+        source: descriptor.source,
+        governance: descriptor.governance,
+        disclosure: descriptor.disclosure,
+        ...(descriptor.assetSha256 === undefined ? {} : { assetSha256: descriptor.assetSha256 }),
       }],
       selectedProfileId: 'cw',
-      channel: { model: 'awgn', noiseFloorDbm: -108, seed: 1234, fadingRateHz: 2 },
+      channel: {
+        model: 'awgn', noiseFloorDbm: -108, seed: 1234, fadingRateHz: 2,
+        receiverImpairment: 'clean',
+      },
+      iqProfiles: [{
+        profileId: 'cw',
+        nativeSampleRateHz: null,
+        signalBandwidthHz: descriptor.occupiedBandwidthHz,
+        profileReferenceCenterHz: descriptor.centerHz,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous',
+        derivedTransportSupported: false,
+      }],
     } satisfies Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
     const onProfile = vi.fn();
     const view = render(<GeneratorWorkspace
@@ -97,7 +108,7 @@ describe('renderer component fault boundaries', () => {
     />);
 
     expect(view.getByRole('alert').textContent).toContain('retired-profile is not admitted; showing cw');
-    const profile = screen.getByRole('button', { name: /Continuous wave/i });
+    const profile = screen.getByRole('button', { name: /Continuous-wave analytic lab tone/i });
     expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
     fireEvent.click(profile);

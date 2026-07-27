@@ -21,7 +21,7 @@ pins, then install in the same order CI installs them:
 git clone https://github.com/PhysicistJohn/Atom-DSP.git ../Atom-DSP
 git -C ../Atom-DSP checkout v0.1.0
 git clone https://github.com/PhysicistJohn/Atom-SignalLab.git ../Atom-SignalLab
-git -C ../Atom-SignalLab checkout c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+git -C ../Atom-SignalLab checkout 98114b100a15ad84875908be5210aae1b2dc7274
 git clone https://github.com/PhysicistJohn/Atom-Classifier.git ../Atom-Classifier
 git -C ../Atom-Classifier checkout a60f4e6bb4ebca11cfa85ee9f8456ea029803541
 
@@ -69,7 +69,7 @@ The live system is deliberately split into four independently versioned reposito
 | `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic clean/receiver-impaired complex-I/Q producer, scalar-classification corpus, visual waveform descriptors, seeded scalar channel and receiver-I/Q models, stimulus intent | Active versioned in-process measurement edge to Atomizer; Firmware stimulus sink remains reserved |
 | `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Safety chain pinned by its own immutable contract test and safety suite; no Atomizer runtime edge |
 
-The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v4.json](./contracts/trio-composition-v4.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
+The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v5.json](./contracts/trio-composition-v5.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
 [Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP) is a shared numerical
 implementation dependency, not a source, transport, instrument, or evidence
@@ -77,7 +77,7 @@ class, so it is deliberately outside that runtime-composition contract.
 
 USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while Atom-Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
 
-Composition v4 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
+Composition v5 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
 
 For owner-built firmware, Atom-Flasher's native manifest picker starts in the
 sibling `../Atom-Firmware` checkout when that directory exists. It remembers a
@@ -119,7 +119,7 @@ producer can evolve without inheriting another source's transport assumptions.
 SignalLab is a separate application and Git repository. Atomizer runs its
 measurement service in-process in both editions: the shared `signal-lab`
 driver bundles the sibling checkout's `src/measurement-service.ts` (and the
-active v1 measurement contract document) directly into the desktop main
+active v2 measurement contract document) directly into the desktop main
 process and the web page, with no bridge subprocess and no packaged resource
 staging.
 
@@ -144,25 +144,34 @@ reproduce their required power-balanced allocation, per-slot PRB sequence,
 subslot/slot timing, or SBFD spectral partition; a disclosure alone does not
 make an unimplemented standard model selectable.
 The retained generated Bayesian model pins that corpus for reproducible
-scalar-observable research. The active in-process measurement service supplies
-swept-spectrum and detected-power observations qualified
+scalar-observable research. The active in-process v2 measurement service
+supplies swept-spectrum and detected-power observations qualified
 `synthetic-visual-projection` plus bounded deterministic `cf32le` complex-I/Q
-for all 42 closed profiles. CW, AM, FM, and the five constellation-reference
-captures preserve the producer's `analytic-complex-baseband` qualification;
-the other 34 preserve
-`standards-derived-complex-baseband` rather than inheriting the scalar
-projection label. The I/Q method returns at most 65,536 complete samples and
-independently accepts bandwidth from 1 kHz through the requested sample rate.
-SignalLab applies the same deterministic causal one-pole low-pass to I and Q;
-the requested bandwidth is its two-sided steady-state -3 dB span, with edges at
-`±bandwidthHz / 2` about center. Scalar AWGN/Rayleigh replay is not applied to
-I/Q; the separately selected seeded receiver-I/Q preset is applied and declared.
-Standards-labelled results are engineering envelopes, not packet-decodable or
-conformance vectors; framework-generated, independently validated assets remain
-future work. Requests below a wideband profile's catalogued occupied support
-produce a disclosed deterministic discrete-time alias projection rather than
-an alias-free reconstruction of the full channel. SignalLab claims no USB emulation, firmware execution,
-RF emission, generator, display, or touch capability. Its selected profile is
+for all 42 closed profiles. Thirty-one profiles have content-addressed,
+independently verified digital-baseband artifacts with exact native sample
+rate, signal bandwidth, RF-reference/profile-center, carrier-offset, and
+cyclic or one-shot replay declarations. Exact clean native bytes retain
+`independently-verified-digital-baseband`; clean resampling, fractional delay,
+or frequency translation retains explicit
+`derived-from-independently-verified-digital-baseband` lineage without claiming
+native byte identity. CW, AM, FM, and the five constellation references are
+rate-flexible analytic generators qualified `analytic-complex-baseband`; the
+three custom builders remain `standards-derived-complex-baseband` engineering
+projections. Every non-clean receiver preset is explicitly downgraded to
+`receiver-impaired-complex-baseband`.
+
+The I/Q method returns at most 65,536 complete samples. Each result separates
+the profile signal bandwidth from the output capture-bandwidth setting and
+separates canonical RF reference, profile signal center, native/output carrier
+offset, RF tune, and operator placement. A transform receipt binds the exact
+source window, output window, rational timing, operations, and SHA-256 of the
+delivered bytes; Atomizer recomputes that payload hash before admission.
+Digital-baseband qualification is qualification of those I/Q bytes and their
+declared construction. It does not depend on an antenna, and it does not claim
+RF emission, antenna performance, product certification, or over-the-air
+conformance. Scalar AWGN/Rayleigh replay is separate; the selected receiver-I/Q
+preset is applied only when declared. SignalLab claims no USB emulation,
+firmware execution, RF emission, generator, display, or touch capability. Its selected profile is
 visible only as source status and capability state and is never copied into any
 measurement or classifier evidence. Detected-power requests carry one
 required safe-integer center frequency; SignalLab returns that exact tune and
@@ -296,8 +305,10 @@ observable classification cannot establish phase, EVM, symbols, coding, or
 protocol identity. The current 450-point/50 ms physical zero-span request is
 `wall-clock-derived`, not timing calibrated, so cadence-rate features are
 excluded. Standards-derived SignalLab classifier scenarios are scalar instrument
-projections, not conformance waveforms. The separate live standards-labelled I/Q
-buffers are engineering envelopes and do not enter that classifier.
+projections, not conformance waveforms. Separate live I/Q buffers do not enter
+that classifier; their analytic, custom-engineering, exact independently
+verified digital, clean-derived, or receiver-impaired qualification remains
+attached only to the I/Q result.
 
 Production inference does not use missing-dimension marginalization: v8 selects one exact evidence view, requires its complete finite feature set with no extras, and evaluates only the independently fitted spectrum-only, envelope-untimed, or envelope-timed likelihood population. Its likelihood architecture preserves equal source-scenario mass while decomposing exactly the five canonized `csma-bursts` sources into three deterministic activity modes with empirical within-source weights and one shared pooled covariance; the remaining sources retain one component.
 
@@ -535,7 +546,7 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 
 ## Normative contracts
 
-- [Trio composition](./contracts/trio-composition-v4.json)
+- [Trio composition](./contracts/trio-composition-v5.json)
 - [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 - [Physical ZS407 characterization](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)

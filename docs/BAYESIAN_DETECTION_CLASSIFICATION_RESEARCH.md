@@ -911,10 +911,11 @@ frames/events.
 
 ## 6. SignalLab canonical corpus contract
 
-SignalLab's 34-profile UI catalog contains 12 public canonized observable
+SignalLab's 42-profile UI catalog contains 12 public canonized observable
 profiles backed by the same executable known-scenario source as the corpus.
-The other 22 visual/standards profiles remain UI fixtures and are not the
-classifier's physical training truth or posterior taxonomy. Named test models
+The other 30 profiles remain outside the classifier's physical training truth
+and posterior taxonomy, irrespective of their separate digital-I/Q
+qualification. Named test models
 whose required power-balanced allocation, per-slot PRB sequence, subslot/slot
 timing, or SBFD spectral partition is not implemented are absent from the
 selectable catalog; that absence is unsupported capability, not negative

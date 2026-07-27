@@ -89,7 +89,7 @@ function identityPresentation(session: InstrumentSessionSnapshot | undefined): {
     qualification: 'SYNTHETIC',
     facts: [
       { icon: <Fingerprint/>, label: 'Contract', value: `${provenance.contractId} v${provenance.contractVersion}`, detail: provenance.contractSha256.slice(0, 16) },
-      { icon: <FlaskConical/>, label: 'Catalog', value: provenance.catalogSha256.slice(0, 16), detail: `Generator ${provenance.generatorSha256.slice(0, 16)}` },
+      { icon: <FlaskConical/>, label: 'Catalog', value: provenance.catalogSha256.slice(0, 16), detail: `Generator/contract binding ${provenance.generatorContractBindingSha256.slice(0, 16)}` },
       { icon: <Usb/>, label: 'USB identity', value: 'Not claimed', detail: 'usbEmulated=false' },
       { icon: <TerminalSquare/>, label: 'Firmware / RF', value: 'Not claimed', detail: 'firmwareExecuted=false · rfEmitted=false' },
     ],

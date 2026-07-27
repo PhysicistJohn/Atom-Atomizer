@@ -88,9 +88,9 @@ describe('BrowserSignalLabWorkerDriver', () => {
 
     await api.configure({
       kind: 'complex-iq',
-      centerHz: 3_500_000_000,
-      sampleRateHz: 2_000_000,
-      bandwidthHz: 1_500_000,
+      centerHz: 3_500_010_000,
+      sampleRateHz: 122_880_000,
+      bandwidthHz: 100_000_000,
       sampleCount: 1_024,
       sampleFormat: 'cf32le',
     });
@@ -98,11 +98,391 @@ describe('BrowserSignalLabWorkerDriver', () => {
     expect(measurement.kind).toBe('complex-iq');
     if (measurement.kind !== 'complex-iq') throw new Error('Expected complex-I/Q measurement');
     expect(measurement.samples.byteLength).toBe(1_024 * 8);
+    expect(measurement).toMatchObject({
+      profileReferenceCenterHz: 3_500_010_000,
+      rfReferenceCenterHz: 3_500_010_000,
+      nativeCarrierOffsetHz: 0,
+      outputCarrierOffsetHz: 0,
+      rfTuneCenterHz: 3_500_010_000,
+      rfPlacement: 'profile-reference',
+      signalBandwidthHz: 100_000_000,
+      nativeSampleRateHz: 122_880_000,
+      payloadKind: 'native-canonical',
+      qualification: 'independently-verified-digital-baseband',
+      representation: 'source-preserved-complex-envelope',
+      normalization: 'none',
+      transformReceipt: {
+        sourceBoundaryPolicy: 'cyclic-modular',
+        sourcePeriodSamples: 2_457_600,
+        sourceCarrierOffsetHz: 0,
+        outputCarrierOffsetHz: 0,
+        operations: [],
+      },
+    });
     expect(worker.transferredByteLengths).toContain(1_024 * 8);
     expect(events.filter((event) => event.type === 'measurement')).toHaveLength(0);
     expect(events.filter((event) => event.type === 'status').map((event) => event.type === 'status' ? event.status : undefined))
       .toEqual(expect.arrayContaining(['busy', 'ready']));
 
+    await api.disconnect();
+  });
+
+  it('preserves canonical lineage while translating RF placement and resampling for hardware transport', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'nr-n78-tdd-100m',
+    });
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 3_450_000_000,
+      sampleRateHz: 120_000_000,
+      bandwidthHz: 100_000_000,
+      sampleCount: 1_024,
+      sampleFormat: 'cf32le',
+    });
+    const measurement = await api.acquire();
+    if (measurement.kind !== 'complex-iq') throw new Error('Expected complex-I/Q measurement');
+    expect(measurement).toMatchObject({
+      centerHz: 3_450_000_000,
+      profileReferenceCenterHz: 3_500_010_000,
+      rfPlacement: 'operator-translated',
+      qualification: 'derived-from-independently-verified-digital-baseband',
+      payloadKind: 'derived-hardware-ready',
+      representation: 'derived-complex-envelope',
+      normalization: 'none',
+    });
+    expect(measurement.canonicalArtifactSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(measurement.transformReceipt?.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'resample',
+        sourceSampleRateHz: 122_880_000,
+        outputSampleRateHz: 120_000_000,
+      }),
+    ]));
+    await api.disconnect();
+  });
+
+  it('downgrades receiver-impaired buffers without losing their canonical source lineage', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'lte-etm1.1',
+    });
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'configure-channel',
+      channel: {
+        model: 'awgn',
+        noiseFloorDbm: -108,
+        seed: 12_345,
+        fadingRateHz: 2,
+        receiverImpairment: 'iq-imbalance',
+      },
+    });
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 1_840_000_000,
+      sampleRateHz: 15_360_000,
+      bandwidthHz: 10_000_000,
+      sampleCount: 256,
+      sampleFormat: 'cf32le',
+    });
+    const measurement = await api.acquire();
+    expect(measurement).toMatchObject({
+      kind: 'complex-iq',
+      qualification: 'receiver-impaired-complex-baseband',
+      receiverImpairment: 'iq-imbalance',
+      channelApplication: 'receiver-impairment-preset',
+      canonicalArtifactSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    await api.disconnect();
+  });
+
+  it('acquires every fixed governed profile at its advertised native geometry', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    const connected = await api.connect((await api.discover()).candidates[0]!);
+    const feature = connected.capabilities.features.find(
+      (capability) => capability.kind === 'signal-lab-profile-selection',
+    );
+    if (feature?.kind !== 'signal-lab-profile-selection' || !feature.iqProfiles) {
+      throw new Error('Expected SignalLab v2 profile transports');
+    }
+    const fixed = feature.iqProfiles.filter((profile) => profile.nativeSampleRateHz !== null);
+    expect(fixed).toHaveLength(31);
+    for (const profile of fixed) {
+      await api.executeFeature({
+        kind: 'signal-lab-profile-selection',
+        action: 'select-profile',
+        profileId: profile.profileId,
+      });
+      // Capture bandwidth is a symmetric passband about the RF tune center, so
+      // exact native bytes need the declared native minimum span, not the bare
+      // signal bandwidth. They only differ for the two offset Bluetooth
+      // artifacts, and for those the difference is the whole point.
+      await api.configure({
+        kind: 'complex-iq',
+        centerHz: profile.profileReferenceCenterHz,
+        sampleRateHz: profile.nativeSampleRateHz!,
+        bandwidthHz: profile.nativeMinimumCaptureBandwidthHz!,
+        sampleCount: Math.min(64, profile.maxOneShotSamples ?? 64),
+        sampleFormat: 'cf32le',
+      });
+      await expect(api.acquire(), profile.profileId).resolves.toMatchObject({
+        kind: 'complex-iq',
+        qualification: 'independently-verified-digital-baseband',
+        payloadKind: 'native-canonical',
+        profileReferenceCenterHz: profile.profileReferenceCenterHz,
+        rfReferenceCenterHz: profile.profileReferenceCenterHz - profile.nativeCarrierOffsetHz,
+        nativeCarrierOffsetHz: profile.nativeCarrierOffsetHz,
+        outputCarrierOffsetHz: profile.nativeCarrierOffsetHz,
+        rfTuneCenterHz: profile.profileReferenceCenterHz - profile.nativeCarrierOffsetHz,
+      });
+    }
+    await api.disconnect();
+  }, 30_000);
+
+  it('keeps the Bluetooth BR packet signal at 2.410 GHz inside its 2.441 GHz native capture', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'bluetooth-classic-connected',
+    });
+    // BR sits at -31 MHz inside its 80 Msps artifact, so a symmetric capture
+    // that keeps the carrier where it natively is costs 2 * 31 + 1 = 63 MHz.
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_410_000_000,
+      sampleRateHz: 80_000_000,
+      bandwidthHz: 63_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    await expect(api.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq',
+      profileReferenceCenterHz: 2_410_000_000,
+      rfReferenceCenterHz: 2_441_000_000,
+      nativeCarrierOffsetHz: -31_000_000,
+      outputCarrierOffsetHz: -31_000_000,
+      rfTuneCenterHz: 2_441_000_000,
+      qualification: 'independently-verified-digital-baseband',
+      payloadKind: 'native-canonical',
+    });
+    await api.disconnect();
+  });
+
+  it('serves a signal-wide but offset-narrow Bluetooth BR capture as translated derived bytes', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'bluetooth-classic-connected',
+    });
+    // 1 MHz still contains the whole 1 MHz signal, so the request is legal. It
+    // just cannot hold the -31 MHz offset, so the producer must translate the
+    // carrier to DC, emit the receipt operation, and stop claiming native bytes.
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_410_000_000,
+      sampleRateHz: 80_000_000,
+      bandwidthHz: 1_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    await expect(api.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq',
+      nativeCarrierOffsetHz: -31_000_000,
+      outputCarrierOffsetHz: 0,
+      rfTuneCenterHz: 2_410_000_000,
+      qualification: 'derived-from-independently-verified-digital-baseband',
+      payloadKind: 'derived-hardware-ready',
+      transformReceipt: {
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'frequency-translate',
+            sourceCarrierOffsetHz: -31_000_000,
+            outputCarrierOffsetHz: 0,
+          }),
+        ]),
+      },
+    });
+    await api.disconnect();
+  });
+
+  it('derives Bluetooth one-shot output bounds from native duration', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'bluetooth-le-advertising',
+    });
+    // LE sits at -15 MHz, so its exact-native symmetric span is 31 MHz.
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_426_000_000,
+      sampleRateHz: 80_000_000,
+      bandwidthHz: 31_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    await expect(api.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq',
+      profileReferenceCenterHz: 2_426_000_000,
+      rfReferenceCenterHz: 2_441_000_000,
+      nativeCarrierOffsetHz: -15_000_000,
+      outputCarrierOffsetHz: -15_000_000,
+      rfTuneCenterHz: 2_441_000_000,
+      qualification: 'independently-verified-digital-baseband',
+      payloadKind: 'native-canonical',
+      transformReceipt: {
+        sourceBoundaryPolicy: 'one-shot-zero-extended',
+        sourcePeriodSamples: null,
+        operations: [],
+      },
+    });
+    await expect(api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_426_000_000,
+      sampleRateHz: 40_000_000,
+      bandwidthHz: 1_000_000,
+      sampleCount: 6_081,
+      sampleFormat: 'cf32le',
+    })).rejects.toThrow(/at most 6080 output samples/i);
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_426_000_000,
+      sampleRateHz: 40_000_000,
+      bandwidthHz: 1_000_000,
+      sampleCount: 6_080,
+      sampleFormat: 'cf32le',
+    });
+    await expect(api.acquire()).resolves.toMatchObject({
+      kind: 'complex-iq',
+      qualification: 'derived-from-independently-verified-digital-baseband',
+      sampleCount: 6_080,
+      profileReferenceCenterHz: 2_426_000_000,
+      rfReferenceCenterHz: 2_441_000_000,
+      nativeCarrierOffsetHz: -15_000_000,
+      outputCarrierOffsetHz: 0,
+      rfTuneCenterHz: 2_426_000_000,
+      transformReceipt: {
+        sourceBoundaryPolicy: 'one-shot-zero-extended',
+        sourcePeriodSamples: null,
+        sourceCarrierOffsetHz: -15_000_000,
+        outputCarrierOffsetHz: 0,
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'frequency-translate',
+            sourceCarrierOffsetHz: -15_000_000,
+            outputCarrierOffsetHz: 0,
+          }),
+        ]),
+      },
+    });
+    await api.disconnect();
+  });
+
+  it('admits a fixed profile returning to native rate at fractional native phase', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'nr-n78-tdd-100m',
+    });
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 3_500_010_000,
+      sampleRateHz: 120_000_000,
+      bandwidthHz: 100_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    await api.acquire();
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 3_500_010_000,
+      sampleRateHz: 122_880_000,
+      bandwidthHz: 100_000_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    const returned = await api.acquire();
+    expect(returned).toMatchObject({
+      kind: 'complex-iq',
+      sampleRateHz: 122_880_000,
+      nativeSampleRateHz: 122_880_000,
+      qualification: 'derived-from-independently-verified-digital-baseband',
+      payloadKind: 'derived-hardware-ready',
+      transformReceipt: {
+        sourceSampleRateHz: 122_880_000,
+        outputSampleRateHz: 122_880_000,
+        sourceBoundaryPolicy: 'cyclic-modular',
+        sourcePeriodSamples: 2_457_600,
+        operations: [expect.objectContaining({
+          kind: 'fractional-delay',
+          sampleRateHz: 122_880_000,
+        })],
+      },
+    });
+    if (returned.kind !== 'complex-iq' || returned.transformReceipt === undefined) {
+      throw new Error('Expected SignalLab v2 I/Q receipt');
+    }
+    expect(returned.transformReceipt.outputStartSourceSampleDenominator).not.toBe('1');
+    await api.disconnect();
+  });
+
+  it('admits a flexible generator rate switch with same-rate fractional-delay lineage', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    await api.connect((await api.discover()).candidates[0]!);
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'cw',
+    });
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 100_000_000,
+      sampleRateHz: 3_000_000,
+      bandwidthHz: 2_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    await api.acquire();
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 100_000_000,
+      sampleRateHz: 2_000_000,
+      bandwidthHz: 2_000,
+      sampleCount: 64,
+      sampleFormat: 'cf32le',
+    });
+    const returned = await api.acquire();
+    expect(returned).toMatchObject({
+      kind: 'complex-iq',
+      qualification: 'analytic-complex-baseband',
+      payloadKind: 'generated-at-output-rate',
+      canonicalArtifactSha256: null,
+      transformReceipt: {
+        sourceArtifactSha256: null,
+        sourceSampleRateHz: 2_000_000,
+        outputSampleRateHz: 2_000_000,
+        sourceBoundaryPolicy: 'continuous-session-origin-zero-extended',
+        sourcePeriodSamples: null,
+        operations: [expect.objectContaining({
+          kind: 'fractional-delay',
+          sampleRateHz: 2_000_000,
+        })],
+      },
+    });
     await api.disconnect();
   });
 

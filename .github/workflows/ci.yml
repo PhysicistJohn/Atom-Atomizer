@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+          ref: 98114b100a15ad84875908be5210aae1b2dc7274
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -87,10 +87,18 @@ jobs:
         run: npm run build
       - run: npm run typecheck
       - run: npm test
-      - run: npm audit --audit-level=high
+      - run: npm run audit
 
   signal-lab-interop:
-    runs-on: ubuntu-latest
+    # This job runs SignalLab's own check, and SignalLab's standards provider
+    # pins the exact cf64le bytes of a float64 LTE E-TM1.1 reference frame.
+    # libm last-ulp rounding differs by architecture, so on x86_64 the provider
+    # fails closed at module load. The pins were authored on arm64 and are bound
+    # by srsRAN oracle evidence, so they cannot be re-pinned without a provider
+    # recipe revision backed by a re-run oracle. Run the interop check on the
+    # architecture where those identities hold. SignalLab's own CI is likewise
+    # macos-only for this reason.
+    runs-on: macos-latest
     timeout-minutes: 35
     env:
       SIGNAL_LAB_INTEGRATION_REQUIRED: '1'
@@ -108,7 +116,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-SignalLab
-          ref: c1889d4e9ba7ea6ad9acf40cf94aa44657e1a420
+          ref: 98114b100a15ad84875908be5210aae1b2dc7274
           path: Atom-SignalLab
           persist-credentials: false
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -157,13 +165,22 @@ jobs:
         # workspace's electron/dist empty on this job. Self-heal by forcing
         # Electron's own postinstall to run again, with diagnostics if it
         # still doesn't land.
+        #
+        # Resolve the binary the way Electron itself does, through the path.txt
+        # its postinstall writes, rather than hardcoding a name. That file holds
+        # `electron` on Linux, `Electron.app/Contents/MacOS/Electron` on macOS,
+        # and `electron.exe` on Windows, and this job runs on macOS.
         run: |
-          if [ ! -e apps/desktop/node_modules/electron/dist/electron ]; then
+          root=apps/desktop/node_modules/electron
+          if [ ! -f "$root/path.txt" ] || [ ! -e "$root/dist/$(cat "$root/path.txt")" ]; then
             echo "Electron binary missing after npm ci; forcing its install script"
-            ls -la apps/desktop/node_modules/electron/dist 2>&1 || echo "apps/desktop/node_modules/electron/dist does not exist"
-            node apps/desktop/node_modules/electron/install.js
+            ls -la "$root/dist" 2>&1 || echo "$root/dist does not exist"
+            node "$root/install.js"
           fi
-          test -e apps/desktop/node_modules/electron/dist/electron
+          test -f "$root/path.txt"
+          binary="$root/dist/$(cat "$root/path.txt")"
+          echo "resolved Electron binary: $binary"
+          test -e "$binary"
       - name: Validate the Bayesian detector
         working-directory: Atom-Atomizer
         run: npm run check:bayesian-detector

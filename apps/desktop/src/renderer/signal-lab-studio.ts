@@ -26,10 +26,8 @@ export interface SignalLabStudioCapabilityProjection {
 }
 
 /**
- * Converts only admitted, complete Atomizer capability state into the shared
- * Studio view. Geometry-only legacy capabilities stay visible as unavailable;
- * they are never padded with invented labels, standards evidence, or channel
- * settings.
+ * Converts the complete, governed measurement-bridge-v2 capability state into
+ * the shared Studio view without inventing catalog or channel evidence.
  */
 export function projectSignalLabStudioStatus(
   capability: SignalLabProfileCapability,
@@ -37,9 +35,6 @@ export function projectSignalLabStudioStatus(
   channelOverride?: SignalLabChannelState,
 ): SignalLabStudioCapabilityProjection {
   try {
-    if (!capability.profiles.every(isCompleteDescriptor)) {
-      return Object.freeze({ error: 'The connected SignalLab driver did not expose its complete waveform catalog.' });
-    }
     const catalog = capability.profiles.map((profile) => waveformDescriptorSchema.parse({
       id: profile.profileId,
       label: profile.label,
@@ -51,6 +46,7 @@ export function projectSignalLabStudioStatus(
       recommendedSpanHz: profile.recommendedSpanHz,
       projection: profile.projection,
       source: profile.source,
+      governance: profile.governance,
       disclosure: profile.disclosure,
       ...(profile.assetSha256 === undefined ? {} : { assetSha256: profile.assetSha256 }),
     }));
@@ -81,12 +77,6 @@ export function projectSignalLabStudioStatus(
   } catch (value) {
     return Object.freeze({ error: boundedProjectionError(value) });
   }
-}
-
-function isCompleteDescriptor(
-  profile: SignalLabProfileCapability['profiles'][number],
-): profile is Extract<typeof profile, { label: string }> {
-  return 'label' in profile;
 }
 
 function boundedProjectionError(value: unknown): string {

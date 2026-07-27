@@ -77,7 +77,7 @@ export class AgentExecutor {
         sessionId: active.sessionId,
       } : null,
       firmwareTwin: { owner: 'tinysa-firmware', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
-      signalLab: { owner: 'tinysa-signal-lab', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v1', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+      signalLab: { owner: 'tinysa-signal-lab', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v2-in-process', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
     } as const;
   }
 
@@ -194,12 +194,12 @@ export class AgentExecutor {
       .find((feature) => feature.kind === 'signal-lab-profile-selection');
     if (capability?.kind !== 'signal-lab-profile-selection') return null;
     return {
-      selectedProfileId: capability.selectedProfileId ?? null,
-      // Catalog entries are either full descriptors (with family/label) or
-      // bare geometry; loose-name resolution wants the labels when present.
-      profiles: capability.profiles.map((profile) => 'label' in profile
-        ? { profileId: profile.profileId, family: profile.family, label: profile.label }
-        : { profileId: profile.profileId, label: profile.profileId }),
+      selectedProfileId: capability.selectedProfileId,
+      profiles: capability.profiles.map((profile) => ({
+        profileId: profile.profileId,
+        family: profile.family,
+        label: profile.label,
+      })),
     };
   };
 
@@ -273,6 +273,23 @@ export class AgentExecutor {
             qualification: currentIqCapture.qualification,
             sourceKind: currentInstrument.session?.provenance.sourceKind ?? null,
             execution: currentInstrument.session?.provenance.execution ?? null,
+            signalLabIq: currentIqCapture.payloadKind === undefined ? null : {
+              profileReferenceCenterHz: currentIqCapture.profileReferenceCenterHz,
+              rfReferenceCenterHz: currentIqCapture.rfReferenceCenterHz,
+              nativeCarrierOffsetHz: currentIqCapture.nativeCarrierOffsetHz,
+              rfPlacement: currentIqCapture.rfPlacement,
+              outputCarrierOffsetHz: currentIqCapture.outputCarrierOffsetHz,
+              rfTuneCenterHz: currentIqCapture.rfTuneCenterHz,
+              signalBandwidthHz: currentIqCapture.signalBandwidthHz,
+              nativeSampleRateHz: currentIqCapture.nativeSampleRateHz,
+              payloadKind: currentIqCapture.payloadKind,
+              representation: currentIqCapture.representation,
+              normalization: currentIqCapture.normalization,
+              receiverImpairment: currentIqCapture.receiverImpairment,
+              channelApplication: currentIqCapture.channelApplication,
+              canonicalArtifactSha256: currentIqCapture.canonicalArtifactSha256,
+              transformReceipt: currentIqCapture.transformReceipt,
+            },
           },
         } : null,
       },

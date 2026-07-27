@@ -501,8 +501,9 @@ export function selectSignalLabProfileCapability(state: InstrumentStateSlice) {
 }
 export function selectIqCaptureUnavailableReason(state: IqAvailabilityStateSlice): string | undefined {
   const signalLabProfileCapability = selectSignalLabProfileCapability(state);
-  return signalLabProfileCapability?.iqProfileIds !== undefined
-    && (state.selectedProfile === undefined || !signalLabProfileCapability.iqProfileIds.includes(state.selectedProfile))
+  const admittedProfileIds = signalLabProfileCapability?.iqProfiles.map(({ profileId }) => profileId);
+  return admittedProfileIds !== undefined
+    && (state.selectedProfile === undefined || !admittedProfileIds.includes(state.selectedProfile))
     ? 'The selected SignalLab profile is not present in the source\'s admitted I/Q registry.'
     : undefined;
 }

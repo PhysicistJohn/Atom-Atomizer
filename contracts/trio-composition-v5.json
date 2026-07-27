@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tinysa.local/contracts/trio-composition-v5.json",
+  "contractId": "tinysa-trio-composition",
+  "contractVersion": 5,
+  "effectiveDate": "2026-07-27",
+  "parties": {
+    "atomizer": {
+      "repository": "Atom-Atomizer",
+      "owner": "operator-control-plane-and-instrument-host",
+      "applicationContractVersion": 6,
+      "instrumentContractVersion": 1,
+      "instrumentApiVersion": 1,
+      "tinySaProtocolContractVersion": 3,
+      "agentSurfaceVersion": 9,
+      "registeredDrivers": [
+        {
+          "driverId": "signal-lab",
+          "sourceKinds": ["signal-lab"]
+        },
+        {
+          "driverId": "tinysa-zs407",
+          "sourceKinds": ["serial-port", "tinysa-firmware-twin"]
+        }
+      ],
+      "factoryDefault": {
+        "driverId": "signal-lab",
+        "fallback": "none"
+      },
+      "physicalFirmwareCompatibility": {
+        "identities": [
+          {
+            "firmwareVersion": "tinySA4_v1.4-217-gc5dd31f",
+            "reportedRevision": "c5dd31f",
+            "sourceCommit": "c5dd31fd4679c15ba92ff46a6e258c1e3516ff0c"
+          },
+          {
+            "firmwareVersion": "tinySA4_v1.4-224-gc979386",
+            "reportedRevision": "c979386",
+            "sourceCommit": "c97938697b6c7485e7cab50bca9af76996b7d671"
+          }
+        ],
+        "identityEvidence": "reported-shell-version-not-binary-attestation",
+        "alternateVersionPolicy": "decorated-or-alternate-known-revision-is-custom-unqualified",
+        "unknownRevisionPolicy": "warning-admit-as-custom-unqualified-without-source-provenance"
+      }
+    },
+    "firmware": {
+      "repository": "Atom-Firmware",
+      "owner": "executable-hardware-twin",
+      "bridgeContractVersion": 1,
+      "bridge": "renode-monitor-v1",
+      "firmwareRelease": "lab-v0.2.0-protocol",
+      "firmwareSourceCommit": "d12bd826555eee51505542a55fd184ade5817d58",
+      "firmwareBinarySha256": "a1dbaa03978a25b2a8b2a0e85f60029a6cc736481732eff68e93362724683dd7"
+    },
+    "signalLab": {
+      "repository": "Atom-SignalLab",
+      "owner": "synthetic-measurement-and-stimulus-authoring",
+      "standaloneApiVersion": 2,
+      "measurementBridgeContractVersion": 2,
+      "measurementBridgeStatus": "active",
+      "measurementBridge": "signal-lab-measurement-bridge",
+      "stimulusContractVersion": 1,
+      "closedProfileCount": 42,
+      "fixedDigitalProfileCount": 31,
+      "rateFlexibleProfileCount": 11,
+      "firmwareStimulusSinkStatus": "reserved-not-connected"
+    }
+  },
+  "externalUtilities": {
+    "flasher": {
+      "repository": "Atom-Flasher",
+      "owner": "firmware-update-control-plane",
+      "runtimeParty": false,
+      "applicationContract": "contracts/flasher-application-v2.json",
+      "applicationContractVersion": 2,
+      "deviceContractVersion": 2,
+      "interfaceCatalog": "contracts/contract-catalog-v3.json",
+      "interfaceCatalogVersion": 3,
+      "frozenInterfaceCatalog": "contracts/contract-catalog-v2.json",
+      "frozenInterfaceCatalogVersion": 2,
+      "frozenLegacyApplicationContract": "contracts/flasher-application-v1.json",
+      "frozenLegacyApplicationContractVersion": 1,
+      "independence": "no-runtime-build-or-source-dependency-on-the-trio",
+      "exclusiveOwnership": [
+        "firmware-release-selection-and-exact-artifact-metadata",
+        "content-addressed-download-and-cache-verification",
+        "custom-firmware-manifest-admission-and-content-addressed-local-import",
+        "physical-update-preflight-and-dfu-admission",
+        "irreversible-write-authority-and-durable-journaling",
+        "post-write-reboot-and-device-continuity-verification"
+      ],
+      "atomizerBoundary": "Atomizer retains operational firmware compatibility only and exposes no firmware-update operation."
+    }
+  },
+  "edges": [
+    {
+      "producer": "signalLab",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "in-process-typescript-direct-import",
+      "serialization": "none",
+      "processBoundary": "none",
+      "contract": "contracts/signal-lab-measurement-bridge-v2.json",
+      "assumptions": [
+        "Atomizer directly imports AtomizerMeasurementService and admits exactly measurement contract version 2 through the strict runtime input, status, capability, result, and transform-receipt schemas of its direct service calls",
+        "Atomizer computes contractSha256 from UTF-8 JSON.stringify of the imported parsed contract document, receives catalogSha256 for the runtime canonical catalog, and computes generatorContractBindingSha256 as SHA-256 of UTF-8 atomizer-in-process-generator followed by one NUL byte and contractSha256; this last value is a contract binding and is explicitly not generator code identity",
+        "Atomizer reads the complete ordered iqProfiles capability and admits each selected profile against its declared profile reference center, native carrier offset, native sample rate or rate-flexible status, signal bandwidth, replay policy, and cyclic period or one-shot native limit",
+        "every version-2 channel configuration explicitly selects clean or one seeded receiver-impairment preset, and Atomizer validates the result qualification and channel application against that selection",
+        "the owning Atomizer session serializes synchronous service calls, independently binds its sourceId, and treats contract, schema, correlation, state, sequence, receipt, or semantic mismatch as terminal without retry or driver fallback"
+      ],
+      "guarantees": [
+        "SignalLab produces bounded swept-spectrum and detected-power measurements qualified synthetic-visual-projection plus bounded complex-I/Q measurements for all 42 closed profiles; 31 fixed standards-linked profiles bind immutable digital artifacts, three operator-defined builders remain standards-derived engineering projections, and eight laboratory/reference profiles are deterministic mathematical constructions",
+        "each fixed I/Q capability declares its digital-envelope profileReferenceCenterHz, nativeCarrierOffsetHz, nativeSampleRateHz, signalBandwidthHz, replay policy, and exactly one cyclic period or one-shot native limit; each rate-flexible capability declares continuous replay and generation at the requested output rate",
+        "a clean fixed capture is native-canonical and may retain independent digital qualification only when rate, exact native phase, and admitted RF tuning preserve the artifact bytes; requested RF center is output placement metadata independent of digital artifact identity",
+        "when hardware-ready rate, fractional phase, or carrier placement requires transformation, SignalLab preserves the canonical artifact identity separately, emits newly hashed derived bytes, downgrades byte-level qualification to explicit derived lineage, and supplies a deterministic receipt with exact rational start, full source support, boundary policy, source and output hashes, carrier offsets, and ordered translation, resampling, fractional-delay, and impairment operations",
+        "captureBandwidthHz is an output capture setting distinct from signalBandwidthHz and does not silently filter source I/Q; downsampling is admitted only when the 95-percent output-Nyquist anti-alias passband contains the declared signal bandwidth, while equal-rate fractional delay and upsampling preserve the complete source Nyquist interval",
+        "cyclic artifacts wrap their declared native period, one-shot artifacts are bounded in the native domain and zero-extend only outside the artifact for declared FIR support, and continuous generated sources use a state-free session-origin timeline with exact rational elapsed-time continuity across output-rate changes",
+        "clean, independently verified native bytes; clean derived bytes; clean reference-generated or standards-derived bytes; and receiver-impaired bytes retain distinct qualification, payload-kind, representation, normalization, and transform-receipt evidence",
+        "I/Q is a digital sample interface and requires no antenna qualification; hardware-ready describes deterministic output sample geometry only and never claims DAC behavior, analog reconstruction, antenna coupling, calibrated RF emission, RF conformance, product qualification, or certification",
+        "SignalLab claims usbEmulated false, firmwareExecuted false, and rfEmitted false and exposes no USB, firmware, serial, screen, touch, RF-generator, or antenna identity",
+        "every status and measurement carries the exact source identity while selected profile remains visible only in status and capability state and is never copied into measurement, detector, classifier, or exported-observation evidence",
+        "profile or channel change replaces the opaque producer configuration revision before later acquisition; every accepted request settles once, invalid input changes no state, and neither party retries, substitutes, downgrades, or falls back"
+      ]
+    },
+    {
+      "producer": "physical-zs407",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "usb-cdc-acm-through-tinysa-zs407-driver",
+      "assumptions": [
+        "serial enumeration retains valid endpoints and typed source-scoped failures independently",
+        "the selected candidate identity is exact-zs407-cdc at USB VID:PID 0483:5740",
+        "firmware shell identifies ZS407 across the version and info responses",
+        "reported source revision resolves through Atomizer's operational compatibility registry or is explicitly warning-admitted as custom-unqualified",
+        "firmware exposes the complete required command set including zero offset readback"
+      ],
+      "guarantees": [
+        "execution is physical and qualification is device-observed",
+        "usbIdentityVerified is true only after exact identity",
+        "raw serial and TinySA shell semantics remain below the tinysa-zs407 driver",
+        "serial enumeration, open, and close are bounded; a late open is closed as an orphan, an uncertain close blocks writes, and unrelated serial endpoints are never admitted",
+        "RF output state is command-acknowledged rather than measured; dispatch uncertainty, acknowledgement failure, or state-echo disagreement becomes unknown and faults the session until explicit output-off recovery",
+        "scanraw offset is read immediately before binary acquisition and retained as evidence",
+        "the generic host connects a physical candidate only after explicit selection or a persisted tinysa-zs407 preference"
+      ]
+    },
+    {
+      "producer": "firmware",
+      "consumer": "atomizer",
+      "status": "active",
+      "transport": "renode-monitor-bridge-through-tinysa-zs407-driver",
+      "assumptions": [
+        "the tinysa-zs407 driver descriptor-launches the admitted owner-controlled, non-writable declared sibling bridge with contractVersion 1 under an environment allowlist",
+        "ready evidence exactly matches the pinned executable-twin release, source commit, binary hash, bridge, and boot signature"
+      ],
+      "guarantees": [
+        "execution and qualification are firmware-executed-twin",
+        "usbIdentityVerified is absent and usbTransactionsModeled is false",
+        "RF output state is firmware-executed-twin evidence from the twin and never a claim of physical emission or calibrated RF measurement",
+        "sweeps, LCD frames, touch, and generator state originate from executable firmware or fail",
+        "the generic host connects the twin only after explicit selection or a persisted tinysa-zs407/tinysa-firmware-twin preference"
+      ]
+    },
+    {
+      "producer": "signalLab",
+      "consumer": "firmware",
+      "status": "reserved-not-connected",
+      "transport": "future-versioned-stimulus-sink",
+      "assumptions": [
+        "a future Firmware-owned sink explicitly accepts SignalLabStimulusIntent contractVersion 1"
+      ],
+      "guarantees": [
+        "the active SignalLab-to-Atomizer measurement edge does not activate or imply a Firmware stimulus sink",
+        "SignalLab never impersonates USB hardware",
+        "standards-derived profiles remain visual resource and timing projections unless immutable conformance evidence is added",
+        "no current process applies SignalLab stimulus intent to executable firmware"
+      ]
+    }
+  ],
+  "admission": {
+    "factoryDefault": "load the owner-only version-1 preference or select the signal-lab driver when no preference file exists",
+    "discovery": "complete one generation across the static driver registry while retaining valid candidates and typed driver/source-scoped failures independently",
+    "selection": "select exactly one candidate owned by the preferred driver and optional source kind",
+    "ambiguity": "fail visibly when a preference matches zero or multiple candidates",
+    "fallback": "never connect a different driver or source kind after preference, discovery, admission, contract, identity, or connection failure",
+    "operatorSwitch": "manual selection may connect SignalLab, a physical ZS407, or the executable firmware twin after the current session is RF-safely disconnected"
+  },
+  "safetyInvariants": [
+    "No component silently retries, reroutes, substitutes, downgrades, or fabricates successful evidence.",
+    "SignalLab simulation, physical USB, Renode firmware execution, and future SDR acquisition retain distinct sourceKind, execution, transport, qualification, capability, and provenance variants.",
+    "Every session candidate, provenance record, configuration revision, measurement, and feature result is runtime-validated at driver, manager, IPC, and renderer boundaries.",
+    "The factory default is SignalLab; preference or startup failure is visible and cannot activate a TinySA or firmware twin as fallback.",
+    "Only Atomizer owns runtime instrument selection, session serialization, configuration admission, acquisition streaming, OpenAI credentials, agent policy, approvals, and operator orchestration.",
+    "Each driver owns source-specific discovery, identity proof, command translation, capabilities, and teardown; the generic host contains no serial, TinySA shell, SignalLab generator, or future NeptuneSDR protocol logic.",
+    "SignalLab is an in-process high-level measurement source and is never represented as a ByteTransport, subprocess protocol peer, TinySA, USB device, firmware device, RF emitter, screen, touch surface, or antenna; its complex-I/Q capability is a digital sample interface rather than hardware identity.",
+    "SignalLab selected profile and UI state are excluded from detector and classifier inputs; only admitted measurement evidence and source qualification may reach analysis.",
+    "A SignalLab profile or channel change invalidates the current configuration before any further acquisition.",
+    "A sweep, detected-power, or complex-IQ capture is admitted only when its session ID, configuration revision, geometry, monotonic sequence, qualification, capability constraints, and source identity match the active session.",
+    "One acquisition is one atomic measurement transaction: a driver's event and return must be deeply equal when both exist, exactly one validated result is projected, and a conflicting, repeated, novel, stale, or out-of-band measurement faults the session.",
+    "Complex-IQ remains a bounded single-buffer instrument acquisition of at most 64 MiB; SignalLab advertises cf32le only and a narrower 65,536-output-sample ceiling. Its 31 fixed digital profiles distinguish immutable native artifacts from newly hashed hardware-ready derivations, and its 11 rate-flexible profiles generate directly on an exact continuous timeline. RF placement metadata does not qualify or alter digital bytes by itself. Capture bandwidth and signal bandwidth are distinct; no hidden capture filter exists. Every transform and every non-clean receiver impairment is explicit and reproducible. No I/Q result claims antenna behavior, analog reconstruction, calibrated RF emission, broad standards compliance, RF conformance, product qualification, or certification. The current TinySA driver does not claim complex-IQ.",
+    "Atomizer main is the sole owner of RF output state. Physical state is command-acknowledged, executable-twin state is firmware-executed-twin, and unsupported sources are not-applicable; none of those labels implies calibrated RF measurement.",
+    "An RF-capable session enters unknown before output-affecting dispatch. Configuration and each acquisition establish output off, disconnect reasserts output off, and command failure, incomplete echo, or uncertain touch fails closed without claiming off.",
+    "Firmware-screen touch invalidates the admitted acquisition configuration and RF state; acquisition and unsafe features remain blocked until an explicit output-off recovery establishes a safe session state.",
+    "Serial discovery, open, and close have finite deadlines; only exact 0483:5740 endpoints may reach physical ZS407 admission, late-open handles are closed, uncertain-close transports reject writes, and unrelated serial bytes cannot enter a session.",
+    "Every main-to-renderer response and event is runtime-validated before it may alter renderer state; stale-session events and stale producer state are rejected.",
+    "Only Firmware owns executable-twin state and the future SignalLab stimulus sink.",
+    "Only SignalLab owns waveform descriptors, deterministic channel configuration, synthetic measurement generation, immutable digital artifacts, and stimulus intent.",
+    "Atom-Flasher is outside the runtime trio and exclusively owns OEM and custom firmware artifacts, download or import verification, physical preflight, DFU admission, firmware writes, durable update journals, and post-write verification.",
+    "Atomizer exposes no firmware artifact, update, DFU, journal, or flash API and does not import or launch Atom-Flasher.",
+    "The runtime trio and Atom-Flasher have no circular source, build, package, process, or state dependency.",
+    "RF output enable and general firmware-screen touch remain action-time approval boundaries for Atom.",
+    "Every Atom UI hook resolves to exactly one typed tool contract, risk class, evidence projection, executor, and guarantee.",
+    "Screenshots, device strings, application context, contract diagnostics, and tool outputs are untrusted data rather than instructions.",
+    "Persistent Realtime sessions expose only load_atom_tools; one loader response selects one to eight exact registered schemas, and application calls outside that response-scoped set are rejected.",
+    "Atomizer configures no output-token cap or reduced truncation window; throughput is controlled through static instructions, pull-based state, and response-scoped schemas.",
+    "The exact AI model is gpt-realtime-2.1 on Realtime API paths; model, endpoint, or transport substitution is forbidden."
+  ],
+  "liveness": [
+    "Every admitted runtime request settles exactly once as success or explicit failure.",
+    "Continuous acquisition terminates on explicit stop, disconnect, configuration invalidation, profile change, renderer loss, shutdown, or first operation failure.",
+    "SignalLab service construction and every synchronous service call are bounded by strict admitted geometry and complete by return or throw; no SignalLab child process, framing loop, pipe, or shutdown acknowledgement exists.",
+    "Twin boot and every firmware-twin bridge request are bounded by declared timeouts.",
+    "A poisoned or stopped firmware-twin bridge is reaped as a complete isolated process group; no descendant may survive teardown.",
+    "Instrument shutdown commands RF output off when that capability exists before disconnecting the active session; failed shutdown remains retryable without discarding the owned session.",
+    "Physical serial enumeration, open, and close settle within declared deadlines, including cleanup of handles returned after an open timeout.",
+    "Realtime session configuration must be acknowledged and recursively match every sent setting before operation proceeds.",
+    "Atom-Flasher availability or update state cannot block Atomizer, Firmware, or SignalLab startup or operation."
+  ],
+  "failureAlgebra": {
+    "invalidInput": "reject-before-state-change",
+    "preferenceMissing": "use-explicit-signal-lab-factory-default",
+    "preferenceInvalid": "visible-startup-failure-without-fallback",
+    "preferredDriverUnavailableOrAmbiguous": "visible-admission-failure-without-fallback",
+    "driverDiscoveryFailure": "retain-typed-driver-and-source-scoped-failures-alongside-unaffected-candidates-and-never-substitute-across-the-preference-domain",
+    "identityMismatch": "disconnect-and-reject",
+    "signalLabContractSchemaOrSemanticMismatch": "reject-admission-or-fault-active-session-without-retry-or-driver-fallback",
+    "signalLabUnrepresentableExactPhase": "reject-before-source-synthesis-or-state-change",
+    "signalLabDerivedRateBelowAntiAliasGuard": "reject-before-source-synthesis-or-state-change",
+    "signalLabOneShotLimitExceeded": "reject-before-source-synthesis-or-state-change",
+    "twinReadyMismatch": "terminate-child-and-reject-without-retry",
+    "configurationChangeOrProfileSelection": "invalidate-configuration-before-next-acquisition",
+    "incompleteOrMisboundEvidence": "reject-without-projection-or-analysis",
+    "rfOutputUncertainOrEchoMismatch": "mark-unknown-fault-session-and-permit-only-explicit-output-off-recovery",
+    "driverMeasurementEventReturnMismatch": "fault-session-without-projecting-either-result",
+    "serialLifecycleTimeout": "reject-operation-clean-up-late-open-and-block-writes-after-uncertain-close",
+    "complexIqContinuousRequest": "reject-before-acquisition",
+    "streamFailure": "stop-at-first-failure-and-report-faulted",
+    "agentSchemaOrPolicyFailure": "reject-before-executor",
+    "highImpactDenial": "return-denial-without-retry",
+    "realtimeConfigurationMismatch": "terminate-session",
+    "signalLabFirmwareSinkAbsent": "report-reserved-not-connected",
+    "externalFlasherAbsent": "leave-runtime-trio-operational-and-report-firmware-update-out-of-scope"
+  },
+  "compatibility": {
+    "rule": "A producer guarantee must imply every consumer assumption on the same active runtime edge.",
+    "runtimeVersioning": "Any weakened guarantee, stronger assumption, changed runtime owner, changed evidence label, driver contract change, or newly active runtime edge requires a new trio contract version and coordinated commits in all three runtime repositories.",
+    "driverEvolution": "A new driver registers a unique driverId and sourceKind set, declares only truthful generic capabilities, and adds a separately versioned source-specific extension only when the common contract cannot express an operation without making another driver lie; complex-IQ chunking, backpressure, or long-lived sample streaming still requires a new instrument/API contract version.",
+    "externalUtilityVersioning": "Atom-Flasher versions its application, device, evidence, and interface contracts independently; changing its release or write policy does not change this runtime composition unless the ownership boundary changes.",
+    "verification": "Release gating requires byte-identical v5 copies in the three runtime repositories, byte-identical active SignalLab measurement-contract-v2 documents wherever copied, real in-process SignalLab producer-consumer interoperation, exact capability and transform-receipt semantic validation, repository-local runtime/build/boundary tests, unchanged historical v1 and v4 contract hashes, and independent validation of Atom-Flasher's active interface catalog v3, active application/device contract v2, frozen interface catalog v2, and frozen legacy application contract v1."
+  }
+}

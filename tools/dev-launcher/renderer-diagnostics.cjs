@@ -64,10 +64,10 @@ function normalizeSignalLabSessionAdmission(value) {
     || provenance.transport !== 'signal-lab-measurement-bridge'
     || provenance.qualification !== 'synthetic-visual-projection'
     || provenance.contractId !== 'tinysa-signal-lab-atomizer-measurement'
-    || provenance.contractVersion !== 1
+    || provenance.contractVersion !== 2
     || !isSha256(provenance.contractSha256)
     || !isSha256(provenance.catalogSha256)
-    || !isSha256(provenance.generatorSha256)
+    || !isSha256(provenance.generatorContractBindingSha256)
     || claims?.usbEmulated !== false
     || claims?.firmwareExecuted !== false
     || claims?.rfEmitted !== false) return undefined;
@@ -87,10 +87,10 @@ function normalizeSignalLabSessionAdmission(value) {
       transport: 'signal-lab-measurement-bridge',
       qualification: 'synthetic-visual-projection',
       contractId: 'tinysa-signal-lab-atomizer-measurement',
-      contractVersion: 1,
+      contractVersion: 2,
       contractSha256: provenance.contractSha256,
       catalogSha256: provenance.catalogSha256,
-      generatorSha256: provenance.generatorSha256,
+      generatorContractBindingSha256: provenance.generatorContractBindingSha256,
       claims: Object.freeze({
         usbEmulated: false,
         firmwareExecuted: false,

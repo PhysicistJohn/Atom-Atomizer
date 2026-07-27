@@ -32,6 +32,7 @@ import {
   type InstrumentSessionEvent,
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
+  type SignalLabWaveformDescriptor,
 } from '@tinysa/contracts';
 import {
   InstrumentDriverContractError,
@@ -43,6 +44,7 @@ import {
   type InstrumentSession,
 } from './instrument-driver.js';
 import { InstrumentDriverRegistry } from './instrument-driver-registry.js';
+import { sha256HexOfBytes } from './sha256.js';
 
 export type InstrumentManagerErrorCode =
   | 'admission-limit'
@@ -659,9 +661,11 @@ export class InstrumentManager {
           ? withSelectedSignalLabProfile(active.capabilities, request.profileId)
           : request.action === 'configure-channel'
             ? withSignalLabChannel(active.capabilities, request.channel)
-            // Custom-waveform selections change only the descriptor content, not
-            // the capability surface shape; the driver refreshed its own status.
-            : active.capabilities;
+            : admitRefreshedCustomWaveformCapabilities(
+                active.capabilities,
+                active.session.capabilities,
+                request.standard,
+              );
       } else if (request.kind === 'rf-generator') {
         if (request.action === 'configure') {
           await this.#acknowledgeRfOutputOff(
@@ -1165,6 +1169,117 @@ function withSignalLabChannel(
   return instrumentCapabilitiesSchema.parse({ ...capabilities, features });
 }
 
+/**
+ * Admit a driver's refreshed capability after a custom-waveform build.
+ *
+ * A custom build is allowed to change exactly two things: the
+ * `custom-${standard}` catalog descriptor and its matching I/Q transport. It is
+ * an untrusted driver call, so nothing else is taken on trust: acquisitions,
+ * unrelated features, every other descriptor and transport, the selected
+ * profile, and channel state must all still be structurally identical. The
+ * returned capability is rebuilt from the previously admitted one with only the
+ * two target entries substituted, so a driver cannot smuggle a change through
+ * a field this function forgot to compare.
+ */
+function admitRefreshedCustomWaveformCapabilities(
+  previous: InstrumentCapabilities,
+  refreshed: InstrumentCapabilities,
+  standard: Extract<
+    InstrumentFeatureRequest,
+    { kind: 'signal-lab-profile-selection'; action: 'configure-custom-waveform' }
+  >['standard'],
+): InstrumentCapabilities {
+  const reject = (message: string): never => {
+    throw new InstrumentManagerError('driver-contract', message);
+  };
+  if (refreshed.schemaVersion !== previous.schemaVersion) {
+    reject('SignalLab custom-waveform configuration changed the capability schema version');
+  }
+  if (!structuralEqual(refreshed.acquisitions, previous.acquisitions)) {
+    reject('SignalLab custom-waveform configuration changed acquisition capabilities');
+  }
+  if (refreshed.features.length !== previous.features.length) {
+    reject('SignalLab custom-waveform configuration changed the advertised feature set');
+  }
+  const sourceIndex = previous.features.findIndex(
+    (feature) => feature.kind === 'signal-lab-profile-selection',
+  );
+  const previousSource = previous.features[sourceIndex];
+  const refreshedSource = refreshed.features[sourceIndex];
+  if (previousSource?.kind !== 'signal-lab-profile-selection'
+    || refreshedSource?.kind !== 'signal-lab-profile-selection') {
+    reject('SignalLab custom-waveform result has no matching refreshed capability');
+    throw new Error('unreachable');
+  }
+  for (const [index, feature] of previous.features.entries()) {
+    if (index === sourceIndex) continue;
+    if (!structuralEqual(refreshed.features[index], feature)) {
+      reject(`SignalLab custom-waveform configuration changed the unrelated ${feature.kind} feature`);
+    }
+  }
+  if (refreshedSource.selectedProfileId !== previousSource.selectedProfileId) {
+    reject('SignalLab custom-waveform configuration changed the selected profile without a profile-selection result');
+  }
+  if (!structuralEqual(refreshedSource.channel, previousSource.channel)) {
+    reject('SignalLab custom-waveform configuration changed channel state without a channel-configuration result');
+  }
+  const expectedProfileId = `custom-${standard}`;
+  const descriptorIndex = previousSource.profiles
+    .findIndex((profile) => profile.profileId === expectedProfileId);
+  const transportIndex = previousSource.iqProfiles
+    .findIndex((profile) => profile.profileId === expectedProfileId);
+  if (descriptorIndex < 0 || transportIndex < 0) {
+    reject(`SignalLab custom-waveform configuration named ${expectedProfileId}, which is not an advertised profile`);
+  }
+  if (refreshedSource.profiles.length !== previousSource.profiles.length
+    || refreshedSource.iqProfiles.length !== previousSource.iqProfiles.length) {
+    reject('SignalLab custom-waveform configuration changed the size of the governed catalog');
+  }
+  // Identity and order are part of the admitted catalog, not part of what a
+  // custom build may rewrite. Compare them before comparing contents so a
+  // reordered catalog cannot make an unrelated substitution look targeted.
+  for (const [index, profile] of previousSource.profiles.entries()) {
+    if (refreshedSource.profiles[index]?.profileId !== profile.profileId) {
+      reject('SignalLab custom-waveform configuration reordered or renamed the governed catalog');
+    }
+  }
+  for (const [index, profile] of previousSource.iqProfiles.entries()) {
+    if (refreshedSource.iqProfiles[index]?.profileId !== profile.profileId) {
+      reject('SignalLab custom-waveform configuration reordered or renamed the I/Q transport catalog');
+    }
+  }
+  for (const [index, profile] of previousSource.profiles.entries()) {
+    if (index === descriptorIndex) continue;
+    if (!structuralEqual(refreshedSource.profiles[index], profile)) {
+      reject(`SignalLab custom-waveform configuration changed the unrelated ${profile.profileId} descriptor`);
+    }
+  }
+  for (const [index, profile] of previousSource.iqProfiles.entries()) {
+    if (index === transportIndex) continue;
+    if (!structuralEqual(refreshedSource.iqProfiles[index], profile)) {
+      reject(`SignalLab custom-waveform configuration changed the unrelated ${profile.profileId} I/Q transport`);
+    }
+  }
+  const refreshedDescriptor = refreshedSource.profiles[descriptorIndex];
+  const refreshedTransport = refreshedSource.iqProfiles[transportIndex];
+  if (refreshedDescriptor === undefined || refreshedTransport === undefined) {
+    reject(`SignalLab custom-waveform configuration omitted refreshed ${expectedProfileId} geometry`);
+    throw new Error('unreachable');
+  }
+  const profiles = previousSource.profiles.map(
+    (profile, index) => index === descriptorIndex ? refreshedDescriptor : profile,
+  );
+  const iqProfiles = previousSource.iqProfiles.map(
+    (profile, index) => index === transportIndex ? refreshedTransport : profile,
+  );
+  const features = previous.features.map(
+    (feature, index) => index === sourceIndex
+      ? { ...previousSource, profiles, iqProfiles }
+      : feature,
+  );
+  return instrumentCapabilitiesSchema.parse({ ...previous, features });
+}
+
 function requireRange(value: number, range: { min: number; max: number; step?: number }, label: string): void {
   const stepOffset = range.step === undefined ? 0 : (value - range.min) / range.step;
   const missesStep = range.step !== undefined
@@ -1254,6 +1369,9 @@ function assertMeasurementBinding(
     if (measurement.resolutionBandwidthHz !== null || measurement.attenuationDb !== null) {
       throw new InstrumentManagerError('driver-contract', 'SignalLab measurements must not claim physical RBW or attenuation readback');
     }
+    if (active.session.provenance.contractVersion === 2 && measurement.kind === 'complex-iq') {
+      assertSignalLabV2IqBinding(measurement, active);
+    }
   } else if (measurement.producerConfigurationEpoch !== undefined) {
     throw new InstrumentManagerError('driver-contract', 'Non-SignalLab measurement claimed a producer configuration epoch');
   } else if ((measurement.kind === 'swept-spectrum' || measurement.kind === 'detected-power-timeseries')
@@ -1304,12 +1422,137 @@ function expectedMeasurementQualification(
   const selected = source?.kind === 'signal-lab-profile-selection'
     ? source.profiles.find((profile) => profile.profileId === source.selectedProfileId)
     : undefined;
-  if (!selected || !('qualification' in selected)) {
+  if (!isCompleteSignalLabDescriptor(selected)) {
     throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q measurement has no complete admitted selected-profile qualification');
+  }
+  if (measurement.receiverImpairment !== undefined && measurement.receiverImpairment !== 'clean') {
+    return 'receiver-impaired-complex-baseband';
+  }
+  if (selected.qualification === 'independently-verified-digital-baseband') {
+    const transport = source?.kind === 'signal-lab-profile-selection'
+      ? source.iqProfiles.find((profile) => profile.profileId === source.selectedProfileId)
+      : undefined;
+    if (transport?.nativeSampleRateHz !== null
+      && measurement.sampleRateHz === transport?.nativeSampleRateHz
+      && measurement.payloadKind === 'native-canonical') {
+      return 'independently-verified-digital-baseband';
+    }
+    return 'derived-from-independently-verified-digital-baseband';
   }
   return selected.qualification === 'visual'
     ? 'analytic-complex-baseband'
     : 'standards-derived-complex-baseband';
+}
+
+function assertSignalLabV2IqBinding(
+  measurement: Extract<InstrumentMeasurement, { kind: 'complex-iq' }>,
+  active: ActiveSession,
+): void {
+  const source = active.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
+  const selected = source?.kind === 'signal-lab-profile-selection'
+    ? source.profiles.find((profile) => profile.profileId === source.selectedProfileId)
+    : undefined;
+  const transport = source?.kind === 'signal-lab-profile-selection'
+    ? source.iqProfiles.find((profile) => profile.profileId === source.selectedProfileId)
+    : undefined;
+  if (!isCompleteSignalLabDescriptor(selected) || !transport) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab v2 I/Q measurement lacks its governed profile transport');
+  }
+  if (measurement.transformReceipt?.outputSamplesSha256 !== sha256HexOfBytes(measurement.samples)) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      'SignalLab I/Q transform receipt output hash does not match the received sample bytes',
+    );
+  }
+  if (measurement.profileReferenceCenterHz !== transport.profileReferenceCenterHz
+    || measurement.nativeCarrierOffsetHz !== transport.nativeCarrierOffsetHz
+    || measurement.signalBandwidthHz !== transport.signalBandwidthHz) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q profile reference geometry does not match its admitted transport');
+  }
+  const admittedImpairment = source?.kind === 'signal-lab-profile-selection'
+    ? source.channel.receiverImpairment
+    : 'clean';
+  if (measurement.receiverImpairment !== admittedImpairment) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q receiver-impairment evidence does not match the admitted channel state');
+  }
+  const expectedNativeRate = transport.nativeSampleRateHz ?? measurement.sampleRateHz;
+  if (measurement.nativeSampleRateHz !== expectedNativeRate) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q native-rate evidence does not match the admitted profile transport');
+  }
+  const expectedBoundaryPolicy = transport.replay === 'continuous'
+    ? 'continuous-session-origin-zero-extended'
+    : transport.replay === 'cyclic'
+      ? 'cyclic-modular'
+      : 'one-shot-zero-extended';
+  if (measurement.transformReceipt?.sourceBoundaryPolicy !== expectedBoundaryPolicy
+    || measurement.transformReceipt.sourcePeriodSamples !== (transport.nativePeriodSamples ?? null)) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      'SignalLab I/Q source-boundary receipt does not match the admitted replay policy and native period',
+    );
+  }
+  if (measurement.sampleRateHz < transport.signalBandwidthHz
+    || measurement.bandwidthHz < transport.signalBandwidthHz) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q output transport excludes declared profile signal support');
+  }
+  // Capture bandwidth is a symmetric passband about `rfTuneCenterHz`, so an
+  // output carrier that is not at DC costs `2 * |offset|` of it on top of the
+  // signal bandwidth. A driver claiming to have kept an offset carrier inside a
+  // capture too narrow to hold that span is reporting impossible geometry.
+  const outputCarrierOffsetHz = measurement.outputCarrierOffsetHz;
+  if (outputCarrierOffsetHz === undefined) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab v2 I/Q measurement omitted its output carrier offset');
+  }
+  const requiredCaptureBandwidthHz =
+    2 * Math.abs(outputCarrierOffsetHz) + transport.signalBandwidthHz;
+  if (measurement.bandwidthHz < requiredCaptureBandwidthHz) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      `SignalLab I/Q capture bandwidth ${measurement.bandwidthHz} Hz cannot symmetrically contain a ${outputCarrierOffsetHz} Hz carrier offset with ${transport.signalBandwidthHz} Hz of signal support`,
+    );
+  }
+  // The same span decides whether exact native bytes were even representable.
+  // Below the native floor the producer must have translated the carrier to DC.
+  if (transport.nativeMinimumCaptureBandwidthHz !== null
+    && measurement.bandwidthHz < transport.nativeMinimumCaptureBandwidthHz
+    && (measurement.payloadKind === 'native-canonical' || outputCarrierOffsetHz !== 0)) {
+    throw new InstrumentManagerError(
+      'driver-contract',
+      `SignalLab I/Q capture bandwidth ${measurement.bandwidthHz} Hz is narrower than the ${transport.nativeMinimumCaptureBandwidthHz} Hz native span, so the carrier must have been translated to DC`,
+    );
+  }
+  if (measurement.centerHz === measurement.profileReferenceCenterHz
+    ? measurement.rfPlacement !== 'profile-reference'
+    : measurement.rfPlacement !== 'operator-translated') {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q RF placement evidence does not match the requested output center');
+  }
+  const frequencyTranslation = measurement.transformReceipt?.operations.find(
+    (operation) => operation.kind === 'frequency-translate',
+  );
+  if (measurement.outputCarrierOffsetHz === transport.nativeCarrierOffsetHz) {
+    if (frequencyTranslation !== undefined) {
+      throw new InstrumentManagerError('driver-contract', 'SignalLab claimed frequency translation without changing the native carrier offset');
+    }
+  } else if (!frequencyTranslation
+    || frequencyTranslation.sourceCarrierOffsetHz !== transport.nativeCarrierOffsetHz
+    || frequencyTranslation.outputCarrierOffsetHz !== measurement.outputCarrierOffsetHz) {
+    throw new InstrumentManagerError('driver-contract', 'SignalLab output carrier placement lacks a matching frequency-translation receipt');
+  }
+  if (selected.qualification === 'independently-verified-digital-baseband') {
+    const artifactHash = selected.assetSha256;
+    if (artifactHash === undefined
+      || measurement.canonicalArtifactSha256 !== artifactHash
+      || measurement.transformReceipt?.sourceArtifactSha256 !== artifactHash) {
+      throw new InstrumentManagerError('driver-contract', 'SignalLab digital I/Q lineage does not name the admitted canonical artifact');
+    }
+  }
+}
+
+function isCompleteSignalLabDescriptor(value: unknown): value is SignalLabWaveformDescriptor {
+  return typeof value === 'object' && value !== null
+    && 'profileId' in value
+    && 'qualification' in value
+    && 'source' in value;
 }
 
 function assertFeatureResult(

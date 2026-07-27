@@ -477,9 +477,9 @@ describe('signal-aware peak-marker center selection', () => {
   });
 
   it.each([
-    'wifi6-he-mu',
-    'wifi6-he-tb',
-  ] as const)('centers SignalLab %s on its bounded threshold component while leaving disjoint 3 dB islands unavailable', (profile) => {
+    ['wifi6-he-mu', true],
+    ['wifi6-he-tb', false],
+  ] as const)('centers SignalLab %s on its bounded threshold component with profile-appropriate 3 dB classification', (profile, expectsNonmonotoneHalfPower) => {
     const descriptor = waveformDescriptor(profile);
     const range = suggestedAnalyzerRange(descriptor);
     const points = 450;
@@ -579,7 +579,14 @@ describe('signal-aware peak-marker center selection', () => {
       }
     }
 
-    expect(nonmonotoneLooks).toBeGreaterThan(0);
+    if (expectsNonmonotoneHalfPower) {
+      // The two-user HE-MU projection has disjoint left/right 106-tone RUs.
+      expect(nonmonotoneLooks).toBeGreaterThan(0);
+    } else {
+      // The qualified HE-TB vector is one STA on one right-side 106-tone RU,
+      // so its active scalar response has one resolved half-power island.
+      expect(nonmonotoneLooks).toBe(0);
+    }
     expect(centroidLooks).toBeGreaterThan(0);
     expect(unavailableLooks).toBeGreaterThan(0);
     expect(rejectedRemoteRawCrests).toBeGreaterThan(0);

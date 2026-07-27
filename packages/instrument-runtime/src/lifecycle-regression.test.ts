@@ -250,10 +250,10 @@ class FakeSignalLabSession implements InstrumentSession {
       verifiedAt: CAPTURED_AT,
       producerConfigurationEpoch: `producer-epoch:${this.#epoch}`,
       contractId: 'tinysa-signal-lab-atomizer-measurement',
-      contractVersion: 1,
+      contractVersion: 2,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
-      generatorSha256: 'c'.repeat(64),
+      generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
     };
   }
@@ -366,6 +366,15 @@ function fakeCapabilities(selectedProfileId: string): InstrumentCapabilities {
         powerUnit: 'dBm',
         timing: 'uniform',
       },
+      {
+        kind: 'complex-iq',
+        centerFrequencyHz: { min: 1, max: 6_000_000_000, step: 1 },
+        sampleRateHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthHz: { min: 1, max: 491_520_000, step: 1 },
+        bandwidthMode: 'independent',
+        sampleCount: { min: 1, max: 65_536, step: 1 },
+        sampleFormat: 'cf32le',
+      },
     ],
     features: [{
       kind: 'signal-lab-profile-selection',
@@ -389,6 +398,7 @@ function fakeCapabilities(selectedProfileId: string): InstrumentCapabilities {
               url: 'https://example.test/signal-lab/cw',
             }],
           },
+          governance: fixtureGovernance(INITIAL_PROFILE_ID, 'TinySA SignalLab'),
           disclosure: 'Analytic fixture profile.',
         },
         {
@@ -417,11 +427,92 @@ function fakeCapabilities(selectedProfileId: string): InstrumentCapabilities {
               url: 'https://www.3gpp.org/dynareport/36141.htm',
             }],
           },
+          governance: fixtureGovernance(OTHER_PROFILE_ID, '3GPP'),
           disclosure: 'Standards-derived deterministic fixture projection.',
         },
       ],
       selectedProfileId,
+      channel: {
+        model: 'awgn',
+        noiseFloorDbm: -108,
+        seed: 407,
+        fadingRateHz: 2,
+        receiverImpairment: 'clean',
+      },
+      iqProfiles: [{
+        profileId: INITIAL_PROFILE_ID,
+        nativeSampleRateHz: null,
+        signalBandwidthHz: 1,
+        profileReferenceCenterHz: 100_000_000,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous',
+        derivedTransportSupported: false,
+      }, {
+        profileId: OTHER_PROFILE_ID,
+        nativeSampleRateHz: null,
+        signalBandwidthHz: 9_000_000,
+        profileReferenceCenterHz: 1_842_500_000,
+        nativeCarrierOffsetHz: 0,
+        nativeMinimumCaptureBandwidthHz: null,
+        replay: 'continuous',
+        derivedTransportSupported: false,
+      }],
     }],
+  };
+}
+
+function fixtureGovernance(
+  profileId: string,
+  organization: '3GPP' | 'TinySA SignalLab',
+) {
+  const standardsDerived = organization === '3GPP';
+  return {
+    schemaVersion: 1 as const,
+    profileId,
+    signalKind: standardsDerived
+      ? 'standards-derived-engineering-profile' as const
+      : 'mathematical-lab-reference' as const,
+    governingOrganizations: [organization],
+    governingBodies: [{
+      organization,
+      technicalBody: standardsDerived ? '3GPP TSG RAN' as const : 'TinySA SignalLab project' as const,
+      authorityScope: standardsDerived
+        ? 'LTE waveform definition and deterministic test-model configuration.'
+        : 'Deterministic mathematical laboratory reference.',
+    }],
+    normativeReferences: standardsDerived ? [{
+      organization: '3GPP' as const,
+      documentId: '3GPP TS 36.141',
+      revision: 'Release 18',
+      clauses: ['6.1'],
+      url: 'https://www.3gpp.org/dynareport/36141.htm',
+    }] : [],
+    applicability: {
+      status: standardsDerived ? 'applicable' as const : 'not-applicable' as const,
+      reason: standardsDerived
+        ? 'The engineering fixture is governed by the cited LTE test-model specification.'
+        : 'A mathematical fixture has no external radio-standard applicability.',
+    },
+    implementedQualificationState: standardsDerived
+      ? 'standards-derived-engineering-projection' as const
+      : 'mathematical-reference' as const,
+    testedClaimScope: {
+      kind: standardsDerived
+        ? 'deterministic-engineering-projection' as const
+        : 'deterministic-mathematical-reference' as const,
+      statement: 'Fixture verifies the declared deterministic SignalLab boundary.',
+      testLocations: ['src/lifecycle-regression.test.ts'],
+    },
+    claims: {
+      standardsCompliance: 'not-claimed' as const,
+      digitalStandardsAdherence: standardsDerived ? 'not-verified' as const : 'not-applicable' as const,
+      digitalQualification: 'not-qualified' as const,
+      rfConformance: 'not-qualified' as const,
+    },
+    digitalQualificationEvidence: null,
+    qualificationBlockers: ['Fixture carries no independent digital-baseband qualification evidence.'],
+    reason: 'Lifecycle fixture declares only its directly tested deterministic scope.',
   };
 }
 
