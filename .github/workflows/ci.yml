@@ -87,10 +87,18 @@ jobs:
         run: npm run build
       - run: npm run typecheck
       - run: npm test
-      - run: npm audit --audit-level=high
+      - run: npm run audit
 
   signal-lab-interop:
-    runs-on: ubuntu-latest
+    # This job runs SignalLab's own check, and SignalLab's standards provider
+    # pins the exact cf64le bytes of a float64 LTE E-TM1.1 reference frame.
+    # libm last-ulp rounding differs by architecture, so on x86_64 the provider
+    # fails closed at module load. The pins were authored on arm64 and are bound
+    # by srsRAN oracle evidence, so they cannot be re-pinned without a provider
+    # recipe revision backed by a re-run oracle. Run the interop check on the
+    # architecture where those identities hold. SignalLab's own CI is likewise
+    # macos-only for this reason.
+    runs-on: macos-latest
     timeout-minutes: 35
     env:
       SIGNAL_LAB_INTEGRATION_REQUIRED: '1'
