@@ -165,13 +165,22 @@ jobs:
         # workspace's electron/dist empty on this job. Self-heal by forcing
         # Electron's own postinstall to run again, with diagnostics if it
         # still doesn't land.
+        #
+        # Resolve the binary the way Electron itself does, through the path.txt
+        # its postinstall writes, rather than hardcoding a name. That file holds
+        # `electron` on Linux, `Electron.app/Contents/MacOS/Electron` on macOS,
+        # and `electron.exe` on Windows, and this job runs on macOS.
         run: |
-          if [ ! -e apps/desktop/node_modules/electron/dist/electron ]; then
+          root=apps/desktop/node_modules/electron
+          if [ ! -f "$root/path.txt" ] || [ ! -e "$root/dist/$(cat "$root/path.txt")" ]; then
             echo "Electron binary missing after npm ci; forcing its install script"
-            ls -la apps/desktop/node_modules/electron/dist 2>&1 || echo "apps/desktop/node_modules/electron/dist does not exist"
-            node apps/desktop/node_modules/electron/install.js
+            ls -la "$root/dist" 2>&1 || echo "$root/dist does not exist"
+            node "$root/install.js"
           fi
-          test -e apps/desktop/node_modules/electron/dist/electron
+          test -f "$root/path.txt"
+          binary="$root/dist/$(cat "$root/path.txt")"
+          echo "resolved Electron binary: $binary"
+          test -e "$binary"
       - name: Validate the Bayesian detector
         working-directory: Atom-Atomizer
         run: npm run check:bayesian-detector
