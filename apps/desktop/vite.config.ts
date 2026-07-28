@@ -7,6 +7,7 @@ import { developmentRendererTrust, validateDevelopmentServerUrl } from './src/ma
 
 const root = fileURLToPath(new URL('./src/renderer', import.meta.url));
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
+const sharedPublicRoot = fileURLToPath(new URL('../web/public', import.meta.url));
 const signalLabSourceRoot = fileURLToPath(new URL('../../../Atom-SignalLab/src', import.meta.url));
 const classifierSourceRoot = fileURLToPath(new URL('../../../Atom-Classifier/src', import.meta.url));
 const developmentUrl = validateDevelopmentServerUrl(process.env.VITE_DEV_SERVER_URL ?? 'http://localhost:5173');
@@ -18,6 +19,9 @@ export default defineConfig({
   ],
   root,
   base: './',
+  // Browser and packaged-desktop builds consume one byte-identical static v3
+  // runtime package. The large JSON assets stay outside JavaScript chunks.
+  publicDir: sharedPublicRoot,
   resolve: {
     // SignalLab Studio is source-bundled into Atomizer. Pin renderer singletons
     // even when both sibling checkouts have installed their own dependencies.

@@ -642,6 +642,7 @@ function projectModulationClassification(result: ModulationClassification) {
     confidence: result.confidence,
     isUnknown: result.isUnknown,
     candidates: result.candidates,
+    ...(result.rejection ? { rejection: result.rejection } : {}),
   };
 }
 

@@ -8,9 +8,9 @@ import type { ModulationClassification } from '../embedding-classifier-runtime.j
 import type { ClassificationWorkerRequest, ClassificationWorkerResponse } from '../classification-worker-protocol.js';
 import type { RendererKernel } from './kernel.js';
 
-// Candidate-independent runtime geometry shared by v2 today and the opt-in v3
-// adapter. The prefixes are contiguous: no plotting-style subsampling is
-// allowed at this boundary. v3's causal stage-one gate uses its own first-16K
+// Frozen live-v3 capture geometry. The prefixes are contiguous: no
+// plotting-style subsampling is allowed at this boundary. The causal stage-one
+// gate uses its own first-16K
 // prefix internally for captures longer than 16K.
 const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
 const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
@@ -27,7 +27,8 @@ export function classificationIqPrefixLength(sampleCount: number): number | unde
   }
   if (sampleCount < CLASSIFICATION_IQ_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_MIN_SAMPLES;
   if (sampleCount < CLASSIFICATION_IQ_LONG_SAMPLES) return CLASSIFICATION_IQ_MEDIUM_SAMPLES;
-  return Math.min(sampleCount, CLASSIFICATION_IQ_MAX_SAMPLES);
+  if (sampleCount < CLASSIFICATION_IQ_MAX_SAMPLES) return CLASSIFICATION_IQ_LONG_SAMPLES;
+  return CLASSIFICATION_IQ_MAX_SAMPLES;
 }
 
 export interface ClassificationExecutor {
@@ -56,8 +57,8 @@ type ClassificationEvidence =
  * workspaces only render the shared projection. Every complete input is offered
  * for instantaneous classification, and every successful result is one sample.
  * One worker job runs at a time and one newest pending input replaces stale
- * queued work; successful posteriors are integrated over a timestamped trailing
- * 500 ms window.
+ * queued work; admitted distributions and candid abstentions are integrated
+ * over a timestamped trailing 500 ms window.
  */
 export class ClassificationController {
   private readonly executor: ClassificationExecutor;

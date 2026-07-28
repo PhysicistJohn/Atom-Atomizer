@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { validateDevelopmentServerUrl, type RendererTrust } from './renderer-trust.js';
 
 export const CONTENT_SECURITY_POLICY_HEADER = 'Content-Security-Policy';
-export const PACKAGED_RENDERER_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
+export const PACKAGED_RENDERER_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' atomizer-classifier:";
 
 /**
  * Computes the CSP source expression for one exact inline script. Hashing the

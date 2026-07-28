@@ -44,4 +44,51 @@ describe('agent classification results', () => {
     });
     expect(result).not.toHaveProperty('contract', 'capture-modulation-classification-v1');
   });
+
+  it('exposes staged rejection metadata without a classifier candidate', async () => {
+    const store = new AtomizerStore(createInitialRendererState({
+      initialWorkspace: 'spectrum',
+      initialAgentOpen: false,
+    }));
+    store.set({
+      classification: {
+        source: 'iq',
+        pending: false,
+        sampleCount: 3,
+        result: {
+          flavor: 'iq',
+          family: 'unknown',
+          modulation: 'unknown',
+          confidence: 0,
+          isUnknown: true,
+          candidates: [],
+          bwFraction: 0.4,
+          rejection: {
+            stage: 2,
+            reason: 'open-set',
+            score: 0.98,
+            threshold: 0.95,
+          },
+        },
+      },
+    });
+
+    const result = await new AgentExecutor(
+      new RendererKernel(store),
+    ).classifyCurrentCapture();
+
+    expect(result).toMatchObject({
+      family: 'unknown',
+      modulation: 'unknown',
+      confidence: 0,
+      isUnknown: true,
+      candidates: [],
+      rejection: {
+        stage: 2,
+        reason: 'open-set',
+        score: 0.98,
+        threshold: 0.95,
+      },
+    });
+  });
 });

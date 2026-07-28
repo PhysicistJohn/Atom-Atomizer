@@ -20,13 +20,9 @@ const stageOneRejection: ModulationClassification = {
   flavor: 'iq',
   modulation: 'unknown',
   family: 'unknown',
-  confidence: 1,
+  confidence: 0,
   isUnknown: true,
-  posterior: { ofdm: 0.6, dsss: 0.4 },
-  candidates: [
-    { label: 'ofdm', confidence: 0.6 },
-    { label: 'dsss', confidence: 0.4 },
-  ],
+  candidates: [],
   bwFraction: 1,
   rejection: {
     stage: 1,

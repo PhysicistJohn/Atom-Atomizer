@@ -59,8 +59,10 @@ describe('DetectWorkspace', () => {
       ...iqResult,
       modulation: 'unknown',
       family: 'unknown',
-      confidence: 1,
+      confidence: 0,
       isUnknown: true,
+      candidates: [],
+      topLeaf: undefined,
       bwFraction: 1,
       rejection: {
         stage: 1,
@@ -80,5 +82,6 @@ describe('DetectWorkspace', () => {
 
     expect(screen.getByText(/Noise-like capture gated before bandwidth estimation/i)).toBeDefined();
     expect(screen.queryByText(/Occupied bandwidth ≈/i)).toBeNull();
+    expect(document.querySelector('.detect-bar')).toBeNull();
   });
 });

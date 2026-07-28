@@ -64,6 +64,21 @@ export function accumulateModulationConsensus(
   const unknownSamples = samples.filter((sample) => sample.result.isUnknown);
   if (unknownSamples.length > sampleCount / 2) {
     const representative = unknownSamples.at(-1)!.result;
+    if (representative.rejection) {
+      // A dual-v3 rejection is a public abstention, not a classified row.
+      // Do not reconstruct a candidate label from other samples in the trend.
+      const projection: ModulationClassification = {
+        ...representative,
+        family: 'unknown',
+        modulation: 'unknown',
+        confidence: 0,
+        isUnknown: true,
+        posterior: undefined,
+        candidates: [],
+        topLeaf: undefined,
+      };
+      return { state: { samples }, projection: { sampleCount, result: projection } };
+    }
     const projection: ModulationClassification = {
       ...representative,
       family: 'unknown',

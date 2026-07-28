@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, screen, type IpcMainInvokeEvent } from 'electron';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,10 @@ import { SafeShutdownGate } from './safe-shutdown-gate.js';
 import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
 import { loadPrivateEnvironmentFromCandidates, selectPrivateEnvironmentCandidates } from './private-environment.js';
 import {
+  ATOMIZER_CLASSIFIER_ASSET_SCHEME,
+  registerClassifierAssetProtocol,
+} from './classifier-asset-protocol.js';
+import {
   assertTrustedRendererEvent,
   developmentRendererTrust,
   isTrustedMediaPermission,
@@ -33,6 +37,15 @@ import {
 } from './renderer-trust.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
+protocol.registerSchemesAsPrivileged([{
+  scheme: ATOMIZER_CLASSIFIER_ASSET_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+  },
+}]);
 const privateEnvironment = selectPrivateEnvironmentCandidates(process.env.TINYSA_ENV_FILE, [
   resolve(process.cwd(), '.env'),
   resolve(process.cwd(), '../../.env'),
@@ -203,6 +216,10 @@ async function connectDefaultInstrument(): Promise<void> {
 
 registerIpc();
 app.whenReady().then(async () => {
+  registerClassifierAssetProtocol(
+    protocol,
+    join(here, '../renderer/classifier/v3'),
+  );
   await createWindow();
   await connectDefaultInstrument();
 }).catch((error) => {

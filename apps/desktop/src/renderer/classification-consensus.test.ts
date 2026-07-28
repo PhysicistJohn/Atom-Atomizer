@@ -128,6 +128,48 @@ describe('Detect modulation consensus', () => {
     expect(projection.topLeaf).toBeUndefined();
   });
 
+  it('never reconstructs classifier output for a staged v3 rejection', () => {
+    const rejected: ModulationClassification = {
+      flavor: 'iq',
+      family: 'unknown',
+      modulation: 'unknown',
+      confidence: 0,
+      isUnknown: true,
+      candidates: [],
+      bwFraction: 1,
+      rejection: {
+        stage: 1,
+        reason: 'noise',
+        score: 1.5,
+        threshold: 0.95,
+      },
+    };
+    let state = accumulateModulationConsensus(
+      emptyModulationConsensus(),
+      rejected,
+      0,
+    ).state;
+    ({ state } = accumulateModulationConsensus(
+      state,
+      result({ ofdm: 0.9, dsss: 0.1 }),
+      10,
+    ));
+    const projection = accumulateModulationConsensus(
+      state,
+      rejected,
+      20,
+    ).projection.result;
+    expect(projection).toMatchObject({
+      family: 'unknown',
+      modulation: 'unknown',
+      confidence: 0,
+      isUnknown: true,
+      candidates: [],
+      rejection: { stage: 1, reason: 'noise' },
+    });
+    expect(projection.posterior).toBeUndefined();
+  });
+
   it('rejects a non-monotonic sample timestamp', () => {
     const state = accumulateModulationConsensus(emptyModulationConsensus(), result({ fm: 1 }), 10).state;
     expect(() => accumulateModulationConsensus(state, result({ fm: 1 }), 9))
