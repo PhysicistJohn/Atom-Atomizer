@@ -24,10 +24,40 @@ describe('application-global classification controller', () => {
     }
 
     expect(executor.iqFirstComponents).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect(executor.iqSampleCounts).toEqual(Array.from({ length: 10 }, () => 4_096));
+    expect(executor.iqSampleCounts).toEqual(Array.from({ length: 10 }, () => 16_384));
     expect(store.get().classification).toMatchObject({
       source: 'iq', pending: false, sampleCount: 10, result: { family: 'ofdm' },
     });
+    controller.dispose();
+  });
+
+  it('admits only tested I/Q lengths and selects the corresponding contiguous prefix', async () => {
+    const executor = new ImmediateExecutor();
+    const { store, controller } = setup(executor, () => 0);
+
+    controller.ingestIq(capture('too-short', 1, { sampleCount: 4_095 }));
+    await flushMicrotasks();
+    expect(executor.iqSampleCounts).toEqual([]);
+    expect(store.get().classification).toMatchObject({
+      source: 'iq', pending: false, sampleCount: 0, result: undefined,
+    });
+
+    const admitted: readonly [number, number][] = [
+      [4_096, 4_096],
+      [8_191, 4_096],
+      [8_192, 8_192],
+      [16_383, 8_192],
+      [16_384, 16_384],
+      [20_000, 20_000],
+      [32_768, 32_768],
+      [32_769, 32_768],
+    ];
+    for (const [sampleCount] of admitted) {
+      controller.ingestIq(capture(`iq-${sampleCount}`, sampleCount, { sampleCount }));
+      await flushMicrotasks();
+    }
+
+    expect(executor.iqSampleCounts).toEqual(admitted.map(([, expected]) => expected));
     controller.dispose();
   });
 
@@ -215,9 +245,11 @@ class ImmediateScalarExecutor implements ClassificationExecutor {
 function capture(
   measurementId: string,
   sequence: number,
-  overrides: Partial<Pick<ComplexIqMeasurement, 'producerConfigurationEpoch' | 'sampleRateHz' | 'bandwidthHz'>> = {},
+  overrides: Partial<Pick<ComplexIqMeasurement,
+    'producerConfigurationEpoch' | 'sampleRateHz' | 'bandwidthHz' | 'sampleCount'
+  >> = {},
 ): ComplexIqMeasurement {
-  const sampleCount = 16_384;
+  const sampleCount = overrides.sampleCount ?? 16_384;
   const samples = new Uint8Array(sampleCount * 8);
   const view = new DataView(samples.buffer);
   view.setFloat32(0, sequence, true);

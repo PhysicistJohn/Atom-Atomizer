@@ -86,8 +86,9 @@ export function DetectWorkspace({
               ))}
             </div>
             <p className="detect-note">
-              Occupied bandwidth ≈ {(modulation.bwFraction * 100).toFixed(0)}% of {modulation.flavor === 'iq' ? 'sample rate' : 'span'} ·
-              modulation family, not a protocol or emitter identity.
+              {modulation.rejection?.stage === 1
+                ? 'Noise-like capture gated before bandwidth estimation; no occupied-bandwidth estimate was made.'
+                : <>Occupied bandwidth ≈ {(modulation.bwFraction * 100).toFixed(0)}% of {modulation.flavor === 'iq' ? 'sample rate' : 'span'} · modulation family, not a protocol or emitter identity.</>}
             </p>
           </div>
         )}

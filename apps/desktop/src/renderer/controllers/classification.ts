@@ -8,9 +8,27 @@ import type { ModulationClassification } from '../embedding-classifier-runtime.j
 import type { ClassificationWorkerRequest, ClassificationWorkerResponse } from '../classification-worker-protocol.js';
 import type { RendererKernel } from './kernel.js';
 
-// Atom-Classifier is trained and independently evaluated on contiguous 4K
-// prefixes. Keep that model geometry separate from the larger recovery window.
-const CLASSIFICATION_IQ_SAMPLES = 4_096;
+// Candidate-independent runtime geometry shared by v2 today and the opt-in v3
+// adapter. The prefixes are contiguous: no plotting-style subsampling is
+// allowed at this boundary. v3's causal stage-one gate uses its own first-16K
+// prefix internally for captures longer than 16K.
+const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
+const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
+const CLASSIFICATION_IQ_LONG_SAMPLES = 16_384;
+const CLASSIFICATION_IQ_MAX_SAMPLES = 32_768;
+
+/**
+ * Select the admitted contiguous capture prefix for modulation classification.
+ * Captures below the minimum independently tested geometry produce no sample.
+ */
+export function classificationIqPrefixLength(sampleCount: number): number | undefined {
+  if (!Number.isInteger(sampleCount) || sampleCount < CLASSIFICATION_IQ_MIN_SAMPLES) {
+    return undefined;
+  }
+  if (sampleCount < CLASSIFICATION_IQ_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_MIN_SAMPLES;
+  if (sampleCount < CLASSIFICATION_IQ_LONG_SAMPLES) return CLASSIFICATION_IQ_MEDIUM_SAMPLES;
+  return Math.min(sampleCount, CLASSIFICATION_IQ_MAX_SAMPLES);
+}
 
 export interface ClassificationExecutor {
   classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification>;
@@ -199,8 +217,10 @@ export class ClassificationController {
     });
   }
 
-  private classifyIq(capture: ComplexIqMeasurement): Promise<ModulationClassification> {
-    const { re, im } = decodeComplexIqChannels(capture, CLASSIFICATION_IQ_SAMPLES);
+  private classifyIq(capture: ComplexIqMeasurement): Promise<ModulationClassification | undefined> {
+    const prefixLength = classificationIqPrefixLength(capture.sampleCount);
+    if (prefixLength === undefined) return Promise.resolve(undefined);
+    const { re, im } = decodeComplexIqChannels(capture, prefixLength);
     return this.executor.classifyIq(re, im, capture.bandwidthHz);
   }
 }
@@ -303,7 +323,7 @@ class InlineClassificationExecutor implements ClassificationExecutor {
   dispose(): void {}
 }
 
-function createClassificationExecutor(): ClassificationExecutor {
+export function createClassificationExecutor(): ClassificationExecutor {
   return typeof Worker === 'undefined'
     ? new InlineClassificationExecutor()
     : new BrowserClassificationExecutor();

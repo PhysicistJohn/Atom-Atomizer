@@ -51,5 +51,34 @@ describe('DetectWorkspace', () => {
     expect(screen.getByText('Capture envelope')).toBeDefined();
     expect(document.querySelector('[data-agent-control="detection.threshold-mode"]')).not.toBeNull();
     expect(document.querySelector('[data-agent-control="classification.capture-envelope"]')).not.toBeNull();
+    expect(screen.getByText(/Occupied bandwidth ≈ 12% of sample rate/i)).toBeDefined();
+  });
+
+  it('does not claim an occupied bandwidth when stage one gates a noise-like capture', () => {
+    const stageOneRejection: ModulationClassification = {
+      ...iqResult,
+      modulation: 'unknown',
+      family: 'unknown',
+      confidence: 1,
+      isUnknown: true,
+      bwFraction: 1,
+      rejection: {
+        stage: 1,
+        reason: 'noise',
+        score: 0.99,
+        threshold: 0.5,
+      },
+    };
+    render(
+      <DetectWorkspace
+        {...baseProps}
+        source="iq"
+        pending={false}
+        modulation={stageOneRejection}
+      />,
+    );
+
+    expect(screen.getByText(/Noise-like capture gated before bandwidth estimation/i)).toBeDefined();
+    expect(screen.queryByText(/Occupied bandwidth ≈/i)).toBeNull();
   });
 });

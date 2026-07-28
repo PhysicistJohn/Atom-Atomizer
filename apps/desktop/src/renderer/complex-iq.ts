@@ -301,10 +301,10 @@ export function previewComplexIq(
  * Decode a CONTIGUOUS full-resolution prefix of a capture into separate I and Q
  * `Float64Array` channels — the numeric form the embedding modulation classifier
  * consumes. Unlike {@link previewComplexIq} (which subsamples for plotting), this
- * keeps samples contiguous so band detection and resampling are meaningful. The
- * prefix is bounded (`maxSamples`) so the work stays fixed regardless of the
- * multi-megabyte capture size; the classifier normalizes to a canonical length
- * internally, so a few thousand contiguous samples suffice.
+ * keeps samples contiguous so band detection and resampling are meaningful.
+ * The caller selects `maxSamples` from the classifier's admitted capture-length
+ * contract; this decoder only validates byte geometry and materializes that
+ * bounded prefix.
  */
 export function decodeComplexIqChannels(
   capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat'>,
