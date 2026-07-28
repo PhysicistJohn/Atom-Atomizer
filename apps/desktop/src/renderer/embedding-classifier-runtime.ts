@@ -99,6 +99,14 @@ export interface ModulationClassification {
   bwFraction: number;
   /** Strongest fused protocol leaf, when the fusion concentrates. */
   topLeaf?: { label: string; probability: number };
+  /** Present for v3 staged abstention; omitted for the live v2 classifier. */
+  rejection?: {
+    /** Stage 1 short-circuited as noise; stage 2 rejected a classified row. */
+    readonly stage: 1 | 2;
+    readonly reason: 'noise' | 'open-set';
+    readonly score: number;
+    readonly threshold: number;
+  };
 }
 
 interface IqClassifierLike {
@@ -173,6 +181,179 @@ export async function classifyIqModulation(
 ): Promise<ModulationClassification> {
   const classifier = await loadIqClassifier();
   return toModulation(classifier.classifyIq(re, im, bandwidthHz ? { bandwidthHz } : {}), 'iq');
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in v3 time-domain adapter
+// ---------------------------------------------------------------------------
+
+export interface TimeDomainV3RuntimeAssets {
+  readonly classifierAsset: unknown;
+  readonly opensetAsset: unknown;
+  readonly encoderAsset: unknown;
+}
+
+export interface IqModulationClassifier {
+  classifyIq(
+    re: Float64Array,
+    im: Float64Array,
+    bandwidthHz?: number,
+  ): ModulationClassification;
+}
+
+interface TimeDomainDecisionLike {
+  readonly closedLabel: string | null;
+  readonly squaredPrototypeDistances: ArrayLike<number> | null;
+  readonly rejectedStage: 1 | 2 | null;
+  readonly forward: {
+    readonly preprocess: { readonly context: { readonly bw: number } };
+  } | null;
+  readonly openSet: {
+    readonly stagedScore: number;
+    readonly threshold: number;
+  };
+}
+
+interface TimeDomainClassifierLike {
+  readonly asset: { readonly classification: { readonly classes: string[] } };
+  classify(
+    inPhase: ArrayLike<number>,
+    quadrature: ArrayLike<number>,
+  ): TimeDomainDecisionLike;
+}
+
+function conditionalPosterior(
+  classes: readonly string[],
+  squaredDistances: ArrayLike<number> | null,
+): Record<string, number> {
+  if (classes.length === 0) {
+    throw new RangeError('the v3 classifier must expose at least one class');
+  }
+  if (squaredDistances === null) {
+    const uniform = 1 / classes.length;
+    return Object.fromEntries(classes.map((name) => [name, uniform]));
+  }
+  if (squaredDistances.length !== classes.length) {
+    throw new RangeError('v3 prototype distances do not match the class list');
+  }
+  // The model has no calibrated probability head. This conditional display
+  // distribution is the monotone softmax of its actual decision metric
+  // (-squared Euclidean distance, unit temperature); open-set admission remains
+  // exclusively the fitted staged policy below.
+  let maximum = Number.NEGATIVE_INFINITY;
+  const logits = classes.map((_, index) => {
+    const value = -squaredDistances[index]!;
+    if (!Number.isFinite(value)) {
+      throw new RangeError('v3 prototype distances must be finite');
+    }
+    maximum = Math.max(maximum, value);
+    return value;
+  });
+  const exponentials = logits.map((value) => Math.exp(value - maximum));
+  const normalizer = exponentials.reduce((sum, value) => sum + value, 0);
+  return Object.fromEntries(
+    classes.map((name, index) => [name, exponentials[index]! / normalizer]),
+  );
+}
+
+function toTimeDomainV3Modulation(
+  classifier: TimeDomainClassifierLike,
+  decision: TimeDomainDecisionLike,
+): ModulationClassification {
+  const posterior = conditionalPosterior(
+    classifier.asset.classification.classes,
+    decision.squaredPrototypeDistances,
+  );
+  const candidates = Object.entries(posterior)
+    .map(([label, confidence]) => ({ label, confidence }))
+    .sort((left, right) =>
+      right.confidence - left.confidence || left.label.localeCompare(right.label))
+    .slice(0, 4);
+  const isUnknown = decision.rejectedStage !== null;
+  const closedConfidence = decision.closedLabel === null
+    ? candidates[0]!.confidence
+    : posterior[decision.closedLabel]!;
+  return {
+    flavor: 'iq',
+    modulation: isUnknown ? 'unknown' : decision.closedLabel!,
+    family: isUnknown ? 'unknown' : decision.closedLabel!,
+    confidence: closedConfidence,
+    isUnknown,
+    posterior,
+    candidates,
+    // Stage 1 intentionally runs before the bandwidth-estimating frontend.
+    // Use the conservative full-band value instead of doing forbidden
+    // downstream work for a gated capture.
+    bwFraction: decision.forward?.preprocess.context.bw ?? 1,
+    rejection: decision.rejectedStage === null ? undefined : {
+      stage: decision.rejectedStage,
+      reason: decision.rejectedStage === 1 ? 'noise' : 'open-set',
+      score: decision.openSet.stagedScore,
+      threshold: decision.openSet.threshold,
+    },
+  };
+}
+
+/**
+ * Build the v3 adapter from an explicit, coherent asset set. Production is the
+ * fail-closed default: staging JSON is accepted only when the caller names the
+ * staging channel. This factory does not change Atomizer's live v2 selection.
+ */
+export async function createTimeDomainV3ModulationAdapter(
+  assets: TimeDomainV3RuntimeAssets,
+  admission: 'staging' | 'production' = 'production',
+): Promise<IqModulationClassifier> {
+  const module = await import(
+    '../../../../../Atom-Classifier/src/embedding/index.js'
+  );
+  const classifier = await module.createTimeDomainClassifierV3({
+    ...assets,
+    admission,
+  }) as unknown as TimeDomainClassifierLike;
+  return {
+    classifyIq: (re, im) =>
+      toTimeDomainV3Modulation(classifier, classifier.classify(re, im)),
+  };
+}
+
+let iqV3StagingPromise: Promise<IqModulationClassifier> | undefined;
+
+async function loadTimeDomainV3StagingAdapter(): Promise<IqModulationClassifier> {
+  if (!iqV3StagingPromise) {
+    iqV3StagingPromise = (async () => {
+      const [classifier, openset, encoder] = await Promise.all([
+        import(
+          '../../../../../Atom-Classifier/src/embedding/assets-v3-staging/time-domain-classifier-weights-v1.json'
+        ),
+        import(
+          '../../../../../Atom-Classifier/src/embedding/assets-v3-staging/time-domain-openset-weights-v1.json'
+        ),
+        import(
+          '../../../../../Atom-Classifier/src/embedding/assets-v3-staging/time-domain-fusion-weights-v3.json'
+        ),
+      ]);
+      return createTimeDomainV3ModulationAdapter({
+        classifierAsset: (classifier as { default?: unknown }).default ?? classifier,
+        opensetAsset: (openset as { default?: unknown }).default ?? openset,
+        encoderAsset: (encoder as { default?: unknown }).default ?? encoder,
+      }, 'staging');
+    })();
+  }
+  return iqV3StagingPromise;
+}
+
+/**
+ * Explicit development entry point for the tracked candidate. Kept separate
+ * from `classifyIqModulation`, so landing the adapter cannot promote v3 or
+ * change the live worker path.
+ */
+export async function classifyIqModulationV3Staging(
+  re: Float64Array,
+  im: Float64Array,
+  bandwidthHz?: number,
+): Promise<ModulationClassification> {
+  const classifier = await loadTimeDomainV3StagingAdapter();
+  return classifier.classifyIq(re, im, bandwidthHz);
 }
 
 /**
