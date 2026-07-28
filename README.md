@@ -23,7 +23,7 @@ git -C ../Atom-DSP checkout v0.1.0
 git clone https://github.com/PhysicistJohn/Atom-SignalLab.git ../Atom-SignalLab
 git -C ../Atom-SignalLab checkout 02846e21863a5f50130139ffa1e42fc022bdaec2
 git clone https://github.com/PhysicistJohn/Atom-Classifier.git ../Atom-Classifier
-git -C ../Atom-Classifier checkout c42db746d8adada725482f4d22cb4412bf05d0ef
+git -C ../Atom-Classifier checkout 50764b92b4aa1b2557e7e0a943fc172f5d868ae7
 
 npm --prefix ../Atom-DSP ci
 npm --prefix ../Atom-DSP run build

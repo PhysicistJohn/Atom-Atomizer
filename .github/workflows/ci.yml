@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
-          ref: c42db746d8adada725482f4d22cb4412bf05d0ef
+          ref: 50764b92b4aa1b2557e7e0a943fc172f5d868ae7
           path: Atom-Classifier
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Classifier
-          ref: c42db746d8adada725482f4d22cb4412bf05d0ef
+          ref: 50764b92b4aa1b2557e7e0a943fc172f5d868ae7
           path: Atom-Classifier
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
