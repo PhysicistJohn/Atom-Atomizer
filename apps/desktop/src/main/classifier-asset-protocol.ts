@@ -16,6 +16,19 @@ const CLASSIFIER_ASSET_FILENAMES = new Set([
 
 type ProtocolLike = Pick<Protocol, 'handle'>;
 
+/**
+ * The custom protocol is needed only by the packaged file: renderer. During
+ * development, Vite serves the same byte-verified package from its public
+ * directory over the already trusted loopback origin. Skipping registration
+ * there also avoids Electron's requirement that privileged schemes be
+ * declared before app readiness when the dev launcher imports main late.
+ */
+export function requiresClassifierAssetProtocol(
+  developmentRendererUrl: URL | undefined,
+): boolean {
+  return developmentRendererUrl === undefined;
+}
+
 function response(
   body: BodyInit | null,
   status: number,

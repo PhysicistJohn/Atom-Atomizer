@@ -25,6 +25,7 @@ import { loadPrivateEnvironmentFromCandidates, selectPrivateEnvironmentCandidate
 import {
   ATOMIZER_CLASSIFIER_ASSET_SCHEME,
   registerClassifierAssetProtocol,
+  requiresClassifierAssetProtocol,
 } from './classifier-asset-protocol.js';
 import {
   assertTrustedRendererEvent,
@@ -37,15 +38,24 @@ import {
 } from './renderer-trust.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-protocol.registerSchemesAsPrivileged([{
-  scheme: ATOMIZER_CLASSIFIER_ASSET_SCHEME,
-  privileges: {
-    standard: true,
-    secure: true,
-    supportFetchAPI: true,
-    corsEnabled: true,
-  },
-}]);
+const developmentServerUrl = selectDevelopmentServerUrl(
+  process.env.VITE_DEV_SERVER_URL,
+  app.isPackaged,
+);
+const useClassifierAssetProtocol = requiresClassifierAssetProtocol(
+  developmentServerUrl,
+);
+if (useClassifierAssetProtocol) {
+  protocol.registerSchemesAsPrivileged([{
+    scheme: ATOMIZER_CLASSIFIER_ASSET_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  }]);
+}
 const privateEnvironment = selectPrivateEnvironmentCandidates(process.env.TINYSA_ENV_FILE, [
   resolve(process.cwd(), '.env'),
   resolve(process.cwd(), '../../.env'),
@@ -120,7 +130,7 @@ function assertTrustedIpcEvent(event: IpcMainInvokeEvent): void {
 
 async function createWindow(): Promise<void> {
   const rendererPath = join(here, '../renderer/index.html');
-  const developmentUrl = selectDevelopmentServerUrl(process.env.VITE_DEV_SERVER_URL, app.isPackaged);
+  const developmentUrl = developmentServerUrl;
   const trust = developmentUrl ? developmentRendererTrust(developmentUrl) : productionRendererTrust(rendererPath);
   const workArea = screen.getPrimaryDisplay().workAreaSize;
   // Exact no-scroll content floor: Device + Atom needs
@@ -216,10 +226,12 @@ async function connectDefaultInstrument(): Promise<void> {
 
 registerIpc();
 app.whenReady().then(async () => {
-  registerClassifierAssetProtocol(
-    protocol,
-    join(here, '../renderer/classifier/v3'),
-  );
+  if (useClassifierAssetProtocol) {
+    registerClassifierAssetProtocol(
+      protocol,
+      join(here, '../renderer/classifier/v3'),
+    );
+  }
   await createWindow();
   await connectDefaultInstrument();
 }).catch((error) => {

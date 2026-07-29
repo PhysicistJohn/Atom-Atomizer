@@ -7,6 +7,7 @@ import {
   ATOMIZER_CLASSIFIER_ASSET_SCHEME,
   classifierAssetResponse,
   registerClassifierAssetProtocol,
+  requiresClassifierAssetProtocol,
 } from './classifier-asset-protocol.js';
 
 describe('packaged classifier asset protocol', () => {
@@ -72,5 +73,12 @@ describe('packaged classifier asset protocol', () => {
     expect(handle).toHaveBeenCalledOnce();
     expect(handle.mock.calls[0]?.[0]).toBe(ATOMIZER_CLASSIFIER_ASSET_SCHEME);
     expect(handle.mock.calls[0]?.[1]).toBeTypeOf('function');
+  });
+
+  it('uses the custom protocol only for the packaged file renderer', () => {
+    expect(requiresClassifierAssetProtocol(undefined)).toBe(true);
+    expect(
+      requiresClassifierAssetProtocol(new URL('http://localhost:5173')),
+    ).toBe(false);
   });
 });

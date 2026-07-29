@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { CircleAlert } from 'lucide-react';
 import { AtomAgentPanel } from './components/AtomAgentPanel.js';
 import { useAtomAgent } from './useAtomAgent.js';
@@ -123,6 +123,7 @@ export function App({
 }: AppProps = {}) {
   const [runtime] = useState(() => createRendererRuntime({ initialWorkspace, initialAgentOpen }));
   const { store, kernel } = runtime;
+  const classifierLifetimeGeneration = useRef(0);
   const state = useStore(store, selectAppShellState, shallowEqual);
   const {
     workspace, agentOpen, error, notice, analyzerStartHz, analyzerStopHz,
@@ -143,7 +144,6 @@ export function App({
     void kernel.events.initialize(generation);
     return () => {
       kernel.initializationGeneration.current++;
-      runtime.classification.dispose();
       if (kernel.continuousRequested.current && kernel.continuousStreamOwnership.current) {
         void window.atomizerInstrument.stopStreaming().catch((value) => {
           console.error('Continuous acquisition did not stop while the Atomizer renderer unmounted', value);
@@ -152,6 +152,20 @@ export function App({
       kernel.continuousRequested.current = false;
       kernel.events.rejectInvalidatingFeatureReceipt(new Error('Atomizer renderer unmounted before the invalidating feature lifecycle settled'));
       unsubscribe();
+    };
+  }, []);
+  useEffect(() => {
+    ++classifierLifetimeGeneration.current;
+    return () => {
+      const disposalGeneration = ++classifierLifetimeGeneration.current;
+      // React development StrictMode replays setup -> cleanup -> setup on the
+      // same retained runtime. Defer irreversible disposal for one microtask:
+      // the replayed setup supersedes it, while a real unmount does not.
+      queueMicrotask(() => {
+        if (classifierLifetimeGeneration.current === disposalGeneration) {
+          runtime.classification.dispose();
+        }
+      });
     };
   }, []);
   // Mount-time persistence parity with the retired per-key effects: a

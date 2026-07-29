@@ -26,6 +26,7 @@ import {
   resolveClassificationTargetSelection,
   semanticControlRequiresCoordinates,
 } from './AppShell.js';
+import { ClassificationController } from './controllers/classification.js';
 import { agentControlBinding } from '@tinysa/agent';
 import { ATOM_REALTIME_TOOL_CALL_LIMIT } from './atom-agent-retention.js';
 import {
@@ -832,6 +833,20 @@ describe('operator vertical slice', () => {
 
     expect(screen.getByText('tinySA Ultra+ ZS407')).toBeTruthy();
     expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the application classifier alive across StrictMode effect replay and disposes it on real unmount', async () => {
+    const dispose = vi.spyOn(ClassificationController.prototype, 'dispose');
+    const mounted = render(<StrictMode><App/></StrictMode>);
+
+    await waitFor(() => expect(window.atomizerInstrument.getState).toHaveBeenCalledTimes(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(dispose).not.toHaveBeenCalled();
+
+    mounted.unmount();
+    await act(async () => { await Promise.resolve(); });
+    expect(dispose).toHaveBeenCalledOnce();
+    dispose.mockRestore();
   });
 
   it('classifies one representative per regular component association and honors a zero-span target', () => {

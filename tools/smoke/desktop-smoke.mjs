@@ -265,18 +265,38 @@ async function spectrumCenterIs184GHz() {
 
 async function classificationDetectPanel() {
   await clickOrFail('classification-workspace', 'workspace.classification');
-  await pollFor('classification-pipeline', `(() => {
+  await pollFor('classification-panel', `Boolean(document.querySelector('.detect-workspace'))`, 15_000);
+  // Detect is intentionally a read-only projection. A fresh bounded global
+  // frame is the operation that must publish I/Q evidence to the classifier.
+  await clickOrFail('classification-single', 'acquisition.single');
+  const outcome = await pollFor('classification-pipeline', `(() => {
+    const alert = [...document.querySelectorAll('[role="alert"]')]
+      .map((node) => node.textContent ?? '')
+      .find((text) => text.trim().length > 0);
+    if (alert) return 'ERROR:' + alert;
     const flavor = document.querySelector('.detect-flavor')?.textContent ?? '';
     const result = document.querySelector('.detect-result');
-    return Boolean(result) && flavor.includes('COMPLEX I/Q') && /LIVE · 500 MS TREND · [1-9][0-9]* SAMPLES?/.test(flavor);
-  })()`, 15_000);
-  pass('classification', 'global complex-I/Q classifier renders its live 500 ms trend');
+    return Boolean(result)
+      && flavor.includes('COMPLEX I/Q')
+      && /500 MS TREND · 1 SAMPLE/.test(flavor)
+      ? 'PASS:' + flavor
+      : '';
+  })()`, 120_000);
+  if (String(outcome).startsWith('ERROR:')) {
+    throw new Error(`classification-pipeline: ${String(outcome).slice('ERROR:'.length)}`);
+  }
+  pass('classification', 'fresh bounded I/Q frame produced one classifier trend sample');
 }
 
 async function stopContinuous() {
   const outcome = await click('acquisition.continuous.stop');
-  if (outcome === 'missing') throw new Error('continuous-stop: stop control missing');
+  if (outcome === 'missing') info('continuous-stop', 'continuous acquisition was already stopped');
   if (outcome === 'disabled') info('continuous-stop', 'stop control disabled (already stopping)');
+  await pollFor('continuous-stopped', `(() => {
+    const run = document.querySelector('button[data-agent-control="acquisition.continuous.start"]');
+    const single = document.querySelector('button[data-agent-control="acquisition.single"]');
+    return Boolean(run && single && !run.disabled && !single.disabled);
+  })()`, 30_000);
   pass('continuous-stop', 'continuous acquisition stopped');
 }
 
@@ -364,8 +384,8 @@ const steps = [
   ['renderer-rss', rendererRssDelta],
   ['family-5gnr', switchFamilyTo5gNr],
   ['spectrum-center', spectrumCenterIs184GHz],
-  ['classification', classificationDetectPanel],
   ['continuous-stop', stopContinuous],
+  ['classification', classificationDetectPanel],
   ['wlan-iq', wlanIqCapture],
   ['run-retarget', runRetargetsAcrossWorkspaces],
 ];
