@@ -36,6 +36,7 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
   return <DetectWorkspace
     modulation={s.classification.result}
     pending={s.classification.pending}
+    classificationIssue={s.classification.issue}
     source={s.classification.source}
     live={s.continuous}
     sampleCount={s.classification.sampleCount}

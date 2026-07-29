@@ -1105,7 +1105,7 @@ describe('operator vertical slice', () => {
       first.capture.resolve(complexIqMeasurement(first.configuration, first.revision, first.id));
       await flushMicrotasks();
     });
-    await act(async () => { await vi.advanceTimersByTimeAsync(16); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(49); });
     expect(pending).toHaveLength(1);
     expect(acquisitionKinds.filter((kind) => kind === 'complex-iq')).toHaveLength(1);
     expect(acquisitionKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(1);
@@ -1113,7 +1113,7 @@ describe('operator vertical slice', () => {
       .map(([configuration]) => configuration.kind);
     expect(configuredKinds.filter((kind) => kind === 'swept-spectrum')).toHaveLength(1);
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(52); });
     expect(pending).toHaveLength(2);
     expect(pending[1]?.configuration.centerHz).toBe(101_000_000);
     expect(document.body.textContent).not.toContain('iq-buffer-1');
@@ -1228,16 +1228,24 @@ describe('operator vertical slice', () => {
         true,
       ));
     });
-    await waitFor(() => expect(pendingIq).toHaveLength(2));
-    await act(async () => {
-      const nextIq = pendingIq[1]!;
-      nextIq.capture.resolve(complexIqMeasurement(
-        nextIq.configuration,
-        nextIq.revision,
-        nextIq.id,
-      ));
-    });
-    await waitFor(() => expect(pendingSpectrum).toHaveLength(2));
+    // Depending on how much wall time the UI work above consumed, the 100 ms
+    // global deadline may admit the next I/Q buffer before the replacement
+    // scalar look. Drain either valid serialized ordering deterministically.
+    await waitFor(
+      () => expect(pendingIq.length === 2 || pendingSpectrum.length === 2).toBe(true),
+      { timeout: 5_000 },
+    );
+    if (pendingIq.length === 2) {
+      await act(async () => {
+        const nextIq = pendingIq[1]!;
+        nextIq.capture.resolve(complexIqMeasurement(
+          nextIq.configuration,
+          nextIq.revision,
+          nextIq.id,
+        ));
+      });
+    }
+    await waitFor(() => expect(pendingSpectrum).toHaveLength(2), { timeout: 5_000 });
     const replacement = pendingSpectrum[1]!;
     const acquisition = screen.getByRole('region', { name: 'Acquisition controls' });
     expect((replacement.configuration.startHz + replacement.configuration.stopHz) / 2).toBe(101_000_000);
@@ -1256,14 +1264,16 @@ describe('operator vertical slice', () => {
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
     expect(acquisition.getAttribute('aria-description')).toContain(replacement.id);
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(4);
+    const acquisitionCountBeforeRestart = vi.mocked(window.atomizerInstrument.acquire).mock.calls.length;
+    const iqCountBeforeRestart = pendingIq.length;
+    expect(acquisitionCountBeforeRestart).toBe(iqCountBeforeRestart + 2);
 
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
-    await waitFor(() => expect(pendingIq).toHaveLength(3));
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
+    await waitFor(() => expect(pendingIq).toHaveLength(iqCountBeforeRestart + 1));
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(acquisitionCountBeforeRestart + 1);
     fireEvent.click(screen.getByRole('button', { name: /^Stop$/i }));
     await act(async () => {
-      const replacementRunIq = pendingIq[2]!;
+      const replacementRunIq = pendingIq[iqCountBeforeRestart]!;
       replacementRunIq.capture.resolve(complexIqMeasurement(
         replacementRunIq.configuration,
         replacementRunIq.revision,
@@ -1271,7 +1281,7 @@ describe('operator vertical slice', () => {
       ));
     });
     await waitFor(() => expect(screen.getByRole('button', { name: /^Run$/i })).toBeTruthy());
-    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(5);
+    expect(window.atomizerInstrument.acquire).toHaveBeenCalledTimes(acquisitionCountBeforeRestart + 1);
   });
 
   it('waits for an in-flight scalar look before applying a SignalLab profile transaction', async () => {

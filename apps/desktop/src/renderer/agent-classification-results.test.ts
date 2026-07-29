@@ -15,6 +15,7 @@ describe('agent classification results', () => {
         source: 'iq',
         pending: false,
         sampleCount: 21,
+        issue: undefined,
         result: {
           flavor: 'iq',
           family: 'ofdm',
@@ -55,6 +56,7 @@ describe('agent classification results', () => {
         source: 'iq',
         pending: false,
         sampleCount: 3,
+        issue: undefined,
         result: {
           flavor: 'iq',
           family: 'unknown',

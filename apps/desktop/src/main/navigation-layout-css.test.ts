@@ -3,6 +3,18 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Application responsive layout contract', () => {
+  it('enters the non-overlapping compact layout before Atom can cover measurement controls', () => {
+    const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
+    const compactBreakpoints = [...css.matchAll(/@media\s*\(max-width:\s*1210px\)/g)];
+
+    // One block applies intermediate density changes and the later block owns
+    // the full compact structure. They deliberately share one breakpoint.
+    expect(compactBreakpoints).toHaveLength(2);
+    expect(css).not.toMatch(/@media\s*\(max-width:\s*880px\)/);
+    expect(css).toMatch(/\.measurement-overlay-scrim\s*\{[^}]*z-index:\s*21/);
+    expect(css).toMatch(/\.measurement-overlay,\s*\n\s*\.measurement-overlay\.controls\s*\{[^}]*z-index:\s*22/);
+  });
+
   it('keeps the grid and its bottom status row non-scrolling at every breakpoint', () => {
     const css = readFileSync(resolve(process.cwd(), 'apps/desktop/src/renderer/styles.css'), 'utf8');
     const detectGridRules = rulesFor(css, '.classification-grid');

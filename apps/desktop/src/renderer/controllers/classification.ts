@@ -16,6 +16,8 @@ const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
 const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
 const CLASSIFICATION_IQ_LONG_SAMPLES = 16_384;
 const CLASSIFICATION_IQ_MAX_SAMPLES = 32_768;
+const CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE =
+  'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.';
 
 /**
  * Select the admitted contiguous capture prefix for modulation classification.
@@ -122,6 +124,7 @@ export class ClassificationController {
         pending: false,
         sampleCount: 0,
         result: clearResult ? undefined : this.k.state.classification.result,
+        issue: undefined,
       },
     });
   }
@@ -141,16 +144,35 @@ export class ClassificationController {
       this.consensus = emptyModulationConsensus();
       this.latest = undefined;
       this.lastCompletedKey = undefined;
-      this.k.set({ classification: { source: evidence.source, pending: true, sampleCount: 0, result: undefined } });
+      this.k.set({
+        classification: {
+          source: evidence.source,
+          pending: true,
+          sampleCount: 0,
+          result: undefined,
+          issue: undefined,
+        },
+      });
     }
     if ((evidence.key === this.inFlightKey && this.inFlightGeneration === this.generation)
       || evidence.key === this.latest?.key
       || evidence.key === this.lastCompletedKey) return;
     this.latest = evidence;
     // Once this scope has a projection, subsequent samples update it without a
-    // second busy-state write on every capture.
-    if (!this.k.state.classification.result && !this.k.state.classification.pending) {
-      this.k.set({ classification: { ...this.k.state.classification, source: evidence.source, pending: true } });
+    // second busy-state write on every capture. A distinct retry does clear a
+    // terminal issue immediately so the UI never attributes the prior
+    // attempt's failure to work that has just been admitted.
+    const current = this.k.state.classification;
+    const beginsFirstProjection = !current.result && !current.pending;
+    if (beginsFirstProjection || current.issue !== undefined) {
+      this.k.set({
+        classification: {
+          ...current,
+          source: evidence.source,
+          pending: beginsFirstProjection ? true : current.pending,
+          issue: undefined,
+        },
+      });
     }
     this.drain();
   }
@@ -180,8 +202,22 @@ export class ClassificationController {
       (result) => {
         if (this.disposed
           || generation !== this.generation
-          || evidence.scope !== this.activeScope
-          || !result) return;
+          || evidence.scope !== this.activeScope) return;
+        if (!result) {
+          this.lastCompletedKey = evidence.key;
+          const issue = evidence.source === 'iq'
+            && classificationIqPrefixLength(evidence.capture.sampleCount) === undefined
+            ? { kind: 'unavailable' as const, message: CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE }
+            : undefined;
+          this.k.set({
+            classification: {
+              ...this.k.state.classification,
+              source: evidence.source,
+              issue,
+            },
+          });
+          return;
+        }
         this.lastCompletedKey = evidence.key;
         const next = accumulateModulationConsensus(
           this.consensus,
@@ -195,12 +231,23 @@ export class ClassificationController {
             pending: false,
             sampleCount: next.projection.sampleCount,
             result: next.projection.result,
+            issue: undefined,
           },
         });
       },
       (failure) => {
         if (!this.disposed && generation === this.generation && evidence.scope === this.activeScope) {
           console.error('[ATOMIZER-CLASSIFICATION-WORKER] Classification sample failed', failure);
+          this.k.set({
+            classification: {
+              ...this.k.state.classification,
+              source: evidence.source,
+              issue: {
+                kind: 'failure',
+                message: classificationFailureMessage(failure),
+              },
+            },
+          });
         }
       },
     ).finally(() => {
@@ -224,6 +271,17 @@ export class ClassificationController {
     const { re, im } = decodeComplexIqChannels(capture, prefixLength);
     return this.executor.classifyIq(re, im, capture.bandwidthHz);
   }
+}
+
+function classificationFailureMessage(failure: unknown): string {
+  const detail = failure instanceof Error
+    ? failure.message.trim()
+    : typeof failure === 'string'
+      ? failure.trim()
+      : '';
+  return detail
+    ? `Modulation classification failed: ${detail}. Capture again; if the problem continues, restart Atomizer.`
+    : 'Modulation classification failed. Capture again; if the problem continues, restart Atomizer.';
 }
 
 class BrowserClassificationExecutor implements ClassificationExecutor {

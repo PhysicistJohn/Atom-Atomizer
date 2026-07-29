@@ -16,10 +16,28 @@ interface PendingRecovery {
   readonly capture: ComplexIqMeasurement;
 }
 
+export const IQ_RECOVERY_MINIMUM_PERIOD_MILLISECONDS = 250;
+
+export interface IqRecoveryScheduling {
+  readonly minimumPeriodMilliseconds: number;
+  nowMilliseconds(): number;
+  schedule(callback: () => void, delayMilliseconds: number): ReturnType<typeof setTimeout>;
+  cancel(timer: ReturnType<typeof setTimeout>): void;
+}
+
+const DEFAULT_IQ_RECOVERY_SCHEDULING: IqRecoveryScheduling = {
+  minimumPeriodMilliseconds: IQ_RECOVERY_MINIMUM_PERIOD_MILLISECONDS,
+  nowMilliseconds: () => performance.now(),
+  schedule: (callback, delayMilliseconds) => globalThis.setTimeout(callback, delayMilliseconds),
+  cancel: (timer) => globalThis.clearTimeout(timer),
+};
+
 /**
  * Runs at most one constellation recovery at a time and retains only the newest
- * waiting capture. Raw preview/canvas updates are never coupled to recovery or
- * classifier throughput.
+ * waiting capture. Recovery is decorative and intentionally capped at 4 Hz:
+ * the first result remains immediate while a live 12–20 Hz acquisition cannot
+ * pin a CPU core on blind equalization. Raw preview/canvas updates are never
+ * coupled to recovery or classifier throughput.
  */
 export class IqRecoveryController {
   private readonly executor: IqRecoveryExecutor;
@@ -30,10 +48,13 @@ export class IqRecoveryController {
   private lastCompletedKey: string | undefined;
   private generation = 0;
   private disposed = false;
+  private nextRecoveryAt = Number.NEGATIVE_INFINITY;
+  private scheduledDrain: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly publish: (result: RecoveredConstellation | undefined) => void,
     executor: IqRecoveryExecutor = createIqRecoveryExecutor(),
+    private readonly scheduling: IqRecoveryScheduling = DEFAULT_IQ_RECOVERY_SCHEDULING,
   ) {
     this.executor = executor;
   }
@@ -46,6 +67,8 @@ export class IqRecoveryController {
       this.activeScope = scope;
       this.latest = undefined;
       this.lastCompletedKey = undefined;
+      this.nextRecoveryAt = Number.NEGATIVE_INFINITY;
+      this.cancelScheduledDrain();
       this.publish(undefined);
     }
     const key = JSON.stringify([scope, capture.measurementId]);
@@ -60,6 +83,8 @@ export class IqRecoveryController {
     this.activeScope = undefined;
     this.latest = undefined;
     this.lastCompletedKey = undefined;
+    this.nextRecoveryAt = Number.NEGATIVE_INFINITY;
+    this.cancelScheduledDrain();
     this.publish(undefined);
   }
 
@@ -68,16 +93,29 @@ export class IqRecoveryController {
     this.disposed = true;
     this.generation++;
     this.latest = undefined;
+    this.cancelScheduledDrain();
     this.executor.dispose();
   }
 
   private drain(): void {
     if (this.disposed || this.inFlight || !this.latest) return;
+    const delay = this.nextRecoveryAt - this.scheduling.nowMilliseconds();
+    if (delay > 0) {
+      if (this.scheduledDrain === undefined) {
+        this.scheduledDrain = this.scheduling.schedule(() => {
+          this.scheduledDrain = undefined;
+          this.drain();
+        }, delay);
+      }
+      return;
+    }
     const work = this.latest;
     const generation = this.generation;
     this.latest = undefined;
     this.inFlight = true;
     this.inFlightKey = work.key;
+    this.nextRecoveryAt = this.scheduling.nowMilliseconds()
+      + Math.max(0, this.scheduling.minimumPeriodMilliseconds);
     let recovery: Promise<RecoveredConstellation>;
     try { recovery = this.executor.recover(work.capture); }
     catch (failure) { recovery = Promise.reject(failure); }
@@ -93,6 +131,12 @@ export class IqRecoveryController {
       this.inFlightKey = undefined;
       this.drain();
     });
+  }
+
+  private cancelScheduledDrain(): void {
+    if (this.scheduledDrain === undefined) return;
+    this.scheduling.cancel(this.scheduledDrain);
+    this.scheduledDrain = undefined;
   }
 }
 

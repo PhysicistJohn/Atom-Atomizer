@@ -112,12 +112,24 @@ export function visibleMeasurementView(value: unknown): MeasurementViewId {
 
 export type ContinuousAcquisitionMode = 'spectrum' | 'complex-iq';
 
+export type GlobalClassificationIssue =
+  | {
+      readonly kind: 'unavailable';
+      readonly message: string;
+    }
+  | {
+      readonly kind: 'failure';
+      readonly message: string;
+    };
+
 export interface GlobalClassificationState {
   readonly source: 'iq' | 'scalar' | 'none';
   /** True only while the current scope is waiting for its first usable sample. */
   readonly pending: boolean;
   readonly sampleCount: number;
   readonly result: ModulationClassification | undefined;
+  /** Actionable terminal state for the latest classification attempt. */
+  readonly issue: GlobalClassificationIssue | undefined;
 }
 
 /** The complete reactive renderer state. One frozen record, replaced whole. */
@@ -308,7 +320,7 @@ export function createInitialRendererState(options: {
     diagnostics: [],
     screenFrame: undefined,
     iqCapture: undefined,
-    classification: { source: 'none', pending: false, sampleCount: 0, result: undefined },
+    classification: { source: 'none', pending: false, sampleCount: 0, result: undefined, issue: undefined },
     selectedProfile: undefined,
     selectedSignalLabChannel: undefined,
     acquisition: 'idle',

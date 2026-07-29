@@ -26,9 +26,9 @@ export function emptyModulationConsensus(): ModulationConsensusState {
 /**
  * Add one instantaneous classifier sample and project the equal-sample mean
  * posterior over the trailing 500 ms. The window is timestamp bounded rather
- * than count bounded: at the normal 60 Hz acquisition ceiling it contains
- * roughly 30 successful samples, while a slower worker retains fewer. Samples
- * exactly 500 ms old remain in the inclusive window.
+ * than count bounded: at the normal 10 Hz I/Q ceiling it contains five new
+ * completions, or six when one lands exactly on each inclusive boundary. A
+ * slower worker retains fewer.
  */
 export function accumulateModulationConsensus(
   previous: ModulationConsensusState,

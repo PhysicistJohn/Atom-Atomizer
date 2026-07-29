@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './AppShell.js';
+import { retainRendererRoot } from './renderer-root.js';
 import './styles.css';
 
 document.documentElement.dataset.platform = navigator.platform.startsWith('Mac') ? 'darwin' : 'other';
@@ -21,4 +22,7 @@ class RendererErrorBoundary extends React.Component<React.PropsWithChildren, { e
   }
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><RendererErrorBoundary><App /></RendererErrorBoundary></React.StrictMode>);
+const rootHost = document.getElementById('root');
+if (!rootHost) throw new Error('Atomizer renderer root element is unavailable');
+retainRendererRoot(rootHost, createRoot)
+  .render(<React.StrictMode><RendererErrorBoundary><App /></RendererErrorBoundary></React.StrictMode>);

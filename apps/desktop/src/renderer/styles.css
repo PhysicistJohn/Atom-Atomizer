@@ -1146,12 +1146,13 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 }
 
 /* ---------------------------------------------------------------------------
-   Mobile PWA layout (web edition on phones). Desktop pixels are frozen: every
-   rule lives inside this media query and the Electron shell never renders at
-   these widths. Structure: sidebar becomes a top nav strip, the workspace
-   stacks one panel per row and scrolls, and Atom docks as a bottom sheet.
+   Compact browser layout (phones, tablets, and narrow desktop windows).
+   Electron's 1532 px content floor never enters this mode. At narrower web
+   widths a fixed 404 px Atom panel otherwise covers the measurement toolbar
+   and collapses the I/Q time plot to a few pixels, so navigation becomes a top
+   strip, the workspace stacks one panel per row, and Atom docks at the bottom.
 --------------------------------------------------------------------------- */
-@media (max-width: 880px) {
+@media (max-width: 1210px) {
   body { min-width: 0; min-height: 0; }
   .app-shell {
     height: 100dvh;
@@ -1342,13 +1343,14 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .measurement-overlay,
   .measurement-overlay.controls {
     position: fixed;
+    z-index: 22;
     width: auto;
     inset: 141px 8px auto 8px;
     max-height: calc(100dvh - 200px);
     padding-top: 46px;
     overflow: auto;
   }
-  .measurement-overlay-scrim { display: block; position: fixed; inset: 0; z-index: 11; border: 0; background: rgba(0, 0, 0, .5); }
+  .measurement-overlay-scrim { display: block; position: fixed; inset: 0; z-index: 21; border: 0; background: rgba(0, 0, 0, .5); }
   .measurement-overlay-close { display: flex; }
   .inspector-head { border-right: 0; }
 

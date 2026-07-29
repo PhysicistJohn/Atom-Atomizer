@@ -48,7 +48,15 @@ import {
   type RendererKernel,
 } from './kernel.js';
 
-const MAXIMUM_GLOBAL_DISPLAY_HZ = 60;
+// The renderer and both analysis workers consume complete buffers. A 60 Hz
+// synthetic source previously allocated and decoded far more I/Q evidence than
+// an operator could inspect, driving multi-gigabyte working sets. Ten
+// complete I/Q buffers per second still gives the 500 ms classifier trend five
+// new completions (and six retained at an exact inclusive boundary). The
+// scalar look shares the same ceiling so a source with both capabilities
+// cannot force more than roughly 20 full renderer commits per second.
+const MAXIMUM_GLOBAL_IQ_FRAMES_PER_SECOND = 10;
+const MAXIMUM_GLOBAL_SPECTRUM_FRAMES_PER_SECOND = 10;
 
 /** Pace complete I/Q buffers to their admitted capture duration without
  * producing frames faster than the browser can present them. Each published
@@ -57,7 +65,7 @@ export function continuousIqFramePeriodMilliseconds(
   configuration: Pick<ComplexIqConfiguration, 'sampleCount' | 'sampleRateHz'>,
 ): number {
   return Math.max(
-    1_000 / MAXIMUM_GLOBAL_DISPLAY_HZ,
+    1_000 / MAXIMUM_GLOBAL_IQ_FRAMES_PER_SECOND,
     configuration.sampleCount / configuration.sampleRateHz * 1_000,
   );
 }
@@ -70,7 +78,7 @@ export function continuousSpectrumFramePeriodMilliseconds(
   const admittedMilliseconds = typeof configuration.sweepTimeSeconds === 'number'
     ? configuration.sweepTimeSeconds * 1_000
     : 0;
-  return Math.max(1_000 / MAXIMUM_GLOBAL_DISPLAY_HZ, admittedMilliseconds);
+  return Math.max(1_000 / MAXIMUM_GLOBAL_SPECTRUM_FRAMES_PER_SECOND, admittedMilliseconds);
 }
 
 interface ContinuousSpectrumConfigurationOwnership {

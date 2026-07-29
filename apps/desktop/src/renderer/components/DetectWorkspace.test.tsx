@@ -54,6 +54,33 @@ describe('DetectWorkspace', () => {
     expect(screen.getByText(/Occupied bandwidth ≈ 12% of sample rate/i)).toBeDefined();
   });
 
+  it('classifies only while pending and replaces a stale result with an actionable classifier issue', () => {
+    const view = render(
+      <DetectWorkspace
+        {...baseProps}
+        source="iq"
+        pending
+      />,
+    );
+    expect(screen.getByText('Classifying…')).toBeDefined();
+
+    view.rerender(
+      <DetectWorkspace
+        {...baseProps}
+        source="iq"
+        pending={false}
+        modulation={iqResult}
+        classificationIssue={{
+          kind: 'failure',
+          message: 'Modulation classification failed: worker unavailable. Capture again.',
+        }}
+      />,
+    );
+    expect(screen.queryByText('Classifying…')).toBeNull();
+    expect(screen.getByText(/worker unavailable.*Capture again/i)).toBeDefined();
+    expect(document.querySelector('.detect-label')).toBeNull();
+  });
+
   it('does not claim an occupied bandwidth when stage one gates a noise-like capture', () => {
     const stageOneRejection: ModulationClassification = {
       ...iqResult,

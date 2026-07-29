@@ -98,6 +98,34 @@ describe('complex I/Q workspace', () => {
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
   });
 
+  it('identifies only while classification is pending and explains an unavailable short capture', () => {
+    const props = captureProps();
+    const view = render(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      {...props}
+      classificationPending
+      busy={false}
+      onChange={vi.fn()}
+    />);
+    expect(screen.getByText('Identifying…')).toBeTruthy();
+
+    view.rerender(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      {...props}
+      classificationPending={false}
+      classificationIssue={{
+        kind: 'unavailable',
+        message: 'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.',
+      }}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+    expect(screen.queryByText('Identifying…')).toBeNull();
+    expect(screen.getByText(/at least 4,096 complex samples.*Increase Complex samples/i)).toBeTruthy();
+  });
+
   it('displays output placement separately from canonical profile lineage', () => {
     const props = captureProps();
     render(<IqWorkspace

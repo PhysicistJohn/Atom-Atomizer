@@ -40,6 +40,10 @@ describe('application-global classification controller', () => {
     expect(executor.iqSampleCounts).toEqual([]);
     expect(store.get().classification).toMatchObject({
       source: 'iq', pending: false, sampleCount: 0, result: undefined,
+      issue: {
+        kind: 'unavailable',
+        message: expect.stringMatching(/at least 4,096 complex samples.*Increase Complex samples/i),
+      },
     });
 
     const admitted: readonly [number, number][] = [
@@ -58,6 +62,7 @@ describe('application-global classification controller', () => {
     }
 
     expect(executor.iqSampleCounts).toEqual(admitted.map(([, expected]) => expected));
+    expect(store.get().classification.issue).toBeUndefined();
     controller.dispose();
   });
 
@@ -170,7 +175,77 @@ describe('application-global classification controller', () => {
     executor.resolve(1, result({ fm: 1 }));
     await flushMicrotasks();
     expect(store.get().classification).toMatchObject({ pending: false, sampleCount: 1, result: { family: 'fm' } });
+    expect(store.get().classification.issue).toBeUndefined();
     expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+    controller.dispose();
+  });
+
+  it('publishes actionable current-scope failures and clears them on success, scope change, and reset', async () => {
+    let now = 0;
+    const executor = new DeferredExecutor();
+    const { store, controller } = setup(executor, () => now);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    controller.ingestIq(capture('iq-broken', 1));
+    executor.reject(0, new Error('worker unavailable'));
+    await flushMicrotasks();
+    expect(store.get().classification).toMatchObject({
+      source: 'iq',
+      pending: false,
+      sampleCount: 0,
+      result: undefined,
+      issue: {
+        kind: 'failure',
+        message: expect.stringMatching(/worker unavailable.*Capture again/i),
+      },
+    });
+
+    now = 20;
+    controller.ingestIq(capture('iq-retry', 2));
+    expect(store.get().classification.pending).toBe(true);
+    expect(store.get().classification.issue).toBeUndefined();
+    executor.resolve(1, result({ fm: 1 }));
+    await flushMicrotasks();
+    expect(store.get().classification).toMatchObject({
+      pending: false,
+      sampleCount: 1,
+      result: { family: 'fm' },
+      issue: undefined,
+    });
+
+    now = 40;
+    controller.ingestIq(capture('iq-broken-again', 3));
+    executor.reject(2, new Error('second failure'));
+    await flushMicrotasks();
+    expect(store.get().classification.issue).toMatchObject({ kind: 'failure' });
+
+    now = 60;
+    controller.ingestIq(capture('iq-new-scope', 4, { sampleRateHz: 28_000_000 }));
+    expect(store.get().classification).toMatchObject({
+      pending: true,
+      sampleCount: 0,
+      result: undefined,
+      issue: undefined,
+    });
+    executor.resolve(3, result({ ofdm: 1 }));
+    await flushMicrotasks();
+
+    now = 80;
+    controller.ingestIq(capture('iq-new-scope-failure', 5, { sampleRateHz: 28_000_000 }));
+    executor.reject(4, new Error('third failure'));
+    await flushMicrotasks();
+    expect(store.get().classification.issue).toMatchObject({ kind: 'failure' });
+
+    controller.reset();
+    expect(store.get().classification).toEqual({
+      source: 'none',
+      pending: false,
+      sampleCount: 0,
+      result: undefined,
+      issue: undefined,
+    });
+    expect(error).toHaveBeenCalledTimes(3);
     error.mockRestore();
     controller.dispose();
   });

@@ -2,6 +2,7 @@ import { Cpu, ScanSearch } from 'lucide-react';
 import type { EnvelopeClassification } from '@tinysa/analysis';
 import type { DetectedSignal, SignalDetectionConfig, Sweep, ZeroSpanCapture, ZeroSpanConfig } from '@tinysa/contracts';
 import type { ModulationClassification } from '../embedding-classifier-runtime.js';
+import type { GlobalClassificationIssue } from '../store.js';
 import { DETECT_CONSENSUS_WINDOW_MS } from '../classification-consensus.js';
 import { CaptureEvidenceStrip, DetectionSettings, type DetectedPowerCapability } from './DetectorControls.js';
 
@@ -20,12 +21,13 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
  * candidate distribution, and the fused protocol-leaf guess.
  */
 export function DetectWorkspace({
-  modulation, pending, source, live = false, sampleCount = 0,
+  modulation, pending, classificationIssue, source, live = false, sampleCount = 0,
   sweep, detectionConfig, detectorBusy, onDetectionConfig,
   zeroConfig, zeroCapture, envelope, detectedPowerCapability, captureUnavailableReason, captureTarget, busy, onAcquireZero,
 }: {
   modulation?: ModulationClassification;
   pending: boolean;
+  classificationIssue?: GlobalClassificationIssue;
   source: 'iq' | 'scalar' | 'none';
   live?: boolean;
   sampleCount?: number;
@@ -42,14 +44,16 @@ export function DetectWorkspace({
   busy: boolean;
   onAcquireZero(): void;
 }) {
+  const showIssue = source !== 'none' && !pending && classificationIssue !== undefined;
+  const visibleModulation = showIssue ? undefined : modulation;
   return (
     <div className="detect-workspace" role="region" aria-label="Modulation classifier">
       <section className="detect-stage">
         <header className="detect-header">
           <div><ScanSearch size={16} /><span><strong>Modulation classifier</strong><small>Metric-embedding · synthetic-trained</small></span></div>
-          {modulation && (
+          {visibleModulation && (
             <span className="detect-flavor">
-              {modulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}
+              {visibleModulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}
               {sampleCount > 0
                 ? ` · ${live ? 'LIVE · ' : ''}${DETECT_CONSENSUS_WINDOW_MS} MS TREND · ${sampleCount} ${sampleCount === 1 ? 'SAMPLE' : 'SAMPLES'}`
                 : ''}
@@ -63,21 +67,27 @@ export function DetectWorkspace({
             <p>Acquire a complex-I/Q buffer, or run a spectrum sweep with a detected signal, to classify the modulation.</p>
           </div>
         )}
-        {source !== 'none' && pending && !modulation && (
+        {source !== 'none' && pending && !visibleModulation && (
           <div className="detect-empty"><p>Classifying…</p></div>
         )}
+        {showIssue && (
+          <div className="detect-empty" role="status"><p>{classificationIssue.message}</p></div>
+        )}
+        {source !== 'none' && !pending && !classificationIssue && !visibleModulation && (
+          <div className="detect-empty"><p>No modulation classification is available for this capture. Acquire another capture to try again.</p></div>
+        )}
 
-        {modulation && (
+        {visibleModulation && (
           <div className="detect-result">
             <div className="detect-primary">
-              <span className={`detect-conf${modulation.isUnknown ? ' unknown' : ''}`}>
-                {modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}%`}
+              <span className={`detect-conf${visibleModulation.isUnknown ? ' unknown' : ''}`}>
+                {visibleModulation.isUnknown ? 'UNKNOWN' : `${Math.round(visibleModulation.confidence * 100)}%`}
               </span>
-              <span className="detect-label">{modulation.isUnknown ? 'Unknown signal' : modLabel(modulation.modulation)}</span>
-              {modulation.topLeaf && <span className="detect-leaf">likely {leafLabel(modulation.topLeaf.label)}</span>}
+              <span className="detect-label">{visibleModulation.isUnknown ? 'Unknown signal' : modLabel(visibleModulation.modulation)}</span>
+              {visibleModulation.topLeaf && <span className="detect-leaf">likely {leafLabel(visibleModulation.topLeaf.label)}</span>}
             </div>
             <div className="detect-bars">
-              {modulation.candidates.map((c) => (
+              {visibleModulation.candidates.map((c) => (
                 <div key={c.label} className="detect-bar">
                   <span>{modLabel(c.label)}</span>
                   <div className="detect-track"><div style={{ width: `${Math.round(c.confidence * 100)}%` }} /></div>
@@ -86,9 +96,9 @@ export function DetectWorkspace({
               ))}
             </div>
             <p className="detect-note">
-              {modulation.rejection?.stage === 1
+              {visibleModulation.rejection?.stage === 1
                 ? 'Noise-like capture gated before bandwidth estimation; no occupied-bandwidth estimate was made.'
-                : <>Occupied bandwidth ≈ {(modulation.bwFraction * 100).toFixed(0)}% of {modulation.flavor === 'iq' ? 'sample rate' : 'span'} · modulation family, not a protocol or emitter identity.</>}
+                : <>Occupied bandwidth ≈ {(visibleModulation.bwFraction * 100).toFixed(0)}% of {visibleModulation.flavor === 'iq' ? 'sample rate' : 'span'} · modulation family, not a protocol or emitter identity.</>}
             </p>
           </div>
         )}

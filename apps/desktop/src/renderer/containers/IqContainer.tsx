@@ -72,6 +72,9 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
   const modulation = s.classification.result?.flavor === 'iq'
     ? s.classification.result
     : undefined;
+  const iqClassification = s.classification.source === 'iq'
+    ? s.classification
+    : undefined;
 
   return <IqWorkspace
     configuration={s.iqConfiguration}
@@ -80,6 +83,8 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     previewError={previewError}
     captureMeta={captureMeta}
     modulation={modulation}
+    classificationPending={iqClassification?.pending ?? false}
+    classificationIssue={iqClassification?.issue}
     recovered={recovered}
     busy={!s.connected || s.busy}
     captureUnavailableReason={s.captureUnavailableReason}

@@ -9,6 +9,7 @@ import {
   type ComplexIqPreview,
 } from '../complex-iq.js';
 import type { ModulationClassification, RecoveredConstellation } from '../embedding-classifier-runtime.js';
+import type { GlobalClassificationIssue } from '../store.js';
 import { EditableParameter } from './ParameterRow.js';
 
 const MODULATION_LABELS: Record<string, string> = {
@@ -26,13 +27,19 @@ export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
   | 'profileReferenceCenterHz' | 'rfReferenceCenterHz' | 'nativeCarrierOffsetHz' | 'rfPlacement'
   | 'outputCarrierOffsetHz' | 'rfTuneCenterHz' | 'signalBandwidthHz' | 'nativeSampleRateHz' | 'payloadKind'> {}
 
-export function IqWorkspace({ configuration, capability, preview, previewError, captureMeta, modulation, recovered, busy, captureUnavailableReason, onChange }: {
+export function IqWorkspace({
+  configuration, capability, preview, previewError, captureMeta, modulation,
+  classificationPending = false, classificationIssue, recovered, busy,
+  captureUnavailableReason, onChange,
+}: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
   preview?: ComplexIqPreview;
   previewError?: string;
   captureMeta?: IqCaptureMeta;
   modulation?: ModulationClassification;
+  classificationPending?: boolean;
+  classificationIssue?: GlobalClassificationIssue;
   recovered?: RecoveredConstellation;
   busy: boolean;
   captureUnavailableReason?: string;
@@ -65,7 +72,12 @@ export function IqWorkspace({ configuration, capability, preview, previewError, 
           <span className="iq-format-badge">{capture?.sampleFormat ?? configuration.sampleFormat}</span>
         </div>
       </header>
-      <LiveModulationBar modulation={modulation} hasCapture={captureMeta !== undefined}/>
+      <LiveModulationBar
+        modulation={modulation}
+        hasCapture={captureMeta !== undefined}
+        pending={classificationPending}
+        issue={classificationIssue}
+      />
       <div className="iq-plot-grid">
         <IqTimePlot preview={preview} zoom={plotZoom}/>
         <ConstellationPlot preview={preview} recovered={recovered} zoom={plotZoom}/>
@@ -340,18 +352,31 @@ function formatPlotZoom(zoom: number): string {
  * detector controls live in the Detect panel; this is the at-a-glance "what am
  * I looking at" monitor beside the plots.
  */
-function LiveModulationBar({ modulation, hasCapture }: { modulation?: ModulationClassification; hasCapture: boolean }) {
-  const runners = modulation?.candidates.filter((candidate) => candidate.label !== modulation.candidates[0]?.label).slice(0, 2) ?? [];
+function LiveModulationBar({ modulation, hasCapture, pending, issue }: {
+  modulation?: ModulationClassification;
+  hasCapture: boolean;
+  pending: boolean;
+  issue?: GlobalClassificationIssue;
+}) {
+  const showIssue = hasCapture && !pending && issue !== undefined;
+  const visibleModulation = showIssue ? undefined : modulation;
+  const runners = visibleModulation?.candidates
+    .filter((candidate) => candidate.label !== visibleModulation.candidates[0]?.label)
+    .slice(0, 2) ?? [];
   return <div className="iq-live-mod" role="status" aria-label="Live modulation classification">
     <div className="iq-live-mod-primary">
       <span className="iq-live-mod-tag"><Radar size={13}/>Modulation</span>
       {!hasCapture && <span className="iq-live-mod-idle">Run or Single to auto-identify</span>}
-      {hasCapture && !modulation && <span className="iq-live-mod-idle">Identifying…</span>}
-      {modulation && <strong className="iq-live-mod-label">{modulation.isUnknown ? 'Unknown' : modLabel(modulation.modulation)}</strong>}
-      {modulation?.topLeaf && <em className="iq-live-mod-leaf">likely {leafLabel(modulation.topLeaf.label)}</em>}
+      {hasCapture && pending && !visibleModulation && <span className="iq-live-mod-idle">Identifying…</span>}
+      {showIssue && <span className="iq-live-mod-idle">{issue.message}</span>}
+      {hasCapture && !pending && !issue && !visibleModulation && (
+        <span className="iq-live-mod-idle">No modulation classification is available for this capture.</span>
+      )}
+      {visibleModulation && <strong className="iq-live-mod-label">{visibleModulation.isUnknown ? 'Unknown' : modLabel(visibleModulation.modulation)}</strong>}
+      {visibleModulation?.topLeaf && <em className="iq-live-mod-leaf">likely {leafLabel(visibleModulation.topLeaf.label)}</em>}
     </div>
-    {modulation && <div className="iq-live-mod-secondary">
-      <span className={`iq-live-mod-conf${modulation.isUnknown ? ' unknown' : ''}`}>{modulation.isUnknown ? 'UNKNOWN' : `${Math.round(modulation.confidence * 100)}% confidence`}</span>
+    {visibleModulation && <div className="iq-live-mod-secondary">
+      <span className={`iq-live-mod-conf${visibleModulation.isUnknown ? ' unknown' : ''}`}>{visibleModulation.isUnknown ? 'UNKNOWN' : `${Math.round(visibleModulation.confidence * 100)}% confidence`}</span>
       {runners.length > 0 && <span className="iq-live-mod-runners">{runners.map((candidate) => `${modLabel(candidate.label)} ${Math.round(candidate.confidence * 100)}%`).join(' · ')}</span>}
     </div>}
   </div>;

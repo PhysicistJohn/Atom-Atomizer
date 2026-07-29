@@ -63,9 +63,9 @@ export default function AtomizerWebPage() {
       </div>
       <App
         initialWorkspace={signalLab ? 'generator' : 'spectrum'}
-        // Phones start with the Atom bottom sheet closed so the measurement
-        // column is the first thing on screen; the topbar pill opens it.
-        initialAgentOpen={!signalLab && !window.matchMedia('(max-width: 880px)').matches}
+        // Compact browser layouts start with the Atom bottom sheet closed so
+        // measurement controls and I/Q plots own the initial viewport.
+        initialAgentOpen={!signalLab && !window.matchMedia('(max-width: 1210px)').matches}
       />
     </>
   );
