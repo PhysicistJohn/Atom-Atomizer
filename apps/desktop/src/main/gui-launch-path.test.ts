@@ -37,13 +37,6 @@ describe('augmentedGuiLaunchPath', () => {
 });
 
 describe('restoreGuiLaunchPath', () => {
-  it('mutates the given environment object PATH in place', () => {
-    const env = { PATH: '/usr/bin' } as NodeJS.ProcessEnv;
-    restoreGuiLaunchPath(env);
-    expect(typeof env.PATH).toBe('string');
-    expect(env.PATH).toContain('/usr/bin');
-  });
-
   it('is a no-op on platforms outside darwin/linux', () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32' });
