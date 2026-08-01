@@ -626,6 +626,10 @@ export class AcquisitionController {
         return false;
       }
     }
+    const channelConfiguration = reconcileChannelConfigurationToSweep(
+      k.state.channelConfiguration,
+      next,
+    );
     k.analysisSequence.current++;
     const nextHistory = [next, ...k.state.history].slice(0, HISTORY_LIMIT);
     const nextTraceFrames = k.traceAccumulator.current.update(next);
@@ -634,6 +638,7 @@ export class AcquisitionController {
       history: nextHistory,
       traceFrames: nextTraceFrames,
       firmwareTraceFrames: next.firmwareTraces ?? [],
+      ...(channelConfiguration === k.state.channelConfiguration ? {} : { channelConfiguration }),
     };
     let trackerRows: readonly DetectedSignal[];
     try {
@@ -1373,6 +1378,32 @@ export function fitChannelConfigurationToSpan(input: ChannelMeasurementConfigura
     adjacentBandwidthHz,
     channelSpacingHz,
   });
+}
+
+/** Keep channel windows inside the scalar evidence that was actually accepted.
+ * Host-derived FFT bounds may be fractional even though the channel contract is
+ * integer-Hz, so reconcile against the conservative whole-Hz interior. */
+export function reconcileChannelConfigurationToSweep(
+  input: ChannelMeasurementConfiguration,
+  sweep: Pick<Sweep, 'actualStartHz' | 'actualStopHz'>,
+): ChannelMeasurementConfiguration {
+  if (!Number.isFinite(sweep.actualStartHz) || !Number.isFinite(sweep.actualStopHz)) {
+    throw new Error('Channel measurement reconciliation requires finite sweep bounds');
+  }
+  const startHz = Math.ceil(sweep.actualStartHz);
+  const stopHz = Math.floor(sweep.actualStopHz);
+  if (stopHz <= startHz) {
+    throw new Error('Channel measurement reconciliation requires at least one whole-Hz interval');
+  }
+  const current = channelMeasurementConfigurationSchema.parse(input);
+  const requestedExtent = Math.max(
+    current.mainBandwidthHz / 2,
+    current.adjacentChannelCount * current.channelSpacingHz + current.adjacentBandwidthHz / 2,
+  );
+  if (current.centerHz - requestedExtent >= startHz
+    && current.centerHz + requestedExtent <= stopHz) return input;
+  const fitted = fitChannelConfigurationToSpan(current, startHz, stopHz);
+  return sameStructuredValue(fitted, input) ? input : fitted;
 }
 
 export function coherentSweepCount(history: readonly Sweep[], depth: number): number {

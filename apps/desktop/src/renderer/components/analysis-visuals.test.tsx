@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DetectedSignal, Sweep } from '@tinysa/contracts';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
@@ -119,8 +119,43 @@ describe('analysis visual contracts', () => {
     expect(within(view.container).getByText('Resolution-limited')).toBeTruthy();
     expect(within(view.container).getByText(/RBW\/grid 25 Hz/i)).toBeTruthy();
     expect(within(view.container).getByLabelText(/3 dB bandwidth resolution-limited; response [\d.]+ Hz; RBW\/grid 25 Hz/i)).toBeTruthy();
-    expect(within(view.container).getByText('OCCUPIED BANDWIDTH · 99%')).toBeTruthy();
+    expect(within(view.container).getByText('DISPLAYED-SPAN OCCUPIED BANDWIDTH · 99%')).toBeTruthy();
     expect(view.container.querySelector('.three-db-window')).not.toBeNull();
+  });
+
+  it('fits channel windows once to the strongest qualified response', () => {
+    const frequencyHz = Array.from({ length: 1_001 }, (_, index) => index * 1_000);
+    const fitSweep: Sweep = {
+      ...sweep,
+      id: 'sweep-fit',
+      actualStartHz: 0,
+      actualStopHz: 1_000_000,
+      actualRbwHz: 1_000,
+      frequencyHz,
+      powerDbm: frequencyHz.map((frequency, index) => frequency >= 400_000 && frequency <= 500_000 ? -40 - (index % 2) : -120),
+      requested: { ...sweep.requested, startHz: 0, stopHz: 1_000_000, points: frequencyHz.length },
+    };
+    const onConfiguration = vi.fn();
+    const view = render(<ChannelAnalysisView
+      sweep={fitSweep}
+      configuration={{
+        centerHz: 500_000,
+        mainBandwidthHz: 100_000,
+        adjacentBandwidthHz: 50_000,
+        channelSpacingHz: 75_000,
+        adjacentChannelCount: 2,
+        occupiedPowerPercent: 99,
+        obwNoiseCorrection: 'robust-floor',
+      }}
+      display={{ referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }}
+      onConfiguration={onConfiguration}
+    />);
+
+    fireEvent.click(within(view.container).getByRole('button', { name: 'Fit channel windows to strongest response in current sweep' }));
+
+    expect(onConfiguration).toHaveBeenCalledOnce();
+    expect(onConfiguration).toHaveBeenCalledWith(expect.objectContaining({ centerHz: expect.any(Number), mainBandwidthHz: expect.any(Number) }));
+    expect(within(view.container).getByRole('status').textContent).toMatch(/Fitted .* around .* strongest qualified response/);
   });
 
   it('renders detection geometry only when the owning workspace enables it', async () => {

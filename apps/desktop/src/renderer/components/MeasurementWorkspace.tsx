@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { BarChart3, Clock3, Crosshair, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
+import { BarChart3, Clock3, Crosshair, Gauge, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
 import type {
   AnalyzerConfig,
   AnalyzerConfigPatch,
@@ -31,11 +31,11 @@ import { formatFrequency, formatPowerLevel } from '../format.js';
 import { AnalyzerInspector } from './AnalyzerInspector.js';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
 import { IqCaptureSetup } from './IqWorkspace.js';
-import { MeasurementDock } from './MeasurementDock.js';
+import { MeasurementDock, type MeasurementDockPanel } from './MeasurementDock.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
 
-type Overlay = 'setup' | 'controls';
+type Drawer = 'setup' | MeasurementDockPanel;
 
 export interface MeasurementWorkspaceProps {
   measurementActions?: ReactNode;
@@ -84,7 +84,11 @@ export interface MeasurementWorkspaceProps {
 }
 
 export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
-  const [overlay, setOverlay] = useState<Overlay>();
+  const [drawer, setDrawer] = useState<Drawer>();
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLButtonElement | null>(null);
+  const focusDrawerRef = useRef(false);
+  const previousViewRef = useRef(props.view);
   const activeDetections = props.detections.filter((item) =>
     typeof item === 'object' && item !== null && item.state === 'active');
   const view = props.view === 'envelope-stft' ? 'spectrum' : props.view;
@@ -93,32 +97,80 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     && props.iqConfiguration !== undefined
     && props.onIqConfiguration !== undefined;
   const setupLabel = hasIqCaptureSetup ? 'Capture setup' : 'Sweep setup';
-  const toggleOverlay = (next: Overlay) => setOverlay((current) => current === next ? undefined : next);
+  const traceToolsAvailable = view === 'spectrum';
+  const closeDrawer = (restoreFocus = true) => {
+    const focusTarget = returnFocusRef.current;
+    focusDrawerRef.current = false;
+    setDrawer(undefined);
+    if (restoreFocus && focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
+  };
+  const toggleDrawer = (next: Drawer, trigger: HTMLButtonElement) => {
+    if (drawer === next) {
+      closeDrawer();
+      return;
+    }
+    returnFocusRef.current = trigger;
+    focusDrawerRef.current = true;
+    setDrawer(next);
+  };
+  const selectDockPanel = (next: MeasurementDockPanel) => {
+    focusDrawerRef.current = false;
+    setDrawer(next);
+  };
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOverlay(undefined); };
+    if (!drawer) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const focusTarget = returnFocusRef.current;
+      focusDrawerRef.current = false;
+      setDrawer(undefined);
+      if (focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
+    };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, []);
+  }, [drawer]);
+  useEffect(() => {
+    if (!drawer || !focusDrawerRef.current) return;
+    focusDrawerRef.current = false;
+    window.requestAnimationFrame(() => drawerRef.current?.focus());
+  }, [drawer]);
+  useEffect(() => {
+    if (previousViewRef.current === props.view) return;
+    previousViewRef.current = props.view;
+    focusDrawerRef.current = false;
+    setDrawer(undefined);
+  }, [props.view]);
+  const drawerTitle = drawer === 'setup'
+    ? setupLabel
+    : drawer === 'traces'
+      ? 'Trace controls'
+      : drawer === 'markers'
+        ? 'Marker controls'
+        : 'Display controls';
   return <section className="measurement-workspace">
     <header className="measurement-viewbar">
       <div className="measurement-view-utilities" role="toolbar" aria-label="Measurement utilities">
         {props.measurementActions && <div className="stage-measurement-actions">{props.measurementActions}</div>}
         <div className="measurement-view-actions">
-          <button className={overlay === 'setup' ? 'active' : ''} onClick={() => toggleOverlay('setup')} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>{setupLabel}</span></button>
-          <button className={overlay === 'controls' ? 'active' : ''} onClick={() => toggleOverlay('controls')} data-agent-control="measurement.controls"><Crosshair size={14}/><span>Traces & markers</span></button>
+          <button type="button" className={drawer === 'setup' ? 'active' : ''} aria-label={setupLabel} aria-expanded={drawer === 'setup'} aria-controls="measurement-control-drawer" onClick={(event) => toggleDrawer('setup', event.currentTarget)} data-agent-control="measurement.setup"><SlidersHorizontal size={14}/><span>{setupLabel}</span></button>
+          {traceToolsAvailable && <>
+            <button type="button" className={drawer === 'traces' ? 'active' : ''} aria-label="Traces" aria-expanded={drawer === 'traces'} aria-controls="measurement-control-drawer" onClick={(event) => toggleDrawer('traces', event.currentTarget)} data-agent-control="measurement.controls"><BarChart3 size={14}/><span>Traces</span></button>
+            <button type="button" className={drawer === 'markers' ? 'active' : ''} aria-label="Markers" aria-expanded={drawer === 'markers'} aria-controls="measurement-control-drawer" onClick={(event) => toggleDrawer('markers', event.currentTarget)} data-agent-exclusion="human-disclosure"><Crosshair size={14}/><span>Markers</span></button>
+            <button type="button" className={drawer === 'display' ? 'active' : ''} aria-label="Display" aria-expanded={drawer === 'display'} aria-controls="measurement-control-drawer" onClick={(event) => toggleDrawer('display', event.currentTarget)} data-agent-exclusion="human-disclosure"><Gauge size={14}/><span>Display</span></button>
+          </>}
         </div>
       </div>
     </header>
-    <div className="measurement-stage">
-      {overlay && <button type="button" className="measurement-overlay-scrim" aria-label="Close panel" data-agent-exclusion="human-overlay-dismiss" onClick={() => setOverlay(undefined)}/>}
-      {overlay && <div className={`measurement-overlay ${overlay}`} role="region" aria-label={overlay === 'setup' ? `${setupLabel} overlay` : 'Trace and marker overlay'}>
-        <button type="button" className="measurement-overlay-close" aria-label="Close panel" data-agent-exclusion="human-overlay-dismiss" onClick={() => setOverlay(undefined)}><X size={16}/></button>
-        {overlay === 'setup'
+    <div className={`measurement-stage${drawer ? ' drawer-open' : ''}${drawer && drawer !== 'setup' ? ' controls-open' : ''}`}>
+      {drawer && <button type="button" className="measurement-overlay-scrim" aria-label="Close panel" data-agent-exclusion="human-overlay-dismiss" onClick={() => closeDrawer()}/>}
+      {drawer && <div id="measurement-control-drawer" ref={drawerRef} tabIndex={-1} className={`measurement-overlay ${drawer === 'setup' ? 'setup' : 'controls'}`} role="region" aria-label={`${drawerTitle} panel`}>
+        <header className="measurement-drawer-header"><span>{drawer === 'setup' ? <SlidersHorizontal size={15}/> : drawer === 'markers' ? <Crosshair size={15}/> : drawer === 'display' ? <Gauge size={15}/> : <BarChart3 size={15}/>}<strong>{drawerTitle}</strong></span><button type="button" className="measurement-overlay-close" aria-label={`Close ${drawerTitle}`} data-agent-exclusion="human-overlay-dismiss" onClick={() => closeDrawer()}><X size={16}/></button></header>
+        <div className="measurement-drawer-body">{drawer === 'setup'
           ? hasIqCaptureSetup
             ? <IqCaptureSetup configuration={props.iqConfiguration!} capability={props.iqCapability} busy={props.busy && !props.streaming} onChange={props.onIqConfiguration!}/>
             : <AnalyzerInspector config={props.analyzer} capability={props.spectrumCapability} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
-          : <MeasurementDock traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
-        }
+          : <MeasurementDock panel={drawer} onPanel={selectDockPanel} traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
+        }</div>
       </div>}
       <div className="measurement-stage-content" aria-label="Measurement view">
         {view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy} spectrumCapabilityAvailable={props.spectrumCapabilityAvailable}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}

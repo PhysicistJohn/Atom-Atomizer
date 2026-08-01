@@ -182,14 +182,28 @@ export function selectMarkerCenterOnTrace(
 ): MarkerCenterBinSelection {
   validateInput(frame, 0, actualRbwHz);
   const peakIndex = maximumIndex(frame.powerDbm, 0, frame.powerDbm.length - 1);
+  return selectMarkerCenterFromBinOnTrace(frame, peakIndex, actualRbwHz, detections);
+}
+
+/** Apply the same bounded-component center policy starting from one selected
+ * trace peak. This lets callers rank prominence-qualified components instead
+ * of allowing an unqualified global bump to hide every other response. */
+export function selectMarkerCenterFromBinOnTrace(
+  frame: Pick<TraceFrame, 'frequencyHz' | 'powerDbm'>,
+  markerBinIndex: number,
+  actualRbwHz: number,
+  detections: readonly DetectedSignal[] = [],
+): MarkerCenterBinSelection {
+  validateInput(frame, markerBinIndex, actualRbwHz);
   const peakSelection = { markerCenterMethod: 'local-peak' as const };
   const preliminary = characterizeMarkerLocalTrace(
     frame,
-    peakIndex,
+    markerBinIndex,
     actualRbwHz,
     detections,
     peakSelection,
   );
+  const peakIndex = nearestFrequencyIndex(frame.frequencyHz, preliminary.localPeakHz);
   const threeDecibelBandwidth = 'threeDecibelBandwidth' in preliminary
     ? preliminary.threeDecibelBandwidth
     : undefined;

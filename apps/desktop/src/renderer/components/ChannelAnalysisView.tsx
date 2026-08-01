@@ -1,7 +1,7 @@
-import { useId, useMemo } from 'react';
-import { BarChart3, Brackets, Radio } from 'lucide-react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import { BarChart3, Brackets, Radio, ScanSearch } from 'lucide-react';
 import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep, SweepPowerReference } from '@tinysa/contracts';
-import { measureChannel } from '@tinysa/analysis';
+import { fitChannelConfigurationToSweep, measureChannel } from '@tinysa/analysis';
 import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
 import { frequencyToX, traceGeometry, validSpectrumDisplay } from '../plot-geometry.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
@@ -17,6 +17,33 @@ export interface ChannelAnalysisViewProps {
 
 export function ChannelAnalysisView({ sweep, configuration, display, spectrumCapabilityAvailable = true, onConfiguration }: ChannelAnalysisViewProps) {
   const measurement = useMemo(() => evaluate(sweep, configuration), [sweep, configuration]);
+  const [fitStatus, setFitStatus] = useState<{ sweepId: string; kind: 'success' | 'unavailable'; message: string }>();
+  useEffect(() => {
+    if (fitStatus && sweep?.id !== fitStatus.sweepId) setFitStatus(undefined);
+  }, [fitStatus, sweep?.id]);
+  const fitCurrentResponse = () => {
+    if (!sweep) return;
+    try {
+      const fit = fitChannelConfigurationToSweep(sweep, configuration);
+      if (fit.status === 'unavailable') {
+        setFitStatus({ sweepId: sweep.id, kind: 'unavailable', message: fit.message });
+        return;
+      }
+      onConfiguration(fit.configuration);
+      const adjustedComparisonLayout = Object.values(fit.adjustments).some(Boolean);
+      setFitStatus({
+        sweepId: sweep.id,
+        kind: 'success',
+        message: `Fitted ${formatFrequency(fit.configuration.mainBandwidthHz)} around ${formatFrequency(fit.configuration.centerHz)} from the strongest qualified response.${adjustedComparisonLayout ? ' Comparison windows were reduced to remain inside the acquired span.' : ''}`,
+      });
+    } catch (value) {
+      setFitStatus({
+        sweepId: sweep.id,
+        kind: 'unavailable',
+        message: value instanceof Error ? value.message : String(value),
+      });
+    }
+  };
   return <section className="channel-analysis-view" aria-label="Channel power, 3 dB bandwidth, ACP, and occupied bandwidth">
     <div className="channel-visual">
       <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result} spectrumCapabilityAvailable={spectrumCapabilityAvailable}/>
@@ -24,12 +51,21 @@ export function ChannelAnalysisView({ sweep, configuration, display, spectrumCap
       {measurement.error && <div className="measurement-error" role="alert"><strong>Measurement unavailable</strong><span>{measurement.error}</span></div>}
     </div>
     <aside className="channel-console">
-      <div className="channel-console-title"><span><Brackets size={14}/></span><strong>Channel setup</strong></div>
+      <div className="channel-console-title"><span><Brackets size={14}/></span><strong>Channel setup</strong><button type="button" disabled={!sweep} title={sweep ? 'Strongest prominence-qualified trace component; no protocol or channel-plan inference.' : 'Acquire a spectrum or I/Q buffer first.'} aria-label="Fit channel windows to strongest response in current sweep" onClick={fitCurrentResponse} data-agent-exclusion="human-derived-fit"><ScanSearch size={13}/>Fit response</button></div>
+      {fitStatus && <div className={`channel-fit-status ${fitStatus.kind}`} role="status">{fitStatus.message}</div>}
       <div className="channel-form parameter-stack">
         <NumberControl label="Center frequency" value={configuration.centerHz} minimum={0} controlId="channel.center" onValue={(centerHz) => onConfiguration({ ...configuration, centerHz })}/>
-        <NumberControl label="Main bandwidth" value={configuration.mainBandwidthHz} minimum={1} controlId="channel.main-bandwidth" onValue={(mainBandwidthHz) => onConfiguration({ ...configuration, mainBandwidthHz })}/>
-        <NumberControl label="Channel spacing" value={configuration.channelSpacingHz} minimum={1} controlId="channel.spacing" onValue={(channelSpacingHz) => onConfiguration({ ...configuration, channelSpacingHz })}/>
-        <NumberControl label="Adjacent bandwidth" value={configuration.adjacentBandwidthHz} minimum={1} controlId="channel.adjacent-bandwidth" onValue={(adjacentBandwidthHz) => onConfiguration({ ...configuration, adjacentBandwidthHz })}/>
+        <NumberControl label="Main bandwidth" value={configuration.mainBandwidthHz} minimum={1} controlId="channel.main-bandwidth" onValue={(mainBandwidthHz) => onConfiguration({
+          ...configuration,
+          mainBandwidthHz,
+          channelSpacingHz: Math.max(configuration.channelSpacingHz, Math.ceil((mainBandwidthHz + configuration.adjacentBandwidthHz) / 2)),
+        })}/>
+        <NumberControl label="Channel spacing" value={configuration.channelSpacingHz} minimum={Math.ceil((configuration.mainBandwidthHz + configuration.adjacentBandwidthHz) / 2)} controlId="channel.spacing" onValue={(channelSpacingHz) => onConfiguration({ ...configuration, channelSpacingHz })}/>
+        <NumberControl label="Adjacent bandwidth" value={configuration.adjacentBandwidthHz} minimum={1} controlId="channel.adjacent-bandwidth" onValue={(adjacentBandwidthHz) => onConfiguration({
+          ...configuration,
+          adjacentBandwidthHz,
+          channelSpacingHz: Math.max(configuration.channelSpacingHz, Math.ceil((configuration.mainBandwidthHz + adjacentBandwidthHz) / 2)),
+        })}/>
         <SelectParameter label="Adjacent pairs" value={configuration.adjacentChannelCount} options={[{ value: 1, label: '1 · adjacent' }, { value: 2, label: '2 · alternate' }, { value: 3, label: '3 · extended' }]} controlId="channel.adjacent-count" onValue={(value) => onConfiguration({ ...configuration, adjacentChannelCount: Number(value) })}/>
         <EditableParameter label="Occupied power" value={configuration.occupiedPowerPercent} displayValue={`${configuration.occupiedPowerPercent}%`} unit="%" minimum={10} maximum={99.9} step={0.1} controlId="channel.occupied-power" onCommit={(value) => onConfiguration({ ...configuration, occupiedPowerPercent: Number(value) })}/>
         <SelectParameter label="OBW noise treatment" value={configuration.obwNoiseCorrection} options={[{ value: 'none', label: 'Total displayed power' }, { value: 'robust-floor', label: 'Subtract robust floor' }]} controlId="channel.obw-noise" onValue={(value) => onConfiguration({ ...configuration, obwNoiseCorrection: value as ChannelMeasurementConfiguration['obwNoiseCorrection'] })}/>
@@ -114,7 +150,7 @@ function ChannelResults({ result, powerReference }: { result: ChannelMeasurement
     {threeDecibelBandwidth.status === 'unavailable'
       ? <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>Unavailable</strong><span>{formatThreeDecibelUnavailableReason(threeDecibelBandwidth.reason)}</span></div>
       : <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>{threeDecibelBandwidth.status === 'resolution-limited' ? 'Resolution-limited' : formatFrequency(threeDecibelBandwidth.bandwidthHz)}</strong><span>{threeDecibelBandwidth.status === 'resolution-limited' ? `Response ${formatFrequency(threeDecibelBandwidth.bandwidthHz)} · RBW/grid ${formatFrequency(threeDecibelBandwidth.resolutionScaleHz)}` : `${formatFrequency(threeDecibelBandwidth.startHz)} — ${formatFrequency(threeDecibelBandwidth.stopHz)} · interpolated`}</span></div>}
-    <div className="channel-primary-result obw"><small>OCCUPIED BANDWIDTH · {result.occupiedBandwidth.percent}%</small><strong>{formatFrequency(result.occupiedBandwidth.bandwidthHz)}</strong><span>{formatFrequency(result.occupiedBandwidth.startHz)} — {formatFrequency(result.occupiedBandwidth.stopHz)}</span></div>
+    <div className="channel-primary-result obw"><small>DISPLAYED-SPAN OCCUPIED BANDWIDTH · {result.occupiedBandwidth.percent}%</small><strong>{formatFrequency(result.occupiedBandwidth.bandwidthHz)}</strong><span>All responses · {formatFrequency(result.occupiedBandwidth.startHz)} — {formatFrequency(result.occupiedBandwidth.stopHz)}</span></div>
     <div className="acp-results"><small>LOWER ACP</small><div>{lower.map((entry) => <span key={`l${entry.order}`}><em>L{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatPowerLevel(entry.powerDbm, powerReference)}</i></span>)}</div></div>
     <div className="acp-results"><small>UPPER ACP</small><div>{upper.map((entry) => <span key={`u${entry.order}`}><em>U{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatPowerLevel(entry.powerDbm, powerReference)}</i></span>)}</div></div>
   </div>;

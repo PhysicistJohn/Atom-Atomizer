@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DetectedPowerTimeseriesConfiguration, InstrumentMeasurement, InstrumentSessionSnapshot, SweptSpectrumConfiguration } from '@tinysa/contracts';
+import { sweepExportSweepSchema, type DetectedPowerTimeseriesConfiguration, type InstrumentMeasurement, type InstrumentSessionSnapshot, type SweptSpectrumConfiguration } from '@tinysa/contracts';
 import { projectDerivedSpectrumFromComplexIq, projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
 import type { ComplexIqMeasurement } from './complex-iq.js';
 
@@ -128,6 +128,7 @@ describe('projectDerivedSpectrumFromComplexIq', () => {
     expect(projected.frequencyHz).toHaveLength(2_048);
     expect(projected.powerDbm).toHaveLength(2_048);
     expect(projected.identity).toMatchObject({ kind: 'instrument-session', driverId: 'neptune-p210', sessionId: 'session-neptune' });
+    expect(() => sweepExportSweepSchema.parse(projected)).not.toThrow();
 
     let peakIndex = 0;
     for (let index = 1; index < projected.powerDbm.length; index++) {

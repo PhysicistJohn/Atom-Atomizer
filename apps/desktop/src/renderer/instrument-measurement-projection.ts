@@ -81,8 +81,12 @@ export function projectDerivedSpectrumFromComplexIq(
     ...(measurement.powerReference === undefined ? {} : { powerReference: measurement.powerReference }),
     requested: {
       kind: 'swept-spectrum',
-      startHz: projection.frequencyHz[0]!,
-      stopHz: projection.frequencyHz.at(-1)!,
+      // The analyzer configuration contract uses whole-Hz bounds. FFT bins can
+      // end fractionally, while the Sweep's actual bounds retain that exact
+      // observed grid; nearest-Hz requested bounds remain within export-grid
+      // tolerance without pretending the last bin was integral.
+      startHz: Math.round(projection.frequencyHz[0]!),
+      stopHz: Math.round(projection.frequencyHz.at(-1)!),
       points: projection.fftSize,
       sweepTimeSeconds,
       controls: {

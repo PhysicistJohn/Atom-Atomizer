@@ -103,6 +103,14 @@ import {
 export { measureThreeDecibelBandwidth, measureTraceThreeDecibelBandwidth } from './channel-bandwidth.js';
 export { characterizeMarkerLocalTrace, selectMarkerCenterOnTrace } from './marker-characterization.js';
 export {
+  fitChannelConfigurationToSweep,
+  type ChannelConfigurationFitEvidence,
+  type ChannelConfigurationFitResult,
+  type ChannelConfigurationFitUnavailableReason,
+  type FittedChannelConfiguration,
+  type UnavailableChannelConfigurationFit,
+} from './channel-fit.js';
+export {
   CLASSIFICATION_CAPTURE_TARGET_RANKING_MODEL,
   classificationCaptureTargetRankEvidence,
   compareClassificationCaptureTargetRankEvidence,

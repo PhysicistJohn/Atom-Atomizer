@@ -1205,7 +1205,7 @@ describe('operator vertical slice', () => {
     const navigation = await screen.findByRole('navigation', { name: /Primary navigation/i });
     await screen.findByText('SIGNALLAB SIMULATION');
     fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Sweep setup$/i }));
     await screen.findByLabelText('Edit Center frequency');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(pendingIq).toHaveLength(1));
@@ -2482,9 +2482,9 @@ describe('operator vertical slice', () => {
     fireEvent.click(within(navigation).getByRole('button', { name: /^Channel$/i }));
     expect(await screen.findByText(/Channel setup/i)).toBeTruthy();
     fireEvent.click(within(navigation).getByRole('button', { name: /^Spectrum$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
     const measurementTabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
     for (const control of ['Markers', 'Traces', 'Display']) expect(measurementTabs.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
     fireEvent.click(measurementTabs.getByRole('button', { name: /Markers/i }));
@@ -2507,7 +2507,7 @@ describe('operator vertical slice', () => {
 
   it('allows marker 1 and the entire marker bank to remain off', async () => {
     const { container } = render(<App/>);
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Markers$/i }));
     const markerOne = screen.getByRole('button', { name: /Marker 1, hidden, selected/i });
     expect(markerOne.getAttribute('aria-pressed')).toBe('false');
     expect(container.querySelectorAll('.marker-selector button.enabled')).toHaveLength(0);
@@ -2539,10 +2539,10 @@ describe('operator vertical slice', () => {
       fireEvent.click(within(navigation).getByRole('button', { name: new RegExp(`^${view}$`, 'i') }));
       assertRenderedContracts();
     }
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     assertRenderedContracts();
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
     assertRenderedContracts();
     const tabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
     for (const panel of ['Traces', 'Display', 'Markers']) {
@@ -2577,7 +2577,7 @@ describe('operator vertical slice', () => {
     await screen.findByText('tinySA Ultra+ ZS407');
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledTimes(2));
@@ -2751,7 +2751,7 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
     await waitFor(() => expect(window.atomizerInstrument.startStreaming).toHaveBeenCalledOnce());
 
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
     await act(async () => {
@@ -2937,7 +2937,7 @@ describe('operator vertical slice', () => {
     const connection = await screen.findByRole('dialog', { name: /Instrument source/i });
     fireEvent.click(screen.getByRole('button', { name: /TinySA executable firmware twin/i }));
     await screen.findByText('tinySA Ultra+ ZS407');
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
 
     fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
     let editor = screen.getByRole('dialog', { name: /Stop frequency numeric entry/i });
@@ -2970,7 +2970,7 @@ describe('operator vertical slice', () => {
     await act(async () => { instrumentEventListener?.({ type: 'measurement', measurement: acquiredMeasurement(requested, 'current-fm', streamingRevision) }); });
     expect(container.querySelector('[aria-label="Measured power by frequency"]')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: /Sweep setup/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     fireEvent.click(screen.getByRole('button', { name: /2\.4 GHz/i }));
     await waitFor(() => expect(window.atomizerInstrument.stopStreaming).toHaveBeenCalledOnce());
     await act(async () => { instrumentEventListener?.({ type: 'measurement', measurement: acquiredMeasurement(requested, 'late-fm', streamingRevision) }); });
@@ -2993,8 +2993,7 @@ describe('operator vertical slice', () => {
     await waitFor(() => expect(window.atomizerInstrument.acquire).toHaveBeenCalledOnce());
     expect(container.querySelector('.firmware-trace')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
-    fireEvent.click(within(container.querySelector('.measurement-tabs') as HTMLElement).getByRole('button', { name: /Traces/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
     const traceToggle = screen.getByRole('button', { name: /Trace 1.*On/i });
     fireEvent.click(traceToggle);
     await waitFor(() => expect(screen.getByRole('button', { name: /Trace 1.*Off/i })).toBeTruthy());
@@ -3077,7 +3076,7 @@ describe('operator vertical slice', () => {
     });
     expect(peakResult.output?.reading?.localCharacterization?.peakToRobustFloorDb).toBeGreaterThan(10);
     expect(await screen.findByText('CW peak marker placed.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Markers$/i }));
     expect(screen.getByRole('button', { name: /Marker 1, visible, selected/i })).toBeTruthy();
     expect(screen.getAllByText(/Narrow · resolution limited/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/peak-to-floor/i).length).toBeGreaterThan(0);
@@ -3189,7 +3188,7 @@ describe('operator vertical slice', () => {
     const send = screen.getByRole('button', { name: /Send to Atom/i });
     fireEvent.change(composer, { target: { value: 'Confirm the app is still responsive.' } });
     await waitFor(() => expect(send.hasAttribute('disabled')).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: /Traces & markers/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Markers$/i }));
     expect(screen.getByRole('button', { name: /Marker 1, visible, selected/i })).toBeTruthy();
   });
 

@@ -4,7 +4,7 @@ import type { DetectedSignal, SignalDetectionConfig, Sweep, ZeroSpanCapture, Zer
 import type { ModulationClassification } from '../embedding-classifier-runtime.js';
 import type { GlobalClassificationIssue } from '../store.js';
 import { DETECT_CONSENSUS_WINDOW_MS } from '../classification-consensus.js';
-import { CaptureEvidenceStrip, DetectionSettings, type DetectedPowerCapability } from './DetectorControls.js';
+import { CaptureEvidenceStrip, DetectionSettings, SignalDetectionResults, type DetectedPowerCapability } from './DetectorControls.js';
 
 const MODULATION_LABELS: Record<string, string> = {
   cw: 'Continuous wave', am: 'AM', fm: 'FM',
@@ -22,7 +22,7 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
  */
 export function DetectWorkspace({
   modulation, pending, classificationIssue, source, live = false, sampleCount = 0,
-  sweep, detectionConfig, detectorBusy, onDetectionConfig,
+  sweep, detections = [], detectionConfig, detectorBusy, onDetectionConfig,
   zeroConfig, zeroCapture, envelope, detectedPowerCapability, captureUnavailableReason, captureTarget, busy, onAcquireZero,
 }: {
   modulation?: ModulationClassification;
@@ -32,6 +32,7 @@ export function DetectWorkspace({
   live?: boolean;
   sampleCount?: number;
   sweep?: Sweep;
+  detections?: readonly DetectedSignal[];
   detectionConfig?: SignalDetectionConfig;
   detectorBusy: boolean;
   onDetectionConfig(config: SignalDetectionConfig): void;
@@ -109,6 +110,7 @@ export function DetectWorkspace({
             </p>
           </div>
         )}
+        {detectionConfig && <SignalDetectionResults sweep={sweep} detections={detections} config={detectionConfig}/>}
       </section>
 
       <aside className="detect-config">

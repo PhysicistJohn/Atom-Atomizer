@@ -19,9 +19,14 @@ import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } 
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
 
-type Panel = 'markers' | 'traces' | 'display';
+export type MeasurementDockPanel = 'markers' | 'traces' | 'display';
 
 export interface MeasurementDockProps {
+  /** Controlled by the measurement drawer when present; direct component
+   * consumers can continue to use the internal tab state. */
+  panel?: MeasurementDockPanel;
+  initialPanel?: MeasurementDockPanel;
+  onPanel?(panel: MeasurementDockPanel): void;
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
   firmwareFrames: readonly FirmwareTraceFrame[];
@@ -45,7 +50,12 @@ export interface MeasurementDockProps {
 }
 
 export function MeasurementDock(props: MeasurementDockProps) {
-  const [panel, setPanel] = useState<Panel>('markers');
+  const [uncontrolledPanel, setUncontrolledPanel] = useState<MeasurementDockPanel>(props.initialPanel ?? 'markers');
+  const panel = props.panel ?? uncontrolledPanel;
+  const selectPanel = (next: MeasurementDockPanel) => {
+    if (props.panel === undefined) setUncontrolledPanel(next);
+    props.onPanel?.(next);
+  };
   const activeMarker = props.markers.find((marker) => marker.id === props.activeMarkerId);
   if (!activeMarker) throw new Error(`Active marker M${props.activeMarkerId} does not exist`);
   const activeReading = props.readings.find((reading) => reading.markerId === props.activeMarkerId);
@@ -58,9 +68,9 @@ export function MeasurementDock(props: MeasurementDockProps) {
 
   return <section className="measurement-dock" aria-label="Markers, traces, and display controls">
     <nav className="measurement-tabs" aria-label="Measurement controls">
-      <button className={panel === 'markers' ? 'active' : ''} onClick={() => setPanel('markers')} data-agent-control="measurement.markers"><Crosshair size={15}/><span>Markers</span><em>{enabledMarkers.length}/8</em></button>
-      <button className={panel === 'traces' ? 'active' : ''} onClick={() => setPanel('traces')} data-agent-control="measurement.traces"><BarChart3 size={15}/><span>Traces</span><em>{visibleTraces.length}/4</em></button>
-      <button className={panel === 'display' ? 'active' : ''} onClick={() => setPanel('display')} data-agent-control="measurement.display"><Gauge size={15}/><span>Display</span><em>{props.display.decibelsPerDivision} dB/div</em></button>
+      <button type="button" aria-pressed={panel === 'markers'} className={panel === 'markers' ? 'active' : ''} onClick={() => selectPanel('markers')} data-agent-control="measurement.markers"><Crosshair size={15}/><span>Markers</span><em>{enabledMarkers.length}/8</em></button>
+      <button type="button" aria-pressed={panel === 'traces'} className={panel === 'traces' ? 'active' : ''} onClick={() => selectPanel('traces')} data-agent-control="measurement.traces"><BarChart3 size={15}/><span>Traces</span><em>{visibleTraces.length}/4</em></button>
+      <button type="button" aria-pressed={panel === 'display'} className={panel === 'display' ? 'active' : ''} onClick={() => selectPanel('display')} data-agent-control="measurement.display"><Gauge size={15}/><span>Display</span><em>{props.display.decibelsPerDivision} dB/div</em></button>
     </nav>
 
     {panel === 'markers' && <div className="measurement-panel marker-panel">

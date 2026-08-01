@@ -1,4 +1,4 @@
-import { Activity, ScanSearch } from 'lucide-react';
+import { Activity, RadioTower, ScanSearch } from 'lucide-react';
 import { robustNoiseFloor, type EnvelopeClassification } from '@tinysa/analysis';
 import type {
   DetectedSignal, InstrumentAcquisitionCapability, SignalDetectionConfig, Sweep, ZeroSpanCapture, ZeroSpanConfig,
@@ -74,6 +74,42 @@ export function DetectionSettings({ sweep, config, busy, onConfig }: {
       <SelectParameter label="Release after" value={config.releaseAfterMissedSweeps} options={releaseOptions} disabled={busy} controlId="detection.release" onValue={(value) => onConfig({ ...config, releaseAfterMissedSweeps: Number(value) })}/>
     </fieldset>
     {relativePower && <p className="detect-note" role="status">Absolute dBm detection is unavailable for this uncalibrated dBFS-relative FFT. Adaptive margin and prominence remain usable as dB ratios.</p>}
+  </section>;
+}
+
+/** Visible projection of the frequency-local detector/tracker. The detector
+ * has always run globally; this makes its candidate and promoted rows visible
+ * without conflating them with modulation-classifier output. */
+export function SignalDetectionResults({ sweep, detections, config }: {
+  sweep?: Sweep;
+  detections: readonly DetectedSignal[];
+  config: SignalDetectionConfig;
+}) {
+  const current = detections
+    .filter((signal) => signal.state !== 'released'
+      && signal.missedSweeps === 0
+      && Number.isFinite(signal.peakHz)
+      && Number.isFinite(signal.peakDbm)
+      && Number.isFinite(signal.bandwidthHz)
+      && Number.isFinite(signal.prominenceDb))
+    .sort((left, right) => Number(right.state === 'active') - Number(left.state === 'active')
+      || right.peakDbm - left.peakDbm)
+    .slice(0, 8);
+  const activeCount = current.filter((signal) => signal.state === 'active').length;
+  const candidateCount = current.length - activeCount;
+  return <section className="detection-results-panel" aria-label="Detected signal regions">
+    <header><span><RadioTower size={14}/><strong>Signal regions</strong></span><em aria-live="polite" aria-atomic="true">{activeCount} tracked · {candidateCount} candidate{candidateCount === 1 ? '' : 's'}</em></header>
+    {current.length === 0
+      ? <div className="detection-results-empty"><strong>{sweep ? 'No regions above threshold' : 'No sweep to detect'}</strong><span>{sweep ? 'Adjust the relative margin or acquire another frame.' : 'Use Single for one candidate look, or Run for persistent tracking.'}</span></div>
+      : <div className="detection-result-list">{current.map((signal) => {
+        const promoted = signal.state === 'active';
+        const progress = Math.min(signal.persistenceSweeps, config.minimumConsecutiveSweeps);
+        return <article key={signal.id} className={promoted ? 'active' : 'candidate'}>
+          <div><span className="detection-state">{promoted ? 'TRACKED' : 'CANDIDATE'}</span><strong>{formatFrequency(signal.peakHz)}</strong><em>{formatPowerLevel(signal.peakDbm, sweep?.powerReference)}</em></div>
+          <div><span>{formatFrequency(signal.bandwidthHz)} wide</span><span>{signal.prominenceDb.toFixed(1)} dB prominence</span><strong>{promoted ? `${signal.persistenceSweeps} sweeps tracked` : `${progress} / ${config.minimumConsecutiveSweeps} sweeps to track`}</strong></div>
+        </article>;
+      })}</div>}
+    {candidateCount > 0 && <p>Single exposes a candidate immediately. Repeat Single or use Run to satisfy the configured persistence gate.</p>}
   </section>;
 }
 

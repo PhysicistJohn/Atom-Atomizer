@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstrumentAcquisitionCapability, MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
 import { DEFAULT_COMPLEX_IQ_CONFIGURATION } from '../complex-iq.js';
@@ -195,7 +195,9 @@ describe('desktop navigation and compact measurement layout', () => {
       expect(topBar.queryByRole('button', { name: removedTopTab })).toBeNull();
     }
     expect(topBar.getByRole('button', { name: 'Sweep setup' })).toBeTruthy();
-    expect(topBar.getByRole('button', { name: 'Traces & markers' })).toBeTruthy();
+    expect(topBar.getByRole('button', { name: 'Traces' })).toBeTruthy();
+    expect(topBar.getByRole('button', { name: 'Markers' })).toBeTruthy();
+    expect(topBar.getByRole('button', { name: 'Display' })).toBeTruthy();
     expect(topBar.getByRole('button', { name: 'Export CSV' })).toBeTruthy();
     expect(topBar.queryByRole('button', { name: 'Run' })).toBeNull();
     expect(topBar.queryByRole('button', { name: 'Single' })).toBeNull();
@@ -203,7 +205,7 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(within(view.container).getByLabelText('Spectrum plot')).toBeTruthy();
   });
 
-  it('offers driver-neutral capture setup instead of dead sweep controls for an I/Q-only source', () => {
+  it('offers direct, dismissible capture and trace drawers for an I/Q-only source', async () => {
     const onIqConfiguration = vi.fn();
     const view = render(<MeasurementWorkspace
       view="spectrum"
@@ -247,11 +249,29 @@ describe('desktop navigation and compact measurement layout', () => {
 
     const setup = within(view.container).getByRole('button', { name: 'Capture setup' });
     expect(within(view.container).queryByRole('button', { name: 'Sweep setup' })).toBeNull();
+    expect(setup.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(setup);
-    const overlay = within(view.container).getByRole('region', { name: 'Capture setup overlay' });
+    const overlay = within(view.container).getByRole('region', { name: 'Capture setup panel' });
+    expect(setup.getAttribute('aria-expanded')).toBe('true');
     expect(within(overlay).getByText('DRIVER ADVERTISED')).toBeTruthy();
     expect(within(overlay).getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
     expect(within(overlay).getByText('ci16le')).toBeTruthy();
+    fireEvent.click(within(overlay).getByRole('button', { name: 'Close Capture setup' }));
+    expect(within(view.container).queryByRole('region', { name: 'Capture setup panel' })).toBeNull();
+    expect(setup.getAttribute('aria-expanded')).toBe('false');
+    await waitFor(() => expect(document.activeElement).toBe(setup));
+
+    const tracesButton = within(view.container).getByRole('button', { name: 'Traces' });
+    fireEvent.click(tracesButton);
+    const traceDrawer = within(view.container).getByRole('region', { name: 'Trace controls panel' });
+    await waitFor(() => expect(document.activeElement).toBe(traceDrawer));
+    expect(within(traceDrawer).getByRole('button', { name: /Traces1\/4/i }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(traceDrawer).getByText('TRACE 4')).toBeTruthy();
+    const markersTab = within(traceDrawer).getByRole('button', { name: /Markers0\/8/i });
+    markersTab.focus();
+    fireEvent.click(markersTab);
+    await waitFor(() => expect(within(view.container).getByRole('region', { name: 'Marker controls panel' })).toBeTruthy());
+    expect(document.activeElement).toBe(markersTab);
   });
 
   it('binds the DEV marker readout diagnostic to its source sweep', () => {

@@ -41,6 +41,7 @@ export function DetectContainer({ runtime }: { runtime: RendererRuntime }) {
     live={s.continuous}
     sampleCount={s.classification.sampleCount}
     sweep={s.sweep}
+    detections={s.detections}
     detectionConfig={s.detectionConfig}
     detectorBusy={s.busy}
     onDetectionConfig={(config) => kernel.applyDetectionConfiguration(config)}
