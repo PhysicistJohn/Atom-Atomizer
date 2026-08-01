@@ -44,6 +44,9 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
       signalBandwidthHz: capture.signalBandwidthHz,
       nativeSampleRateHz: capture.nativeSampleRateHz,
       payloadKind: capture.payloadKind,
+      adcSignificantBits: capture.adcSignificantBits,
+      adcFullScaleCode: capture.adcFullScaleCode,
+      powerReference: capture.powerReference,
     };
     try { return { preview: previewComplexIq(capture), previewError: undefined, captureMeta: meta }; }
     catch (error) {
@@ -89,5 +92,6 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     busy={!s.connected || s.busy}
     captureUnavailableReason={s.captureUnavailableReason}
     onChange={(configuration) => runtime.acquisition.stageIqConfiguration(configuration)}
+    onExport={() => void runtime.features.exportLatestIqFromUi()}
   />;
 }

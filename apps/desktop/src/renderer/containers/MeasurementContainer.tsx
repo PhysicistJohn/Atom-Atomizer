@@ -2,12 +2,15 @@ import { useMemo, type ReactNode } from 'react';
 import { Download } from 'lucide-react';
 import { readMarkers } from '@tinysa/analysis';
 import { MeasurementWorkspace } from '../components/MeasurementWorkspace.js';
-import { selectBusy, selectSpectrumCapability, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
+import { selectBusy, selectIqCapability, selectSpectrumCapability, selectSpectrumCapabilityAvailable, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
 const selectMeasurementState = (state: AtomizerRendererState) => ({
   measurementView: state.measurementView,
   spectrumCapability: selectSpectrumCapability(state),
+  iqCapability: selectIqCapability(state),
+  spectrumCapabilityAvailable: selectSpectrumCapabilityAvailable(state),
+  iqConfiguration: state.iqConfiguration,
   analyzer: state.analyzer,
   sweep: state.sweep,
   history: state.history,
@@ -52,7 +55,7 @@ export function MeasurementContainer({ runtime, measurementActions }: {
   return <MeasurementWorkspace
     measurementActions={measurementActions}
     view={s.measurementView}
-    analyzer={s.analyzer} spectrumCapability={s.spectrumCapability} busy={s.busy} streaming={s.continuous} onAnalyzer={(configuration) => void acquisition.updateAnalyzerFromUi(configuration)}
+    analyzer={s.analyzer} spectrumCapability={s.spectrumCapability} iqCapability={s.iqCapability} iqConfiguration={s.iqConfiguration} spectrumCapabilityAvailable={s.spectrumCapabilityAvailable} busy={s.busy} streaming={s.continuous} onAnalyzer={(configuration) => void acquisition.updateAnalyzerFromUi(configuration)} onIqConfiguration={(configuration) => acquisition.stageIqConfiguration(configuration)}
     sweep={s.sweep} history={s.history} detections={s.detections} acquisition={s.acquisition}
     traces={s.traceConfiguration} frames={s.traceFrames} firmwareFrames={s.firmwareTraceFrames} visibleFirmwareTraceIds={s.visibleFirmwareTraceIds} onFirmwareTraceVisibility={(traceId, visible) => measurement.configureFirmwareTraceVisibility(traceId, visible)} activeTraceId={s.activeTraceId} onActiveTrace={(traceId) => runtime.store.set({ activeTraceId: traceId })} markers={s.markers} readings={markerReadings}
     activeMarkerId={s.activeMarkerId} markerSearch={s.markerSearchConfiguration} display={s.displayConfiguration}

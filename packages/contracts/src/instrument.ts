@@ -273,7 +273,13 @@ function compactUint8ArraySchema(maximumBytes: number) {
   });
 }
 
-export const instrumentSourceKindSchema = z.enum(['serial-port', 'tinysa-firmware-twin', 'signal-lab']);
+export const instrumentSourceKindSchema = z.enum([
+  'serial-port',
+  'tinysa-firmware-twin',
+  'signal-lab',
+  'neptune-p210',
+  'neptune-p210-twin',
+]);
 export type InstrumentSourceKind = z.infer<typeof instrumentSourceKindSchema>;
 
 const candidateBaseShape = {
@@ -318,10 +324,46 @@ export const signalLabInstrumentCandidateDescriptorSchema = z.object({
   }).strict(),
 }).strict();
 
+/**
+ * The physical NeptuneSDR/HAMGEEK P210 (AD9361), reached over the network via
+ * libiio. This is network endpoint evidence only; there is no VID/PID or
+ * serial path because the board is never a local USB/serial device to this
+ * host. `endpoint` is the IIO context URI or bare host (for example
+ * `ip:10.0.0.250`); `contextDescription` is only present when a live probe
+ * returned one.
+ */
+export const neptuneP210CandidateDescriptorSchema = z.object({
+  ...candidateBaseShape,
+  sourceKind: z.literal('neptune-p210'),
+  neptuneP210: z.object({
+    endpoint: endpointPathSchema,
+    contextDescription: metadataStringSchema.optional(),
+  }).strict(),
+}).strict();
+
+/**
+ * The QEMU-executed digital twin of the P210, reached the same way (network
+ * libiio/iiod, typically localhost). `profile` names the firmware interface
+ * spec's declared QEMU execution profile. `physicalRfModeled` is always
+ * `false`: the twin proves only the digital IIO/FFT contact, never RF, PCB,
+ * or oscillator fidelity.
+ */
+export const neptuneP210TwinCandidateDescriptorSchema = z.object({
+  ...candidateBaseShape,
+  sourceKind: z.literal('neptune-p210-twin'),
+  neptuneP210Twin: z.object({
+    endpoint: endpointPathSchema,
+    profile: z.literal('qemu-development'),
+    physicalRfModeled: z.literal(false),
+  }).strict(),
+}).strict();
+
 export const instrumentCandidateDescriptorSchema = z.discriminatedUnion('sourceKind', [
   serialInstrumentCandidateDescriptorSchema,
   tinySaFirmwareTwinCandidateDescriptorSchema,
   signalLabInstrumentCandidateDescriptorSchema,
+  neptuneP210CandidateDescriptorSchema,
+  neptuneP210TwinCandidateDescriptorSchema,
 ]);
 export type InstrumentCandidateDescriptor = z.infer<typeof instrumentCandidateDescriptorSchema>;
 
@@ -347,10 +389,18 @@ export const tinySaFirmwareTwinCandidateSchema = tinySaFirmwareTwinCandidateDesc
 export const signalLabInstrumentCandidateSchema = signalLabInstrumentCandidateDescriptorSchema.extend({
   discoveryRevision: instrumentOpaqueIdSchema,
 }).strict();
+export const neptuneP210CandidateSchema = neptuneP210CandidateDescriptorSchema.extend({
+  discoveryRevision: instrumentOpaqueIdSchema,
+}).strict();
+export const neptuneP210TwinCandidateSchema = neptuneP210TwinCandidateDescriptorSchema.extend({
+  discoveryRevision: instrumentOpaqueIdSchema,
+}).strict();
 export const instrumentCandidateSchema = z.discriminatedUnion('sourceKind', [
   serialInstrumentCandidateSchema,
   tinySaFirmwareTwinCandidateSchema,
   signalLabInstrumentCandidateSchema,
+  neptuneP210CandidateSchema,
+  neptuneP210TwinCandidateSchema,
 ]);
 export type InstrumentCandidate = z.infer<typeof instrumentCandidateSchema>;
 
@@ -495,6 +545,10 @@ export const detectedPowerTimeseriesCapabilitySchema = z.object({
   powerUnit: z.literal('dBm'),
   timing: z.literal('uniform'),
 }).strict();
+// Single-channel only. The P210 is a 2x2 AD9361, but two-channel/MIMO
+// capture is deliberately out of scope for this pass: per ADR 0004, new
+// common semantics need at least two credible consumers before they widen
+// this shape, and it would require its own versioned contract addition.
 export const complexIqCapabilitySchema = z.object({
   kind: z.literal('complex-iq'),
   centerFrequencyHz: frequencyRangeSchema,
@@ -1081,6 +1135,24 @@ export function instrumentCapabilitySourceBindingIssues(
     }
     return issues;
   }
+  if (sourceKind === 'neptune-p210' || sourceKind === 'neptune-p210-twin') {
+    // Neptune v1 is receive-only complex-I/Q. No scalar acquisition of any
+    // control model (receiver or synthetic-scalar), no RF-generator feature,
+    // and no borrowed SignalLab profile-selection surface are admitted.
+    if (scalar.length !== 0) {
+      issues.push({ path: ['acquisitions'], message: `${sourceKind} must not advertise swept-spectrum or detected-power scalar acquisitions` });
+    }
+    if (!capabilities.acquisitions.some((capability) => capability.kind === 'complex-iq')) {
+      issues.push({ path: ['acquisitions'], message: `${sourceKind} must advertise complex-I/Q acquisition` });
+    }
+    if (capabilities.features.some((feature) => feature.kind === 'rf-generator')) {
+      issues.push({ path: ['features'], message: `${sourceKind} is receive-only in v1 and must not advertise an RF-generator feature` });
+    }
+    if (capabilities.features.some((feature) => feature.kind === 'signal-lab-profile-selection')) {
+      issues.push({ path: ['features'], message: `${sourceKind} cannot advertise SignalLab profile selection` });
+    }
+    return issues;
+  }
   if (scalar.some((capability) => capability.controls.model !== 'receiver')) {
     issues.push({ path: ['acquisitions'], message: `${sourceKind} scalar acquisitions must expose receiver controls` });
   }
@@ -1322,10 +1394,35 @@ export const signalLabInstrumentSessionProvenanceSchema = z.object({
   }).strict(),
 }).strict();
 
+/** Physical P210 session provenance: network endpoint evidence only, matching the candidate. */
+export const neptuneP210SessionProvenanceSchema = z.object({
+  sourceKind: z.literal('neptune-p210'),
+  execution: z.literal('physical'),
+  transport: z.literal('libiio-network'),
+  qualification: z.literal('device-observed'),
+  verifiedAt: instrumentTimestampSchema,
+  endpoint: endpointPathSchema,
+  contextDescription: metadataStringSchema.optional(),
+}).strict();
+
+/** QEMU-twin session provenance: same network transport, explicit non-RF execution evidence. */
+export const neptuneP210TwinSessionProvenanceSchema = z.object({
+  sourceKind: z.literal('neptune-p210-twin'),
+  execution: z.literal('firmware-executed-twin'),
+  transport: z.literal('libiio-network'),
+  qualification: z.literal('firmware-executed-twin'),
+  verifiedAt: instrumentTimestampSchema,
+  endpoint: endpointPathSchema,
+  profile: z.literal('qemu-development'),
+  physicalRfModeled: z.literal(false),
+}).strict();
+
 export const instrumentSessionProvenanceSchema = z.discriminatedUnion('sourceKind', [
   serialInstrumentSessionProvenanceSchema,
   tinySaFirmwareTwinSessionProvenanceSchema,
   signalLabInstrumentSessionProvenanceSchema,
+  neptuneP210SessionProvenanceSchema,
+  neptuneP210TwinSessionProvenanceSchema,
 ]);
 export type InstrumentSessionProvenance = z.infer<typeof instrumentSessionProvenanceSchema>;
 
@@ -1544,6 +1641,18 @@ const syntheticScalarControlsSchema = z.object({
   model: z.literal('synthetic-scalar'),
   timingQualification: z.literal('simulation-exact'),
 }).strict();
+/**
+ * A post-hoc scalar projection of a complex-I/Q capture (Welch periodogram),
+ * never a native swept-spectrum acquisition. There is no receiver RBW/
+ * attenuation/detector to describe here -- `fftSize` and `window` are the
+ * complete, honest record of how the projection was computed.
+ */
+const hostDerivedIqProjectionControlsSchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('host-derived-iq-projection'),
+  fftSize: z.number().int().positive(),
+  window: z.literal('hann-periodic'),
+}).strict();
 
 export const sweptSpectrumConfigurationSchema = z.object({
   kind: z.literal('swept-spectrum'),
@@ -1557,6 +1666,7 @@ export const sweptSpectrumConfigurationSchema = z.object({
   controls: z.discriminatedUnion('model', [
     receiverScalarSpectrumControlsSchema,
     syntheticScalarControlsSchema,
+    hostDerivedIqProjectionControlsSchema,
   ]),
 }).strict().superRefine((configuration, context) => {
   if (configuration.stopHz <= configuration.startHz) {
@@ -1564,6 +1674,9 @@ export const sweptSpectrumConfigurationSchema = z.object({
   }
   if (configuration.controls.model === 'synthetic-scalar' && configuration.sweepTimeSeconds === 'auto') {
     context.addIssue({ code: 'custom', path: ['sweepTimeSeconds'], message: 'Synthetic scalar sweeps require an exact simulated sweep time' });
+  }
+  if (configuration.controls.model === 'host-derived-iq-projection' && configuration.sweepTimeSeconds === 'auto') {
+    context.addIssue({ code: 'custom', path: ['sweepTimeSeconds'], message: 'Host-derived I/Q projections require the exact capture duration' });
   }
 });
 export type SweptSpectrumConfiguration = z.infer<typeof sweptSpectrumConfigurationSchema>;
@@ -2162,6 +2275,19 @@ export const complexIqMeasurementSchema = z.object({
   normalization: z.enum(['unit-peak', 'none', 'peak-to-0.98']).optional(),
   receiverImpairment: signalLabReceiverImpairmentPresetSchema.optional(),
   channelApplication: z.enum(['not-applied', 'receiver-impairment-preset']).optional(),
+  /**
+   * Neptune P210-only AD9361 front-end evidence. Parallel to, and never
+   * combined with, the SignalLab v2 semantic block above: omitted by v1,
+   * SignalLab, and every driver other than the P210/twin. The AD9361 RX ADC
+   * packs 12 significant bits into a 16-bit sample slot with a fixed
+   * full-scale code of 2048. There is no generic power-unit field on
+   * complex-I/Q measurements today, so `powerReference` is the explicit
+   * marker that this power is uncalibrated dBFS-relative and must never be
+   * presented or exported as dBm.
+   */
+  adcSignificantBits: z.literal(12).optional(),
+  adcFullScaleCode: z.literal(2048).optional(),
+  powerReference: z.literal('uncalibrated-dbfs-relative').optional(),
 }).strict().superRefine((measurement, context) => {
   if (measurement.bandwidthHz > measurement.sampleRateHz) {
     context.addIssue({ code: 'custom', path: ['bandwidthHz'], message: 'Complex-I/Q bandwidth cannot exceed its sample rate' });
@@ -2195,6 +2321,22 @@ export const complexIqMeasurementSchema = z.object({
     'channelApplication',
   ] as const;
   const semanticCount = semanticKeys.filter((key) => measurement[key] !== undefined).length;
+  const neptuneAdcEvidenceKeys = ['adcSignificantBits', 'adcFullScaleCode', 'powerReference'] as const;
+  const neptuneAdcEvidenceCount = neptuneAdcEvidenceKeys.filter((key) => measurement[key] !== undefined).length;
+  if (neptuneAdcEvidenceCount !== 0 && semanticCount !== 0) {
+    context.addIssue({
+      code: 'custom',
+      path: ['adcFullScaleCode'],
+      message: 'Neptune P210 ADC evidence must not be combined with SignalLab v2 I/Q semantics',
+    });
+  }
+  if (neptuneAdcEvidenceCount !== 0 && neptuneAdcEvidenceCount !== neptuneAdcEvidenceKeys.length) {
+    context.addIssue({
+      code: 'custom',
+      path: ['adcFullScaleCode'],
+      message: 'Neptune P210 ADC evidence must be present atomically',
+    });
+  }
   if (semanticCount !== 0 && semanticCount !== semanticKeys.length) {
     context.addIssue({
       code: 'custom',
@@ -2517,6 +2659,24 @@ export const instrumentSessionSnapshotSchema = z.object({
         }
         break;
       }
+      case 'neptune-p210': {
+        if (session.provenance.sourceKind !== 'neptune-p210') throw new Error('Candidate/provenance source narrowing failed');
+        for (const field of ['endpoint', 'contextDescription'] as const) {
+          if (session.candidate.neptuneP210[field] !== session.provenance[field]) {
+            context.addIssue({ code: 'custom', path: ['provenance', field], message: `Session Neptune P210 ${field} must match discovery evidence` });
+          }
+        }
+        break;
+      }
+      case 'neptune-p210-twin': {
+        if (session.provenance.sourceKind !== 'neptune-p210-twin') throw new Error('Candidate/provenance source narrowing failed');
+        for (const field of ['endpoint', 'profile', 'physicalRfModeled'] as const) {
+          if (session.candidate.neptuneP210Twin[field] !== session.provenance[field]) {
+            context.addIssue({ code: 'custom', path: ['provenance', field], message: `Session Neptune P210 twin ${field} must match discovery evidence` });
+          }
+        }
+        break;
+      }
       default: {
         const unhandledCandidate: never = session.candidate;
         throw new Error(`Session candidate binding is undefined for ${JSON.stringify(unhandledCandidate)}`);
@@ -2592,6 +2752,11 @@ function expectedSessionRfOutputQualification(
     case 'serial-port': return 'command-acknowledged';
     case 'tinysa-firmware-twin': return 'firmware-executed-twin';
     case 'signal-lab': return 'not-applicable';
+    // Neptune v1 is receive-only: rfOutput is always 'not-supported' and is
+    // handled by the early return above, so these branches only exist to
+    // keep this switch exhaustive over InstrumentSessionProvenance.
+    case 'neptune-p210': return 'not-applicable';
+    case 'neptune-p210-twin': return 'not-applicable';
     default: {
       const unhandledProvenance: never = provenance;
       throw new Error(`RF-output qualification is undefined for ${JSON.stringify(unhandledProvenance)}`);

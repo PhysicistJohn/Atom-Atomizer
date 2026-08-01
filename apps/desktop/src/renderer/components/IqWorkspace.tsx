@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Activity, CircleDot, Cpu, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, CircleDot, Cpu, Download, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
 import { formatExactFrequency, formatFrequency } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
@@ -25,12 +25,22 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
   'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'
   | 'profileReferenceCenterHz' | 'rfReferenceCenterHz' | 'nativeCarrierOffsetHz' | 'rfPlacement'
-  | 'outputCarrierOffsetHz' | 'rfTuneCenterHz' | 'signalBandwidthHz' | 'nativeSampleRateHz' | 'payloadKind'> {}
+  | 'outputCarrierOffsetHz' | 'rfTuneCenterHz' | 'signalBandwidthHz' | 'nativeSampleRateHz' | 'payloadKind'
+  | 'adcSignificantBits' | 'adcFullScaleCode' | 'powerReference'> {}
+
+export interface IqCaptureSetupProps {
+  configuration: ComplexIqConfiguration;
+  capability?: ComplexIqCapability;
+  captureMeta?: IqCaptureMeta;
+  busy: boolean;
+  captureUnavailableReason?: string;
+  onChange(configuration: ComplexIqConfiguration): void;
+}
 
 export function IqWorkspace({
   configuration, capability, preview, previewError, captureMeta, modulation,
   classificationPending = false, classificationIssue, recovered, busy,
-  captureUnavailableReason, onChange,
+  captureUnavailableReason, onChange, onExport,
 }: {
   configuration: ComplexIqConfiguration;
   capability?: ComplexIqCapability;
@@ -44,11 +54,11 @@ export function IqWorkspace({
   busy: boolean;
   captureUnavailableReason?: string;
   onChange(configuration: ComplexIqConfiguration): void;
+  onExport?(): void;
 }) {
   const [plotZoom, setPlotZoom] = useState(1);
   const capture = captureMeta;
   const durationSeconds = capture ? capture.sampleCount / capture.sampleRateHz : undefined;
-  const equalRateBandwidth = capability?.bandwidthMode === 'equal-to-sample-rate';
 
   return <div
     className="iq-workspace"
@@ -69,6 +79,7 @@ export function IqWorkspace({
             <button type="button" aria-label="Zoom I/Q plots in" title="Zoom I/Q plots in" disabled={!preview || plotZoom >= 8} onClick={() => setPlotZoom((current) => Math.min(8, current * 2))}><ZoomIn size={13}/></button>
             <output aria-label="I/Q plot zoom">{formatPlotZoom(plotZoom)}</output>
           </div>
+          {onExport && <button type="button" className="iq-export-button" data-agent-control="export.sigmf" disabled={!capture} aria-label="Export SigMF" title={capture ? 'Export byte-exact SigMF capture' : 'Acquire a capture before exporting'} onClick={onExport}><Download size={12}/><span>SigMF</span></button>}
           <span className="iq-format-badge">{capture?.sampleFormat ?? configuration.sampleFormat}</span>
         </div>
       </header>
@@ -96,39 +107,66 @@ export function IqWorkspace({
       </footer>
     </section>
 
-    <section className="iq-control-panel">
-      <div className="panel-header"><div><Cpu size={14}/>Capture setup</div><span>{capability ? 'DRIVER ADVERTISED' : 'UNAVAILABLE'}</span></div>
-      <div className="parameter-stack iq-parameter-stack">
-        <EditableParameter label="Center frequency" value={configuration.centerHz} displayValue={formatExactFrequency(configuration.centerHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, centerHz: Number(value) })}/>
-        <EditableParameter label="Sample rate" value={configuration.sampleRateHz} displayValue={formatFrequency(configuration.sampleRateHz)} unit="Hz" minimum={capability?.sampleRateHz.min} maximum={capability?.sampleRateHz.max} step={capability?.sampleRateHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleRateHz: Number(value) })}/>
-        <EditableParameter label={equalRateBandwidth ? 'Capture bandwidth · rate locked' : 'Capture bandwidth'} value={configuration.bandwidthHz} displayValue={formatFrequency(configuration.bandwidthHz)} unit="Hz" minimum={capability?.bandwidthHz.min} maximum={Math.min(capability?.bandwidthHz.max ?? 0, configuration.sampleRateHz)} step={capability?.bandwidthHz.step ?? 1} disabled={!capability || busy || equalRateBandwidth} onCommit={(value) => onChange({ ...configuration, bandwidthHz: Number(value) })}/>
-        <EditableParameter label="Complex samples" value={configuration.sampleCount} displayValue={configuration.sampleCount.toLocaleString()} minimum={capability?.sampleCount.min} maximum={capability?.sampleCount.max} step={capability?.sampleCount.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleCount: Number(value) })}/>
-      </div>
-      <div className="iq-driver-facts">
-        <span><small>Wire format</small><strong>{capability?.sampleFormat ?? '—'}</strong></span>
-        <span><small>Capture bytes</small><strong>{formatBytes(configuration.sampleCount * bytesPerSample(configuration.sampleFormat))}</strong></span>
-        {capture?.payloadKind && <span><small>Payload lineage</small><strong>{capture.payloadKind.replaceAll('-', ' ')}</strong></span>}
-        {capture?.profileReferenceCenterHz !== undefined && <span>
-          <small>Profile signal center</small>
-          <strong>{formatExactFrequency(capture.profileReferenceCenterHz)} · {capture.rfPlacement?.replaceAll('-', ' ')}</strong>
-        </span>}
-        {capture?.rfReferenceCenterHz !== undefined && <span>
-          <small>Native RF reference</small>
-          <strong>{formatExactFrequency(capture.rfReferenceCenterHz)}</strong>
-        </span>}
-        {capture?.nativeCarrierOffsetHz !== undefined && <span>
-          <small>Carrier offset · native / output</small>
-          <strong>{formatSignedFrequency(capture.nativeCarrierOffsetHz)} / {formatSignedFrequency(capture.outputCarrierOffsetHz!)}</strong>
-        </span>}
-        {capture?.rfTuneCenterHz !== undefined && <span>
-          <small>Output RF tune center</small>
-          <strong>{formatExactFrequency(capture.rfTuneCenterHz)}</strong>
-        </span>}
-      </div>
-      {captureUnavailableReason && <div className="inline-error" role="status">{captureUnavailableReason}</div>}
-      <div className="channel-contract-note"><Activity size={14}/><p>Use sidebar Single for one bounded buffer or Run for one-at-a-time, backpressured buffers. Atomizer preserves native encoding and validates exact byte geometry.</p></div>
-    </section>
+    <IqCaptureSetup
+      configuration={configuration}
+      capability={capability}
+      captureMeta={capture}
+      busy={busy}
+      captureUnavailableReason={captureUnavailableReason}
+      onChange={onChange}
+    />
   </div>;
+}
+
+/** Driver-neutral I/Q controls shared by the I/Q workspace and every
+ * host-derived scalar-spectrum view. A complex-I/Q-only source can therefore
+ * retune and change capture geometry from Spectrum without Atomizer exposing
+ * disabled native-sweep controls that the instrument never advertised. */
+export function IqCaptureSetup({
+  configuration,
+  capability,
+  captureMeta: capture,
+  busy,
+  captureUnavailableReason,
+  onChange,
+}: IqCaptureSetupProps) {
+  const equalRateBandwidth = capability?.bandwidthMode === 'equal-to-sample-rate';
+  return <section className="iq-control-panel">
+    <div className="panel-header"><div><Cpu size={14}/>Capture setup</div><span>{capability ? 'DRIVER ADVERTISED' : 'UNAVAILABLE'}</span></div>
+    <div className="parameter-stack iq-parameter-stack">
+      <EditableParameter label="Center frequency" value={configuration.centerHz} displayValue={formatExactFrequency(configuration.centerHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, centerHz: Number(value) })}/>
+      <EditableParameter label="Sample rate" value={configuration.sampleRateHz} displayValue={formatFrequency(configuration.sampleRateHz)} unit="Hz" minimum={capability?.sampleRateHz.min} maximum={capability?.sampleRateHz.max} step={capability?.sampleRateHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleRateHz: Number(value) })}/>
+      <EditableParameter label={equalRateBandwidth ? 'Capture bandwidth · rate locked' : 'Capture bandwidth'} value={configuration.bandwidthHz} displayValue={formatFrequency(configuration.bandwidthHz)} unit="Hz" minimum={capability?.bandwidthHz.min} maximum={Math.min(capability?.bandwidthHz.max ?? 0, configuration.sampleRateHz)} step={capability?.bandwidthHz.step ?? 1} disabled={!capability || busy || equalRateBandwidth} onCommit={(value) => onChange({ ...configuration, bandwidthHz: Number(value) })}/>
+      <EditableParameter label="Complex samples" value={configuration.sampleCount} displayValue={configuration.sampleCount.toLocaleString()} minimum={capability?.sampleCount.min} maximum={capability?.sampleCount.max} step={capability?.sampleCount.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleCount: Number(value) })}/>
+    </div>
+    <div className="iq-driver-facts">
+      <span><small>Wire format</small><strong>{capability?.sampleFormat ?? '—'}</strong></span>
+      <span><small>Capture bytes</small><strong>{formatBytes(configuration.sampleCount * bytesPerSample(configuration.sampleFormat))}</strong></span>
+      {capture?.payloadKind && <span><small>Payload lineage</small><strong>{capture.payloadKind.replaceAll('-', ' ')}</strong></span>}
+      {capture?.profileReferenceCenterHz !== undefined && <span>
+        <small>Profile signal center</small>
+        <strong>{formatExactFrequency(capture.profileReferenceCenterHz)} · {capture.rfPlacement?.replaceAll('-', ' ')}</strong>
+      </span>}
+      {capture?.rfReferenceCenterHz !== undefined && <span>
+        <small>Native RF reference</small>
+        <strong>{formatExactFrequency(capture.rfReferenceCenterHz)}</strong>
+      </span>}
+      {capture?.nativeCarrierOffsetHz !== undefined && <span>
+        <small>Carrier offset · native / output</small>
+        <strong>{formatSignedFrequency(capture.nativeCarrierOffsetHz)} / {formatSignedFrequency(capture.outputCarrierOffsetHz!)}</strong>
+      </span>}
+      {capture?.rfTuneCenterHz !== undefined && <span>
+        <small>Output RF tune center</small>
+        <strong>{formatExactFrequency(capture.rfTuneCenterHz)}</strong>
+      </span>}
+      {capture?.adcSignificantBits !== undefined && <span>
+        <small>AD9361 ADC evidence</small>
+        <strong>{capture.adcSignificantBits}-bit · full scale {capture.adcFullScaleCode} · {capture.powerReference?.replaceAll('-', ' ')}</strong>
+      </span>}
+    </div>
+    {captureUnavailableReason && <div className="inline-error" role="status">{captureUnavailableReason}</div>}
+    <div className="channel-contract-note"><Activity size={14}/><p>Use sidebar Single for one bounded buffer or Run for one-at-a-time, backpressured buffers. Atomizer preserves native encoding and validates exact byte geometry.</p></div>
+  </section>;
 }
 
 // Retained canvases with rAF latest-wins (same pattern as SpectrumPlot):

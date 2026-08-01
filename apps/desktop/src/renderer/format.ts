@@ -1,3 +1,5 @@
+import type { SweepPowerReference } from '@tinysa/contracts';
+
 export function formatFrequency(hz: number, precision = 3): string {
   const absolute = Math.abs(hz);
   if (absolute >= 1_000_000_000) return `${trim(hz / 1_000_000_000, precision)} GHz`;
@@ -19,6 +21,19 @@ export function parseFrequency(text: string): number {
   return hz;
 }
 export function formatLevel(dbm: number): string { return `${dbm.toFixed(1)} dBm`; }
+export function formatPowerLevel(value: number, reference?: SweepPowerReference): string {
+  return reference === 'uncalibrated-dbfs-relative'
+    ? `${value.toFixed(1)} dBFS (relative)`
+    : formatLevel(value);
+}
+export function powerAxisUnit(reference?: SweepPowerReference): 'dBm' | 'dBFS rel.' {
+  return reference === 'uncalibrated-dbfs-relative' ? 'dBFS rel.' : 'dBm';
+}
+export function formatPowerDensity(value: number, reference?: SweepPowerReference): string {
+  return reference === 'uncalibrated-dbfs-relative'
+    ? `${value.toFixed(1)} dBFS/Hz (relative)`
+    : `${value.toFixed(1)} dBm/Hz`;
+}
 export function formatSpan(startHz: number, stopHz: number): string { return formatFrequency(stopHz - startHz); }
 export function median(values: readonly number[]): number {
   if (values.length === 0) return Number.NaN;

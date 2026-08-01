@@ -17,6 +17,7 @@ import {
   type SweptSpectrumConfiguration,
   type DetectedPowerTimeseriesConfiguration,
   type InstrumentSessionProvenance,
+  type InstrumentMeasurement,
   type InstrumentReceiveOnlySafetyState,
   type ReceiveOnlySafetyReceipt,
 } from './instrument.js';
@@ -511,6 +512,8 @@ export interface TraceFrame {
   actualRbwHz: number;
   /** Exact qualification retained with actualRbwHz; absence is itself part of the provenance. */
   resolutionBandwidthQualification?: ResolutionBandwidthQualification;
+  /** Present only when the retained scalar values are uncalibrated full-scale-relative I/Q projections. */
+  powerReference?: SweepPowerReference;
   sweepCount: number;
   sourceSweepId: string;
   evidence: 'host-derived';
@@ -525,6 +528,8 @@ export interface MarkerReading {
   deltaFrequencyHz?: number;
   deltaPowerDb?: number;
   noiseDensityDbmHz?: number;
+  /** Retained from the trace so legacy `*Dbm` storage fields are never presented as calibrated dBm by mistake. */
+  powerReference?: SweepPowerReference;
   /** Evidence-local shape and component-bounded OBW; never a whole-span or protocol-label projection. */
   localCharacterization: MarkerLocalCharacterization;
   sourceSweepId: string;
@@ -773,8 +778,12 @@ export interface InstrumentMeasurementIdentity {
   provenance: InstrumentSessionProvenance;
 }
 export type MeasurementIdentity = DeviceIdentity | InstrumentMeasurementIdentity;
-export type ResolutionBandwidthQualification = 'device-observed' | 'firmware-executed-twin' | 'synthetic-grid-equivalent' | 'unavailable';
+export type ResolutionBandwidthQualification = 'device-observed' | 'firmware-executed-twin' | 'synthetic-grid-equivalent' | 'host-derived-fft-bin' | 'unavailable';
 export type AttenuationQualification = 'device-observed' | 'firmware-executed-twin' | 'not-applicable';
+/** Additive qualification for scalar arrays whose legacy field name is
+ * `powerDbm` but whose values are not calibrated dBm. Absence preserves the
+ * existing calibrated/source-qualified scalar contract. */
+export type SweepPowerReference = 'uncalibrated-dbfs-relative';
 
 export interface Sweep {
   kind: 'spectrum';
@@ -784,6 +793,8 @@ export interface Sweep {
   elapsedMilliseconds: number;
   frequencyHz: readonly number[];
   powerDbm: readonly number[];
+  /** Explicit for uncalibrated full-scale-relative host projections; never infer dBm when present. */
+  powerReference?: SweepPowerReference;
   /** Exact scalar configuration admitted by the main-process driver boundary. */
   requested: SweptSpectrumConfiguration;
   actualStartHz: number;
@@ -794,7 +805,7 @@ export interface Sweep {
   resolutionBandwidthQualification?: ResolutionBandwidthQualification;
   /** Explicit whenever a driver-neutral projection supplied the analysis value. */
   attenuationQualification?: AttenuationQualification;
-  source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state' | 'instrument-driver-scalar' | 'signal-lab-synthetic';
+  source: 'scan-text' | 'scanraw-binary' | 'renode-executable-state' | 'instrument-driver-scalar' | 'signal-lab-synthetic' | 'host-derived-from-complex-iq';
   rawSweepOffsetDb?: number;
   firmwareTraces?: readonly FirmwareTraceFrame[];
   complete: true;
@@ -1426,17 +1437,18 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
   elapsedMilliseconds: z.number().finite().nonnegative().max(MAX_INSTRUMENT_ELAPSED_MILLISECONDS_V1),
   frequencyHz: boundedExportArray(exportFrequencySchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
   powerDbm: boundedExportArray(exportPowerSchema, MAX_SWEEP_EXPORT_POINTS_V1, 1),
+  powerReference: z.literal('uncalibrated-dbfs-relative').optional(),
   requested: sweptSpectrumConfigurationSchema,
   actualStartHz: exportFrequencySchema,
   actualStopHz: exportFrequencySchema,
   actualRbwHz: z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1),
   actualAttenuationDb: exportPowerSchema.nullable(),
   resolutionBandwidthQualification: z.enum([
-    'device-observed', 'firmware-executed-twin', 'synthetic-grid-equivalent', 'unavailable',
+    'device-observed', 'firmware-executed-twin', 'synthetic-grid-equivalent', 'host-derived-fft-bin', 'unavailable',
   ]).optional(),
   attenuationQualification: z.enum(['device-observed', 'firmware-executed-twin', 'not-applicable']).optional(),
   source: z.enum([
-    'scan-text', 'scanraw-binary', 'renode-executable-state', 'instrument-driver-scalar', 'signal-lab-synthetic',
+    'scan-text', 'scanraw-binary', 'renode-executable-state', 'instrument-driver-scalar', 'signal-lab-synthetic', 'host-derived-from-complex-iq',
   ]),
   rawSweepOffsetDb: exportPowerSchema.optional(),
   firmwareTraces: boundedExportArray(
@@ -1477,6 +1489,17 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
     && sweep.source !== 'scanraw-binary'
     && sweep.source !== 'renode-executable-state') {
     context.addIssue({ code: 'custom', path: ['rawSweepOffsetDb'], message: 'Raw sweep offset evidence requires binary scan or executable-twin acquisition provenance' });
+  }
+  if (sweep.powerReference !== undefined && sweep.source !== 'host-derived-from-complex-iq') {
+    context.addIssue({ code: 'custom', path: ['powerReference'], message: 'Uncalibrated dBFS-relative power requires host-derived complex-I/Q provenance' });
+  }
+  if (sweep.source === 'host-derived-from-complex-iq'
+    && sweep.requested.controls.model !== 'host-derived-iq-projection') {
+    context.addIssue({ code: 'custom', path: ['requested', 'controls', 'model'], message: 'Host-derived complex-I/Q provenance requires host-derived I/Q projection controls' });
+  }
+  if (sweep.requested.controls.model === 'host-derived-iq-projection'
+    && sweep.requested.controls.fftSize !== sweep.requested.points) {
+    context.addIssue({ code: 'custom', path: ['requested', 'controls', 'fftSize'], message: 'Host-derived FFT size must match the exported point count' });
   }
 
   const requireSource = (allowed: readonly Sweep['source'][], label: string): void => {
@@ -1534,6 +1557,26 @@ export const sweepExportSweepSchema: z.ZodType<Sweep> = z.object({
       ));
       if (!Number.isFinite(minimumGridSpacing) || minimumGridSpacing <= 0 || sweep.actualRbwHz !== minimumGridSpacing) {
         context.addIssue({ code: 'custom', path: ['actualRbwHz'], message: 'SignalLab synthetic-grid resolution must equal the minimum exported frequency spacing' });
+      }
+    } else if (provenance.sourceKind === 'neptune-p210' || provenance.sourceKind === 'neptune-p210-twin') {
+      requireExportControlModel(sweep, context, 'host-derived-iq-projection', 'Neptune P210 host-derived spectrum');
+      requireSource(['host-derived-from-complex-iq'], 'Neptune P210 host-derived spectrum');
+      requireResolutionQualification('host-derived-fft-bin', true, 'Neptune P210 host-derived spectrum');
+      if (sweep.powerReference !== 'uncalibrated-dbfs-relative') {
+        context.addIssue({ code: 'custom', path: ['powerReference'], message: 'Neptune P210 host-derived spectrum requires explicit uncalibrated dBFS-relative power evidence' });
+      }
+      if (sweep.firmwareTraces !== undefined) {
+        context.addIssue({ code: 'custom', path: ['firmwareTraces'], message: 'Neptune P210 host-derived spectrum cannot claim dBm firmware trace readback' });
+      }
+      if (sweep.actualAttenuationDb === null) {
+        requireAttenuation('not-applicable', 'not-applicable', true, 'Neptune P210 host-derived spectrum');
+      } else {
+        requireAttenuation(
+          provenance.execution === 'physical' ? 'device-observed' : 'firmware-executed-twin',
+          'observed',
+          true,
+          'Neptune P210 host-derived spectrum',
+        );
       }
     } else {
       const unhandledProvenance: never = provenance;
@@ -1600,10 +1643,22 @@ export type SweepExportResult =
   | { status: 'saved'; path: string; format: 'csv' | 'json'; bytesWritten: number }
   | { status: 'cancelled'; format: 'csv' | 'json' };
 
+/** Byte-exact complex-I/Q export request. The privileged main process admits
+ * the full measurement and its matching session identity before writing the
+ * paired SigMF metadata/data files. */
+export interface ComplexIqExportCapture {
+  measurement: Extract<InstrumentMeasurement, { kind: 'complex-iq' }>;
+  identity: InstrumentMeasurementIdentity;
+}
+export type ComplexIqExportResult =
+  | { status: 'saved'; metaPath: string; dataPath: string; bytesWritten: number }
+  | { status: 'cancelled' };
+
 export const ATOMIZER_FILES_API_VERSION = 1 as const;
 export interface AtomizerFilesApiV1 {
   readonly version: typeof ATOMIZER_FILES_API_VERSION;
   exportSweep(request: SweepExportRequest): Promise<SweepExportResult>;
+  exportComplexIq(request: ComplexIqExportCapture): Promise<ComplexIqExportResult>;
 }
 
 export type DeviceErrorCode = 'not-connected' | 'unsupported' | 'invalid-state' | 'invalid-request' | 'timeout' | 'cancelled' | 'transport' | 'protocol' | 'identity-mismatch';
@@ -1627,4 +1682,3 @@ export interface WaveformClassificationEvidence {
    */
   detectedPowerCaptureReceipt?: DetectedPowerCaptureReceipt;
 }
-

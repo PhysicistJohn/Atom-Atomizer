@@ -1,10 +1,11 @@
-import { hannSymmetric, realFftMagnitudesUnscaled } from '@atomos/dsp';
+import { decodeComplexSample, equivalentNoiseBandwidthBins, hannPeriodic, hannSymmetric, realFftMagnitudesUnscaled, welchPowerSpectrumPeriodicHann } from '@atomos/dsp';
 import type {
   AdjacentChannelMeasurement,
   AnalysisModeDefinition,
   ActivityAssociationObservation,
   ChannelMeasurementConfiguration,
   ChannelMeasurementResult,
+  ComplexIqSampleFormat,
   DetectedPowerCaptureProjectionKind,
   DetectedPowerCaptureReceipt,
   DetectedSignal,
@@ -30,6 +31,7 @@ import type {
 } from '@tinysa/contracts';
 import {
   channelMeasurementConfigurationSchema,
+  complexIqPayloadByteLength,
   envelopeStftConfigurationSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
@@ -1378,6 +1380,69 @@ export function computeEnvelopeStft(capture: ZeroSpanCapture, input: EnvelopeStf
   };
 }
 
+export interface DerivedSpectrumFromComplexIq {
+  readonly frequencyHz: readonly number[];
+  readonly powerDbm: readonly number[];
+  readonly actualRbwHz: number;
+  readonly fftSize: number;
+}
+
+/** Longest FFT a UI plot needs to render usefully; a wide Neptune-class
+ * capture (16384 samples) still yields several averaged Welch segments
+ * at this size instead of one unaveraged, noisier frame. */
+const HOST_DERIVED_SPECTRUM_MAXIMUM_FFT_SIZE = 4_096;
+
+/**
+ * Project a scalar power spectrum from a complex-I/Q capture: an averaged,
+ * Hann-windowed Welch periodogram, fftshifted about the tuned center. A
+ * spectrum is a projection of the complex I/Q vector -- producing one has
+ * never required a native swept-spectrum acquisition. Returned power is
+ * relative/unnormalized-reference (not calibrated dBm); callers must label
+ * it using the source measurement's own power reference (Neptune's
+ * `powerReference: 'uncalibrated-dbfs-relative'`, for example).
+ */
+export function deriveSpectrumFromComplexIq(capture: {
+  readonly samples: Uint8Array;
+  readonly sampleCount: number;
+  readonly sampleFormat: ComplexIqSampleFormat;
+  readonly centerHz: number;
+  readonly sampleRateHz: number;
+  /** ADC full-scale code when meaningful samples occupy only part of their wire slot. */
+  readonly adcFullScaleCode?: number;
+}): DerivedSpectrumFromComplexIq {
+  const expectedBytes = complexIqPayloadByteLength(capture.sampleCount, capture.sampleFormat);
+  if (capture.samples.byteLength !== expectedBytes) {
+    throw new RangeError(`I/Q payload contains ${capture.samples.byteLength} bytes; expected ${expectedBytes}`);
+  }
+  let fftSize = 1;
+  while (fftSize * 2 <= capture.sampleCount && fftSize * 2 <= HOST_DERIVED_SPECTRUM_MAXIMUM_FFT_SIZE) fftSize *= 2;
+  if (fftSize < 4) throw new Error('Spectrum projection requires at least four complex I/Q samples');
+
+  const view = new DataView(capture.samples.buffer, capture.samples.byteOffset, capture.samples.byteLength);
+  const re = new Float64Array(capture.sampleCount);
+  const im = new Float64Array(capture.sampleCount);
+  for (let index = 0; index < capture.sampleCount; index++) {
+    const [inPhase, quadrature] = decodeComplexSample(view, index, capture.sampleFormat, {
+      fullScaleCode: capture.adcFullScaleCode,
+    });
+    if (!Number.isFinite(inPhase) || !Number.isFinite(quadrature)) throw new RangeError(`I/Q sample ${index} contains a non-finite component`);
+    re[index] = inPhase;
+    im[index] = quadrature;
+  }
+
+  const window = hannPeriodic(fftSize);
+  const windowSumSquares = window.reduce((sum, value) => sum + value * value, 0);
+  const periodogram = welchPowerSpectrumPeriodicHann(re, im, fftSize);
+  const normalization = fftSize * windowSumSquares;
+  const powerDbm = Array.from(periodogram, (bin) => milliwattsToDbm(Math.max(Number.MIN_VALUE, bin / normalization)));
+
+  const binWidthHz = capture.sampleRateHz / fftSize;
+  const frequencyHz = Array.from({ length: fftSize }, (_, bin) => capture.centerHz + (bin - fftSize / 2) * binWidthHz);
+  const actualRbwHz = binWidthHz * equivalentNoiseBandwidthBins(window);
+
+  return { frequencyHz, powerDbm, actualRbwHz, fftSize };
+}
+
 interface TraceState {
   configuration: TraceConfiguration;
   frame?: TraceFrame;
@@ -1487,6 +1552,7 @@ export class TraceAccumulator {
         ...(sweep.resolutionBandwidthQualification === undefined
           ? {}
           : { resolutionBandwidthQualification: sweep.resolutionBandwidthQualification }),
+        ...(sweep.powerReference === undefined ? {} : { powerReference: sweep.powerReference }),
         sweepCount,
         sourceSweepId: sweep.id,
         evidence: 'host-derived',
@@ -1536,6 +1602,7 @@ export function readMarkers(
       frequencyHz: frame.frequencyHz[binIndex]!,
       powerDbm,
       ...(marker.mode === 'noise-density' ? { noiseDensityDbmHz: powerDbm - 10 * Math.log10(frame.actualRbwHz) } : {}),
+      ...(frame.powerReference === undefined ? {} : { powerReference: frame.powerReference }),
       localCharacterization: characterizeMarkerLocalTrace(
         frame,
         binIndex,
@@ -1557,6 +1624,10 @@ export function readMarkers(
     const reading = readings.get(marker.id);
     const reference = readings.get(marker.referenceMarkerId);
     if (!reading || !reference) continue;
+    if (reading.powerReference !== reference.powerReference) {
+      readings.delete(marker.id);
+      continue;
+    }
     readings.set(marker.id, {
       ...reading,
       deltaFrequencyHz: reading.frequencyHz - reference.frequencyHz,
@@ -1588,6 +1659,9 @@ export function searchMarker(
   if (!frame.frequencyHz.length || frame.frequencyHz.length !== frame.powerDbm.length) throw new Error('Marker search requires a complete trace frame');
   if (action === 'peak') return selectMarkerCenterOnTrace(frame, frame.actualRbwHz, detections).frequencyHz;
   if (action === 'minimum') return frame.frequencyHz[minimumIndex(frame.powerDbm)]!;
+  if (frame.powerReference === 'uncalibrated-dbfs-relative') {
+    throw new Error('Directional marker search requires an absolute dBm minimum level and is unavailable for uncalibrated dBFS-relative traces');
+  }
   const peaks = localPeakIndices(frame.powerDbm, search);
   const currentIndex = nearestFrequencyIndex(frame.frequencyHz, currentFrequencyHz);
   const candidates = action === 'next-left'
@@ -2224,7 +2298,8 @@ function sameFrequencyGrid(left: readonly number[], right: readonly number[]): b
 
 function sameTraceResolutionProvenance(frame: TraceFrame, sweep: Sweep): boolean {
   return frame.actualRbwHz === sweep.actualRbwHz
-    && frame.resolutionBandwidthQualification === sweep.resolutionBandwidthQualification;
+    && frame.resolutionBandwidthQualification === sweep.resolutionBandwidthQualification
+    && frame.powerReference === sweep.powerReference;
 }
 
 function isPassiveTraceMode(mode: TraceConfiguration['mode']): mode is 'view' | 'blank' {

@@ -252,7 +252,7 @@ export interface ComplexIqPreview {
  * UI work stays fixed even when a hardware driver returns the 64 MiB v1 limit.
  */
 export function previewComplexIq(
-  capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat'>,
+  capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat' | 'adcFullScaleCode'>,
   maximumPoints = 4_096,
 ): ComplexIqPreview {
   if (!Number.isSafeInteger(maximumPoints) || maximumPoints < 1 || maximumPoints > COMPLEX_IQ_RECOVERY_SAMPLE_LIMIT) {
@@ -275,7 +275,9 @@ export function previewComplexIq(
     const sampleIndex = inspectedSampleCount === 1
       ? 0
       : Math.round(previewIndex * (capture.sampleCount - 1) / (inspectedSampleCount - 1));
-    const [i, q] = decodeComplexSample(view, sampleIndex, capture.sampleFormat);
+    const [i, q] = decodeComplexSample(view, sampleIndex, capture.sampleFormat, {
+      fullScaleCode: capture.adcFullScaleCode,
+    });
     if (!Number.isFinite(i) || !Number.isFinite(q)) {
       throw new RangeError(`I/Q preview encountered a non-finite component at complex sample ${sampleIndex}`);
     }
@@ -307,7 +309,7 @@ export function previewComplexIq(
  * bounded prefix.
  */
 export function decodeComplexIqChannels(
-  capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat'>,
+  capture: Pick<ComplexIqMeasurement, 'samples' | 'sampleCount' | 'sampleFormat' | 'adcFullScaleCode'>,
   maxSamples = 4_096,
 ): { re: Float64Array; im: Float64Array } {
   const expectedBytes = complexIqPayloadByteLength(capture.sampleCount, capture.sampleFormat);
@@ -319,7 +321,9 @@ export function decodeComplexIqChannels(
   const re = new Float64Array(n);
   const im = new Float64Array(n);
   for (let k = 0; k < n; k++) {
-    const [i, q] = decodeComplexSample(view, k, capture.sampleFormat);
+    const [i, q] = decodeComplexSample(view, k, capture.sampleFormat, {
+      fullScaleCode: capture.adcFullScaleCode,
+    });
     re[k] = i;
     im[k] = q;
   }

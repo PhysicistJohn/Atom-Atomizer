@@ -15,7 +15,7 @@ import type {
   TraceFrame,
   TraceId,
 } from '@tinysa/contracts';
-import { formatFrequency, formatLevel } from '../format.js';
+import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
 
@@ -49,6 +49,10 @@ export function MeasurementDock(props: MeasurementDockProps) {
   const activeMarker = props.markers.find((marker) => marker.id === props.activeMarkerId);
   if (!activeMarker) throw new Error(`Active marker M${props.activeMarkerId} does not exist`);
   const activeReading = props.readings.find((reading) => reading.markerId === props.activeMarkerId);
+  const activeFrame = props.frames.find((frame) => frame.traceId === activeMarker.traceId);
+  const displayFrame = props.frames.find((frame) => frame.traceId === props.activeTraceId);
+  const activePowerReference = activeReading?.powerReference ?? activeFrame?.powerReference;
+  const relativePower = activePowerReference === 'uncalibrated-dbfs-relative';
   const enabledMarkers = props.markers.filter((marker) => marker.enabled);
   const visibleTraces = props.traces.filter((trace) => trace.mode !== 'blank');
 
@@ -91,9 +95,9 @@ export function MeasurementDock(props: MeasurementDockProps) {
       </div>
       <section className="marker-searches">
         <div className="panel-section-label"><span>Search</span><small>Moves M{activeMarker.id}</small></div>
-        <div className="search-action-grid"><button onClick={() => props.onSearch('peak')} data-agent-control="marker.search.peak"><ScanSearch size={14}/>Peak</button><button onClick={() => props.onSearch('minimum')} data-agent-control="marker.search.minimum"><Sigma size={14}/>Minimum</button><button onClick={() => props.onSearch('next-left')} data-agent-control="marker.search.left"><ChevronLeft size={14}/>Previous</button><button onClick={() => props.onSearch('next-right')} data-agent-control="marker.search.right">Next<ChevronRight size={14}/></button></div>
+        <div className="search-action-grid"><button onClick={() => props.onSearch('peak')} data-agent-control="marker.search.peak"><ScanSearch size={14}/>Peak</button><button onClick={() => props.onSearch('minimum')} data-agent-control="marker.search.minimum"><Sigma size={14}/>Minimum</button><button disabled={relativePower} title={relativePower ? 'Directional search requires a calibrated absolute dBm minimum level' : undefined} onClick={() => props.onSearch('next-left')} data-agent-control="marker.search.left"><ChevronLeft size={14}/>Previous</button><button disabled={relativePower} title={relativePower ? 'Directional search requires a calibrated absolute dBm minimum level' : undefined} onClick={() => props.onSearch('next-right')} data-agent-control="marker.search.right">Next<ChevronRight size={14}/></button></div>
         <div className="parameter-stack">
-          <EditableParameter label="Minimum level" value={props.search.minimumLevelDbm} displayValue={`${props.search.minimumLevelDbm} dBm`} unit="dBm" minimum={-174} maximum={30} controlId="marker.search.threshold" onCommit={(value) => props.onSearchConfiguration({ ...props.search, minimumLevelDbm: Number(value) })}/>
+          <EditableParameter label="Minimum level" value={props.search.minimumLevelDbm} displayValue={relativePower ? 'Unavailable · calibrated dBm required' : `${props.search.minimumLevelDbm} dBm`} unit="dBm" minimum={-174} maximum={30} disabled={relativePower} controlId="marker.search.threshold" onCommit={(value) => props.onSearchConfiguration({ ...props.search, minimumLevelDbm: Number(value) })}/>
           <EditableParameter label="Peak excursion" value={props.search.minimumExcursionDb} displayValue={`${props.search.minimumExcursionDb} dB`} unit="dB" minimum={0} maximum={100} controlId="marker.search.excursion" onCommit={(value) => props.onSearchConfiguration({ ...props.search, minimumExcursionDb: Number(value) })}/>
         </div>
       </section>
@@ -102,7 +106,7 @@ export function MeasurementDock(props: MeasurementDockProps) {
     {panel === 'traces' && <TracePanel {...props}/>}
 
     {panel === 'display' && <div className="measurement-panel display-panel parameter-stack">
-      <EditableParameter label="Reference level" value={props.display.referenceLevelDbm} displayValue={`${props.display.referenceLevelDbm} dBm`} unit="dBm" minimum={-150} maximum={30} controlId="display.reference-level" onCommit={(value) => props.onDisplay({ ...props.display, referenceLevelDbm: Number(value) })}/>
+      <EditableParameter label="Reference level" value={props.display.referenceLevelDbm} displayValue={`${props.display.referenceLevelDbm} ${powerAxisUnit(displayFrame?.powerReference)}`} unit={powerAxisUnit(displayFrame?.powerReference)} minimum={-150} maximum={30} controlId="display.reference-level" onCommit={(value) => props.onDisplay({ ...props.display, referenceLevelDbm: Number(value) })}/>
       <SelectParameter label="Vertical scale" value={props.display.decibelsPerDivision} options={[1, 2, 5, 10, 20].map((value) => ({ value, label: `${value} dB / division` }))} controlId="display.scale" onValue={(value) => props.onDisplay({ ...props.display, decibelsPerDivision: Number(value) as SpectrumDisplayConfiguration['decibelsPerDivision'] })}/>
       <div className="panel-action"><button className="secondary full" onClick={props.onAutoScale} data-agent-control="display.auto-scale"><Gauge size={14}/>Auto scale latest trace</button></div>
     </div>}
@@ -140,8 +144,8 @@ function TracePanel(props: MeasurementDockProps) {
 function formatMarkerReading(reading: MarkerReading | undefined): string {
   if (!reading) return '—';
   if (reading.mode === 'delta' && reading.deltaPowerDb !== undefined && reading.deltaFrequencyHz !== undefined) return `Δ ${reading.deltaPowerDb >= 0 ? '+' : ''}${reading.deltaPowerDb.toFixed(1)} dB · ${formatSignedFrequency(reading.deltaFrequencyHz)}`;
-  if (reading.mode === 'noise-density' && reading.noiseDensityDbmHz !== undefined) return `${reading.noiseDensityDbmHz.toFixed(1)} dBm/Hz`;
-  return formatLevel(reading.powerDbm);
+  if (reading.mode === 'noise-density' && reading.noiseDensityDbmHz !== undefined) return formatPowerDensity(reading.noiseDensityDbmHz, reading.powerReference);
+  return formatPowerLevel(reading.powerDbm, reading.powerReference);
 }
 
 function MarkerCharacterizationCard({ reading }: { reading: MarkerReading }) {

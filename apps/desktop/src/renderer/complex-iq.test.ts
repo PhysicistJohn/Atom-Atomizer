@@ -203,6 +203,17 @@ describe('bounded complex I/Q preview decoding', () => {
     expect(preview.points.map((point) => point.sampleIndex)).toEqual([0, 3]);
     expect(preview.points[1]).toMatchObject({ i: 3_000 / 32_768, q: -3_000 / 32_768 });
 
+    const ad9361 = new Uint8Array(4);
+    const ad9361View = new DataView(ad9361.buffer);
+    ad9361View.setInt16(0, 2_047, true);
+    ad9361View.setInt16(2, -2_048, true);
+    expect(previewComplexIq({
+      samples: ad9361,
+      sampleCount: 1,
+      sampleFormat: 'ci16le',
+      adcFullScaleCode: 2_048,
+    }).points[0]).toMatchObject({ i: 2_047 / 2_048, q: -1 });
+
     expect(previewComplexIq({ samples: new Uint8Array([0, 255]), sampleCount: 1, sampleFormat: 'cu8' }).points[0])
       .toMatchObject({ i: -1, q: 1 });
   });

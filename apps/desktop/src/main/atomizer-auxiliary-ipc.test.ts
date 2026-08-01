@@ -13,6 +13,7 @@ import {
   ATOMIZER_AI_IPC_CHANNELS,
   ATOMIZER_AUXILIARY_IPC_CHANNELS,
   ATOMIZER_FILES_IPC_CHANNELS,
+  ATOMIZER_NEPTUNE_IPC_CHANNELS,
 } from './atomizer-ipc-channels.js';
 import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
 
@@ -47,7 +48,7 @@ describe('Atomizer auxiliary privileged IPC', () => {
     for (const operation of Object.values(operations)) expect(operation).not.toHaveBeenCalled();
   });
 
-  it('validates exact arity and payloads before invoking each operation family', () => {
+  it('validates exact arity and payloads before invoking each operation family', async () => {
     const ipc = new FakeIpc();
     const operations = fakeOperations();
     registerAtomizerAuxiliaryIpc(ipc, operations, assertTrusted, new BoundedPrivilegedIpcAdmission());
@@ -65,6 +66,14 @@ describe('Atomizer auxiliary privileged IPC', () => {
     expect(ipc.invoke(ATOMIZER_AI_IPC_CHANNELS.computerScroll, { screenshotId: SCREENSHOT_ID, x: 1, y: 2, deltaX: 0, deltaY: 10 })).toBe('scroll');
     expect(() => ipc.invoke(ATOMIZER_FILES_IPC_CHANNELS.exportSweep, { format: 'csv', sweep: { forged: true } })).toThrow();
     expect(operations.exportSweep).not.toHaveBeenCalled();
+    expect(() => ipc.invoke(ATOMIZER_FILES_IPC_CHANNELS.exportComplexIq, { measurement: { forged: true }, identity: {} })).toThrow();
+    expect(operations.exportComplexIq).not.toHaveBeenCalled();
+    expect(await ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'neptune-p210', endpoint: 'ip:10.0.0.250' }))
+      .toEqual({ ok: true });
+    expect(() => ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'not-a-real-kind', endpoint: 'ip:10.0.0.250' }))
+      .toThrow(/sourceKind must be/);
+    expect(() => ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'neptune-p210', endpoint: '' }))
+      .toThrow(/endpoint must be/);
   });
 
   it('rejects oversized SDP and computer-control strings or scalars before operation invocation', () => {
@@ -205,6 +214,7 @@ function assertTrusted(event: TestEvent): void {
 function fakeOperations() {
   return {
     exportSweep: vi.fn(() => 'export'),
+    exportComplexIq: vi.fn(() => 'export-complex-iq'),
     aiStatus: vi.fn(() => 'status' as unknown),
     createRealtimeCall: vi.fn(() => 'answer'),
     agentTurn: vi.fn(() => 'turn'),
@@ -213,5 +223,6 @@ function fakeOperations() {
     computerType: vi.fn(() => 'type'),
     computerKey: vi.fn(() => 'key'),
     computerScroll: vi.fn(() => 'scroll'),
+    addNeptuneManualEndpoint: vi.fn(async () => ({ ok: true }) as const),
   } satisfies AtomizerAuxiliaryIpcOperations;
 }

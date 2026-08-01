@@ -43,6 +43,41 @@ describe('sweep export', () => {
     });
   });
 
+  it('exports a Neptune host-derived FFT as explicitly uncalibrated dBFS-relative evidence', () => {
+    const derived: Sweep = {
+      ...sweep,
+      powerReference: 'uncalibrated-dbfs-relative',
+      requested: {
+        kind: 'swept-spectrum', startHz: 100, stopHz: 200, points: 20, sweepTimeSeconds: 0.02,
+        controls: { schemaVersion: 1, model: 'host-derived-iq-projection', fftSize: 20, window: 'hann-periodic' },
+      },
+      actualRbwHz: 7.5,
+      actualAttenuationDb: null,
+      resolutionBandwidthQualification: 'host-derived-fft-bin',
+      attenuationQualification: 'not-applicable',
+      source: 'host-derived-from-complex-iq',
+      identity: neptuneSessionIdentity(),
+    };
+
+    const json = JSON.parse(serializeSweep(derived, 'json')) as Sweep;
+    expect(json).toMatchObject({
+      powerReference: 'uncalibrated-dbfs-relative',
+      source: 'host-derived-from-complex-iq',
+      resolutionBandwidthQualification: 'host-derived-fft-bin',
+    });
+    const csv = serializeSweep(derived, 'csv');
+    expect(csv.split('\n')[0]).toContain('frequency_hz,power_dbfs_relative');
+    expect(csv.split('\n')[1]).toMatch(/,uncalibrated-dbfs-relative$/);
+    expect(csv.split('\n')[0]).not.toContain('power_dbm');
+
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...derived, powerReference: undefined },
+    }).success).toBe(false);
+    expect(sweepExportRequestSchema.safeParse({
+      format: 'json', sweep: { ...derived, source: 'instrument-driver-scalar' },
+    }).success).toBe(false);
+  });
+
   it('preserves exact custom-firmware warning provenance and rejects invented commits', () => {
     const physical: Sweep = {
       ...sweep,
@@ -372,6 +407,23 @@ function signalLabIdentity(): Sweep['identity'] {
       catalogSha256: 'b'.repeat(64),
       generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+    },
+  };
+}
+
+function neptuneSessionIdentity(): Sweep['identity'] {
+  return {
+    kind: 'instrument-session',
+    sessionId: 'session:neptune-p210',
+    driverId: 'neptune-p210',
+    candidateId: 'neptune-p210:ip:10.0.0.250',
+    provenance: {
+      sourceKind: 'neptune-p210',
+      execution: 'physical',
+      transport: 'libiio-network',
+      qualification: 'device-observed',
+      verifiedAt: '2026-07-10T12:34:56.000Z',
+      endpoint: 'ip:10.0.0.250',
     },
   };
 }

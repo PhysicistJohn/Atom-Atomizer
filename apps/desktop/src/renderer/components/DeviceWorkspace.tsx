@@ -104,6 +104,26 @@ function identityPresentation(session: InstrumentSessionSnapshot | undefined): {
       { icon: <Usb/>, label: 'USB transactions', value: 'Not modeled' },
     ],
   };
+  if (provenance.sourceKind === 'neptune-p210') return {
+    title: session.candidate.displayName,
+    subtitle: 'NeptuneSDR/HAMGEEK P210 (AD9361) · libiio network · complex I/Q only, no RF output',
+    qualification: 'DEVICE OBSERVED',
+    facts: [
+      { icon: <TerminalSquare/>, label: 'Endpoint', value: provenance.endpoint, detail: provenance.contextDescription },
+      { icon: <TerminalSquare/>, label: 'Transport', value: provenance.transport },
+      { icon: <Usb/>, label: 'USB identity', value: 'Not claimed', detail: 'Reached over the network, never a local USB/serial device' },
+    ],
+  };
+  if (provenance.sourceKind === 'neptune-p210-twin') return {
+    title: session.candidate.displayName,
+    subtitle: `QEMU digital twin · ${provenance.profile} · physical RF not modeled`,
+    qualification: 'FIRMWARE-EXECUTED TWIN',
+    facts: [
+      { icon: <TerminalSquare/>, label: 'Endpoint', value: provenance.endpoint },
+      { icon: <TerminalSquare/>, label: 'Profile', value: provenance.profile },
+      { icon: <Usb/>, label: 'Physical RF', value: 'Not modeled', detail: 'Proves only the digital IIO/FFT contact' },
+    ],
+  };
   const port = provenance.serialPort;
   return {
     title: provenance.device.model,

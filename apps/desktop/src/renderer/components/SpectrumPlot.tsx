@@ -2,7 +2,7 @@ import { Activity, Orbit } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { DetectedSignal, FirmwareTraceFrame, FirmwareTraceId, MarkerId, MarkerReading, SpectrumDisplayConfiguration, Sweep, TraceFrame, TraceId } from '@tinysa/contracts';
-import { formatFrequency, formatLevel } from '../format.js';
+import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import { powerY, validSpectrumDisplay } from '../plot-geometry.js';
 import {
@@ -30,6 +30,17 @@ export interface SpectrumPlotProps {
   selectedDetectionId?: string;
   display?: SpectrumDisplayConfiguration;
   busy: boolean;
+  /**
+   * Whether the connected source can ever populate a sweep here -- natively
+   * (swept-spectrum) or via a host-derived-from-complex-I/Q projection
+   * (Neptune P210 and any other complex-I/Q source) -- distinct from `sweep`
+   * being absent because nothing has been acquired *yet*. Only a source with
+   * neither capability (e.g. detected-power-timeseries only) can never
+   * produce one; telling that operator to "connect and acquire" would be
+   * actively misleading, not just uninformative. Defaults to `true` so
+   * callers that do not yet pass this keep the original message.
+   */
+  spectrumCapabilityAvailable?: boolean;
   onMarkerPlace?(frequencyHz: number): boolean;
 }
 
@@ -141,6 +152,7 @@ export function SpectrumPlot({
   selectedDetectionId,
   display = DEFAULT_DISPLAY,
   busy,
+  spectrumCapabilityAvailable = true,
   onMarkerPlace,
 }: SpectrumPlotProps) {
   // Filtering, sorting, validation, and logical projection for the legends are
@@ -167,6 +179,7 @@ export function SpectrumPlot({
         ...(sweep.resolutionBandwidthQualification === undefined
           ? {}
           : { resolutionBandwidthQualification: sweep.resolutionBandwidthQualification }),
+        ...(sweep.powerReference === undefined ? {} : { powerReference: sweep.powerReference }),
         sweepCount: 1,
         sourceSweepId: sweep.id,
         evidence: 'host-derived',
@@ -511,17 +524,19 @@ export function SpectrumPlot({
     className={`plot-panel ${sweep && activeMarker ? 'has-marker-readout-gutter' : ''}`}
     aria-label="Spectrum plot"
     aria-description={DEVELOPMENT_RENDERER && sweep
-      ? `sweepId=${sweep.id}; sequence=${sweep.sequence}`
+      ? `sweepId=${sweep.id}; sequence=${sweep.sequence}${sweep.powerReference ? `; powerReference=${sweep.powerReference}` : ''}`
       : undefined}
   >
-    <div className="panel-header"><div><span className="live-indicator"/><strong>{busy ? 'Acquiring' : sweep ? `Sweep ${sweep.sequence}` : 'No sweep'}</strong>{hostTraceLegend.length + firmwareTraceLegend.length > 0 && <small>{hostTraceLegend.map((trace) => `H${trace.traceId} ${traceAbbreviation(trace.mode)}`).join(' · ')}{firmwareTraceLegend.map((trace) => ` · D${trace.traceId} ${trace.role.toUpperCase()}`).join('')}</small>}</div><div className="plot-meta"><span><Activity size={13}/>{sweepPointCount === undefined ? '—' : `${sweepPointCount} points`}</span><span><Orbit size={13}/>{renderableDetections.length} signal{renderableDetections.length === 1 ? '' : 's'}</span><span>{hostTraceLegend.length} host · {firmwareTraceLegend.length} device</span></div></div>
+    <div className="panel-header"><div><span className="live-indicator"/><strong>{busy ? 'Acquiring' : sweep ? `Sweep ${sweep.sequence}` : 'No sweep'}</strong>{hostTraceLegend.length + firmwareTraceLegend.length > 0 && <small>{hostTraceLegend.map((trace) => `H${trace.traceId} ${traceAbbreviation(trace.mode)}`).join(' · ')}{firmwareTraceLegend.map((trace) => ` · D${trace.traceId} ${trace.role.toUpperCase()}`).join('')}</small>}{sweep?.powerReference === 'uncalibrated-dbfs-relative' && <small>UNCALIBRATED · dBFS RELATIVE</small>}</div><div className="plot-meta"><span><Activity size={13}/>{sweepPointCount === undefined ? '—' : `${sweepPointCount} points`}</span><span><Orbit size={13}/>{renderableDetections.length} signal{renderableDetections.length === 1 ? '' : 's'}</span><span>{hostTraceLegend.length} host · {firmwareTraceLegend.length} device</span></div></div>
     {sweep && activeMarker && <MarkerReadoutGutter marker={activeMarker}/>}
     <div className={`plot-canvas ${busy ? 'is-loading' : ''} ${onMarkerPlace ? 'marker-placeable' : ''}`}>
-      <div className="y-labels">{Array.from({ length: 5 }, (_, index) => <span key={index}>{formatAxisLevel(maximumDbm - index * effectiveDisplay.decibelsPerDivision * 2.5)}</span>)}<em>dBm</em></div>
-      {!sweep ? <div className="plot-empty"><div className="empty-atom"><AtomicMark size={76}/></div><strong>No sweep</strong><p>Connect and acquire.</p></div> : <div className="plot-graph"><div className="plot-data-viewport"><canvas
+      <div className="y-labels">{Array.from({ length: 5 }, (_, index) => <span key={index}>{formatAxisLevel(maximumDbm - index * effectiveDisplay.decibelsPerDivision * 2.5)}</span>)}<em>{powerAxisUnit(sweep?.powerReference)}</em></div>
+      {!sweep ? <div className="plot-empty"><div className="empty-atom"><AtomicMark size={76}/></div>{spectrumCapabilityAvailable
+        ? <><strong>No sweep</strong><p>Connect and acquire.</p></>
+        : <><strong>No scalar spectrum capability</strong><p>The connected source has no swept-spectrum or complex-I/Q acquisition -- it can never produce a sweep here.</p></>}</div> : <div className="plot-graph"><div className="plot-data-viewport"><canvas
         ref={canvasRef}
         data-agent-control={onMarkerPlace ? 'spectrum.marker-place' : undefined}
-        aria-label="Measured power by frequency"
+        aria-label={sweep?.powerReference === 'uncalibrated-dbfs-relative' ? 'Uncalibrated relative power by frequency' : 'Measured power by frequency'}
         onPointerDown={pointerFrequency}
         onPointerMove={(event) => { if (event.buttons === 1) pointerFrequency(event); }}
       /></div><div className="plot-marker-overlay" data-testid="plot-marker-overlay">{renderableMarkers.map((marker) => {
@@ -828,6 +843,6 @@ function traceAbbreviation(mode: TraceFrame['mode']): string { return ({ 'clear-
 function formatAxisLevel(value: number): string { return Number.isInteger(value) ? String(value) : value.toFixed(1); }
 function formatMarkerLevel(marker: MarkerReading): string {
   if (marker.mode === 'delta' && marker.deltaPowerDb !== undefined) return `Δ ${marker.deltaPowerDb >= 0 ? '+' : ''}${marker.deltaPowerDb.toFixed(1)} dB`;
-  if (marker.mode === 'noise-density' && marker.noiseDensityDbmHz !== undefined) return `${marker.noiseDensityDbmHz.toFixed(1)} dBm/Hz`;
-  return formatLevel(marker.powerDbm);
+  if (marker.mode === 'noise-density' && marker.noiseDensityDbmHz !== undefined) return formatPowerDensity(marker.noiseDensityDbmHz, marker.powerReference);
+  return formatPowerLevel(marker.powerDbm, marker.powerReference);
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DetectedPowerTimeseriesConfiguration, InstrumentMeasurement, InstrumentSessionSnapshot, SweptSpectrumConfiguration } from '@tinysa/contracts';
-import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
+import { projectDerivedSpectrumFromComplexIq, projectDetectedPowerMeasurement, projectSpectrumMeasurement } from './instrument-measurement-projection.js';
+import type { ComplexIqMeasurement } from './complex-iq.js';
 
 const HASH = 'a'.repeat(64);
 const analyzer: SweptSpectrumConfiguration = { kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3, sweepTimeSeconds: 0.05, controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' } };
@@ -61,5 +62,89 @@ describe('generic measurement projection', () => {
     };
     expect(() => projectSpectrumMeasurement(spectrum({ sessionId: twin.sessionId, producerConfigurationEpoch: undefined }), twin, analyzer)).toThrow(/omitted.*resolution bandwidth/i);
     expect(() => projectSpectrumMeasurement(spectrum({ sessionId: 'other' }), signalLabSession, analyzer)).toThrow(/does not match active session/i);
+  });
+});
+
+describe('projectDerivedSpectrumFromComplexIq', () => {
+  const neptuneSession: InstrumentSessionSnapshot = {
+    sessionId: 'session-neptune', driverId: 'neptune-p210',
+    candidate: {
+      schemaVersion: 1, driverId: 'neptune-p210', candidateId: 'neptune-p210:ip:10.0.0.250', displayName: 'NeptuneSDR P210',
+      sourceKind: 'neptune-p210', neptuneP210: { endpoint: 'ip:10.0.0.250' }, discoveryRevision: 'd1',
+    },
+    provenance: {
+      sourceKind: 'neptune-p210', execution: 'physical', transport: 'libiio-network', qualification: 'device-observed',
+      verifiedAt: '2026-07-10T00:00:00.000Z', endpoint: 'ip:10.0.0.250',
+    },
+    capabilities: {
+      schemaVersion: 1,
+      acquisitions: [{
+        kind: 'complex-iq',
+        centerFrequencyHz: { min: 70_000_000, max: 6_000_000_000 },
+        sampleRateHz: { min: 520_833, max: 61_440_000 },
+        bandwidthHz: { min: 200_000, max: 56_000_000 },
+        sampleCount: { min: 1_024, max: 65_536 },
+        sampleFormat: 'ci16le',
+      }],
+      features: [],
+    },
+    rfOutput: 'not-supported',
+    rfOutputQualification: 'not-applicable',
+  };
+
+  function encodeCi16leTone(sampleCount: number, offsetHz: number, sampleRateHz: number, amplitude = 0.5) {
+    const bytes = new Uint8Array(sampleCount * 4);
+    const view = new DataView(bytes.buffer);
+    for (let n = 0; n < sampleCount; n++) {
+      const phase = 2 * Math.PI * offsetHz * n / sampleRateHz;
+      view.setInt16(n * 4, Math.round(amplitude * Math.cos(phase) * 2_048), true);
+      view.setInt16(n * 4 + 2, Math.round(amplitude * Math.sin(phase) * 2_048), true);
+    }
+    return bytes;
+  }
+
+  function neptuneIqMeasurement(overrides: Partial<ComplexIqMeasurement> = {}): ComplexIqMeasurement {
+    const sampleCount = 2_048;
+    const sampleRateHz = 1_000_000;
+    return {
+      schemaVersion: 1, kind: 'complex-iq', measurementId: 'iq-1', sessionId: neptuneSession.sessionId,
+      configurationRevision: 'c1', sequence: 1, capturedAt: '2026-07-10T00:00:01.000Z', elapsedMilliseconds: 4,
+      resolutionBandwidthHz: null, attenuationDb: null, qualification: 'device-observed',
+      complete: true, centerHz: 100_000_000, sampleRateHz, bandwidthHz: sampleRateHz,
+      sampleFormat: 'ci16le', sampleCount, samples: encodeCi16leTone(sampleCount, 100_000, sampleRateHz),
+      adcSignificantBits: 12, adcFullScaleCode: 2_048, powerReference: 'uncalibrated-dbfs-relative',
+      ...overrides,
+    };
+  }
+
+  it('derives an honestly-labeled Sweep that places the tone at its true frequency', () => {
+    const projected = projectDerivedSpectrumFromComplexIq(neptuneIqMeasurement(), neptuneSession);
+    expect(projected.source).toBe('host-derived-from-complex-iq');
+    expect(projected.powerReference).toBe('uncalibrated-dbfs-relative');
+    expect(projected.resolutionBandwidthQualification).toBe('host-derived-fft-bin');
+    expect(projected.actualAttenuationDb).toBeNull();
+    expect(projected.attenuationQualification).toBe('not-applicable');
+    expect(projected.requested.controls).toMatchObject({ model: 'host-derived-iq-projection', fftSize: 2_048, window: 'hann-periodic' });
+    expect(projected.frequencyHz).toHaveLength(2_048);
+    expect(projected.powerDbm).toHaveLength(2_048);
+    expect(projected.identity).toMatchObject({ kind: 'instrument-session', driverId: 'neptune-p210', sessionId: 'session-neptune' });
+
+    let peakIndex = 0;
+    for (let index = 1; index < projected.powerDbm.length; index++) {
+      if (projected.powerDbm[index]! > projected.powerDbm[peakIndex]!) peakIndex = index;
+    }
+    const binWidthHz = 1_000_000 / 2_048;
+    expect(Math.abs(projected.frequencyHz[peakIndex]! - 100_100_000)).toBeLessThanOrEqual(binWidthHz);
+  });
+
+  it('surfaces a real device-observed attenuation when the driver reports one', () => {
+    const projected = projectDerivedSpectrumFromComplexIq(neptuneIqMeasurement({ attenuationDb: 6 }), neptuneSession);
+    expect(projected.actualAttenuationDb).toBe(6);
+    expect(projected.attenuationQualification).toBe('device-observed');
+  });
+
+  it('rejects a measurement whose session does not match the active session', () => {
+    expect(() => projectDerivedSpectrumFromComplexIq(neptuneIqMeasurement({ sessionId: 'other' }), neptuneSession))
+      .toThrow(/does not match active session/i);
   });
 });

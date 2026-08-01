@@ -1,8 +1,8 @@
 import { useId, useMemo } from 'react';
 import { BarChart3, Brackets, Radio } from 'lucide-react';
-import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep } from '@tinysa/contracts';
+import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep, SweepPowerReference } from '@tinysa/contracts';
 import { measureChannel } from '@tinysa/analysis';
-import { formatFrequency, formatLevel } from '../format.js';
+import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
 import { frequencyToX, traceGeometry, validSpectrumDisplay } from '../plot-geometry.js';
 import { EditableParameter, SelectParameter } from './ParameterRow.js';
 
@@ -10,15 +10,17 @@ export interface ChannelAnalysisViewProps {
   sweep?: Sweep;
   configuration: ChannelMeasurementConfiguration;
   display: SpectrumDisplayConfiguration;
+  /** See SpectrumPlotProps.spectrumCapabilityAvailable's doc comment -- same distinction, same reason. */
+  spectrumCapabilityAvailable?: boolean;
   onConfiguration(configuration: ChannelMeasurementConfiguration): void;
 }
 
-export function ChannelAnalysisView({ sweep, configuration, display, onConfiguration }: ChannelAnalysisViewProps) {
+export function ChannelAnalysisView({ sweep, configuration, display, spectrumCapabilityAvailable = true, onConfiguration }: ChannelAnalysisViewProps) {
   const measurement = useMemo(() => evaluate(sweep, configuration), [sweep, configuration]);
   return <section className="channel-analysis-view" aria-label="Channel power, 3 dB bandwidth, ACP, and occupied bandwidth">
     <div className="channel-visual">
-      <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result}/>
-      {measurement.result && <ChannelResults result={measurement.result}/>} 
+      <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result} spectrumCapabilityAvailable={spectrumCapabilityAvailable}/>
+      {measurement.result && <ChannelResults result={measurement.result} powerReference={sweep?.powerReference}/>}
       {measurement.error && <div className="measurement-error" role="alert"><strong>Measurement unavailable</strong><span>{measurement.error}</span></div>}
     </div>
     <aside className="channel-console">
@@ -32,12 +34,12 @@ export function ChannelAnalysisView({ sweep, configuration, display, onConfigura
         <EditableParameter label="Occupied power" value={configuration.occupiedPowerPercent} displayValue={`${configuration.occupiedPowerPercent}%`} unit="%" minimum={10} maximum={99.9} step={0.1} controlId="channel.occupied-power" onCommit={(value) => onConfiguration({ ...configuration, occupiedPowerPercent: Number(value) })}/>
         <SelectParameter label="OBW noise treatment" value={configuration.obwNoiseCorrection} options={[{ value: 'none', label: 'Total displayed power' }, { value: 'robust-floor', label: 'Subtract robust floor' }]} controlId="channel.obw-noise" onValue={(value) => onConfiguration({ ...configuration, obwNoiseCorrection: value as ChannelMeasurementConfiguration['obwNoiseCorrection'] })}/>
       </div>
-      <div className="channel-contract-note"><BarChart3 size={14}/><p>RBW-normalized scalar sweep · uncalibrated.</p></div>
+      <div className="channel-contract-note"><BarChart3 size={14}/><p>{sweep?.powerReference === 'uncalibrated-dbfs-relative' ? 'Host-derived FFT · uncalibrated dBFS-relative levels; dB ratios remain valid.' : 'RBW-normalized scalar sweep · source-qualified dBm.'}</p></div>
     </aside>
   </section>;
 }
 
-function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep; configuration: ChannelMeasurementConfiguration; display: SpectrumDisplayConfiguration; result?: ChannelMeasurementResult }) {
+function ChannelPlot({ sweep, configuration, display, result, spectrumCapabilityAvailable = true }: { sweep?: Sweep; configuration: ChannelMeasurementConfiguration; display: SpectrumDisplayConfiguration; result?: ChannelMeasurementResult; spectrumCapabilityAvailable?: boolean }) {
   const width = 1000;
   const height = 420;
   const gradientId = `${useId().replaceAll(':', '')}-channel-trace-fill`;
@@ -86,8 +88,8 @@ function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep;
     ? windowGeometry(threeDecibelBandwidth.startHz, threeDecibelBandwidth.stopHz)
     : undefined;
   return <div className="channel-plot-shell">
-    <div className="channel-y-axis"><span>{maximum}</span><span>{minimum}</span><em>dBm</em></div>
-    {!plotSweep || !geometry ? <div className="analysis-empty"><Radio size={23}/><strong>{sweep ? 'Spectrum unavailable' : 'No sweep'}</strong><span>{sweep ? 'The live trace grid was invalid and was not rendered.' : 'Acquire the carrier and adjacent windows.'}</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
+    <div className="channel-y-axis"><span>{maximum}</span><span>{minimum}</span><em>{powerAxisUnit(sweep?.powerReference)}</em></div>
+    {!plotSweep || !geometry ? <div className="analysis-empty"><Radio size={23}/><strong>{sweep ? 'Spectrum unavailable' : spectrumCapabilityAvailable ? 'No sweep' : 'No scalar spectrum capability'}</strong><span>{sweep ? 'The live trace grid was invalid and was not rendered.' : spectrumCapabilityAvailable ? 'Acquire the carrier and adjacent windows.' : 'The connected source has no swept-spectrum or complex-I/Q acquisition -- it can never produce a channel sweep here.'}</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
       <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>
       {Array.from({ length: 9 }, (_, index) => <line key={`v${index}`} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height} className="plot-grid"/>)}
       {Array.from({ length: 6 }, (_, index) => <line key={`h${index}`} x1="0" x2={width} y1={index * height / 5} y2={index * height / 5} className="plot-grid"/>)}
@@ -103,18 +105,18 @@ function ChannelPlot({ sweep, configuration, display, result }: { sweep?: Sweep;
 }
 
 
-function ChannelResults({ result }: { result: ChannelMeasurementResult }) {
+function ChannelResults({ result, powerReference }: { result: ChannelMeasurementResult; powerReference?: SweepPowerReference }) {
   const lower = result.adjacent.filter((item) => item.side === 'lower').sort((left, right) => left.order - right.order);
   const upper = result.adjacent.filter((item) => item.side === 'upper').sort((left, right) => left.order - right.order);
   const threeDecibelBandwidth = result.threeDecibelBandwidth;
   return <div className="channel-results">
-    <div className="channel-primary-result"><small>CHANNEL POWER</small><strong>{formatLevel(result.carrier.powerDbm)}</strong><span>{result.carrier.powerSpectralDensityDbmHz.toFixed(1)} dBm/Hz · {result.carrier.binsUsed} bins</span></div>
+    <div className="channel-primary-result"><small>{powerReference === 'uncalibrated-dbfs-relative' ? 'INTEGRATED RELATIVE LEVEL' : 'CHANNEL POWER'}</small><strong>{formatPowerLevel(result.carrier.powerDbm, powerReference)}</strong><span>{formatPowerDensity(result.carrier.powerSpectralDensityDbmHz, powerReference)} · {result.carrier.binsUsed} bins</span></div>
     {threeDecibelBandwidth.status === 'unavailable'
       ? <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>Unavailable</strong><span>{formatThreeDecibelUnavailableReason(threeDecibelBandwidth.reason)}</span></div>
       : <div className="channel-primary-result three-db" aria-label={threeDecibelAccessibilityLabel(threeDecibelBandwidth)}><small>3 dB BANDWIDTH</small><strong>{threeDecibelBandwidth.status === 'resolution-limited' ? 'Resolution-limited' : formatFrequency(threeDecibelBandwidth.bandwidthHz)}</strong><span>{threeDecibelBandwidth.status === 'resolution-limited' ? `Response ${formatFrequency(threeDecibelBandwidth.bandwidthHz)} · RBW/grid ${formatFrequency(threeDecibelBandwidth.resolutionScaleHz)}` : `${formatFrequency(threeDecibelBandwidth.startHz)} — ${formatFrequency(threeDecibelBandwidth.stopHz)} · interpolated`}</span></div>}
     <div className="channel-primary-result obw"><small>OCCUPIED BANDWIDTH · {result.occupiedBandwidth.percent}%</small><strong>{formatFrequency(result.occupiedBandwidth.bandwidthHz)}</strong><span>{formatFrequency(result.occupiedBandwidth.startHz)} — {formatFrequency(result.occupiedBandwidth.stopHz)}</span></div>
-    <div className="acp-results"><small>LOWER ACP</small><div>{lower.map((entry) => <span key={`l${entry.order}`}><em>L{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
-    <div className="acp-results"><small>UPPER ACP</small><div>{upper.map((entry) => <span key={`u${entry.order}`}><em>U{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatLevel(entry.powerDbm)}</i></span>)}</div></div>
+    <div className="acp-results"><small>LOWER ACP</small><div>{lower.map((entry) => <span key={`l${entry.order}`}><em>L{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatPowerLevel(entry.powerDbm, powerReference)}</i></span>)}</div></div>
+    <div className="acp-results"><small>UPPER ACP</small><div>{upper.map((entry) => <span key={`u${entry.order}`}><em>U{entry.order}</em><strong>{entry.relativeToCarrierDbc.toFixed(1)} dBc</strong><i>{formatPowerLevel(entry.powerDbm, powerReference)}</i></span>)}</div></div>
   </div>;
 }
 

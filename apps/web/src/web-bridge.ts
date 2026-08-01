@@ -3,6 +3,7 @@ import {
   ATOMIZER_INSTRUMENT_API_VERSION,
   type AtomizerFilesApiV1,
   type AtomizerInstrumentApiV1,
+  type ComplexIqExportCapture,
   type SweepExportRequest,
 } from '@tinysa/contracts';
 import { createBrowserAtomAgent } from './atom-realtime-client.js';
@@ -12,6 +13,8 @@ import {
   type AtomizerInstrumentPreferencePort,
 } from '../../desktop/src/main/atomizer-instrument-host.js';
 import type { LoadedInstrumentPreference } from '../../desktop/src/main/instrument-preference.js';
+import { defaultSweepFilename, serializeSweep } from '../../desktop/src/main/sweep-export.js';
+import { serializeComplexIqSigmf } from '../../desktop/src/main/complex-iq-export.js';
 import {
   BrowserSignalLabWorkerDriver,
   BROWSER_SIGNAL_LAB_CANDIDATE_ID,
@@ -95,29 +98,37 @@ function createBrowserInstrumentApi(
   };
 }
 
-function csvCell(value: unknown): string {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+function downloadBlob(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 const files: AtomizerFilesApiV1 = {
   version: ATOMIZER_FILES_API_VERSION,
   async exportSweep(request: SweepExportRequest) {
-    const content = request.format === 'json'
-      ? `${JSON.stringify(request.sweep, null, 2)}\n`
-      : [
-          'frequency_hz,power_dbm',
-          ...request.sweep.frequencyHz.map((frequency, index) => `${csvCell(frequency)},${csvCell(request.sweep.powerDbm[index])}`),
-        ].join('\n') + '\n';
-    const filename = `atomizer-${request.sweep.capturedAt.replace(/[:.]/g, '-')}.${request.format}`;
+    const content = serializeSweep(request.sweep, request.format);
+    const filename = defaultSweepFilename(request.sweep, request.format);
     const blob = new Blob([content], { type: request.format === 'json' ? 'application/json' : 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(filename, blob);
     return { status: 'saved', path: filename, format: request.format, bytesWritten: new TextEncoder().encode(content).byteLength };
+  },
+  async exportComplexIq(request: ComplexIqExportCapture) {
+    const exported = serializeComplexIqSigmf(request);
+    const browserData = new Uint8Array(exported.data.byteLength);
+    browserData.set(exported.data);
+    downloadBlob(exported.metaFilename, new Blob([exported.meta], { type: 'application/json' }));
+    downloadBlob(exported.dataFilename, new Blob([browserData.buffer], { type: 'application/octet-stream' }));
+    return {
+      status: 'saved',
+      metaPath: exported.metaFilename,
+      dataPath: exported.dataFilename,
+      bytesWritten: new TextEncoder().encode(exported.meta).byteLength + exported.data.byteLength,
+    };
   },
 };
 

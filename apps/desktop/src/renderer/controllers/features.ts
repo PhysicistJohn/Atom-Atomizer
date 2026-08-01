@@ -7,6 +7,7 @@ import {
 } from '@tinysa/contracts';
 import { assertWorkspaceTransition } from '../ui-contracts.js';
 import type { InstrumentScreenPoint } from '../components/DeviceWorkspace.js';
+import { measurementIdentity } from '../instrument-measurement-projection.js';
 import { errorMessage, type RendererKernel } from './kernel.js';
 
 export class FeaturesController {
@@ -282,5 +283,34 @@ export class FeaturesController {
   async exportLatestFromUi(format: 'csv' | 'json'): Promise<void> {
     try { await this.exportLatest(format); }
     catch { /* exportLatest already presents the boundary failure in the workspace. */ }
+  }
+
+  async exportLatestIq(): Promise<unknown> {
+    const k = this.k;
+    k.set({ error: undefined });
+    try {
+      const measurement = k.state.iqCapture;
+      if (!measurement) throw new Error('Acquire a complete complex-I/Q capture before exporting');
+      const session = k.requireConnected();
+      if (measurement.sessionId !== session.sessionId) {
+        throw new Error('The latest complex-I/Q capture does not belong to the active instrument session');
+      }
+      const result = await window.atomizerFiles.exportComplexIq({
+        measurement,
+        identity: measurementIdentity(session),
+      });
+      if (result.status === 'saved') {
+        k.set({ notice: `Saved ${result.bytesWritten.toLocaleString()} byte-exact SigMF bytes to ${result.metaPath} and ${result.dataPath}` });
+      }
+      return result;
+    } catch (value) {
+      k.set({ error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  async exportLatestIqFromUi(): Promise<void> {
+    try { await this.exportLatestIq(); }
+    catch { /* exportLatestIq already presents the boundary failure in the workspace. */ }
   }
 }

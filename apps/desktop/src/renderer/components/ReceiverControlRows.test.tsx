@@ -98,4 +98,29 @@ describe('capability-derived receiver controls', () => {
     expect(screen.getByRole('status').textContent).toContain('Receiver controls not applicable');
     expect(screen.queryByRole('combobox', { name: 'RBW mode' })).toBeNull();
   });
+
+  // A Neptune P210 session advertises exactly one acquisition capability
+  // ('complex-iq'); it never advertises 'swept-spectrum' or
+  // 'detected-power-timeseries' at all (per instrumentCapabilitySourceBindingIssues
+  // in @tinysa/contracts). Its capability-derived receiver controls therefore
+  // receive `capability={undefined}` from the connected session, which is the
+  // same "no such acquisition capability" shape these components already
+  // handle for any other source that lacks the capability — no source-kind
+  // branching is needed or present.
+  describe('a Neptune P210 session (complex-iq only, no scalar capability)', () => {
+    it('withholds swept-spectrum receiver controls entirely', () => {
+      render(<AnalyzerInspector config={analyzer} capability={undefined} disabled={false} onChange={() => undefined}/>);
+      expect(screen.getByRole('status').textContent).toContain('Receiver controls unavailable · connect a swept-spectrum source');
+      expect(screen.queryByRole('combobox', { name: 'Transfer' })).toBeNull();
+      expect(screen.queryByRole('combobox', { name: 'RBW mode' })).toBeNull();
+      expect(screen.queryByRole('combobox', { name: 'Detector' })).toBeNull();
+    });
+
+    it('withholds detected-power (zero-span) receiver controls entirely', () => {
+      render(<DetectedPowerReceiverControls config={zero} capability={undefined} disabled={false} controlPrefix="classification.envelope" onChange={() => undefined}/>);
+      expect(screen.getByRole('status').textContent).toContain('Receiver controls unavailable · no detected-power capability');
+      expect(screen.queryByRole('combobox', { name: 'RBW mode' })).toBeNull();
+      expect(screen.queryByRole('combobox', { name: 'Trigger' })).toBeNull();
+    });
+  });
 });

@@ -3323,15 +3323,21 @@ function provenanceFor(candidate: InstrumentCandidate): InstrumentSessionProvena
       device: { model: 'tinySA Ultra+ ZS407', hardwareVersion: 'ZS407', firmwareVersion: 'executable-fixture' },
     };
   }
-  return {
-    sourceKind: 'signal-lab', sourceId: candidate.signalLab.sourceId,
-    execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge',
-    qualification: 'synthetic-visual-projection', verifiedAt: CAPTURED_AT,
-    producerConfigurationEpoch: 'producer-epoch:1',
-    contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
-    contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
-    claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
-  };
+  if (candidate.sourceKind === 'signal-lab') {
+    return {
+      sourceKind: 'signal-lab', sourceId: candidate.signalLab.sourceId,
+      execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge',
+      qualification: 'synthetic-visual-projection', verifiedAt: CAPTURED_AT,
+      producerConfigurationEpoch: 'producer-epoch:1',
+      contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
+      contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
+      claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
+    };
+  }
+  // This fixture file never exercises a Neptune P210 candidate; the
+  // dedicated @tinysa/neptune-p210 package owns Neptune's real provenance
+  // construction and its own hostile-contract test coverage.
+  throw new Error(`provenanceFor fixture does not support source kind ${candidate.sourceKind}`);
 }
 
 function safetyReceipt(

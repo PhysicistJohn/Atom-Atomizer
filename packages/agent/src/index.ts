@@ -23,7 +23,7 @@ export const ATOM_AGENT_VOICE = 'ballad' as const;
 export const ATOM_AGENT_REASONING_EFFORT = 'high' as const;
 export const ATOM_AGENT_VAD_THRESHOLD = 0.97 as const;
 export const ATOM_AGENT_TRANSCRIPTION_MODEL = 'gpt-realtime-whisper' as const;
-export const ATOM_AGENT_VERSION = 10 as const;
+export const ATOM_AGENT_VERSION = 11 as const;
 export const ATOM_TOOL_LOADER_NAME = 'load_atom_tools' as const;
 export const ATOM_MAX_LOADED_TOOLS = 8 as const;
 
@@ -40,9 +40,9 @@ export const agentToolNames = [
   'get_measurement_state', 'select_marker', 'configure_marker', 'configure_marker_search', 'search_marker', 'select_trace', 'configure_trace', 'configure_firmware_trace_visibility', 'reset_trace', 'configure_spectrum_display', 'auto_scale_spectrum_display',
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
-  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span',
+  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span', 'acquire_complex_iq',
   'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
-  'capture_device_screen', 'remote_device_touch', 'export_latest_sweep',
+  'capture_device_screen', 'remote_device_touch', 'export_latest_sweep', 'export_latest_iq',
 ] as const;
 export type AgentToolName = typeof agentToolNames[number];
 export type AtomRealtimeToolName = AgentToolName | typeof ATOM_TOOL_LOADER_NAME;
@@ -113,7 +113,7 @@ export const agentSemanticControlIds = [
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
   'connection.open', 'connection.close', 'connection.refresh', 'connection.disconnect', 'connection.retry-cleanup',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
-  'export.csv', 'export.json', 'error.dismiss', 'notice.dismiss', 'atom.close',
+  'export.csv', 'export.json', 'export.sigmf', 'error.dismiss', 'notice.dismiss', 'atom.close',
   'atom.microphone-mute', 'atom.speaker-mute',
 ] as const;
 export type AgentSemanticControlId = typeof agentSemanticControlIds[number];
@@ -155,8 +155,8 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^channel\.(center|main-bandwidth|spacing|adjacent-bandwidth|adjacent-count|occupied-power|obw-noise)$/, preferredTool: 'configure_channel_measurement', risk: 'operate', projection: 'host-derived', guarantee: 'Configures bounded channel, ACP, ACLR, and OBW integration.' },
   { pattern: /^marker\.[1-8]\.select$/, preferredTool: 'select_marker', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host marker without changing its visibility or reading configuration.' },
   { pattern: /^marker\.[1-8]\.(enabled|frequency|trace|readout|reference|peak-track)$/, preferredTool: 'configure_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Configures one of eight host marker projections.' },
-  { pattern: /^marker\.search\.(threshold|excursion)$/, preferredTool: 'configure_marker_search', risk: 'operate', projection: 'host-derived', guarantee: 'Configures closed marker peak-search eligibility criteria.' },
-  { pattern: /^marker\.search\.(peak|minimum|left|right)$/, preferredTool: 'search_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Moves the active marker using complete trace evidence.' },
+  { pattern: /^marker\.search\.(threshold|excursion)$/, preferredTool: 'configure_marker_search', risk: 'operate', projection: 'host-derived', guarantee: 'Configures closed calibrated-level marker peak-search eligibility criteria; unavailable for uncalibrated relative traces.' },
+  { pattern: /^marker\.search\.(peak|minimum|left|right)$/, preferredTool: 'search_marker', risk: 'operate', projection: 'host-derived', guarantee: 'Moves the active marker using complete trace evidence; unconditional peak/minimum remain reference-neutral while thresholded directional search requires calibrated dBm.' },
   { pattern: /^trace\.[1-4]\.select$/, preferredTool: 'select_trace', risk: 'operate', projection: 'ui-only', guarantee: 'Selects exactly one host trace without mutating its accumulator or mode.' },
   { pattern: /^trace\.[1-4]\.(enabled|mode|average-count)$/, preferredTool: 'configure_trace', risk: 'operate', projection: 'host-derived', guarantee: 'Configures one of four host trace projections, including an explicit Off state.' },
   { pattern: /^firmware-trace\.[1-4]\.visible$/, preferredTool: 'configure_firmware_trace_visibility', risk: 'operate', projection: 'firmware-readback', guarantee: 'Changes only whether one separately identified firmware-readback trace is overlaid; it does not mutate firmware trace state.' },
@@ -175,6 +175,7 @@ export const agentControlBindings: readonly AgentControlBinding[] = [
   { pattern: /^connection\.disconnect$/, preferredTool: 'disconnect_device', risk: 'operate', projection: 'transport', guarantee: 'Disconnects through RF-off and transport teardown sequencing.' },
   { pattern: /^connection\.retry-cleanup$/, preferredTool: 'disconnect_device', risk: 'operate', projection: 'transport', guarantee: 'Retries only the retained failed connection teardown before any new connection can be admitted.' },
   { pattern: /^export\.(csv|json)$/, preferredTool: 'export_latest_sweep', risk: 'operate', projection: 'host-derived', guarantee: 'Opens one explicit native export transaction for complete evidence.' },
+  { pattern: /^export\.sigmf$/, preferredTool: 'export_latest_iq', risk: 'operate', projection: 'host-derived', guarantee: 'Exports the latest complete byte-exact complex-I/Q capture with matching session provenance.' },
   { pattern: /^(error|notice)\.dismiss$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Dismisses only the visible local message.' },
   { pattern: /^atom\.close$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Closes only the Atom panel.' },
   { pattern: /^atom\.toggle$/, preferredTool: 'computer_action', risk: 'operate', projection: 'ui-only', guarantee: 'Toggles only the Atom panel visibility.' },
@@ -198,7 +199,7 @@ export interface AgentApiCoverage {
 const ATOMIZER_DRIVER_API_METHODS = [
   'getState', 'discover', 'connect', 'disconnect', 'configure', 'acquire',
   'startStreaming', 'stopStreaming', 'executeFeature', 'readPreference',
-  'writePreference', 'subscribe', 'exportSweep',
+  'writePreference', 'subscribe', 'exportSweep', 'exportComplexIq',
 ] as const;
 type AtomizerDriverApiMethod = typeof ATOMIZER_DRIVER_API_METHODS[number];
 
@@ -209,7 +210,7 @@ export const agentApiCoverage = {
   connect: { tools: ['connect_device'], projection: 'device-state', guarantee: 'Connects exactly one fresh candidate through its owning driver and retains source-discriminated provenance.', failure: 'Stale, disappeared, or changed candidates fail; no source is substituted.' },
   disconnect: { tools: ['disconnect_device'], projection: 'device-state', guarantee: 'Stops streaming, commands output off when possible, closes transport, and returns terminal state.', failure: 'RF-off and close failures are preserved; RF state becomes unknown.' },
   configure: { tools: ['configure_analyzer', 'configure_zero_span'], projection: 'device-state', guarantee: 'Admits only a configuration kind and range declared by the connected driver.', failure: 'Unsupported acquisition kinds or out-of-capability values reject before driver I/O.' },
-  acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing contextual scalar or complex-I/Q measurement.', failure: 'Incomplete, malformed, wrong-kind, wrong-session, or wrong-configuration evidence is rejected.' },
+  acquire: { tools: ['acquire_sweep', 'acquire_zero_span', 'acquire_envelope_stft', 'acquire_complex_iq'], projection: 'transport-evidence', guarantee: 'Returns exactly one complete, session-bound, provenance-bearing contextual scalar or complex-I/Q measurement.', failure: 'Incomplete, malformed, wrong-kind, wrong-session, or wrong-configuration evidence is rejected.' },
   startStreaming: { tools: ['start_continuous_sweeps'], projection: 'transport-evidence', guarantee: 'Starts one serialized scalar stream or one-at-a-time backpressured complex-I/Q buffer loop.', failure: 'First acquisition failure terminates the active mode visibly.' },
   stopStreaming: { tools: ['stop_continuous_sweeps'], projection: 'device-state', guarantee: 'Stops after the in-flight operation settles.', failure: 'A non-running stream is rejected rather than treated as success.' },
   executeFeature: { tools: ['configure_generator', 'set_rf_output', 'select_signal_lab_profile', 'read_device_diagnostics', 'capture_device_screen', 'remote_device_touch'], projection: 'device-state', guarantee: 'Executes only a feature and range declared by the active driver; RF enable and touch remain approved.', failure: 'Unsupported features fail rather than falling back to another driver or transport.' },
@@ -217,6 +218,7 @@ export const agentApiCoverage = {
   writePreference: { tools: [], projection: 'human-safety-boundary', guarantee: 'Startup-source changes remain a local human UI boundary.', failure: 'A preference change never switches the active session implicitly.' },
   subscribe: { tools: ['get_application_state', 'get_instrument_state'], projection: 'ui-context', guarantee: 'Device events update the same state observed by Atom and the UI.', failure: 'Error events remain visible and cannot be converted to success.' },
   exportSweep: { tools: ['export_latest_sweep'], projection: 'native-export', guarantee: 'Exports only a complete sweep with provenance through explicit user file selection.', failure: 'Cancel is distinct from save; write failure is surfaced.' },
+  exportComplexIq: { tools: ['export_latest_iq'], projection: 'native-export', guarantee: 'Exports only a complete byte-exact complex-I/Q capture paired with its active session identity as SigMF.', failure: 'Missing or stale-session capture, cancellation, and either paired-file write failure are surfaced.' },
 } as const satisfies Readonly<Record<AtomizerDriverApiMethod, AgentApiCoverage>>;
 
 if (Object.keys(agentApiCoverage).length !== ATOMIZER_DRIVER_API_METHODS.length) throw new Error('Atom generic driver API coverage is not exhaustive');
@@ -225,7 +227,7 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'get_application_state', description: 'Read the current Atomizer workspace, contextual continuous-acquisition mode, operation state, staged complex-I/Q configuration and latest bounded I/Q capture summary, simulation status, history count, visible errors, the connected SignalLab profile catalog (signalLab: selectedProfileId plus every profileId with family and label), and optional exact latest-sweep RBW/input-attenuation readbacks paired with their qualifications. Physical receiver values are returned only as device-observed; these readbacks do not establish protocol, emitter, operator, or service identity.' },
   { type: 'function', name: 'get_system_topology', description: 'Read the versioned Atomizer driver host plus active SignalLab, physical TinySA, or firmware-twin source without conflating USB, firmware execution, or synthetic evidence.' },
   { type: 'function', name: 'get_agent_surface', description: 'Read Atom’s closed tool, risk, approval, UI-control binding, projection, and guarantee catalog.' },
-  { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance and warnings, declared capabilities, active configuration, streaming state, startup preference, and RF command state. A missing RF-generator feature or rfOutput=not-supported grants no RF-output authority.' },
+  { type: 'function', name: 'get_instrument_state', description: 'Read the current generic driver session, source-discriminated provenance and warnings, declared capabilities, active configuration, streaming state, startup preference, and RF command state. Reports whether the session\'s power evidence is calibrated (dBm, a physical receiver) or explicitly uncalibrated (dBFS-relative, e.g. Neptune complex-I/Q); never imply calibrated hardware power for uncalibrated evidence. A missing RF-generator feature or rfOutput=not-supported grants no RF-output authority.' },
   { type: 'function', name: 'get_latest_sweep_summary', description: 'Read the latest spectrum sweep range, peak, robust noise floor, metrics, point count, capture timestamp, source, and optional exact RBW/input-attenuation values paired with their qualifications. Physical receiver values are returned only as device-observed; these readbacks do not establish protocol, emitter, operator, or service identity.' },
   { type: 'function', name: 'get_detection_results', description: 'Read separately projected frequency-local detections, 2.4 GHz frequency-agile activity, and static classifier associations from the visible spectrum. Associations are explicitly neither physical emissions nor common-process, simultaneity, emitter, or protocol identity.' },
   { type: 'function', name: 'get_classification_results', description: 'Read the application-global embedding classifier trend. Each complete complex-I/Q buffer (SignalLab/SDR), or each strongest-live-detection magnitude region on a scalar analyzer, is offered for instantaneous classification; every successful result becomes one sample, and posteriors whose classifications completed within the trailing 500 ms form the continuously refreshed trend. Returns the window duration and sample count with the modulation family, refined modulation, confidence, unknown flag, top family candidates, and flavor (iq or magnitude); confidence is the integrated winning-family posterior, or the fraction of samples admitted by the open-set unknown gate when unknown. When no sample is available it reports available:false. Results are open-set equivalence classes, never protocol decoding, conformance, emitter identity, or SignalLab selected-state proof.' },
@@ -247,31 +249,33 @@ const agentToolDescriptors: readonly AgentToolDescriptor[] = [
   { type: 'function', name: 'stop_continuous_sweeps', description: 'Stop continuous acquisition after the currently in-flight firmware command completes.' },
   { type: 'function', name: 'get_measurement_state', description: 'Read all four host-derived trace modes, separately labeled firmware-readback trace visibility, eight marker configurations/readings with trace-local 3 dB response status, separately labeled 99% robust-floor-subtracted threshold-component OBW, peak-to-robust-floor/prominence and bounded detector context, peak-search criteria, and amplitude display scale. Neither width is calibrated SNR, deconvolved emitter bandwidth, whole-span OBW, or protocol allocation.' },
   { type: 'function', name: 'set_measurement_view', description: 'Select Spectrum, Waterfall, or Channel as the active bounded renderer view. The legacy envelope-stft value resolves to Spectrum; dedicated STFT analysis tools remain available.' },
-  { type: 'function', name: 'configure_waterfall', description: 'Configure coherent sweep-history depth and the explicit dBm color scale for the host waterfall; ceilingDbm must exceed floorDbm. Frequency-grid changes are excluded, never resampled silently.' },
+  { type: 'function', name: 'configure_waterfall', description: 'Configure coherent sweep-history depth and the numeric power color scale for the host waterfall; ceilingDbm must exceed floorDbm. The legacy field names express dBm for calibrated sweeps and dBFS-relative for explicitly uncalibrated I/Q-derived sweeps. Frequency-grid or power-reference changes are excluded, never resampled silently.' },
   { type: 'function', name: 'configure_channel_measurement', description: 'Configure main and adjacent integration bandwidths, channel spacing, adjacent pair count, percent-power OBW, and explicit OBW noise treatment. Main and adjacent integration windows must not overlap; all windows must fit the acquired span before measurement.' },
-  { type: 'function', name: 'get_channel_measurement_results', description: 'Calculate host-derived channel power, PSD, adjacent and alternate channel powers in dBm/dBc, local interpolated 3 dB response bandwidth with explicit resolved, resolution-limited, or unavailable status, and separately labeled percent-power OBW from the latest complete scalar sweep. Fails if any configured window is outside the sweep.' },
+  { type: 'function', name: 'get_channel_measurement_results', description: 'Calculate host-derived integrated channel/PSD levels, adjacent and alternate channel ratios in dBc, local interpolated 3 dB response bandwidth with explicit resolved, resolution-limited, or unavailable status, and separately labeled percent-power OBW from the latest complete scalar sweep. Returns an explicit powerReference: calibrated dBm or uncalibrated dBFS-relative. Fails if any configured window is outside the sweep.' },
   { type: 'function', name: 'configure_envelope_stft', description: 'Configure the Hann-windowed STFT of detected zero-span power, including window, hop, mean removal, and display range. hopSize must not exceed windowSize. This is not RF/IQ analysis.' },
   { type: 'function', name: 'get_envelope_stft_results', description: 'Read the STFT of the latest complete zero-span detected-power envelope. Fails when no capture exists or the window exceeds the evidence.' },
   { type: 'function', name: 'acquire_envelope_stft', description: 'Temporarily acquire zero-span detected power using the staged zero-span configuration, restore the staged swept-analyzer configuration, and return its envelope STFT without claiming I/Q, phase, EVM, or symbol recovery.' },
   { type: 'function', name: 'select_marker', description: 'Select one of eight host markers for visual editing without changing its visibility or measurement configuration.' },
   { type: 'function', name: 'configure_marker', description: 'Replace the complete configuration of one host-derived marker and return its current assigned-trace reading when available. Delta mode requires referenceMarkerId different from id and enables a disabled reference marker. Other modes omit referenceMarkerId. This changes only host projection state.' },
-  { type: 'function', name: 'configure_marker_search', description: 'Configure the minimum absolute level and local-peak excursion used by next-left and next-right marker searches.' },
-  { type: 'function', name: 'search_marker', description: 'Enable and move a marker using its assigned trace, then return the exact same evidence-local center and reading shown by the UI. Peak first selects the globally strongest threshold component: a narrow, power-dominant, censored, or otherwise unqualified response uses its true sampled maximum, while one bounded broad component uses the nearest measured bin to its noise-subtracted linear-power centroid. Disjoint half-power islands may share that bounded trace-component center while contiguous 3 dB width remains unavailable; floor-separated components are never merged. Minimum is the unconditional sampled minimum. Only next-left/right apply the staged threshold and excursion criteria. Local 3 dB characterization fails closed when prominence or crossings are unavailable. Fails when that trace has no data.' },
+  { type: 'function', name: 'configure_marker_search', description: 'Configure the minimum absolute dBm level and local-peak excursion used by next-left and next-right marker searches. Fails closed for an uncalibrated dBFS-relative sweep.' },
+  { type: 'function', name: 'search_marker', description: 'Enable and move a marker using its assigned trace, then return the exact same evidence-local center and reading shown by the UI. Peak first selects the globally strongest threshold component: a narrow, power-dominant, censored, or otherwise unqualified response uses its true sampled maximum, while one bounded broad component uses the nearest measured bin to its noise-subtracted linear-power centroid. Disjoint half-power islands may share that bounded trace-component center while contiguous 3 dB width remains unavailable; floor-separated components are never merged. Minimum is the unconditional sampled minimum. Only next-left/right apply the staged absolute threshold and excursion criteria, so those two actions fail closed on uncalibrated dBFS-relative traces while peak and minimum remain usable. Local 3 dB characterization fails closed when prominence or crossings are unavailable. Fails when that trace has no data.' },
   { type: 'function', name: 'select_trace', description: 'Select one of four host traces for visual editing without changing its mode or accumulated data.' },
   { type: 'function', name: 'configure_trace', description: 'Configure one of four host-derived simultaneous traces as Clear/Write, Max Hold, Min Hold, Average, View, or Off.' },
   { type: 'function', name: 'configure_firmware_trace_visibility', description: 'Show or hide exactly one separately identified D1–D4 firmware-readback overlay without commanding or relabeling the instrument trace.' },
   { type: 'function', name: 'reset_trace', description: 'Clear the accumulated memory for one host-derived trace.' },
   { type: 'function', name: 'configure_spectrum_display', description: 'Configure the host spectrum amplitude axis reference level and dB per division. This does not claim firmware display readback.' },
   { type: 'function', name: 'auto_scale_spectrum_display', description: 'Derive and apply a host spectrum amplitude axis from the latest complete sweep. Fails when no sweep exists.' },
-  { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior.' },
+  { type: 'function', name: 'configure_signal_detector', description: 'Configure threshold segmentation plus cross-sweep promotion and release behavior. Absolute levelDbm fails closed on an uncalibrated dBFS-relative sweep; noise-relative margin and prominence remain usable.' },
   { type: 'function', name: 'configure_zero_span', description: 'Apply a non-empty patch to staged detected-power timeseries capture. Receiver RBW, attenuation, and trigger are capability-validated; synthetic sources accept only geometry and exact timing. This is detected envelope data, never I/Q.' },
   { type: 'function', name: 'acquire_zero_span', description: 'Temporarily acquire one driver-declared detected-power timeseries, then restore the staged swept-spectrum configuration. Classify only detected-envelope behavior.' },
+  { type: 'function', name: 'acquire_complex_iq', description: 'Request one complete bounded complex-I/Q capture from the connected session using its already-admitted complex-I/Q configuration, source-agnostic across SignalLab and Neptune P210. Requires the active driver to declare a complex-iq acquisition capability; a session with no complex-I/Q capability (a scalar-only receiver) is rejected with a clear not-applicable result rather than a crash or silent no-op. Returns raw samples with sampleFormat and sampleCount plus an explicit power-evidence qualification — calibrated dBm or uncalibrated dBFS-relative — and never claims a scalar sweep or detected-power timeseries.' },
   { type: 'function', name: 'configure_generator', description: 'Apply the complete driver-neutral generator configuration while forcing RF output off. Path, modulation modes, and ranges must be declared by the active driver.' },
   { type: 'function', name: 'set_rf_output', description: 'Enable or disable RF output only when the active driver declares an RF-generator feature. Enabling requires immediate human approval.' },
   { type: 'function', name: 'select_signal_lab_profile', description: 'Command the connected SignalLab source to emit exactly one profile from its declared signal-lab-profile-selection catalog. Unknown profile IDs fail closed against the advertised catalog before driver I/O. Selection invalidates prior acquired evidence and restages the swept span, detected-power center, and complex-I/Q center around the selected profile exactly as the visual profile picker does. A commanded selection is source configuration, never classifier evidence.' },
   { type: 'function', name: 'capture_device_screen', description: 'Capture one frame using the connected driver’s declared dimensions and pixel format. Fails when no screen feature exists.' },
   { type: 'function', name: 'remote_device_touch', description: 'Send one atomic tap within the connected driver’s declared touch geometry. Every tap requires immediate human approval.' },
   { type: 'function', name: 'export_latest_sweep', description: 'Open a native save dialog and export the latest complete sweep with full source/session provenance and explicit RBW/attenuation qualifications.' },
+  { type: 'function', name: 'export_latest_iq', description: 'Open a native save dialog and export the latest complete complex-I/Q capture as byte-exact paired SigMF data and metadata with full active-session provenance. Fails when no capture exists or the capture belongs to another session.' },
 ];
 
 const observe = (name: AgentToolName): AgentToolPolicy => ({ name, risk: 'observe', approval: 'never' });
@@ -321,12 +325,14 @@ export const agentToolPolicies: Readonly<Record<AgentToolName, AgentToolPolicy>>
   configure_signal_detector: operate('configure_signal_detector'),
   configure_zero_span: operate('configure_zero_span'),
   acquire_zero_span: operate('acquire_zero_span'),
+  acquire_complex_iq: operate('acquire_complex_iq'),
   configure_generator: operate('configure_generator'),
   set_rf_output: { name: 'set_rf_output', risk: 'high-impact', approval: 'at-action' },
   select_signal_lab_profile: operate('select_signal_lab_profile'),
   capture_device_screen: observe('capture_device_screen'),
   remote_device_touch: { name: 'remote_device_touch', risk: 'high-impact', approval: 'at-action' },
   export_latest_sweep: operate('export_latest_sweep'),
+  export_latest_iq: operate('export_latest_iq'),
 };
 
 export const agentToolInputSchemas = {
@@ -374,6 +380,7 @@ export const agentToolInputSchemas = {
   configure_signal_detector: signalDetectionConfigSchema,
   configure_zero_span: zeroSpanConfigPatchSchema,
   acquire_zero_span: z.object({}).strict(),
+  acquire_complex_iq: z.object({}).strict(),
   configure_generator: generatorConfigSchema,
   set_rf_output: z.object({ enabled: z.boolean() }).strict(),
   // Mirrors the contracts instrumentOpaqueIdSchema bounds; the live session's
@@ -382,6 +389,7 @@ export const agentToolInputSchemas = {
   capture_device_screen: z.object({}).strict(),
   remote_device_touch: z.object({ x: z.number().int().nonnegative(), y: z.number().int().nonnegative(), gesture: z.literal('tap') }).strict(),
   export_latest_sweep: z.object({ format: z.enum(['csv', 'json']) }).strict(),
+  export_latest_iq: z.object({}).strict(),
 } as const satisfies Readonly<Record<AgentToolName, z.ZodType>>;
 
 const agentParameterDescriptions: Readonly<Record<string, string>> = Object.freeze({
@@ -414,8 +422,8 @@ const agentParameterDescriptions: Readonly<Record<string, string>> = Object.free
   'configure_analyzer.trigger': 'Complete trigger replacement; use auto alone or normal/single with levelDbm.',
   'configure_analyzer.trigger.mode': 'Trigger mode. Auto forbids levelDbm; normal and single require it.',
   'configure_analyzer.trigger.levelDbm': 'Required trigger threshold in dBm for normal or single mode.',
-  'configure_waterfall.floorDbm': 'Lower power limit of the waterfall color scale in dBm.',
-  'configure_waterfall.ceilingDbm': 'Upper power limit in dBm; runtime validation requires it to exceed floorDbm.',
+  'configure_waterfall.floorDbm': 'Lower numeric power limit of the waterfall color scale: dBm for calibrated sweeps, dBFS-relative for explicitly uncalibrated I/Q-derived sweeps.',
+  'configure_waterfall.ceilingDbm': 'Upper numeric power limit in the sweep power reference; runtime validation requires it to exceed floorDbm.',
   'configure_channel_measurement.centerHz': 'Center frequency of the main integration channel in integer hertz.',
   'configure_channel_measurement.mainBandwidthHz': 'Main-channel integration bandwidth in integer hertz.',
   'configure_channel_measurement.adjacentBandwidthHz': 'Bandwidth of each adjacent-channel integration window in integer hertz.',
@@ -428,7 +436,7 @@ const agentParameterDescriptions: Readonly<Record<string, string>> = Object.free
   'configure_firmware_trace_visibility.visible': 'Whether to render this firmware-readback trace as a separately labeled device overlay.',
   'configure_signal_detector.threshold': 'Complete absolute or noise-relative threshold strategy.',
   'configure_signal_detector.threshold.strategy': 'Threshold strategy discriminator; supply only the fields in its matching branch.',
-  'configure_signal_detector.threshold.levelDbm': 'Absolute detection threshold in dBm.',
+  'configure_signal_detector.threshold.levelDbm': 'Absolute detection threshold in dBm; rejected when the latest sweep is explicitly uncalibrated dBFS-relative.',
   'configure_signal_detector.threshold.marginDb': 'Detection margin above the robust noise floor in dB.',
   'configure_zero_span.rbwKhz': 'Resolution bandwidth for this temporary detected-envelope capture; it does not change staged swept-analyzer RBW.',
   'configure_zero_span.frequencyHz': 'Center frequency for this temporary detected-envelope capture in integer hertz.',
@@ -613,13 +621,13 @@ You are Atom, the native AI copilot inside Atomizer. Help RF hobbyists learn and
 - Trace Off is configure_trace mode "blank". D1–D4 firmware overlay visibility is separate and never mutates firmware trace state.
 - A connection requires a fresh list_connection_candidates result and its opaque candidateId. Opening a dialog is not connecting.
 - Configuration patches are atomic: when one is rejected, immediately resubmit the valid remainder (drop only the rejected field) so the operator's intent — especially a retune — still lands, then say what was dropped and why.
-- Complex-I/Q applies only to sessions that advertise it (SignalLab). Physical ZS407 sessions have no I/Q workspace or captures; say so instead of offering one.
+- Complex-I/Q applies only to sessions that advertise a complex-iq acquisition capability (SignalLab, or a connected Neptune P210/twin). Physical ZS407 sessions have no I/Q workspace or captures; say so instead of offering one. acquire_complex_iq is the direct, source-agnostic tool for one bounded capture from the session's already-admitted complex-I/Q configuration; it rejects cleanly, never crashing or silently returning nothing, when the connected session has no complex-I/Q capability. Its power evidence is calibrated dBm only for a qualified physical receiver; Neptune and any other uncalibrated source report dBFS-relative power, and Atom must say so rather than imply calibrated hardware power.
 - Coordinate click/scroll requires the immediately preceding one-use screenshotId. Type/key requires the exact focused target. Prefer semantic computer_action.
 - Claim success only from a successful tool result. A schema-rejected call itself executed nothing; separately reported narrow cleanup calls may still have run. A failed operation may have changed external state: report it and never replay, reroute, or substitute.
 
 # Evidence boundaries
 - Distinguish staged, commanded, verified, firmware-readback, host-derived, physical, twin, stale, custom-unqualified, custom-source-qualified-receive-only, and unknown evidence. Missing evidence is not a measurement.
-- latestSweep actualRbwHz and actualAttenuationDb are copied only from the completed scalar sweep and only with their explicit resolutionBandwidthQualification and attenuationQualification; never derive them from staged or requested controls. Physical receiver values must be device-observed. These readbacks do not establish protocol, emitter, operator, or service identity.
+- latestSweep actualRbwHz and actualAttenuationDb are copied only from the completed scalar sweep and only with their explicit resolutionBandwidthQualification and attenuationQualification; never derive them from staged or requested controls. Physical receiver values must be device-observed when the sweep is native. A physical Neptune host FFT is instead host-derived-fft-bin, carries explicit uncalibrated-dbfs-relative powerReference, and must never be called dBm. These readbacks do not establish protocol, emitter, operator, or service identity.
 - custom-source-qualified-receive-only means an exact embedded version maps to one frozen audited source commit for its narrowly declared receiver behavior. Preserve its warning: the runtime serial identity does not attest the documented binary SHA-256, it is not OEM, hardware/RF, or metrology qualification, and it grants no generator, screen, touch, marker, Ultra-band, or RF-output authority. The active capability object remains authoritative.
 - Spectrum-derived views use complete scalar sweeps. Zero span and envelope STFT are detected power, never I/Q, phase, symbols, EVM, decoding, conformance, or protocol identity.
 - Detection candidates are not active emissions until promoted. A frequency-agile 2.4 GHz result is a rolling activity association conditional on admitted local looks; it is never one physical emission, emitter identity, or protocol identity. Observable-class results are measurement hypotheses, never knowledge of SignalLab selected state.

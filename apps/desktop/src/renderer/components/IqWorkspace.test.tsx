@@ -98,6 +98,31 @@ describe('complex I/Q workspace', () => {
     expect(view.container.querySelector('[data-agent-control]')).toBeNull();
   });
 
+  it('offers byte-exact SigMF export only after a capture exists', () => {
+    const onExport = vi.fn();
+    const view = render(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      busy={false}
+      onChange={vi.fn()}
+      onExport={onExport}
+    />);
+    expect((screen.getByRole('button', { name: 'Export SigMF' }) as HTMLButtonElement).disabled).toBe(true);
+
+    view.rerender(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      {...captureProps()}
+      busy={false}
+      onChange={vi.fn()}
+      onExport={onExport}
+    />);
+    const exportButton = screen.getByRole('button', { name: 'Export SigMF' }) as HTMLButtonElement;
+    expect(exportButton.disabled).toBe(false);
+    fireEvent.click(exportButton);
+    expect(onExport).toHaveBeenCalledOnce();
+  });
+
   it('identifies only while classification is pending and explains an unavailable short capture', () => {
     const props = captureProps();
     const view = render(<IqWorkspace
@@ -154,6 +179,37 @@ describe('complex I/Q workspace', () => {
     expect(screen.getByText('Profile signal center')).toBeTruthy();
     expect(screen.getByText('Native RF reference')).toBeTruthy();
     expect(screen.getByText('Output RF tune center')).toBeTruthy();
+  });
+
+  it('surfaces Neptune P210 AD9361 ADC evidence and its dBFS-not-dBm power reference', () => {
+    const props = captureProps();
+    render(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      preview={props.preview}
+      captureMeta={{
+        ...props.captureMeta,
+        qualification: 'device-observed',
+        adcSignificantBits: 12,
+        adcFullScaleCode: 2048,
+        powerReference: 'uncalibrated-dbfs-relative',
+      }}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+    expect(screen.getByText('AD9361 ADC evidence')).toBeTruthy();
+    expect(screen.getByText(/12-bit · full scale 2048 · uncalibrated dbfs relative/i)).toBeTruthy();
+  });
+
+  it('omits Neptune ADC evidence for captures that never carried it (SignalLab, TinySA)', () => {
+    render(<IqWorkspace
+      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+      capability={capability}
+      {...captureProps()}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+    expect(screen.queryByText('AD9361 ADC evidence')).toBeNull();
   });
 
   it('fits both plots by default and provides bounded keyboard-accessible zoom and reset controls', () => {

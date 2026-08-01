@@ -26,6 +26,10 @@ export function analyzeBayesianSweep(
   config: SignalDetectionConfig,
 ): readonly DetectedSignal[] {
   validateBayesianDetectorSweep(sweep);
+  if (sweep.powerReference === 'uncalibrated-dbfs-relative'
+    && config.threshold.strategy === 'absolute') {
+    throw new Error('Absolute dBm detection is unavailable for an uncalibrated dBFS-relative sweep; use a noise-relative threshold');
+  }
   const noiseFloorDbm = robustNoiseFloor(sweep.powerDbm);
   const thresholdDbm = config.threshold.strategy === 'absolute'
     ? config.threshold.levelDbm

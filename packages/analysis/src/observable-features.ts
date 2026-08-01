@@ -421,7 +421,13 @@ function sameSweptSpectrumConfiguration(
       && left.controls.schemaVersion === right.controls.schemaVersion
       && left.controls.timingQualification === right.controls.timingQualification;
   }
-  if (right.controls.model !== 'receiver') return false;
+  if (left.controls.model === 'host-derived-iq-projection') {
+    return right.controls.model === 'host-derived-iq-projection'
+      && left.controls.schemaVersion === right.controls.schemaVersion
+      && left.controls.fftSize === right.controls.fftSize
+      && left.controls.window === right.controls.window;
+  }
+  if (left.controls.model !== 'receiver' || right.controls.model !== 'receiver') return false;
   return left.controls.schemaVersion === right.controls.schemaVersion
     && left.controls.acquisitionFormat === right.controls.acquisitionFormat
     && left.controls.resolutionBandwidthKhz === right.controls.resolutionBandwidthKhz

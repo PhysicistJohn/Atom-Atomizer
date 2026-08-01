@@ -70,6 +70,13 @@ test('the installer and installed launcher follow npm workspace ownership for El
   assert.doesNotMatch(launcher, /'node_modules\/electron\/package\.json'/);
 });
 
+test('the launcher rebuilds every externally imported instrument driver workspace', () => {
+  const launcher = readFileSync(join(here, 'main.cjs'), 'utf8');
+
+  assert.match(launcher, /\['tinysa', \['--external', 'serialport', '--external', '@tinysa\/instrument-runtime'\]\]/);
+  assert.match(launcher, /\['neptune-p210', \[\]\]/);
+});
+
 describe('bounded renderer diagnostics', () => {
   test('retains Electron 43 legacy console text instead of logging only its numeric level', () => {
     assert.deepEqual(

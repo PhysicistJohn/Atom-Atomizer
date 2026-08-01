@@ -304,6 +304,23 @@ function assertProvenanceBinding(
       }
       break;
     }
+    case 'neptune-p210': {
+      if (provenance.sourceKind !== 'neptune-p210') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
+      if (candidate.neptuneP210.endpoint !== provenance.endpoint
+        || candidate.neptuneP210.contextDescription !== provenance.contextDescription) {
+        throw new InstrumentDriverContractError(`Driver ${driverId} session Neptune P210 provenance does not match the admitted endpoint`);
+      }
+      break;
+    }
+    case 'neptune-p210-twin': {
+      if (provenance.sourceKind !== 'neptune-p210-twin') throw new InstrumentDriverContractError(`Driver ${driverId} session provenance narrowing failed`);
+      if (candidate.neptuneP210Twin.endpoint !== provenance.endpoint
+        || candidate.neptuneP210Twin.profile !== provenance.profile
+        || candidate.neptuneP210Twin.physicalRfModeled !== provenance.physicalRfModeled) {
+        throw new InstrumentDriverContractError(`Driver ${driverId} session Neptune P210 twin provenance does not match discovery evidence`);
+      }
+      break;
+    }
     default: {
       const unhandledCandidate: never = candidate;
       throw new InstrumentDriverContractError(`Driver ${driverId} has no provenance binding for ${JSON.stringify(unhandledCandidate)}`);

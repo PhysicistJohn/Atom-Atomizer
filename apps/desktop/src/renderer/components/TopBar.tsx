@@ -85,5 +85,11 @@ function sessionLabels(session: InstrumentSessionSnapshot | undefined): { title:
   if (session.provenance.sourceKind === 'tinysa-firmware-twin') {
     return { title: session.provenance.device.model, detail: `${session.provenance.device.firmwareVersion} · executable firmware twin` };
   }
+  if (session.provenance.sourceKind === 'neptune-p210') {
+    return { title: session.candidate.displayName, detail: `${session.provenance.endpoint} · libiio network` };
+  }
+  if (session.provenance.sourceKind === 'neptune-p210-twin') {
+    return { title: session.candidate.displayName, detail: `${session.provenance.endpoint} · QEMU digital twin` };
+  }
   return { title: session.provenance.device.model, detail: session.provenance.device.firmwareVersion };
 }

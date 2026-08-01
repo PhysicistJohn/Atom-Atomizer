@@ -18,7 +18,7 @@ import {
   type DetectedPowerTimeseriesConfiguration,
 } from '@tinysa/contracts';
 import { classifyZeroSpanEnvelope, createDetectedPowerCaptureReceipt } from '@tinysa/analysis';
-import { projectDetectedPowerMeasurement, projectSpectrumMeasurement } from '../instrument-measurement-projection.js';
+import { projectDerivedSpectrumFromComplexIq, projectDetectedPowerMeasurement, projectSpectrumMeasurement } from '../instrument-measurement-projection.js';
 import {
   detectedPowerConfigurationFor,
   sameSweptSpectrumConfiguration,
@@ -611,13 +611,20 @@ export class AcquisitionController {
   ): boolean {
     const k = this.k;
     void configurationRevision;
-    const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
-    const currentAdmitted = capability?.kind === 'swept-spectrum'
-      ? sweptSpectrumConfigurationFor(capability, k.state.analyzer)
-      : undefined;
-    if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
-      console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: k.state.analyzer });
-      return false;
+    // A host-derived-from-complex-iq sweep is a post-hoc FFT projection, not
+    // a native swept-spectrum acquisition -- it never corresponds to an
+    // admitted swept-spectrum analyzer configuration, so the staleness check
+    // below (which exists to reject sweeps from a superseded analyzer stage)
+    // does not apply to it.
+    if (next.source !== 'host-derived-from-complex-iq') {
+      const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'swept-spectrum');
+      const currentAdmitted = capability?.kind === 'swept-spectrum'
+        ? sweptSpectrumConfigurationFor(capability, k.state.analyzer)
+        : undefined;
+      if (!currentAdmitted || !sameSweptSpectrumConfiguration(next.requested, currentAdmitted)) {
+        console.warn('[Analyzer] rejected stale sweep for a superseded staged configuration', { sweepId: next.id, requested: next.requested, staged: k.state.analyzer });
+        return false;
+      }
     }
     k.analysisSequence.current++;
     const nextHistory = [next, ...k.state.history].slice(0, HISTORY_LIMIT);
@@ -815,8 +822,30 @@ export class AcquisitionController {
     if (!publish || publish()) {
       k.set({ iqCapture: measurement });
       k.classification.ingestIq(measurement);
+      this.publishDerivedSpectrum(measurement, k.requireConnected());
     }
     return measurement;
+  }
+
+  /**
+   * Every accepted complex-I/Q measurement from a complex-I/Q-only source
+   * also derives a scalar spectrum (a projection of the I/Q vector, per
+   * `projectDerivedSpectrumFromComplexIq`) so Spectrum, Waterfall, and
+   * Channel stay populated for it. A source that also advertises native
+   * swept-spectrum (SignalLab, tinysa-firmware-twin) already publishes
+   * proper device/twin-observed sweeps through that path -- deriving a
+   * second, lower-fidelity sweep alongside it would only pollute history.
+   * Best-effort and non-fatal: a projection failure must never fail the I/Q
+   * acquisition it rides on.
+   */
+  publishDerivedSpectrum(measurement: ComplexIqMeasurement, session: InstrumentSessionSnapshot): void {
+    if (session.capabilities.acquisitions.some((candidate) => candidate.kind === 'swept-spectrum')) return;
+    try {
+      const projected = projectDerivedSpectrumFromComplexIq(measurement, session);
+      this.recordSweepEvidence(projected, measurement.configurationRevision);
+    } catch (value) {
+      console.warn('[Analyzer] failed to derive a scalar spectrum from a complex-I/Q measurement', errorMessage(value));
+    }
   }
 
   startContinuous(): Promise<void> {

@@ -228,6 +228,7 @@ function buildDevelopmentEntries(contract) {
     ['agent', []],
     ['tinysa', ['--external', 'serialport', '--external', '@tinysa/instrument-runtime']],
     ['test-device', []],
+    ['neptune-p210', []],
   ];
   for (const [packageDirectory, extraArgs] of packageBuilds) {
     const cwd = join(contract.repoRoot, 'packages', packageDirectory);

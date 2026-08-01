@@ -4,12 +4,29 @@ import type {
   InstrumentDiscoveryFailure,
   InstrumentSessionSnapshot,
 } from '@tinysa/contracts';
-import { instrumentCandidateUiKey } from '../ui-contracts.js';
+import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor } from '../ui-contracts.js';
 import {
   instrumentCandidateMatchesPreference,
   instrumentPreferenceSelectionForCandidate,
 } from '../instrument-preference.js';
 import { errorMessage, type RendererKernel } from './kernel.js';
+
+/**
+ * `InstrumentManager` rejects `connect()` for any candidate that does not
+ * exactly match its own latest completed discovery -- including a discovery
+ * the renderer never itself requested (e.g. `writePreference()` runs one
+ * internally before persisting a selection). A stale candidate is always
+ * structurally recoverable: the underlying device did not change, only the
+ * opaque discovery revision did, so re-discovering and matching the same
+ * device by its stable identity (everything but `discoveryRevision` --
+ * see `sameInstrumentCandidateDescriptor`) and retrying once is strictly
+ * better than surfacing a confusing internal revision-mismatch message an
+ * operator has no way to act on.
+ */
+function isStaleCandidateMessage(value: unknown): boolean {
+  return errorMessage(value).toLowerCase().includes('stale')
+    && errorMessage(value).toLowerCase().includes('discovery');
+}
 
 export class ConnectionController {
   constructor(private readonly k: RendererKernel) {}
@@ -42,6 +59,33 @@ export class ConnectionController {
     } catch (value) { k.set({ error: errorMessage(value) }); }
   }
 
+  /**
+   * One-time manual bootstrap for a Neptune P210 that is not reachable by
+   * network scan and has never been connected to before (see
+   * `NeptuneP210InstrumentDriver.addManualEndpoint()`'s doc comment). Probes
+   * the address live through the main process; on success the device is
+   * remembered from then on, so this never needs to be called again for the
+   * same device -- a normal discover() re-probe finds it automatically.
+   * Returns whether it succeeded; the failure message (if any) is surfaced
+   * through the same `error` state every other connection action uses.
+   */
+  async addNeptuneEndpoint(sourceKind: 'neptune-p210' | 'neptune-p210-twin', endpoint: string): Promise<boolean> {
+    const k = this.k;
+    k.set({ error: undefined });
+    try {
+      const result = await window.atomizerNeptune.addManualEndpoint(sourceKind, endpoint);
+      if (!result.ok) {
+        k.set({ error: result.message });
+        return false;
+      }
+      await this.refreshCandidates();
+      return true;
+    } catch (value) {
+      k.set({ error: errorMessage(value) });
+      return false;
+    }
+  }
+
   connectCandidate(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
     return this.k.acquisition.runInstrumentTransaction('connect-instrument', () => this.connectCandidateOwned(candidate));
   }
@@ -51,7 +95,27 @@ export class ConnectionController {
     k.set({ connectionBusy: true, error: undefined });
     k.invalidateAcquiredEvidence();
     try {
-      const next = await window.atomizerInstrument.connect(candidate);
+      let next: InstrumentSessionSnapshot;
+      try {
+        next = await window.atomizerInstrument.connect(candidate);
+      } catch (value) {
+        if (!isStaleCandidateMessage(value)) throw value;
+        // See isStaleCandidateMessage's doc comment. Re-discover, match the
+        // same device by stable identity (never by object equality, since
+        // `discoveryRevision` is exactly what changed), and retry exactly
+        // once -- this must never loop, so a device that has genuinely
+        // disappeared or a second stale rejection surfaces a real error
+        // instead of retrying forever.
+        const fresh = await window.atomizerInstrument.discover();
+        this.acceptDiscovery(fresh.candidates, fresh.failures);
+        const rematched = fresh.candidates.find((value) => sameInstrumentCandidateDescriptor(value, candidate));
+        if (!rematched) {
+          throw new Error(
+            `${candidate.displayName} is no longer in the discovered instrument list -- it may have disappeared. Refresh and try again.`,
+          );
+        }
+        next = await window.atomizerInstrument.connect(rematched);
+      }
       k.events.acceptSession(next);
       // Selecting a source connects and closes the chooser in one step.
       // Reopening it while connected shows the source list with the active
@@ -151,9 +215,11 @@ export function preferredCandidate(candidates: readonly InstrumentCandidate[], s
 
 export function instrumentCandidateIsSimulated(candidate: InstrumentCandidate): boolean {
   switch (candidate.sourceKind) {
-    case 'serial-port': return false;
+    case 'serial-port':
+    case 'neptune-p210': return false;
     case 'tinysa-firmware-twin':
-    case 'signal-lab': return true;
+    case 'signal-lab':
+    case 'neptune-p210-twin': return true;
     default: {
       const unhandledCandidate: never = candidate;
       throw new Error(`Instrument candidate simulation status is undefined for ${JSON.stringify(unhandledCandidate)}`);
@@ -165,6 +231,8 @@ export function connectionNotice(session: InstrumentSessionSnapshot): string {
   const provenance = session.provenance;
   if (provenance.sourceKind === 'signal-lab') return `${session.candidate.displayName} connected as a synthetic measurement source; USB, firmware execution, and RF emission are not claimed`;
   if (provenance.sourceKind === 'tinysa-firmware-twin') return `${provenance.device.model} executable firmware twin connected through ${provenance.bridge}`;
+  if (provenance.sourceKind === 'neptune-p210') return `${session.candidate.displayName} connected over libiio at ${provenance.endpoint}; complex I/Q only, no RF output`;
+  if (provenance.sourceKind === 'neptune-p210-twin') return `${session.candidate.displayName} QEMU digital twin connected at ${provenance.endpoint}; physical RF is not modeled`;
   if (provenance.device.firmwareQualification === 'custom-unqualified') {
     return `${provenance.device.model} connected with custom, source-unqualified firmware`;
   }

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { History } from 'lucide-react';
 import type { Sweep, WaterfallConfiguration } from '@tinysa/contracts';
-import { formatFrequency } from '../format.js';
+import { formatFrequency, powerAxisUnit } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter } from './ParameterRow.js';
 
 export interface WaterfallViewProps {
   history: readonly Sweep[];
   configuration: WaterfallConfiguration;
+  /** See SpectrumPlotProps.spectrumCapabilityAvailable's doc comment -- same distinction, same reason. */
+  spectrumCapabilityAvailable?: boolean;
   onConfiguration(configuration: WaterfallConfiguration): void;
 }
 
@@ -36,7 +38,7 @@ interface RingState {
   row: ImageData;
 }
 
-export function WaterfallView({ history, configuration, onConfiguration }: WaterfallViewProps) {
+export function WaterfallView({ history, configuration, spectrumCapabilityAvailable = true, onConfiguration }: WaterfallViewProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const ring = useRef<RingState | undefined>(undefined);
   const reference = history[0];
@@ -44,6 +46,15 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
     ? history.filter((sweep) => sameGrid(sweep, reference)).slice(0, configuration.historyDepth)
     : [], [history, reference, configuration.historyDepth]);
   const rejected = Math.min(history.length, configuration.historyDepth) - compatible.length;
+  const rejectedForPowerReference = reference
+    ? history.slice(0, configuration.historyDepth).filter((sweep) => sameFrequencyGrid(sweep, reference)
+      && sweep.powerReference !== reference.powerReference).length
+    : 0;
+  const incompatibilityLabel = rejectedForPowerReference === 0
+    ? 'GRID CHANGE'
+    : rejectedForPowerReference === rejected
+      ? 'POWER REFERENCE CHANGE'
+      : 'GRID / POWER REFERENCE CHANGE';
 
   useEffect(() => {
     const element = canvas.current;
@@ -68,9 +79,12 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
           else if (color !== firstColor) differentColor = true;
         }
       }
+      const rangeEvidence = reference.powerReference === 'uncalibrated-dbfs-relative'
+        ? `minDbfsRelative=${minimumDbm}; maxDbfsRelative=${maximumDbm}`
+        : `minDbm=${minimumDbm}; maxDbm=${maximumDbm}`;
       element.setAttribute(
         'aria-description',
-        `rows=${compatible.length}; bins=${reference.powerDbm.length}; colors=${differentColor ? 2 : firstColor === undefined ? 0 : 1}; minDbm=${minimumDbm}; maxDbm=${maximumDbm}`,
+        `rows=${compatible.length}; bins=${reference.powerDbm.length}; colors=${differentColor ? 2 : firstColor === undefined ? 0 : 1}; ${rangeEvidence}`,
       );
     } else {
       element.removeAttribute('aria-description');
@@ -120,20 +134,24 @@ export function WaterfallView({ history, configuration, onConfiguration }: Water
         ref={canvas}
         width="1200"
         height="560"
-        aria-label="Measured power by frequency and sweep time"
+        aria-label={reference?.powerReference === 'uncalibrated-dbfs-relative'
+          ? 'Uncalibrated relative power by frequency and sweep time'
+          : 'Measured power by frequency and sweep time'}
       />
-      {!reference && <div className="analysis-empty"><History size={22}/><strong>No history</strong><span>Run to build sweep history.</span></div>}
-      <div className="waterfall-scale"><span>{configuration.floorDbm} dBm</span><i/><span>{configuration.ceilingDbm} dBm</span></div>
+      {!reference && (spectrumCapabilityAvailable
+        ? <div className="analysis-empty"><History size={22}/><strong>No history</strong><span>Run to build sweep history.</span></div>
+        : <div className="analysis-empty"><History size={22}/><strong>No scalar spectrum capability</strong><span>The connected source has no swept-spectrum or complex-I/Q acquisition -- it can never produce sweep history here.</span></div>)}
+      <div className="waterfall-scale"><span>{configuration.floorDbm} {powerAxisUnit(reference?.powerReference)}</span><i/><span>{configuration.ceilingDbm} {powerAxisUnit(reference?.powerReference)}</span></div>
     </div>
-    <footer className="analysis-axis-footer"><span>{reference ? formatFrequency(reference.actualStartHz) : 'START'}</span><span>{compatible.length} / {configuration.historyDepth} COHERENT{rejected ? ` · ${rejected} GRID CHANGE${rejected === 1 ? '' : 'S'} EXCLUDED` : ''}</span><span>{reference ? formatFrequency(reference.actualStopHz) : 'STOP'}</span></footer>
+    <footer className="analysis-axis-footer"><span>{reference ? formatFrequency(reference.actualStartHz) : 'START'}</span><span>{compatible.length} / {configuration.historyDepth} COHERENT{rejected ? ` · ${rejected} ${incompatibilityLabel}${rejected === 1 ? '' : 'S'} EXCLUDED` : ''}</span><span>{reference ? formatFrequency(reference.actualStopHz) : 'STOP'}</span></footer>
     <aside className="waterfall-console">
       <div className="channel-console-title"><span><History size={14}/></span><strong>History scale</strong></div>
       <div className="waterfall-form parameter-stack">
-        <EditableParameter label="Color floor" value={configuration.floorDbm} displayValue={`${configuration.floorDbm} dBm`} unit="dBm" minimum={-174} maximum={configuration.ceilingDbm - 1} controlId="waterfall.floor" onCommit={(value) => onConfiguration({ ...configuration, floorDbm: Number(value) })}/>
-        <EditableParameter label="Color ceiling" value={configuration.ceilingDbm} displayValue={`${configuration.ceilingDbm} dBm`} unit="dBm" minimum={configuration.floorDbm + 1} maximum={30} controlId="waterfall.ceiling" onCommit={(value) => onConfiguration({ ...configuration, ceilingDbm: Number(value) })}/>
+        <EditableParameter label="Color floor" value={configuration.floorDbm} displayValue={`${configuration.floorDbm} ${powerAxisUnit(reference?.powerReference)}`} unit={powerAxisUnit(reference?.powerReference)} minimum={-174} maximum={configuration.ceilingDbm - 1} controlId="waterfall.floor" onCommit={(value) => onConfiguration({ ...configuration, floorDbm: Number(value) })}/>
+        <EditableParameter label="Color ceiling" value={configuration.ceilingDbm} displayValue={`${configuration.ceilingDbm} ${powerAxisUnit(reference?.powerReference)}`} unit={powerAxisUnit(reference?.powerReference)} minimum={configuration.floorDbm + 1} maximum={30} controlId="waterfall.ceiling" onCommit={(value) => onConfiguration({ ...configuration, ceilingDbm: Number(value) })}/>
         <EditableParameter label="History depth" value={configuration.historyDepth} displayValue={`${configuration.historyDepth} sweeps`} unit="sweeps" minimum={5} maximum={50} step={1} controlId="waterfall.depth" onCommit={(value) => onConfiguration({ ...configuration, historyDepth: Number(value) })}/>
       </div>
-      <div className="waterfall-status"><small>COHERENT HISTORY</small><strong>{compatible.length} / {configuration.historyDepth}</strong><span>{rejected ? `${rejected} incompatible grid${rejected === 1 ? '' : 's'} excluded` : 'All captured grids align'}</span></div>
+      <div className="waterfall-status"><small>COHERENT HISTORY</small><strong>{compatible.length} / {configuration.historyDepth}</strong><span>{rejected ? `${rejected} incompatible grid or power reference${rejected === 1 ? '' : 's'} excluded` : 'All captured grids and power references align'}</span></div>
     </aside>
   </section>;
 }
@@ -231,6 +249,11 @@ function sameStringList(left: readonly string[], right: readonly string[]): bool
 }
 
 function sameGrid(left: Sweep, right: Sweep): boolean {
+  return left.powerReference === right.powerReference
+    && sameFrequencyGrid(left, right);
+}
+
+function sameFrequencyGrid(left: Sweep, right: Sweep): boolean {
   return left.frequencyHz.length === right.frequencyHz.length
     && left.frequencyHz.every((frequency, index) => frequency === right.frequencyHz[index]);
 }

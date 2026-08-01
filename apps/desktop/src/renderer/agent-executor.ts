@@ -160,10 +160,12 @@ export class AgentExecutor {
     currentSweep: Sweep,
     metrics: ReturnType<typeof calculateSweepMetrics>,
   ) {
-    const physical = 'kind' in currentSweep.identity
+    assertAgentSweepPowerEvidence(currentSweep);
+    const physicalNativeReceiver = 'kind' in currentSweep.identity
       && currentSweep.identity.kind === 'instrument-session'
-      && currentSweep.identity.provenance.execution === 'physical';
-    if (physical
+      && currentSweep.identity.provenance.execution === 'physical'
+      && currentSweep.source !== 'host-derived-from-complex-iq';
+    if (physicalNativeReceiver
       && (currentSweep.resolutionBandwidthQualification !== 'device-observed'
         || currentSweep.attenuationQualification !== 'device-observed'
         || currentSweep.actualAttenuationDb === null)) {
@@ -176,6 +178,8 @@ export class AgentExecutor {
       rangeHz: [currentSweep.actualStartHz, currentSweep.actualStopHz],
       points: currentSweep.frequencyHz.length,
       source: currentSweep.source,
+      powerReference: agentPowerReference(currentSweep),
+      powerUnit: currentSweep.powerReference === 'uncalibrated-dbfs-relative' ? 'dBFS-relative' : 'dBm',
       elapsedMilliseconds: currentSweep.elapsedMilliseconds,
       metrics,
       ...(currentSweep.resolutionBandwidthQualification === undefined ? {} : {
@@ -266,6 +270,7 @@ export class AgentExecutor {
             elapsedMilliseconds: currentIqCapture.elapsedMilliseconds,
             durationSeconds: currentIqCapture.sampleCount / currentIqCapture.sampleRateHz,
           },
+          powerReference: currentIqCapture.powerReference ?? 'not-established',
           provenance: {
             sessionId: currentIqCapture.sessionId,
             configurationRevision: currentIqCapture.configurationRevision,
@@ -299,7 +304,10 @@ export class AgentExecutor {
       latestSweep: currentSweep && currentMetrics
         ? this.agentLatestSweepSummary(currentSweep, currentMetrics)
         : null,
-      detections: agentDetectionResults(currentDetections),
+      detections: {
+        ...agentDetectionResults(currentDetections),
+        powerReference: currentSweep ? agentPowerReference(currentSweep) : null,
+      },
       zeroSpan: currentZeroCapture && currentEnvelope ? {
         frequencyHz: currentZeroCapture.frequencyHz,
         samples: currentZeroCapture.powerDbm.length,
@@ -316,12 +324,12 @@ export class AgentExecutor {
         traces: state.traceConfiguration.map((trace) => ({ ...trace, sweepCount: currentTraceFrames.find((frame) => frame.traceId === trace.id)?.sweepCount ?? 0 })),
         firmwareTraces: state.firmwareTraceFrames.map(({ traceId, role, unit, frozen, sourceSweepId, capturedAt }) => ({ traceId, role, unit, frozen, visible: state.visibleFirmwareTraceIds.includes(traceId), sourceSweepId, capturedAt, evidence: 'firmware-readback' })),
         activeTraceId: state.activeTraceId,
-        markers: { configurations: currentMarkers, readings: currentMarkerReadings },
+        markers: { configurations: currentMarkers, readings: currentMarkerReadings, powerReference: currentSweep ? agentPowerReference(currentSweep) : null },
         activeMarkerId: state.activeMarkerId,
         markerSearch: state.markerSearchConfiguration,
         display: state.displayConfiguration,
-        waterfall: { configuration: state.waterfallConfiguration, coherentSweeps: coherentSweepCount(currentHistory, state.waterfallConfiguration.historyDepth) },
-        channel: { configuration: state.channelConfiguration, analysis: channelMeasurement },
+        waterfall: { configuration: state.waterfallConfiguration, coherentSweeps: coherentSweepCount(currentHistory, state.waterfallConfiguration.historyDepth), powerReference: currentSweep ? agentPowerReference(currentSweep) : null },
+        channel: { configuration: state.channelConfiguration, analysis: channelMeasurement, powerReference: currentSweep ? agentPowerReference(currentSweep) : null },
         envelopeStft: { configuration: state.stftConfiguration, analysis: envelopeStft },
         evidence: 'host-derived',
       },
@@ -360,7 +368,10 @@ export class AgentExecutor {
       };
       case 'get_instrument_state': return { ...k.state.instrument, generatorOutput: k.currentGeneratorOutput(), scalarConfiguration: this.agentConfigurationContext() };
       case 'get_latest_sweep_summary': return JSON.parse(this.applicationContext()).latestSweep;
-      case 'get_detection_results': return agentDetectionResults(k.state.detections);
+      case 'get_detection_results': return {
+        ...agentDetectionResults(k.state.detections),
+        powerReference: k.state.sweep ? agentPowerReference(k.state.sweep) : null,
+      };
       case 'get_classification_results': return this.classifyCurrentCapture();
       case 'read_device_diagnostics': return k.features.refreshDiagnostics();
       case 'list_connection_candidates': {
@@ -436,6 +447,9 @@ export class AgentExecutor {
       case 'acquire_sweep': {
         assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
         const frame = await k.acquisition.acquireGlobalFrame();
+        const sweep = frame.sweep ?? (frame.iq && k.state.sweep?.id === frame.iq.measurementId
+          ? k.state.sweep
+          : undefined);
         return {
           acquired: true,
           acquisitionMode: frame.iq ? 'complex-iq' : 'swept-spectrum',
@@ -446,13 +460,15 @@ export class AgentExecutor {
             sampleCount: frame.iq.sampleCount,
             sampleRateHz: frame.iq.sampleRateHz,
             qualification: frame.iq.qualification,
+            powerReference: frame.iq.powerReference ?? 'not-established',
           } : {}),
-          ...(frame.sweep ? {
-            sweepId: frame.sweep.id,
-            sweepSequence: frame.sweep.sequence,
-            points: frame.sweep.frequencyHz.length,
-            source: frame.sweep.source,
-            identity: frame.sweep.identity,
+          ...(sweep ? {
+            sweepId: sweep.id,
+            sweepSequence: sweep.sequence,
+            points: sweep.frequencyHz.length,
+            source: sweep.source,
+            powerReference: agentPowerReference(sweep),
+            identity: sweep.identity,
           } : {}),
         };
       }
@@ -472,7 +488,7 @@ export class AgentExecutor {
         const configuration = waterfallConfigurationSchema.parse(args);
         k.measurement.applyMeasurementView('waterfall');
         k.measurement.applyWaterfall(configuration);
-        return { configuration, retainedSweeps: coherentSweepCount(k.state.history, configuration.historyDepth), evidence: 'host-derived-scalar-sweep' };
+        return { configuration, retainedSweeps: coherentSweepCount(k.state.history, configuration.historyDepth), powerReference: k.state.sweep ? agentPowerReference(k.state.sweep) : null, evidence: 'host-derived-scalar-sweep' };
       }
       case 'configure_channel_measurement': {
         const configuration = channelMeasurementConfigurationSchema.parse(args);
@@ -480,7 +496,11 @@ export class AgentExecutor {
         k.measurement.applyChannelMeasurement(configuration);
         return configuration;
       }
-      case 'get_channel_measurement_results': return k.measurement.requireChannelMeasurement();
+      case 'get_channel_measurement_results': {
+        const sweep = k.state.sweep;
+        if (!sweep) throw new Error('Acquire a complete spectrum sweep before reading channel measurements');
+        return { ...k.measurement.requireChannelMeasurement(), powerReference: agentPowerReference(sweep) };
+      }
       case 'configure_envelope_stft': {
         const configuration = envelopeStftConfigurationSchema.parse(args);
         k.measurement.applyMeasurementView('envelope-stft');
@@ -510,6 +530,9 @@ export class AgentExecutor {
       }
       case 'configure_marker_search': {
         const configuration = markerSearchConfigurationSchema.parse(args);
+        if (k.state.sweep?.powerReference === 'uncalibrated-dbfs-relative') {
+          throw new Error('Marker minimumLevelDbm is an absolute dBm criterion and cannot be configured for an uncalibrated dBFS-relative sweep');
+        }
         k.applyWorkspace('spectrum');
         k.measurement.applyMarkerSearch(configuration);
         return { configuration, evidence: 'host-derived' };
@@ -559,7 +582,7 @@ export class AgentExecutor {
         const display = spectrumDisplayConfigurationSchema.parse(args);
         k.applyWorkspace('spectrum');
         k.measurement.applyDisplay(display);
-        return { display, evidence: 'host-derived' };
+        return { display, powerReference: k.state.sweep ? agentPowerReference(k.state.sweep) : null, evidence: 'host-derived' };
       }
       case 'auto_scale_spectrum_display': {
         const latestSweep = k.state.sweep;
@@ -567,9 +590,17 @@ export class AgentExecutor {
         k.applyWorkspace('spectrum');
         const display = autoScaleSpectrum(latestSweep);
         k.measurement.applyDisplay(display);
-        return { display, sweepId: latestSweep.id, evidence: 'host-derived-complete-sweep' };
+        return { display, sweepId: latestSweep.id, powerReference: agentPowerReference(latestSweep), evidence: 'host-derived-complete-sweep' };
       }
-      case 'configure_signal_detector': { const next = signalDetectionConfigSchema.parse(args); k.applyWorkspace('classification'); return k.applyDetectionConfiguration(next); }
+      case 'configure_signal_detector': {
+        const next = signalDetectionConfigSchema.parse(args);
+        if (k.state.sweep?.powerReference === 'uncalibrated-dbfs-relative'
+          && next.threshold.strategy === 'absolute') {
+          throw new Error('Absolute dBm detection is unavailable for an uncalibrated dBFS-relative sweep; use a noise-relative threshold');
+        }
+        k.applyWorkspace('classification');
+        return { ...k.applyDetectionConfiguration(next), powerReference: k.state.sweep ? agentPowerReference(k.state.sweep) : null };
+      }
       case 'configure_zero_span': {
         const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
         const { patch, configuration: next } = stageDetectedPowerConfigurationPatch(
@@ -583,6 +614,29 @@ export class AgentExecutor {
         return { patch, scalarConfiguration: this.agentConfigurationContext(k.state.analyzer, next) };
       }
       case 'acquire_zero_span': { assertWorkspaceTransition(k.state.workspace, 'classification', k.currentGeneratorOutput()); const result = await k.acquisition.acquireZeroSpan(); k.applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
+      case 'acquire_complex_iq': {
+        // Source-agnostic across SignalLab and Neptune P210: acquireIq() rejects
+        // cleanly (no complex-iq capability, e.g. a scalar-only receiver) with a
+        // thrown Error rather than crashing or silently returning nothing.
+        assertWorkspaceTransition(k.state.workspace, 'iq', k.currentGeneratorOutput());
+        const measurement = await k.acquisition.acquireIq();
+        k.applyWorkspace('iq');
+        return {
+          acquired: true,
+          captureId: measurement.measurementId,
+          sequence: measurement.sequence,
+          centerHz: measurement.centerHz,
+          sampleCount: measurement.sampleCount,
+          sampleRateHz: measurement.sampleRateHz,
+          sampleFormat: measurement.sampleFormat,
+          qualification: measurement.qualification,
+          // Undefined for every source but Neptune P210/twin today: this
+          // codebase has no calibrated-dBm complex-I/Q source, so absence here
+          // must never be read as an implicit calibrated-power claim.
+          powerReference: measurement.powerReference ?? 'not-established',
+          powerUnit: measurement.powerReference === 'uncalibrated-dbfs-relative' ? 'dBFS-relative' : 'not-established',
+        };
+      }
       case 'configure_generator': { const next = generatorConfigSchema.parse(args); k.applyWorkspace('generator'); k.set({ generator: next }); return k.features.configureGeneratorWith(next); }
       case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; k.applyWorkspace('generator'); await k.features.setOutput(enabled); return { enabled, sourceKind: k.state.instrument.session?.provenance.sourceKind ?? 'unknown', evidence: 'driver-commanded' }; }
       case 'select_signal_lab_profile': {
@@ -621,6 +675,7 @@ export class AgentExecutor {
         return { completed: 'tap', point };
       }
       case 'export_latest_sweep': return k.features.exportLatest((args as { format: 'csv' | 'json' }).format);
+      case 'export_latest_iq': return k.features.exportLatestIq();
     }
     const unreachable: never = name;
     return unreachable;
@@ -689,4 +744,44 @@ function inspectRenderedAgentControls() {
       guarantee: binding.guarantee,
     };
   });
+}
+
+function agentPowerReference(sweep: Sweep): 'calibrated-dbm' | 'uncalibrated-dbfs-relative' {
+  return sweep.powerReference ?? 'calibrated-dbm';
+}
+
+/** Agent reads are an external evidence boundary: a physical Neptune FFT is
+ * not allowed to inherit the native-receiver dBm assertions merely because
+ * its session execution is physical. */
+export function assertAgentSweepPowerEvidence(sweep: Sweep): void {
+  if (sweep.powerReference !== 'uncalibrated-dbfs-relative') {
+    if (sweep.source === 'host-derived-from-complex-iq'
+      && 'kind' in sweep.identity
+      && sweep.identity.kind === 'instrument-session'
+      && (sweep.identity.provenance.sourceKind === 'neptune-p210'
+        || sweep.identity.provenance.sourceKind === 'neptune-p210-twin')) {
+      throw new Error('Neptune host-derived spectrum omitted its uncalibrated dBFS-relative power reference');
+    }
+    return;
+  }
+  if (sweep.source !== 'host-derived-from-complex-iq'
+    || sweep.requested.controls.model !== 'host-derived-iq-projection'
+    || sweep.resolutionBandwidthQualification !== 'host-derived-fft-bin') {
+    throw new Error('Uncalibrated dBFS-relative sweep has contradictory host-derived FFT provenance');
+  }
+  if (!('kind' in sweep.identity) || sweep.identity.kind !== 'instrument-session') {
+    throw new Error('Uncalibrated dBFS-relative sweep requires instrument-session provenance');
+  }
+  const execution = sweep.identity.provenance.execution;
+  const expectedAttenuationQualification = sweep.actualAttenuationDb === null
+    ? 'not-applicable'
+    : execution === 'physical'
+      ? 'device-observed'
+      : execution === 'firmware-executed-twin'
+        ? 'firmware-executed-twin'
+        : undefined;
+  if (expectedAttenuationQualification === undefined
+    || sweep.attenuationQualification !== expectedAttenuationQualification) {
+    throw new Error('Uncalibrated dBFS-relative sweep has contradictory attenuation evidence');
+  }
 }

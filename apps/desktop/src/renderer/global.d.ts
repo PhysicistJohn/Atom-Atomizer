@@ -10,5 +10,8 @@ declare global { interface Window {
     computerKey(value:{expectedTarget:string;key:string}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
     computerScroll(value:{screenshotId:string;x:number;y:number;deltaX:number;deltaY:number}):Promise<{ok:boolean;action:string;target?:string;reason?:string}>;
   };
+  atomizerNeptune: {
+    addManualEndpoint(sourceKind: 'neptune-p210' | 'neptune-p210-twin', endpoint: string): Promise<{ ok: true } | { ok: false; message: string }>;
+  };
 } }
 export {};

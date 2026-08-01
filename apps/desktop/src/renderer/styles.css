@@ -606,6 +606,9 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .iq-scale-control button:hover:not(:disabled), .iq-scale-control button.active { color: var(--ink); background: rgba(255,255,255,.065); }
 .iq-scale-control button:disabled { opacity: .3; }
 .iq-scale-control output { min-width: 27px; color: var(--energy-bright); font: 7px var(--mono); text-align: center; }
+.iq-export-button { height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid rgba(100,210,255,.18); border-radius: 8px; color: var(--cyan); background: rgba(100,210,255,.045); font: 7px var(--mono); }
+.iq-export-button:hover:not(:disabled) { border-color: rgba(100,210,255,.38); background: rgba(100,210,255,.09); }
+.iq-export-button:disabled { opacity: .35; }
 .iq-format-badge { padding: 5px 7px; border: 1px solid rgba(100,210,255,.2); border-radius: 7px; color: var(--cyan); background: rgba(100,210,255,.05); font: 8px var(--mono); text-transform: uppercase; }
 /* Live modulation readout beside the I/Q plots — auto-identifies as I/Q streams.
    Two rows: the class (+ protocol leaf) on top, confidence + runner-ups below,
@@ -950,7 +953,7 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .measurement-stage-content, .spectrum-stage, .waterfall-view, .channel-analysis-view { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .measurement-overlay { width: 390px; position: absolute; z-index: 12; inset: 12px 12px 12px auto; overflow: hidden; padding: 7px; border: 1px solid rgba(255,255,255,.14); border-radius: 21px; background: rgba(12,12,15,.8); box-shadow: 0 30px 95px rgba(0,0,0,.58), inset 0 1px rgba(255,255,255,.05); backdrop-filter: blur(36px) saturate(125%); animation: stage-overlay-enter .18s var(--ease); }
 .measurement-overlay.controls { width: 420px; }
-.measurement-overlay .inspector, .measurement-overlay .measurement-dock { height: 100%; overflow: auto; background: rgba(27,27,30,.74); box-shadow: none; }
+.measurement-overlay .inspector, .measurement-overlay .measurement-dock, .measurement-overlay .iq-control-panel { height: 100%; overflow: auto; background: rgba(27,27,30,.74); box-shadow: none; }
 /* Dismiss affordances used only on mobile, where the overlay floats over (and
    hides) the toolbar toggle that would otherwise close it. On desktop the
    toolbar stays visible beside the overlay, so these stay hidden. */
@@ -1403,3 +1406,11 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   /* Dialogs fit the screen. */
   .connection-dialog { width: min(94vw, 520px); }
 }
+
+.manual-endpoint { padding: 0 18px 14px; }
+.manual-endpoint label { display: block; color: var(--muted); font-size: 9px; }
+.manual-endpoint-row { display: flex; gap: 8px; margin-top: 6px; }
+.manual-endpoint-row input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px; outline: 0; color: var(--ink); background: rgba(0,0,0,.15); font: 10px var(--mono); }
+.manual-endpoint-row input:disabled { opacity: .5; }
+.manual-endpoint-row .text-button { flex-shrink: 0; border: 1px solid var(--line); border-radius: 9px; }
+.manual-endpoint-hint { display: block; margin-top: 5px; color: var(--quiet); font-size: 8px; }

@@ -3,6 +3,12 @@ import { join } from 'node:path';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeFile } from 'node:fs/promises';
+import { restoreGuiLaunchPath } from './gui-launch-path.js';
+
+// Must run before anything (e.g. the Neptune driver) can shell out to a
+// subprocess -- see gui-launch-path.ts for why a GUI-launched Electron main
+// process cannot otherwise see a Homebrew/user-local CLI install at all.
+restoreGuiLaunchPath();
 import {
   NodeSerialTransport,
   PhysicalOrTwinTransport,
@@ -11,10 +17,12 @@ import {
   TinySaZs407InstrumentDriver,
 } from '@tinysa/device';
 import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
+import { NeptuneP210InstrumentDriver, RecentP210DeviceStore } from '@tinysa/neptune-p210';
 import { InProcessSignalLabDriver } from '../shared/in-process-signal-lab-driver.js';
 import { OpenAiGateway } from './ai-gateway.js';
 import { AppComputerHarness } from './app-computer.js';
 import { defaultSweepFilename, serializeSweep } from './sweep-export.js';
+import { defaultComplexIqMetaFilename, deriveComplexIqDataPath, serializeComplexIqSigmf } from './complex-iq-export.js';
 import { AtomizerInstrumentHost } from './atomizer-instrument-host.js';
 import { registerAtomizerInstrumentIpc } from './atomizer-instrument-ipc.js';
 import { registerAtomizerAuxiliaryIpc } from './atomizer-auxiliary-ipc.js';
@@ -74,9 +82,12 @@ let rendererTrust: RendererTrust | undefined;
 const shutdownGate = new SafeShutdownGate();
 const ipcAdmission = new BoundedPrivilegedIpcAdmission();
 app.setName('Atomizer');
+const neptuneRecentDevicesStore = new RecentP210DeviceStore(join(app.getPath('userData'), 'instrument'));
+const neptuneDriver = new NeptuneP210InstrumentDriver({ recentDevicesStore: neptuneRecentDevicesStore });
 const instrumentManager = new InstrumentManager(new InstrumentDriverRegistry([
   new TinySaZs407InstrumentDriver(device),
   new InProcessSignalLabDriver(),
+  neptuneDriver,
 ]));
 const instrumentHost = new AtomizerInstrumentHost(
   instrumentManager,
@@ -103,6 +114,25 @@ function registerIpc(): void {
         await writeFile(selection.filePath, content, { encoding: 'utf8', flag: 'w' });
         return { status: 'saved' as const, path: selection.filePath, format: request.format, bytesWritten: Buffer.byteLength(content) };
       },
+      exportComplexIq: async (request) => {
+        const selection = await dialog.showSaveDialog(requireWindow(), {
+          title: 'Export complex I/Q capture',
+          defaultPath: defaultComplexIqMetaFilename(request),
+          filters: [{ name: 'SigMF metadata', extensions: ['sigmf-meta'] }],
+          properties: ['createDirectory', 'showOverwriteConfirmation'],
+        });
+        if (selection.canceled || !selection.filePath) return { status: 'cancelled' as const };
+        const { meta, data } = serializeComplexIqSigmf(request);
+        const dataPath = deriveComplexIqDataPath(selection.filePath);
+        await writeFile(selection.filePath, meta, { encoding: 'utf8', flag: 'w' });
+        await writeFile(dataPath, data, { flag: 'w' });
+        return {
+          status: 'saved' as const,
+          metaPath: selection.filePath,
+          dataPath,
+          bytesWritten: Buffer.byteLength(meta) + data.byteLength,
+        };
+      },
       aiStatus: () => ai.status(),
       createRealtimeCall: (sdp) => ai.createRealtimeCall(sdp),
       agentTurn: (request) => ai.agentTurn(request),
@@ -111,6 +141,7 @@ function registerIpc(): void {
       computerType: (input) => computer.type(requireWindow(), input.expectedTarget, input.text),
       computerKey: (input) => computer.key(requireWindow(), input.expectedTarget, input.key),
       computerScroll: (input) => computer.scroll(requireWindow(), input.screenshotId, input.x, input.y, input.deltaX, input.deltaY),
+      addNeptuneManualEndpoint: (input) => neptuneDriver.addManualEndpoint(input.sourceKind, input.endpoint),
     }, assertTrustedIpcEvent, ipcAdmission);
     unregisterIpc = () => {
       removeAuxiliaryIpc();

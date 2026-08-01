@@ -20,8 +20,8 @@ const validToolArguments = {
   get_envelope_stft_results: {}, acquire_envelope_stft: {},
   configure_signal_detector: { threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 },
   configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, trigger: { mode: 'single', levelDbm: -65 } },
-  acquire_zero_span: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
-  set_rf_output: { enabled: false }, select_signal_lab_profile: { profileId: 'wifi-ofdm-20m' }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' },
+  acquire_zero_span: {}, acquire_complex_iq: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
+  set_rf_output: { enabled: false }, select_signal_lab_profile: { profileId: 'wifi-ofdm-20m' }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' }, export_latest_iq: {},
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
@@ -59,7 +59,7 @@ describe('Atom agent contracts',()=>{
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'iq'}).success).toBe(true);
   });
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(50);
+    expect(agentToolDefinitions).toHaveLength(52);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -144,8 +144,11 @@ describe('Atom agent contracts',()=>{
     expect(realtimeToolDefinitions.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME]);
     // Budget raised 12_500 -> 13_500 with the hardware-session doctrine
     // (one-step source switching, atomic-patch retry, comprehensive loads);
-    // the startup surface still carries only the loader definition.
-    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(13_500);
+    // 13_500 -> 13_750 with the source-agnostic complex-I/Q capture tool and
+    // its power-evidence-honesty instruction guidance; 13_750 -> 13_800 for
+    // the native byte-exact SigMF control/tool binding. The startup surface
+    // still carries only the loader definition.
+    expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(13_800);
     const loaded=createAtomRealtimeResponseTools(['get_application_state','configure_analyzer']);
     expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','configure_analyzer']);
     expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='configure_analyzer'));
@@ -197,7 +200,7 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('latest capture provenance');
   });
   it('has an evidence and failure disposition for every generic instrument and file API method',()=>{
-    expect(Object.keys(agentApiCoverage)).toEqual(['getState','discover','connect','disconnect','configure','acquire','startStreaming','stopStreaming','executeFeature','readPreference','writePreference','subscribe','exportSweep']);
+    expect(Object.keys(agentApiCoverage)).toEqual(['getState','discover','connect','disconnect','configure','acquire','startStreaming','stopStreaming','executeFeature','readPreference','writePreference','subscribe','exportSweep','exportComplexIq']);
     const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
     for(const coverage of Object.values(agentApiCoverage)){
       if(coverage.projection!=='human-safety-boundary')expect(coverage.tools.length).toBeGreaterThan(0);
@@ -254,6 +257,30 @@ describe('Atom agent contracts',()=>{
     expect(validateAgentToolCall({callId:'4',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":16,"window":"hann","removeDc":true,"dynamicRangeDb":80}'}).policy.risk).toBe('operate');
     expect(validateAgentToolCall({callId:'5',name:'get_channel_measurement_results',arguments:'{}'}).policy.risk).toBe('observe');
     expect(()=>validateAgentToolCall({callId:'6',name:'configure_envelope_stft',arguments:'{"windowSize":64,"hopSize":128,"window":"hann","removeDc":true,"dynamicRangeDb":80}'})).toThrow();
+  });
+  it('gives Atom a source-agnostic, capability-gated complex-I/Q capture tool',()=>{
+    const validated=validateAgentToolCall({callId:'1',name:'acquire_complex_iq',arguments:'{}'});
+    expect(validated.policy.risk).toBe('operate');
+    expect(validated.policy.approval).toBe('never');
+    expect(agentToolInputSchemas.acquire_complex_iq.safeParse({}).success).toBe(true);
+    expect(agentToolInputSchemas.acquire_complex_iq.safeParse({sampleRateHz:1}).success).toBe(false);
+    expect(()=>validateAgentToolCall({callId:'2',name:'acquire_complex_iq',arguments:'{"centerHz":100000000}'})).toThrow();
+    const description=agentToolDefinitions.find(tool=>tool.name==='acquire_complex_iq')?.description??'';
+    expect(description).toContain('already-admitted complex-I/Q configuration');
+    expect(description).toContain('SignalLab and Neptune P210');
+    expect(description).toContain('rejected with a clear not-applicable result rather than a crash or silent no-op');
+    expect(description).toContain('calibrated dBm or uncalibrated dBFS-relative');
+    expect(agentApiCoverage.acquire.tools).toContain('acquire_complex_iq');
+  });
+  it('reports honest calibrated-vs-uncalibrated power evidence from session status',()=>{
+    const description=agentToolDefinitions.find(tool=>tool.name==='get_instrument_state')?.description??'';
+    expect(description).toContain('calibrated (dBm, a physical receiver) or explicitly uncalibrated (dBFS-relative, e.g. Neptune complex-I/Q)');
+    expect(description).toContain('never imply calibrated hardware power for uncalibrated evidence');
+  });
+  it('locks Atom prompt guidance for the source-agnostic complex-I/Q capture tool and power-evidence honesty',()=>{
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('acquire_complex_iq is the direct, source-agnostic tool');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('a connected Neptune P210/twin');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Neptune and any other uncalibrated source report dBFS-relative power');
   });
 });
 

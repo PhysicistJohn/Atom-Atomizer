@@ -47,7 +47,14 @@ export function DetectWorkspace({
   const showIssue = source !== 'none' && !pending && classificationIssue !== undefined;
   const visibleModulation = showIssue ? undefined : modulation;
   return (
-    <div className="detect-workspace" role="region" aria-label="Modulation classifier">
+    <div
+      className="detect-workspace"
+      role="region"
+      aria-label="Modulation classifier"
+      aria-description={sweep?.powerReference === 'uncalibrated-dbfs-relative'
+        ? 'Spectrum evidence is uncalibrated dBFS-relative; absolute dBm detector controls are unavailable while relative detection remains usable.'
+        : undefined}
+    >
       <section className="detect-stage">
         <header className="detect-header">
           <div><ScanSearch size={16} /><span><strong>Modulation classifier</strong><small>Metric-embedding · synthetic-trained</small></span></div>

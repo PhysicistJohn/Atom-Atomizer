@@ -324,9 +324,9 @@ const EXPECTED_TOOL_NAMES = [
   'get_measurement_state', 'select_marker', 'configure_marker', 'configure_marker_search', 'search_marker', 'select_trace', 'configure_trace', 'configure_firmware_trace_visibility', 'reset_trace', 'configure_spectrum_display', 'auto_scale_spectrum_display',
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
-  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span',
+  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span', 'acquire_complex_iq',
   'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
-  'capture_device_screen', 'remote_device_touch', 'export_latest_sweep',
+  'capture_device_screen', 'remote_device_touch', 'export_latest_sweep', 'export_latest_iq',
 ] as const;
 
 const EXPECTED_SEMANTIC_CONTROL_IDS = [
@@ -340,7 +340,7 @@ const EXPECTED_SEMANTIC_CONTROL_IDS = [
   'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
   'connection.open', 'connection.close', 'connection.refresh', 'connection.disconnect', 'connection.retry-cleanup',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
-  'export.csv', 'export.json', 'error.dismiss', 'notice.dismiss', 'atom.close',
+  'export.csv', 'export.json', 'export.sigmf', 'error.dismiss', 'notice.dismiss', 'atom.close',
   'atom.microphone-mute', 'atom.speaker-mute',
 ] as const;
 
@@ -381,6 +381,7 @@ const EXPECTED_BINDING_PATTERNS = [
   '^connection\\.disconnect$',
   '^connection\\.retry-cleanup$',
   '^export\\.(csv|json)$',
+  '^export\\.sigmf$',
   '^(error|notice)\\.dismiss$',
   '^atom\\.close$',
   '^atom\\.toggle$',
@@ -405,7 +406,7 @@ const EXPECTED_CONCRETE_CONTROL_IDS = [
   'detection.promote', 'detection.release', 'detection.threshold-mode',
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch',
   'display.auto-scale', 'display.reference-level', 'display.scale',
-  'error.dismiss', 'export.csv', 'export.json',
+  'error.dismiss', 'export.csv', 'export.json', 'export.sigmf',
   'generator.am-depth', 'generator.apply', 'generator.fm-deviation', 'generator.frequency',
   'generator.level', 'generator.modulation', 'generator.modulation-rate', 'generator.path', 'generator.rf-output',
   'marker.search.excursion', 'marker.search.left', 'marker.search.minimum', 'marker.search.peak',
@@ -451,6 +452,15 @@ describe('Atom agent surface completeness (A20)', () => {
     expect(Object.keys(agentToolPolicies).sort()).toEqual([...agentToolNames].sort());
   });
 
+  // KNOWN GAP (Neptune agent-surface stage): this check is expected to fail
+  // until apps/desktop/src/renderer/agent-executor.ts gains an
+  // `acquire_complex_iq` switch case. That file is a renderer file and is
+  // explicitly out of scope for the agent-package stage that added the tool
+  // (packages/agent/src/index.ts), matching the same contracts/driver-stage
+  // boundary already documented for the other Neptune P210 renderer gaps
+  // (ConnectionDialog.tsx, DeviceWorkspace.tsx, TopBar.tsx,
+  // controllers/connection.ts, sweep-export.ts). Reserved for the
+  // Composition/Docs/UI stage.
   it('gives every tool name exactly one executor case and every case a tool name', () => {
     const executorSource = readFileSync(executorPath, 'utf8');
     expect(executorSource, `${executorPath} must keep its compile-time exhaustiveness marker`)

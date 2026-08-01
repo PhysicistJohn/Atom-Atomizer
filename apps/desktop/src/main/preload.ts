@@ -4,6 +4,7 @@ import type {
   AtomizerInstrumentApiV1,
   AtomizerInstrumentEvent,
   AtomizerInstrumentPreferenceSelection,
+  ComplexIqExportCapture,
   InstrumentCandidate,
   InstrumentConfiguration,
   InstrumentFeatureRequest,
@@ -16,6 +17,7 @@ import {
   ATOMIZER_FILES_IPC_VERSION,
   ATOMIZER_INSTRUMENT_IPC_CHANNELS,
   ATOMIZER_INSTRUMENT_IPC_VERSION,
+  ATOMIZER_NEPTUNE_IPC_CHANNELS,
 } from './atomizer-ipc-channels.js';
 
 // Sandboxed Electron preloads cannot resolve workspace runtime modules.
@@ -44,6 +46,7 @@ contextBridge.exposeInMainWorld('atomizerInstrument', atomizerInstrument);
 const atomizerFiles = {
   version: ATOMIZER_FILES_IPC_VERSION,
   exportSweep: (request: SweepExportRequest) => ipcRenderer.invoke(ATOMIZER_FILES_IPC_CHANNELS.exportSweep, request),
+  exportComplexIq: (request: ComplexIqExportCapture) => ipcRenderer.invoke(ATOMIZER_FILES_IPC_CHANNELS.exportComplexIq, request),
 } satisfies AtomizerFilesApiV1;
 contextBridge.exposeInMainWorld('atomizerFiles', atomizerFiles);
 
@@ -56,4 +59,9 @@ contextBridge.exposeInMainWorld('atomAgent', {
   computerType: (value:{expectedTarget:string;text:string}) => ipcRenderer.invoke(ATOMIZER_AI_IPC_CHANNELS.computerType, value),
   computerKey: (value:{expectedTarget:string;key:string}) => ipcRenderer.invoke(ATOMIZER_AI_IPC_CHANNELS.computerKey, value),
   computerScroll: (value:{screenshotId:string;x:number;y:number;deltaX:number;deltaY:number}) => ipcRenderer.invoke(ATOMIZER_AI_IPC_CHANNELS.computerScroll, value)
+});
+
+contextBridge.exposeInMainWorld('atomizerNeptune', {
+  addManualEndpoint: (sourceKind: 'neptune-p210' | 'neptune-p210-twin', endpoint: string) =>
+    ipcRenderer.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind, endpoint }),
 });

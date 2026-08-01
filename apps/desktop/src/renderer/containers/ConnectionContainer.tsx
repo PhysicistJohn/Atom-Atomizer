@@ -35,6 +35,7 @@ function OpenConnectionDialog({ runtime }: { runtime: RendererRuntime }) {
     onRefresh={() => void connection.refreshCandidates()}
     onDisconnect={() => void connection.disconnect()}
     onMakeDefault={() => void connection.makeSelectedDefault()}
+    onAddNeptuneEndpoint={(sourceKind, endpoint) => connection.addNeptuneEndpoint(sourceKind, endpoint)}
     onClose={() => runtime.store.set({ connectionOpen: false })}
   />;
 }

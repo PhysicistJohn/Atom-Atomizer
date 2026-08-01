@@ -1,3 +1,4 @@
+import { deriveSpectrumFromComplexIq } from '@tinysa/analysis';
 import type {
   AttenuationQualification,
   InstrumentMeasurement,
@@ -9,6 +10,7 @@ import type {
   Sweep,
   ZeroSpanCapture,
 } from '@tinysa/contracts';
+import type { ComplexIqMeasurement } from './complex-iq.js';
 
 type SweptSpectrumMeasurement = Extract<InstrumentMeasurement, { kind: 'swept-spectrum' }>;
 type DetectedPowerTimeseriesMeasurement = Extract<InstrumentMeasurement, { kind: 'detected-power-timeseries' }>;
@@ -44,6 +46,59 @@ export function projectSpectrumMeasurement(
       : session.provenance.sourceKind === 'tinysa-firmware-twin'
         ? 'renode-executable-state'
         : 'instrument-driver-scalar',
+    complete: true,
+    identity: measurementIdentity(session),
+  };
+}
+
+/**
+ * Project a scalar spectrum from a complex-I/Q capture: a spectrum is a
+ * projection of the complex I/Q vector, not something only a native
+ * swept-spectrum acquisition can produce. Every accepted complex-I/Q
+ * measurement can honestly become a `Sweep` this way, so a complex-I/Q-only
+ * source (Neptune P210 and any future one) still populates Spectrum,
+ * Waterfall, and Channel -- the projection's provenance says plainly that it
+ * is host-derived, not device-swept.
+ */
+export function projectDerivedSpectrumFromComplexIq(
+  measurement: ComplexIqMeasurement,
+  session: InstrumentSessionSnapshot,
+): Sweep {
+  requireMeasurementSession(measurement, session);
+  const projection = deriveSpectrumFromComplexIq(measurement);
+  const sweepTimeSeconds = measurement.sampleCount / measurement.sampleRateHz;
+  const attenuationQualification: AttenuationQualification = measurement.attenuationDb === null
+    ? 'not-applicable'
+    : receiverMeasurementQualification(session);
+  return {
+    kind: 'spectrum',
+    id: measurement.measurementId,
+    sequence: measurement.sequence,
+    capturedAt: measurement.capturedAt,
+    elapsedMilliseconds: measurement.elapsedMilliseconds,
+    frequencyHz: projection.frequencyHz,
+    powerDbm: projection.powerDbm,
+    ...(measurement.powerReference === undefined ? {} : { powerReference: measurement.powerReference }),
+    requested: {
+      kind: 'swept-spectrum',
+      startHz: projection.frequencyHz[0]!,
+      stopHz: projection.frequencyHz.at(-1)!,
+      points: projection.fftSize,
+      sweepTimeSeconds,
+      controls: {
+        schemaVersion: 1,
+        model: 'host-derived-iq-projection',
+        fftSize: projection.fftSize,
+        window: 'hann-periodic',
+      },
+    },
+    actualStartHz: projection.frequencyHz[0]!,
+    actualStopHz: projection.frequencyHz.at(-1)!,
+    actualRbwHz: projection.actualRbwHz,
+    actualAttenuationDb: measurement.attenuationDb,
+    resolutionBandwidthQualification: 'host-derived-fft-bin',
+    attenuationQualification,
+    source: 'host-derived-from-complex-iq',
     complete: true,
     identity: measurementIdentity(session),
   };
@@ -161,7 +216,7 @@ function receiverMeasurementQualification(
 }
 
 function requireMeasurementSession(
-  measurement: SweptSpectrumMeasurement | DetectedPowerTimeseriesMeasurement,
+  measurement: SweptSpectrumMeasurement | DetectedPowerTimeseriesMeasurement | ComplexIqMeasurement,
   session: InstrumentSessionSnapshot,
 ): void {
   if (measurement.sessionId !== session.sessionId) {

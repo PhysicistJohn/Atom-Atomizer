@@ -505,6 +505,18 @@ export function selectDetectedPowerCapability(state: InstrumentStateSlice) {
 export function selectIqCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
 }
+/**
+ * Whether Spectrum/Waterfall/Channel can ever populate for the current
+ * session: natively (swept-spectrum) or via a host-derived-from-complex-I/Q
+ * projection. Before a session exists at all this stays `true` -- "not yet
+ * connected" must show the ordinary "connect and acquire" empty state, not
+ * the honest no-capability one, which only applies to an actually connected
+ * source that structurally lacks both.
+ */
+export function selectSpectrumCapabilityAvailable(state: InstrumentStateSlice): boolean {
+  if (state.instrument.session === undefined) return true;
+  return selectSpectrumCapability(state) !== undefined || selectIqCapability(state) !== undefined;
+}
 export function selectGeneratorCapability(state: InstrumentStateSlice) {
   return state.instrument.session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
 }

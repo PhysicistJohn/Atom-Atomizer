@@ -16,6 +16,7 @@ import {
   instrumentCandidateDescriptorSchema,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
+  instrumentCapabilitySourceBindingIssues,
   instrumentConfigurationCapabilityBindingIssues,
   instrumentConfigurationSchema,
   instrumentDiscoveryResultSchema,
@@ -28,6 +29,7 @@ import {
   projectDetectedPowerTuneHz,
   instrumentSessionProvenanceSchema,
   instrumentSessionSnapshotSchema,
+  instrumentSourceKindSchema,
   receiveOnlySafetyReceiptSchema,
   signalLabIqTransformReceiptSchema,
   signalLabProfileSelectionCapabilitySchema,
@@ -110,6 +112,75 @@ describe('instrument boundary contracts', () => {
       sourceKind: 'signal-lab',
     }).success).toBe(false);
     expect(instrumentCandidateSchema.safeParse({ ...serial, discoveryRevision: 'discovery:opaque' }).success).toBe(true);
+  });
+
+  it('parses both new Neptune P210 source kinds as strict, self-owned candidate variants', () => {
+    expect(instrumentSourceKindSchema.safeParse('neptune-p210').success).toBe(true);
+    expect(instrumentSourceKindSchema.safeParse('neptune-p210-twin').success).toBe(true);
+
+    const physical = neptuneP210Candidate();
+    const twin = neptuneP210TwinCandidate();
+    expect(instrumentCandidateDescriptorSchema.parse(physical)).toEqual(physical);
+    expect(instrumentCandidateDescriptorSchema.parse(twin)).toEqual(twin);
+    expect(instrumentCandidateSchema.safeParse({ ...physical, discoveryRevision: 'discovery:neptune-p210' }).success).toBe(true);
+    expect(instrumentCandidateSchema.safeParse({ ...twin, discoveryRevision: 'discovery:neptune-p210-twin' }).success).toBe(true);
+
+    // The twin's physicalRfModeled marker is a fixed literal false, never a
+    // configurable boolean: the twin can never truthfully claim RF fidelity.
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...twin,
+      neptuneP210Twin: { ...twin.neptuneP210Twin, physicalRfModeled: true },
+    }).success).toBe(false);
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...twin,
+      neptuneP210Twin: { ...twin.neptuneP210Twin, profile: 'production' },
+    }).success).toBe(false);
+  });
+
+  it('keeps Neptune P210 candidates from smuggling serial-port, firmware-twin, or SignalLab fields', () => {
+    const physical = neptuneP210Candidate();
+    const twin = neptuneP210TwinCandidate();
+    const serial = serialCandidate();
+    const signalLab = signalLabCandidate();
+
+    // Borrowing another source kind's evidence field is rejected by the
+    // strict object shape, per ADR 0004 "Source identity is not flattened".
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...physical,
+      serialPort: serial.serialPort,
+    }).success).toBe(false);
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...physical,
+      signalLab: signalLab.signalLab,
+    }).success).toBe(false);
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...twin,
+      firmwareTwin: {
+        bridge: 'renode-monitor-v1',
+        repositoryCommit: 'a'.repeat(40),
+        firmwareBinarySha256: 'b'.repeat(64),
+        usbTransactionsModeled: false,
+      },
+    }).success).toBe(false);
+    // A VID/PID pair belongs only to serial-port evidence.
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...physical,
+      neptuneP210: { ...physical.neptuneP210, vendorId: '0483', productId: '5740' },
+    }).success).toBe(false);
+    // Declaring the wrong discriminant with the other kind's evidence group must fail.
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...physical,
+      sourceKind: 'neptune-p210-twin',
+    }).success).toBe(false);
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...twin,
+      sourceKind: 'neptune-p210',
+    }).success).toBe(false);
+    // An empty endpoint is not truthful network evidence.
+    expect(instrumentCandidateDescriptorSchema.safeParse({
+      ...physical,
+      neptuneP210: { endpoint: '' },
+    }).success).toBe(false);
   });
 
   it('preserves typed partial discovery failures across driver and public boundaries', () => {
@@ -397,6 +468,93 @@ describe('instrument boundary contracts', () => {
 
     expect(() => complexIqPayloadByteLength(0, 'cf32le')).toThrow(/positive safe integer/);
     expect(() => complexIqPayloadByteLength(MAX_COMPLEX_IQ_SAMPLES_V1 + 1, 'ci8')).toThrow(/limited/);
+  });
+
+  it('rejects Neptune P210 sessions that advertise scalar, generator, or SignalLab profile capabilities', () => {
+    for (const sourceKind of ['neptune-p210', 'neptune-p210-twin'] as const) {
+      const iqOnly = neptuneComplexIqCapabilities();
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, iqOnly)).toEqual([]);
+
+      const withScalarSpectrum = {
+        ...iqOnly,
+        acquisitions: [...iqOnly.acquisitions, {
+          kind: 'swept-spectrum' as const,
+          frequencyHz: { min: 0, max: 1_000 },
+          points: { min: 2, max: 3 },
+          sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.003, max: 60 } },
+          controls: receiverSpectrumCapability(),
+          powerUnit: 'dBm' as const,
+        }],
+      };
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, withScalarSpectrum))
+        .toEqual(expect.arrayContaining([expect.objectContaining({
+          path: ['acquisitions'],
+          message: expect.stringMatching(/must not advertise swept-spectrum or detected-power/),
+        })]));
+
+      const withSyntheticScalar = {
+        ...iqOnly,
+        acquisitions: [...iqOnly.acquisitions, {
+          kind: 'detected-power-timeseries' as const,
+          centerFrequencyHz: { min: 0, max: 1_000 },
+          sampleCount: { min: 1, max: 3 },
+          sweepTimeSeconds: { automatic: false as const, manualSeconds: { min: 0.05, max: 0.05 } },
+          controls: syntheticScalarControls(),
+          powerUnit: 'dBm' as const,
+          timing: 'uniform' as const,
+        }],
+      };
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, withSyntheticScalar))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ path: ['acquisitions'] })]));
+
+      const withGenerator = {
+        ...iqOnly,
+        features: [{
+          kind: 'rf-generator' as const,
+          paths: [{ path: 'normal' as const, frequencyHz: { min: 1, max: 1_000 } }],
+          levelDbm: { min: -30, max: 0 },
+          modulation: { off: true as const },
+        }],
+      };
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, withGenerator))
+        .toEqual(expect.arrayContaining([expect.objectContaining({
+          path: ['features'],
+          message: expect.stringMatching(/receive-only in v1 and must not advertise an RF-generator/),
+        })]));
+
+      const withProfileSelection = {
+        ...iqOnly,
+        features: [{
+          kind: 'signal-lab-profile-selection' as const,
+          profiles: [fixtureVisualProfile('fm', 100, 200, 200)],
+          selectedProfileId: 'fm',
+          channel: {
+            model: 'awgn' as const, noiseFloorDbm: -108, seed: 407, fadingRateHz: 2,
+            receiverImpairment: 'clean' as const,
+          },
+          iqProfiles: [{
+            profileId: 'fm', nativeSampleRateHz: null, signalBandwidthHz: 200,
+            profileReferenceCenterHz: 100, nativeCarrierOffsetHz: 0,
+            nativeMinimumCaptureBandwidthHz: null, replay: 'continuous' as const,
+            derivedTransportSupported: false,
+          }],
+        }],
+      };
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, withProfileSelection))
+        .toEqual(expect.arrayContaining([expect.objectContaining({
+          path: ['features'],
+          message: expect.stringMatching(/cannot advertise SignalLab profile selection/),
+        })]));
+
+      const scalarOnly = {
+        ...iqOnly,
+        acquisitions: [withScalarSpectrum.acquisitions[1]!],
+      };
+      expect(instrumentCapabilitySourceBindingIssues(sourceKind, scalarOnly))
+        .toEqual(expect.arrayContaining([expect.objectContaining({
+          message: expect.stringMatching(/must advertise complex-I\/Q acquisition/),
+        })]));
+    }
   });
 
   it('carries complete SignalLab catalog and channel evidence without admitting partial descriptors', () => {
@@ -876,6 +1034,70 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
   });
 
+  it('binds both new Neptune P210 session kinds through provenance narrowing without a false source-narrowing throw', () => {
+    const physicalSnapshot = neptuneP210Snapshot();
+    const twinSnapshot = neptuneP210TwinSnapshot();
+    expect(() => instrumentSessionSnapshotSchema.safeParse(physicalSnapshot)).not.toThrow();
+    expect(() => instrumentSessionSnapshotSchema.safeParse(twinSnapshot)).not.toThrow();
+    expect(instrumentSessionSnapshotSchema.safeParse(physicalSnapshot).success).toBe(true);
+    expect(instrumentSessionSnapshotSchema.safeParse(twinSnapshot).success).toBe(true);
+
+    // rfOutput must land as not-supported: Neptune v1 is receive-only and
+    // advertises no RF-generator feature.
+    expect(physicalSnapshot.rfOutput).toBe('not-supported');
+    expect(physicalSnapshot.rfOutputQualification).toBe('not-applicable');
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...physicalSnapshot,
+      rfOutput: 'off',
+      rfOutputQualification: 'command-acknowledged',
+    }).success).toBe(false);
+
+    // Candidate/provenance endpoint evidence must agree exactly.
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...physicalSnapshot,
+      provenance: { ...physicalSnapshot.provenance, endpoint: 'ip:10.0.0.251' },
+    }).success).toBe(false);
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...twinSnapshot,
+      provenance: { ...twinSnapshot.provenance, physicalRfModeled: true },
+    }).success).toBe(false);
+
+    // A candidate/provenance source-kind mismatch is rejected, not thrown,
+    // for both new source kinds.
+    expect(() => instrumentSessionSnapshotSchema.safeParse({
+      ...physicalSnapshot,
+      provenance: twinSnapshot.provenance,
+    })).not.toThrow();
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...physicalSnapshot,
+      provenance: twinSnapshot.provenance,
+    }).success).toBe(false);
+    expect(() => instrumentSessionSnapshotSchema.safeParse({
+      ...twinSnapshot,
+      provenance: physicalSnapshot.provenance,
+    })).not.toThrow();
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...twinSnapshot,
+      provenance: physicalSnapshot.provenance,
+    }).success).toBe(false);
+
+    // Neptune capability/feature source binding is enforced inside the public snapshot too.
+    expect(instrumentSessionSnapshotSchema.safeParse({
+      ...physicalSnapshot,
+      capabilities: {
+        ...physicalSnapshot.capabilities,
+        features: [{
+          kind: 'rf-generator' as const,
+          paths: [{ path: 'normal' as const, frequencyHz: { min: 1, max: 1_000 } }],
+          levelDbm: { min: -30, max: 0 },
+          modulation: { off: true as const },
+        }],
+      },
+      rfOutput: 'off',
+      rfOutputQualification: 'command-acknowledged',
+    }).success).toBe(false);
+  });
+
   it('binds authoritative snapshot configuration to its session and advertised capabilities', () => {
     const candidate = { ...serialCandidate(), discoveryRevision: 'discovery:configured' };
     const snapshot = {
@@ -1204,6 +1426,74 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
   });
 
+  it('parses and round-trips Neptune P210 ADC evidence without mixing SignalLab v2 semantics', () => {
+    const common = {
+      schemaVersion: 1 as const,
+      measurementId: 'measurement:neptune-p210',
+      sessionId: 'session:neptune-p210',
+      configurationRevision: 'configuration:neptune-p210',
+      sequence: 1,
+      capturedAt: '2026-07-14T18:00:00.000Z',
+      elapsedMilliseconds: 1,
+      resolutionBandwidthHz: null,
+      attenuationDb: null,
+      qualification: 'device-observed' as const,
+      complete: true as const,
+      kind: 'complex-iq' as const,
+      centerHz: 433_920_000,
+      sampleRateHz: 1_000_000,
+      bandwidthHz: 800_000,
+      sampleFormat: 'cf32le' as const,
+      sampleCount: 2,
+      samples: new Uint8Array(16),
+    };
+    const withAdcEvidence = {
+      ...common,
+      adcSignificantBits: 12 as const,
+      adcFullScaleCode: 2_048 as const,
+      powerReference: 'uncalibrated-dbfs-relative' as const,
+    };
+    const parsed = instrumentMeasurementSchema.safeParse(withAdcEvidence);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data).toEqual(withAdcEvidence);
+
+    // Fields must be present atomically: a driver cannot report only a
+    // fragment of the truthful ADC evidence.
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      adcSignificantBits: 12,
+    }).success).toBe(false);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...common,
+      adcFullScaleCode: 2_048,
+      powerReference: 'uncalibrated-dbfs-relative',
+    }).success).toBe(false);
+
+    // The full-scale code and bit depth are fixed hardware facts, not
+    // driver-chosen values.
+    expect(instrumentMeasurementSchema.safeParse({
+      ...withAdcEvidence,
+      adcFullScaleCode: 4_096,
+    }).success).toBe(false);
+    expect(instrumentMeasurementSchema.safeParse({
+      ...withAdcEvidence,
+      adcSignificantBits: 16,
+    }).success).toBe(false);
+
+    // Neptune ADC evidence and SignalLab v2 I/Q semantics are parallel,
+    // never-combined blocks.
+    const mixed = instrumentMeasurementSchema.safeParse({
+      ...withAdcEvidence,
+      profileReferenceCenterHz: common.centerHz,
+    });
+    expect(mixed.success).toBe(false);
+    if (!mixed.success) {
+      expect(mixed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringMatching(/must not be combined with SignalLab/) }),
+      ]));
+    }
+  });
+
   it('accepts only compact, ordinary ArrayBuffer-backed screen and complex-I/Q payloads', () => {
     const capturedAt = '2026-07-14T18:00:00.000Z';
     const screenResult = (pixels: Uint8Array) => ({
@@ -1478,6 +1768,97 @@ function serialCandidate() {
       vendorId: '0483',
       productId: '5740',
     },
+  };
+}
+
+function neptuneP210Candidate() {
+  return {
+    schemaVersion: 1 as const,
+    driverId: 'neptune-p210',
+    candidateId: 'neptune-p210:ip:10.0.0.250',
+    displayName: 'NeptuneSDR P210',
+    sourceKind: 'neptune-p210' as const,
+    neptuneP210: { endpoint: 'ip:10.0.0.250' },
+  };
+}
+
+function neptuneP210TwinCandidate() {
+  return {
+    schemaVersion: 1 as const,
+    driverId: 'neptune-p210',
+    candidateId: 'neptune-p210-twin:ip:127.0.0.1',
+    displayName: 'NeptuneSDR P210 Twin',
+    sourceKind: 'neptune-p210-twin' as const,
+    neptuneP210Twin: {
+      endpoint: 'ip:127.0.0.1',
+      profile: 'qemu-development' as const,
+      physicalRfModeled: false as const,
+    },
+  };
+}
+
+function neptuneP210Provenance(endpoint = 'ip:10.0.0.250') {
+  return {
+    sourceKind: 'neptune-p210' as const,
+    execution: 'physical' as const,
+    transport: 'libiio-network' as const,
+    qualification: 'device-observed' as const,
+    verifiedAt: '2026-07-14T18:00:00.000Z',
+    endpoint,
+  };
+}
+
+function neptuneP210TwinProvenance(endpoint = 'ip:127.0.0.1') {
+  return {
+    sourceKind: 'neptune-p210-twin' as const,
+    execution: 'firmware-executed-twin' as const,
+    transport: 'libiio-network' as const,
+    qualification: 'firmware-executed-twin' as const,
+    verifiedAt: '2026-07-14T18:00:00.000Z',
+    endpoint,
+    profile: 'qemu-development' as const,
+    physicalRfModeled: false as const,
+  };
+}
+
+function neptuneComplexIqCapabilities() {
+  return {
+    schemaVersion: 1 as const,
+    acquisitions: [{
+      kind: 'complex-iq' as const,
+      centerFrequencyHz: { min: 70_000_000, max: 6_000_000_000 },
+      sampleRateHz: { min: 520_833, max: 61_440_000 },
+      bandwidthHz: { min: 200_000, max: 56_000_000 },
+      sampleCount: { min: 1, max: 1_048_576 },
+      sampleFormat: 'cf32le' as const,
+    }],
+    features: [] as const,
+  };
+}
+
+function neptuneP210Snapshot() {
+  const candidate = { ...neptuneP210Candidate(), discoveryRevision: 'discovery:neptune-p210' };
+  return {
+    sessionId: 'session:neptune-p210',
+    driverId: candidate.driverId,
+    candidate,
+    provenance: neptuneP210Provenance(candidate.neptuneP210.endpoint),
+    capabilities: neptuneComplexIqCapabilities(),
+    rfOutput: 'not-supported' as const,
+    rfOutputQualification: 'not-applicable' as const,
+  };
+}
+
+function neptuneP210TwinSnapshot() {
+  const candidate = { ...neptuneP210TwinCandidate(), discoveryRevision: 'discovery:neptune-p210-twin' };
+  return {
+    sessionId: 'session:neptune-p210-twin',
+    driverId: candidate.driverId,
+    candidate,
+    provenance: neptuneP210TwinProvenance(candidate.neptuneP210Twin.endpoint),
+    capabilities: neptuneComplexIqCapabilities(),
+    rfOutput: 'not-supported' as const,
+    rfOutputQualification: 'not-applicable' as const,
   };
 }
 

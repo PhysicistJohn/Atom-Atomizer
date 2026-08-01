@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
+import type { InstrumentAcquisitionCapability, MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
+import { DEFAULT_COMPLEX_IQ_CONFIGURATION } from '../complex-iq.js';
 import { DEFAULT_ANALYZER } from '../ui-contracts.js';
 import { MeasurementWorkspace } from './MeasurementWorkspace.js';
 import { MeasurementDock } from './MeasurementDock.js';
@@ -22,6 +23,15 @@ const markers = Array.from({ length: 8 }, (_, index) => ({
   frequencyHz: 98_000_000,
   tracking: 'fixed',
 })) as MarkerConfiguration[];
+
+const iqCapability = {
+  kind: 'complex-iq',
+  centerFrequencyHz: { min: 70_000_000, max: 6_000_000_000, step: 1 },
+  sampleRateHz: { min: 1_000_000, max: 56_000_000, step: 1 },
+  bandwidthHz: { min: 200_000, max: 56_000_000, step: 1 },
+  sampleCount: { min: 1_024, max: 1_048_576, step: 1_024 },
+  sampleFormat: 'ci16le',
+} satisfies Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }>;
 
 const markerReading = {
   markerId: 1,
@@ -145,6 +155,7 @@ describe('desktop navigation and compact measurement layout', () => {
       measurementActions={<button type="button">Export CSV</button>}
       view="envelope-stft"
       analyzer={DEFAULT_ANALYZER}
+      spectrumCapabilityAvailable
       busy={false}
       streaming={false}
       onAnalyzer={vi.fn()}
@@ -190,6 +201,57 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(topBar.queryByRole('button', { name: 'Single' })).toBeNull();
     expect(view.container.querySelector('.envelope-stft-view')).toBeNull();
     expect(within(view.container).getByLabelText('Spectrum plot')).toBeTruthy();
+  });
+
+  it('offers driver-neutral capture setup instead of dead sweep controls for an I/Q-only source', () => {
+    const onIqConfiguration = vi.fn();
+    const view = render(<MeasurementWorkspace
+      view="spectrum"
+      analyzer={DEFAULT_ANALYZER}
+      iqCapability={iqCapability}
+      iqConfiguration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleFormat: 'ci16le' }}
+      spectrumCapabilityAvailable
+      busy={false}
+      streaming={false}
+      onAnalyzer={vi.fn()}
+      onIqConfiguration={onIqConfiguration}
+      history={[]}
+      detections={[]}
+      acquisition="idle"
+      traces={traces}
+      frames={[]}
+      firmwareFrames={[]}
+      visibleFirmwareTraceIds={[]}
+      onFirmwareTraceVisibility={vi.fn()}
+      activeTraceId={1}
+      onActiveTrace={vi.fn()}
+      markers={markers}
+      readings={[]}
+      activeMarkerId={1}
+      markerSearch={{ minimumLevelDbm: -90, minimumExcursionDb: 6 }}
+      display={{ referenceLevelDbm: -20, decibelsPerDivision: 10, divisions: 10 }}
+      onTrace={vi.fn()}
+      onTraceReset={vi.fn()}
+      onMarker={vi.fn()}
+      onActiveMarker={vi.fn()}
+      onSearch={vi.fn()}
+      onSearchConfiguration={vi.fn()}
+      onDisplay={vi.fn()}
+      onAutoScale={vi.fn()}
+      onMarkerPlace={() => true}
+      waterfall={{ historyDepth: 35, floorDbm: -120, ceilingDbm: -20, palette: 'atomic' }}
+      onWaterfall={vi.fn()}
+      channel={{ centerHz: 98_000_000, mainBandwidthHz: 200_000, adjacentBandwidthHz: 200_000, channelSpacingHz: 200_000, adjacentChannelCount: 2, occupiedPowerPercent: 99, obwNoiseCorrection: 'none' }}
+      onChannel={vi.fn()}
+    />);
+
+    const setup = within(view.container).getByRole('button', { name: 'Capture setup' });
+    expect(within(view.container).queryByRole('button', { name: 'Sweep setup' })).toBeNull();
+    fireEvent.click(setup);
+    const overlay = within(view.container).getByRole('region', { name: 'Capture setup overlay' });
+    expect(within(overlay).getByText('DRIVER ADVERTISED')).toBeTruthy();
+    expect(within(overlay).getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+    expect(within(overlay).getByText('ci16le')).toBeTruthy();
   });
 
   it('binds the DEV marker readout diagnostic to its source sweep', () => {
