@@ -447,11 +447,7 @@ const powerRangeSchema = boundedFiniteRangeSchema(
   -MAX_INSTRUMENT_POWER_ABS_DB_V1,
   MAX_INSTRUMENT_POWER_ABS_DB_V1,
 );
-
-const receiverScalarSpectrumControlCapabilitySchema = z.object({
-  schemaVersion: z.literal(1),
-  model: z.literal('receiver'),
-  acquisitionFormats: boundedReadonlyArray(z.enum(['text', 'raw']), 2, 1),
+const receiverResolutionAndAttenuationCapabilityShape = {
   resolutionBandwidthKhz: z.object({
     automatic: z.boolean(),
     manual: boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000)
@@ -461,6 +457,17 @@ const receiverScalarSpectrumControlCapabilitySchema = z.object({
     automatic: z.boolean(),
     manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
   }).strict(),
+} as const;
+const receiverTriggerCapabilityShape = {
+  triggerModes: boundedReadonlyArray(z.enum(['auto', 'normal', 'single']), 3, 1),
+  triggerLevelDbm: powerRangeSchema.optional(),
+} as const;
+
+const receiverScalarSpectrumControlCapabilitySchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  acquisitionFormats: boundedReadonlyArray(z.enum(['text', 'raw']), 2, 1),
+  ...receiverResolutionAndAttenuationCapabilityShape,
   detectors: boundedReadonlyArray(z.enum([
     'sample', 'minimum-hold', 'maximum-hold', 'maximum-decay',
     'average-4', 'average-16', 'average', 'quasi-peak',
@@ -468,8 +475,7 @@ const receiverScalarSpectrumControlCapabilitySchema = z.object({
   spurRejection: boundedReadonlyArray(z.enum(['off', 'on', 'auto']), 3, 1),
   lowNoiseAmplifier: boundedReadonlyArray(z.enum(['off', 'on']), 2, 1),
   avoidSpurs: boundedReadonlyArray(z.enum(['off', 'on', 'auto']), 3, 1),
-  triggerModes: boundedReadonlyArray(z.enum(['auto', 'normal', 'single']), 3, 1),
-  triggerLevelDbm: powerRangeSchema.optional(),
+  ...receiverTriggerCapabilityShape,
 }).strict().superRefine((capability, context) => {
   for (const key of ['acquisitionFormats', 'detectors', 'spurRejection', 'lowNoiseAmplifier', 'avoidSpurs', 'triggerModes'] as const) {
     if (new Set(capability[key]).size !== capability[key].length) {
@@ -487,17 +493,8 @@ const receiverScalarSpectrumControlCapabilitySchema = z.object({
 const receiverDetectedPowerControlCapabilitySchema = z.object({
   schemaVersion: z.literal(1),
   model: z.literal('receiver'),
-  resolutionBandwidthKhz: z.object({
-    automatic: z.boolean(),
-    manual: boundedFiniteRangeSchema(Number.MIN_VALUE, MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000)
-      .refine((range) => range.min > 0, { path: ['min'], message: 'RBW minimum must be positive' }),
-  }).strict(),
-  attenuationDb: z.object({
-    automatic: z.boolean(),
-    manual: boundedFiniteRangeSchema(0, MAX_INSTRUMENT_POWER_ABS_DB_V1),
-  }).strict(),
-  triggerModes: boundedReadonlyArray(z.enum(['auto', 'normal', 'single']), 3, 1),
-  triggerLevelDbm: powerRangeSchema.optional(),
+  ...receiverResolutionAndAttenuationCapabilityShape,
+  ...receiverTriggerCapabilityShape,
 }).strict().superRefine((capability, context) => {
   if (new Set(capability.triggerModes).size !== capability.triggerModes.length) {
     context.addIssue({ code: 'custom', path: ['triggerModes'], message: 'Trigger-mode capability values must be unique' });
@@ -1603,10 +1600,7 @@ const scalarTriggerSchema = z.discriminatedUnion('mode', [
     levelDbm: boundedPowerSchema,
   }).strict(),
 ]);
-const receiverScalarSpectrumControlsSchema = z.object({
-  schemaVersion: z.literal(1),
-  model: z.literal('receiver'),
-  acquisitionFormat: z.enum(['text', 'raw']),
+const receiverResolutionAndAttenuationControlsShape = {
   resolutionBandwidthKhz: z.union([
     z.literal('auto'),
     z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000),
@@ -1615,6 +1609,12 @@ const receiverScalarSpectrumControlsSchema = z.object({
     z.literal('auto'),
     z.number().finite().nonnegative().max(MAX_INSTRUMENT_POWER_ABS_DB_V1),
   ]),
+} as const;
+const receiverScalarSpectrumControlsSchema = z.object({
+  schemaVersion: z.literal(1),
+  model: z.literal('receiver'),
+  acquisitionFormat: z.enum(['text', 'raw']),
+  ...receiverResolutionAndAttenuationControlsShape,
   detector: z.enum([
     'sample', 'minimum-hold', 'maximum-hold', 'maximum-decay',
     'average-4', 'average-16', 'average', 'quasi-peak',
@@ -1627,14 +1627,7 @@ const receiverScalarSpectrumControlsSchema = z.object({
 const receiverDetectedPowerControlsSchema = z.object({
   schemaVersion: z.literal(1),
   model: z.literal('receiver'),
-  resolutionBandwidthKhz: z.union([
-    z.literal('auto'),
-    z.number().finite().positive().max(MAX_INSTRUMENT_SAMPLE_RATE_HZ_V1 / 1_000),
-  ]),
-  attenuationDb: z.union([
-    z.literal('auto'),
-    z.number().finite().nonnegative().max(MAX_INSTRUMENT_POWER_ABS_DB_V1),
-  ]),
+  ...receiverResolutionAndAttenuationControlsShape,
   trigger: scalarTriggerSchema,
 }).strict();
 const syntheticScalarControlsSchema = z.object({
@@ -1748,11 +1741,12 @@ export function instrumentConfigurationCapabilityBindingIssues(
     appendRangeBindingIssue(issues, ['startHz'], configuration.startHz, capability.frequencyHz, 'Sweep start');
     appendRangeBindingIssue(issues, ['stopHz'], configuration.stopHz, capability.frequencyHz, 'Sweep stop');
     appendRangeBindingIssue(issues, ['points'], configuration.points, capability.points, 'Sweep points');
-    appendAutomaticOrRangeBindingIssue(
+    appendAutomaticRangeBindingIssue(
       issues,
       ['sweepTimeSeconds'],
       configuration.sweepTimeSeconds,
-      capability.sweepTimeSeconds,
+      capability.sweepTimeSeconds.automatic,
+      capability.sweepTimeSeconds.manualSeconds,
       'Sweep time',
     );
     if (configuration.controls.model !== capability.controls.model) {
@@ -1761,18 +1755,20 @@ export function instrumentConfigurationCapabilityBindingIssues(
       if (!capability.controls.acquisitionFormats.includes(configuration.controls.acquisitionFormat)) {
         issues.push({ path: ['controls', 'acquisitionFormat'], message: `Acquisition format ${configuration.controls.acquisitionFormat} is not advertised` });
       }
-      appendAutomaticOrManualRangeBindingIssue(
+      appendAutomaticRangeBindingIssue(
         issues,
         ['controls', 'resolutionBandwidthKhz'],
         configuration.controls.resolutionBandwidthKhz,
-        capability.controls.resolutionBandwidthKhz,
+        capability.controls.resolutionBandwidthKhz.automatic,
+        capability.controls.resolutionBandwidthKhz.manual,
         'Resolution bandwidth',
       );
-      appendAutomaticOrManualRangeBindingIssue(
+      appendAutomaticRangeBindingIssue(
         issues,
         ['controls', 'attenuationDb'],
         configuration.controls.attenuationDb,
-        capability.controls.attenuationDb,
+        capability.controls.attenuationDb.automatic,
+        capability.controls.attenuationDb.manual,
         'Attenuation',
       );
       if (!capability.controls.detectors.includes(configuration.controls.detector)) {
@@ -1796,18 +1792,20 @@ export function instrumentConfigurationCapabilityBindingIssues(
     if (configuration.controls.model !== capability.controls.model) {
       issues.push({ path: ['controls', 'model'], message: `Detected-power control model ${configuration.controls.model} is not advertised` });
     } else if (configuration.controls.model === 'receiver' && capability.controls.model === 'receiver') {
-      appendAutomaticOrManualRangeBindingIssue(
+      appendAutomaticRangeBindingIssue(
         issues,
         ['controls', 'resolutionBandwidthKhz'],
         configuration.controls.resolutionBandwidthKhz,
-        capability.controls.resolutionBandwidthKhz,
+        capability.controls.resolutionBandwidthKhz.automatic,
+        capability.controls.resolutionBandwidthKhz.manual,
         'Resolution bandwidth',
       );
-      appendAutomaticOrManualRangeBindingIssue(
+      appendAutomaticRangeBindingIssue(
         issues,
         ['controls', 'attenuationDb'],
         configuration.controls.attenuationDb,
-        capability.controls.attenuationDb,
+        capability.controls.attenuationDb.automatic,
+        capability.controls.attenuationDb.manual,
         'Attenuation',
       );
       appendTriggerBindingIssues(issues, configuration.controls.trigger, capability.controls);
@@ -1922,31 +1920,18 @@ function appendRangeBindingIssue(
   }
 }
 
-function appendAutomaticOrRangeBindingIssue(
+function appendAutomaticRangeBindingIssue(
   issues: InstrumentConfigurationCapabilityBindingIssue[],
   path: readonly (string | number)[],
   value: 'auto' | number,
-  capability: Readonly<{ automatic: boolean; manualSeconds: NumericCapabilityRange }>,
+  automatic: boolean,
+  manual: NumericCapabilityRange,
   label: string,
 ): void {
   if (value === 'auto') {
-    if (!capability.automatic) issues.push({ path, message: `${label} does not advertise automatic selection` });
+    if (!automatic) issues.push({ path, message: `${label} does not advertise automatic selection` });
   } else {
-    appendRangeBindingIssue(issues, path, value, capability.manualSeconds, label);
-  }
-}
-
-function appendAutomaticOrManualRangeBindingIssue(
-  issues: InstrumentConfigurationCapabilityBindingIssue[],
-  path: readonly (string | number)[],
-  value: 'auto' | number,
-  capability: Readonly<{ automatic: boolean; manual: NumericCapabilityRange }>,
-  label: string,
-): void {
-  if (value === 'auto') {
-    if (!capability.automatic) issues.push({ path, message: `${label} does not advertise automatic selection` });
-  } else {
-    appendRangeBindingIssue(issues, path, value, capability.manual, label);
+    appendRangeBindingIssue(issues, path, value, manual, label);
   }
 }
 

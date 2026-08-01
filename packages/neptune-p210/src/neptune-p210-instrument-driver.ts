@@ -383,30 +383,19 @@ export class NeptuneP210InstrumentDriver implements InstrumentDriver {
    * than once per device. Never throws: failure is reported the same way a
    * discovery failure is, via the returned result shape.
    */
-  async addManualEndpoint(endpoint: string): Promise<{ ok: true } | { ok: false; message: string }>;
-  /** @deprecated The source-specific overload is retained for direct driver clients during migration. */
   async addManualEndpoint(
-    sourceKind: 'neptune-p210' | 'neptune-p210-twin',
     endpoint: string,
-  ): Promise<{ ok: true } | { ok: false; message: string }>;
-  async addManualEndpoint(
-    endpointOrSourceKind: string,
-    legacyEndpoint?: string,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
-    const sourceKind = legacyEndpoint === undefined
-      ? 'neptune-p210'
-      : endpointOrSourceKind as 'neptune-p210' | 'neptune-p210-twin';
-    const endpoint = legacyEndpoint ?? endpointOrSourceKind;
     const trimmed = endpoint.trim();
     if (!trimmed) return { ok: false, message: 'Enter an instrument address, for example ip:10.0.0.250' };
-    const outcome = await this.#discoverOne(sourceKind, trimmed);
+    const outcome = await this.#discoverOne('neptune-p210', trimmed);
     if (!outcome.descriptor) {
       return { ok: false, message: outcome.failure?.message ?? `${trimmed} did not respond` };
     }
     if (this.#recentDevicesStore) {
       const descriptor = outcome.descriptor;
       await this.#recentDevicesStore.record({
-        sourceKind,
+        sourceKind: 'neptune-p210',
         endpoint: trimmed,
         ...(descriptor.sourceKind === 'neptune-p210' && descriptor.neptuneP210.contextDescription !== undefined
           ? { contextDescription: descriptor.neptuneP210.contextDescription }
@@ -685,7 +674,6 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
   readonly #generateId: () => string;
   readonly #now: () => Date;
   readonly #sleep: (ms: number) => Promise<void>;
-  readonly #listeners = new Set<(event: InstrumentSessionEvent) => void>();
   #configuration: BoundConfiguration | undefined;
   #sequence = 0;
   #closed = false;
@@ -922,7 +910,7 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
       });
 
       // Defense-in-depth "event vs. return" reconciliation. Neptune has no
-      // separate push event stream (subscribe() below is a no-op registry),
+      // separate push event stream (subscribe() below is intentionally inert),
       // so the transport's raw capture result IS the only independent
       // evidence acquire() has for what was actually captured. Refuse to
       // publish a measurement whose captured geometry disagrees with what
@@ -996,15 +984,11 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     if (this.#closed) return;
     await this.#transport.dispose();
     this.#closed = true;
-    this.#listeners.clear();
   }
 
-  subscribe(listener: (event: InstrumentSessionEvent) => void): () => void {
-    // No push/event stream in v1: every acquisition is a plain
-    // request/response through acquire(). This registry exists only to
-    // satisfy the InstrumentSession contract; it never calls a listener.
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+  subscribe(_listener: (event: InstrumentSessionEvent) => void): () => void {
+    // No push/event stream in v1: every acquisition is a plain request/response.
+    return () => {};
   }
 
   #requireOpen(): void {

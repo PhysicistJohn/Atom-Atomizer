@@ -418,7 +418,7 @@ describe('NeptuneP210InstrumentDriver addManualEndpoint()', () => {
       env: {},
       recentDevicesStore: store,
     });
-    const outcome = await driver.addManualEndpoint('neptune-p210', PHYSICAL_ENDPOINT);
+    const outcome = await driver.addManualEndpoint(PHYSICAL_ENDPOINT);
     expect(outcome.ok).toBe(false);
     expect(store.recorded).toEqual([]);
   });
@@ -426,7 +426,7 @@ describe('NeptuneP210InstrumentDriver addManualEndpoint()', () => {
   it('rejects an empty address without touching the transport', async () => {
     const transport = new FakeTransport();
     const driver = deterministicDriver(transport, {});
-    const outcome = await driver.addManualEndpoint('neptune-p210', '   ');
+    const outcome = await driver.addManualEndpoint('   ');
     expect(outcome.ok).toBe(false);
     expect(transport.calls).toEqual([]);
   });

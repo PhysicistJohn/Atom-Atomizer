@@ -723,6 +723,30 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
   });
 
+  it('keeps Auto and manual receiver-capability rejection evidence exact', () => {
+    const capabilities = instrumentCapabilitiesSchema.parse({
+      schemaVersion: 1,
+      acquisitions: [{
+        kind: 'swept-spectrum', frequencyHz: { min: 100, max: 300 }, points: { min: 2, max: 3 },
+        sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.01, max: 1 } },
+        controls: {
+          ...receiverSpectrumCapability(),
+          resolutionBandwidthKhz: { automatic: false, manual: { min: 0.2, max: 850 } },
+        },
+        powerUnit: 'dBm',
+      }],
+      features: [],
+    });
+    const configuration = instrumentConfigurationSchema.parse({
+      kind: 'swept-spectrum', startHz: 100, stopHz: 300, points: 3, sweepTimeSeconds: 0.05,
+      controls: { ...receiverSpectrumControls(), attenuationDb: 32 },
+    });
+    expect(instrumentConfigurationCapabilityBindingIssues(configuration, capabilities)).toEqual([
+      { path: ['controls', 'resolutionBandwidthKhz'], message: 'Resolution bandwidth does not advertise automatic selection' },
+      { path: ['controls', 'attenuationDb'], message: 'Attenuation 32 is outside the advertised capability' },
+    ]);
+  });
+
   it('requires a trigger-level capability exactly when a receiver advertises leveled trigger modes', () => {
     const spectrum = {
       kind: 'swept-spectrum' as const,
