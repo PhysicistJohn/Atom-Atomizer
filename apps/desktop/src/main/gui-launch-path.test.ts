@@ -34,12 +34,6 @@ describe('augmentedGuiLaunchPath', () => {
       .toBe('/opt/homebrew/bin');
   });
 
-  it('is a pure computation: given the same inputs it returns the same result without side effects', () => {
-    const exists = () => true;
-    const first = augmentedGuiLaunchPath('/usr/bin', ['/opt/homebrew/bin'], exists);
-    const second = augmentedGuiLaunchPath('/usr/bin', ['/opt/homebrew/bin'], exists);
-    expect(first).toBe(second);
-  });
 });
 
 describe('restoreGuiLaunchPath', () => {

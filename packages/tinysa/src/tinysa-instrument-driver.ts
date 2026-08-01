@@ -53,7 +53,26 @@ import {
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
-import type { CanonicalOperationResolution, InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
+import {
+  canonicalBooleanParameter,
+  canonicalEnumParameter,
+  canonicalNumericParameter,
+  canonicalOperationDefinition,
+  canonicalRange,
+  effectiveEnum,
+  effectiveNumber,
+  humanizeCanonicalOption,
+  maximumReachableRangeValue,
+  requiredCanonicalIntent as requireCanonicalIntent,
+  resolveCanonicalEnumIntent as resolveCanonicalEnumIntentShared,
+  resolveCanonicalNumberIntent as resolveCanonicalNumberIntentShared,
+  resolveCanonicalRangedNumberIntent as resolveCanonicalRangedNumberIntentShared,
+  type CanonicalEffective,
+  type CanonicalNumericRange as NumericRange,
+  type CanonicalOperationResolution,
+  type InstrumentDriver,
+  type InstrumentSession,
+} from '@tinysa/instrument-runtime';
 import type { TransportDiscoveryResult } from './transport.js';
 import { tinySaAnalyzerConfiguration, tinySaDetectedPowerConfiguration } from './scalar-configuration.js';
 
@@ -615,8 +634,7 @@ const CANONICAL_SOURCE_PARAMETER_IDS = {
   fmDeviationHz: 'source.fm-deviation',
   output: 'source.output',
 } as const;
-const CANONICAL_AUTO_DESCRIPTION = 'The connected driver selects a valid setting when Auto is requested.';
-
+const TINYSA_CANONICAL_INTENT_CONTEXT = 'Canonical receiver sweep';
 type SweptSpectrumCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'swept-spectrum' }>;
 type ReceiverSweepCapability = SweptSpectrumCapability & {
   readonly controls: Extract<SweptSpectrumCapability['controls'], { model: 'receiver' }>;
@@ -626,11 +644,6 @@ type ReceiverPowerCapability = DetectedPowerCapability & {
   readonly controls: Extract<DetectedPowerCapability['controls'], { model: 'receiver' }>;
 };
 type RfGeneratorCapability = Extract<InstrumentCapabilities['features'][number], { kind: 'rf-generator' }>;
-type NumericRange = Readonly<{ min: number; max: number; step?: number }>;
-interface CanonicalEffective<Value extends number | string | boolean> {
-  readonly value: Value;
-  readonly verification: CanonicalParameterVerification;
-}
 interface PendingCanonicalSourceOperation {
   readonly operationId: string;
   readonly feature: InstrumentFeatureRequest;
@@ -655,6 +668,41 @@ type CanonicalReceiverCurrentControls = Extract<
   SweptSpectrumConfiguration['controls'] | DetectedPowerTimeseriesConfiguration['controls'],
   { model: 'receiver' }
 >;
+
+function preferredCanonicalOption<Value extends string>(options: readonly Value[], ...preferred: readonly Value[]): Value {
+  for (const value of preferred) if (options.includes(value)) return value;
+  const fallback = options[0];
+  if (fallback === undefined) throw new Error('Canonical receiver sweep encountered an empty enum capability');
+  return fallback;
+}
+
+function requiredCanonicalIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>, parameterId: string,
+): CanonicalParameterIntent {
+  return requireCanonicalIntent(intents, parameterId, TINYSA_CANONICAL_INTENT_CONTEXT);
+}
+
+function resolveCanonicalNumberIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>, parameterId: string, automaticValue: number, integer = false,
+): number {
+  return resolveCanonicalNumberIntentShared(intents, parameterId, automaticValue, integer, TINYSA_CANONICAL_INTENT_CONTEXT);
+}
+
+function resolveCanonicalRangedNumberIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>, parameterId: string, automaticValue: number,
+  range: NumericRange, outOfRangeMessage: string, integer = false,
+): number {
+  return resolveCanonicalRangedNumberIntentShared(
+    intents, parameterId, automaticValue, range, outOfRangeMessage, integer, TINYSA_CANONICAL_INTENT_CONTEXT,
+  );
+}
+
+function resolveCanonicalEnumIntent<Value extends string>(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>, parameterId: string,
+  options: readonly Value[], automaticValue: Value,
+): Value {
+  return resolveCanonicalEnumIntentShared(intents, parameterId, options, automaticValue, TINYSA_CANONICAL_INTENT_CONTEXT);
+}
 
 function receiverSweepCapability(capabilities: InstrumentCapabilities): ReceiverSweepCapability | undefined {
   const sweep = capabilities.acquisitions.find(
@@ -1195,80 +1243,6 @@ function resolveCanonicalReceiverSweepConfiguration(
   return configuration;
 }
 
-function canonicalNumericParameter(
-  kind: 'integer' | 'number',
-  id: string,
-  label: string,
-  group: string,
-  unit: string,
-  range: NumericRange,
-  effective: CanonicalEffective<number>,
-  requested: CanonicalParameterIntent = { mode: 'auto' },
-): CanonicalParameter {
-  return canonicalParameter(
-    id,
-    label,
-    group,
-    { kind, range: canonicalRange(range) },
-    effective,
-    requested,
-    unit,
-  );
-}
-
-function canonicalEnumParameter<Value extends string>(
-  id: string,
-  label: string,
-  group: string,
-  options: readonly Value[],
-  effective: CanonicalEffective<Value>,
-  requested: CanonicalParameterIntent = { mode: 'auto' },
-): CanonicalParameter {
-  return canonicalParameter(
-    id,
-    label,
-    group,
-    {
-      kind: 'enum',
-      options: options.map((value) => ({ value, label: humanizeCanonicalOption(value) })),
-    },
-    effective,
-    requested,
-  );
-}
-
-function canonicalBooleanParameter(
-  id: string,
-  label: string,
-  group: string,
-  effective: CanonicalEffective<boolean>,
-  requested: CanonicalParameterIntent = { mode: 'auto' },
-): CanonicalParameter {
-  return canonicalParameter(id, label, group, { kind: 'boolean' }, effective, requested);
-}
-
-function canonicalParameter(
-  id: string,
-  label: string,
-  group: string,
-  manual: CanonicalParameter['manual'],
-  effective: CanonicalEffective<number | string | boolean>,
-  requested: CanonicalParameterIntent = { mode: 'auto' },
-  unit?: string,
-): CanonicalParameter {
-  return {
-    id,
-    label,
-    group,
-    ...(unit === undefined ? {} : { unit }),
-    manual,
-    auto: { resolver: 'driver', description: CANONICAL_AUTO_DESCRIPTION },
-    requested,
-    effectiveValue: effective.value,
-    verification: effective.verification,
-  };
-}
-
 function appendCanonicalReceiverControlParameters(
   parameters: CanonicalParameter[],
   parameterIds: CanonicalReceiverParameterIds,
@@ -1375,30 +1349,6 @@ function resolveCanonicalReceiverControls(
   };
 }
 
-function canonicalOperationDefinition(input: Readonly<{
-  id: string;
-  label: string;
-  description: string;
-  scope: 'acquisition' | 'source';
-  parameters: readonly CanonicalParameter[];
-  outputs: readonly string[];
-  unavailable: boolean;
-  primary?: boolean;
-  confirmation?: 'none' | 'high-impact';
-}>): CanonicalInstrumentSurface['operations'][number] {
-  return {
-    id: input.id,
-    label: input.label,
-    description: input.description,
-    scope: input.scope,
-    parameterIds: input.parameters.map((parameter) => parameter.id),
-    outputs: [...input.outputs],
-    availability: input.unavailable ? 'unavailable' : 'available',
-    primary: input.primary ?? false,
-    confirmation: input.confirmation ?? 'none',
-  };
-}
-
 function assertCanonicalConfigurationWithinCapability(
   configuration: Parameters<typeof instrumentConfigurationCapabilityBindingIssues>[0],
   capabilities: InstrumentCapabilities,
@@ -1409,114 +1359,6 @@ function assertCanonicalConfigurationWithinCapability(
   throw new RangeError(`Canonical ${operation} is outside the admitted capability: ${bindingIssues.map(
     (issue) => `${issue.path.join('.')}: ${issue.message}`,
   ).join('; ')}`);
-}
-
-function effectiveNumber(value: unknown, range: NumericRange, fallback: number): CanonicalEffective<number> {
-  if (typeof value === 'number' && rangeAdmits(value, range)) {
-    return { value, verification: 'driver-commanded' };
-  }
-  return { value: fallback, verification: 'driver-selected' };
-}
-
-function effectiveEnum<Value extends string>(
-  value: unknown,
-  options: readonly Value[],
-  fallback: Value,
-): CanonicalEffective<Value> {
-  if (typeof value === 'string' && options.includes(value as Value)) {
-    return { value: value as Value, verification: 'driver-commanded' };
-  }
-  return { value: fallback, verification: 'driver-selected' };
-}
-
-function preferredCanonicalOption<Value extends string>(
-  options: readonly Value[],
-  ...preferred: readonly Value[]
-): Value {
-  for (const value of preferred) {
-    if (options.includes(value)) return value;
-  }
-  const fallback = options[0];
-  if (fallback === undefined) throw new Error('Canonical receiver sweep encountered an empty enum capability');
-  return fallback;
-}
-
-function requiredCanonicalIntent(
-  intents: ReadonlyMap<string, CanonicalParameterIntent>,
-  parameterId: string,
-): CanonicalParameterIntent {
-  const intent = intents.get(parameterId);
-  if (!intent) throw new RangeError(`Canonical receiver sweep is missing ${parameterId}`);
-  return intent;
-}
-
-function resolveCanonicalNumberIntent(
-  intents: ReadonlyMap<string, CanonicalParameterIntent>,
-  parameterId: string,
-  automaticValue: number,
-  integer = false,
-): number {
-  const intent = requiredCanonicalIntent(intents, parameterId);
-  if (intent.mode === 'auto') return automaticValue;
-  if (typeof intent.value !== 'number' || !Number.isFinite(intent.value)) {
-    throw new TypeError(`Canonical receiver sweep parameter ${parameterId} requires a numeric manual value`);
-  }
-  if (integer && !Number.isInteger(intent.value)) {
-    throw new TypeError(`Canonical receiver sweep parameter ${parameterId} requires an integer manual value`);
-  }
-  return intent.value;
-}
-
-function resolveCanonicalRangedNumberIntent(
-  intents: ReadonlyMap<string, CanonicalParameterIntent>,
-  parameterId: string,
-  automaticValue: number,
-  range: NumericRange,
-  outOfRangeMessage: string,
-  integer = false,
-): number {
-  const value = resolveCanonicalNumberIntent(intents, parameterId, automaticValue, integer);
-  if (!rangeAdmits(value, range)) throw new RangeError(outOfRangeMessage);
-  return value;
-}
-
-function resolveCanonicalEnumIntent<Value extends string>(
-  intents: ReadonlyMap<string, CanonicalParameterIntent>,
-  parameterId: string,
-  options: readonly Value[],
-  automaticValue: Value,
-): Value {
-  const intent = requiredCanonicalIntent(intents, parameterId);
-  if (intent.mode === 'auto') return automaticValue;
-  if (typeof intent.value !== 'string' || !options.includes(intent.value as Value)) {
-    throw new RangeError(`Canonical receiver sweep parameter ${parameterId} is not an advertised option`);
-  }
-  return intent.value as Value;
-}
-
-function canonicalRange(range: NumericRange): { min: number; max: number; step?: number } {
-  return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
-}
-
-function maximumReachableRangeValue(range: NumericRange): number {
-  if (range.step === undefined) return range.max;
-  const stepOffset = (range.max - range.min) / range.step;
-  const nearest = Math.round(stepOffset);
-  const steps = Math.abs(stepOffset - nearest) <= Number.EPSILON * Math.max(8, Math.abs(stepOffset) * 8)
-    ? nearest
-    : Math.floor(stepOffset);
-  return Math.min(range.max, range.min + steps * range.step);
-}
-
-function rangeAdmits(value: number, range: NumericRange): boolean {
-  if (!Number.isFinite(value) || value < range.min || value > range.max) return false;
-  if (range.step === undefined) return true;
-  const stepOffset = (value - range.min) / range.step;
-  return Math.abs(stepOffset - Math.round(stepOffset)) <= Number.EPSILON * Math.max(8, Math.abs(stepOffset) * 8);
-}
-
-function humanizeCanonicalOption(value: string): string {
-  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function requireReceiveOnlySafetyState(
@@ -1775,11 +1617,11 @@ function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities 
   if (scalar.sweptSpectrum && device.analyzerFrequency.max > device.analyzerFrequency.min) {
     acquisitions.push({
       kind: 'swept-spectrum',
-      frequencyHz: numericRange(device.analyzerFrequency),
-      points: numericRange(device.sweepPoints),
+      frequencyHz: canonicalRange(device.analyzerFrequency),
+      points: canonicalRange(device.sweepPoints),
       sweepTimeSeconds: {
         automatic: scalar.sweepTimeAutomatic,
-        manualSeconds: numericRange(device.sweepSeconds),
+        manualSeconds: canonicalRange(device.sweepSeconds),
       },
       controls: {
         schemaVersion: 1,
@@ -1787,18 +1629,18 @@ function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities 
         acquisitionFormats: scalar.acquisitionFormats,
         resolutionBandwidthKhz: {
           automatic: scalar.resolutionBandwidthAutomatic,
-          manual: numericRange(device.rbwKhz),
+          manual: canonicalRange(device.rbwKhz),
         },
         attenuationDb: {
           automatic: scalar.attenuationAutomatic,
-          manual: numericRange(device.attenuationDb),
+          manual: canonicalRange(device.attenuationDb),
         },
         detectors: scalar.detectors,
         spurRejection: scalar.spurRejection,
         lowNoiseAmplifier: scalar.lowNoiseAmplifier,
         avoidSpurs: scalar.avoidSpurs,
         triggerModes: scalar.triggerModes,
-        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: numericRange(scalar.triggerLevelDbm) } : {}),
+        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: canonicalRange(scalar.triggerLevelDbm) } : {}),
       },
       powerUnit: 'dBm',
     });
@@ -1806,25 +1648,25 @@ function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities 
   if (scalar.detectedPower) {
     acquisitions.push({
       kind: 'detected-power-timeseries',
-      centerFrequencyHz: numericRange(device.analyzerFrequency),
-      sampleCount: numericRange(device.sweepPoints),
+      centerFrequencyHz: canonicalRange(device.analyzerFrequency),
+      sampleCount: canonicalRange(device.sweepPoints),
       sweepTimeSeconds: {
         automatic: false,
-        manualSeconds: numericRange(device.sweepSeconds),
+        manualSeconds: canonicalRange(device.sweepSeconds),
       },
       controls: {
         schemaVersion: 1,
         model: 'receiver',
         resolutionBandwidthKhz: {
           automatic: scalar.resolutionBandwidthAutomatic,
-          manual: numericRange(device.rbwKhz),
+          manual: canonicalRange(device.rbwKhz),
         },
         attenuationDb: {
           automatic: scalar.attenuationAutomatic,
-          manual: numericRange(device.attenuationDb),
+          manual: canonicalRange(device.attenuationDb),
         },
         triggerModes: scalar.triggerModes,
-        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: numericRange(scalar.triggerLevelDbm) } : {}),
+        ...(scalar.triggerLevelDbm ? { triggerLevelDbm: canonicalRange(scalar.triggerLevelDbm) } : {}),
       },
       powerUnit: 'dBm',
       timing: 'uniform',
@@ -1841,9 +1683,9 @@ function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities 
           path: 'normal',
           frequencyHz: { min: device.generatorFrequency.min, max: device.generatorFundamentalMaximumHz },
         },
-        { path: 'mixer', frequencyHz: numericRange(device.generatorFrequency) },
+        { path: 'mixer', frequencyHz: canonicalRange(device.generatorFrequency) },
       ],
-      levelDbm: numericRange(device.generatorLevel),
+      levelDbm: canonicalRange(device.generatorLevel),
       modulation: {
         off: true,
         ...(device.modulation.includes('am') ? {
@@ -1872,10 +1714,6 @@ function tinySaCapabilities(device: DeviceCapabilities): InstrumentCapabilities 
     acquisitions,
     features,
   });
-}
-
-function numericRange(range: { min: number; max: number; step?: number }): { min: number; max: number; step?: number } {
-  return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
 }
 
 function defaultGeneratorConfiguration(

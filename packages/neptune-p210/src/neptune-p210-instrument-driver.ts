@@ -65,11 +65,13 @@ import {
   type InstrumentSessionEvent,
   type InstrumentSessionProvenance,
   type CanonicalInstrumentSurface,
-  type CanonicalParameterIntent,
-  type CanonicalParameterVerification,
   type CanonicalOperationRequest,
 } from '@tinysa/contracts';
-import type {
+import {
+  canonicalIntegerParameter,
+  canonicalRangeValue,
+  requireCanonicalRange,
+  resolveCanonicalInteger,
   CanonicalOperationResolution,
   InstrumentDriver,
   InstrumentSession,
@@ -132,6 +134,7 @@ export const NEPTUNE_P210_FALLBACK_CAPABILITY_RANGES = Object.freeze({
  * this Math.min is defensive, not presently rate-limiting).
  */
 export const NEPTUNE_P210_MAX_SAMPLE_COUNT = Math.min(MAX_COMPLEX_IQ_SAMPLES_V1, MAX_CAPTURE_SAMPLE_COUNT);
+const CANONICAL_CAPTURE_SELECTION_ERROR = 'Canonical capture selection is not a safe integer';
 
 /**
  * Protects the physical device, not this process. Confirmed directly against
@@ -803,6 +806,7 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     const automaticBandwidthHz = canonicalRangeValue(
       capability.bandwidthHz,
       Math.min(automatic.bandwidthHz, sampleRateHz),
+      CANONICAL_CAPTURE_SELECTION_ERROR,
     );
     const bandwidthHz = resolveCanonicalInteger(
       intents.get('capture.bandwidth'), automaticBandwidthHz, capability.bandwidthHz, 'Capture bandwidth',
@@ -843,13 +847,13 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
         `Neptune P210 only produces ${capability.sampleFormat} samples; ${configuration.sampleFormat} is not honestly satisfiable`,
       );
     }
-    requireRange(configuration.centerHz, capability.centerFrequencyHz, 'Neptune P210 center frequency');
-    requireRange(configuration.sampleRateHz, capability.sampleRateHz, 'Neptune P210 sample rate');
-    requireRange(configuration.bandwidthHz, capability.bandwidthHz, 'Neptune P210 bandwidth');
+    requireCanonicalRange(configuration.centerHz, capability.centerFrequencyHz, 'Neptune P210 center frequency');
+    requireCanonicalRange(configuration.sampleRateHz, capability.sampleRateHz, 'Neptune P210 sample rate');
+    requireCanonicalRange(configuration.bandwidthHz, capability.bandwidthHz, 'Neptune P210 bandwidth');
     if (configuration.bandwidthHz > configuration.sampleRateHz) {
       throw new RangeError('Neptune P210 bandwidth cannot exceed sample rate');
     }
-    requireRange(configuration.sampleCount, capability.sampleCount, 'Neptune P210 sample count');
+    requireCanonicalRange(configuration.sampleCount, capability.sampleCount, 'Neptune P210 sample count');
 
     // Revoke any prior binding before dispatch: a partial multi-attribute
     // failure below must never leave acquire() usable under a stale
@@ -1025,89 +1029,25 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     current: Extract<InstrumentConfiguration, { kind: 'complex-iq' }> | undefined,
   ): Extract<InstrumentConfiguration, { kind: 'complex-iq' }> {
     if (current) return current;
-    const sampleRateHz = canonicalRangeValue(capability.sampleRateHz, 10_000_000);
-    const bandwidthHz = canonicalRangeValue(capability.bandwidthHz, Math.min(8_000_000, sampleRateHz));
+    const sampleRateHz = canonicalRangeValue(capability.sampleRateHz, 10_000_000, CANONICAL_CAPTURE_SELECTION_ERROR);
+    const bandwidthHz = canonicalRangeValue(capability.bandwidthHz, Math.min(8_000_000, sampleRateHz), CANONICAL_CAPTURE_SELECTION_ERROR);
     if (bandwidthHz > sampleRateHz) {
       throw new RangeError('Capture driver could not select an automatic bandwidth within its sample-rate limit');
     }
     return {
       kind: 'complex-iq',
-      centerHz: canonicalRangeValue(capability.centerFrequencyHz, 99_000_000),
+      centerHz: canonicalRangeValue(capability.centerFrequencyHz, 99_000_000, CANONICAL_CAPTURE_SELECTION_ERROR),
       sampleRateHz,
       bandwidthHz,
-      sampleCount: canonicalRangeValue(capability.sampleCount, 262_144),
+      sampleCount: canonicalRangeValue(capability.sampleCount, 262_144, CANONICAL_CAPTURE_SELECTION_ERROR),
       sampleFormat: capability.sampleFormat,
     };
   }
 }
 
-function canonicalIntegerParameter(
-  id: string,
-  label: string,
-  group: string,
-  unit: string | undefined,
-  range: Readonly<{ min: number; max: number; step?: number }>,
-  requested: CanonicalParameterIntent,
-  effectiveValue: number,
-  verification: CanonicalParameterVerification,
-  autoDescription: string,
-): CanonicalInstrumentSurface['parameters'][number] {
-  return {
-    id,
-    label,
-    group,
-    ...(unit === undefined ? {} : { unit }),
-    manual: { kind: 'integer', range },
-    auto: { resolver: 'driver', description: autoDescription },
-    requested,
-    effectiveValue,
-    verification,
-  };
-}
-
-function canonicalRangeValue(
-  range: Readonly<{ min: number; max: number; step?: number }>,
-  preferred: number,
-): number {
-  const step = range.step ?? 1;
-  const maximumSteps = Math.floor((range.max - range.min) / step);
-  const maximum = range.min + maximumSteps * step;
-  const bounded = Math.min(maximum, Math.max(range.min, preferred));
-  const value = range.min + Math.round((bounded - range.min) / step) * step;
-  if (!Number.isSafeInteger(value)) throw new RangeError('Canonical capture selection is not a safe integer');
-  return value;
-}
-
-function resolveCanonicalInteger(
-  intent: CanonicalParameterIntent | undefined,
-  automaticValue: number,
-  range: Readonly<{ min: number; max: number; step?: number }>,
-  label: string,
-): number {
-  if (!intent) throw new RangeError(`${label} intent is missing`);
-  const value = intent.mode === 'auto' ? automaticValue : intent.value;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new RangeError(`${label} must be an integer`);
-  }
-  requireRange(value, range, label);
-  return value;
-}
-
 function sameDescriptor(candidate: InstrumentCandidate, descriptor: InstrumentCandidateDescriptor): boolean {
   const { discoveryRevision: _discoveryRevision, ...withoutRevision } = candidate;
   return JSON.stringify(withoutRevision) === JSON.stringify(descriptor);
-}
-
-function requireRange(value: number, range: Readonly<{ min: number; max: number; step?: number }>, label: string): void {
-  if (value < range.min || value > range.max) {
-    throw new RangeError(`${label} ${value} is outside the advertised capability [${range.min}, ${range.max}]`);
-  }
-  if (range.step !== undefined) {
-    const steps = (value - range.min) / range.step;
-    if (Math.abs(steps - Math.round(steps)) > 1e-9 * Math.max(1, Math.abs(steps))) {
-      throw new RangeError(`${label} ${value} does not lie on the advertised step grid`);
-    }
-  }
 }
 
 /**

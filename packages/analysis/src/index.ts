@@ -1,4 +1,4 @@
-import { combineDbm, dbmToMilliwatts, decodeComplexSample, equivalentNoiseBandwidthBins, hannPeriodic, hannSymmetric, milliwattsToDbm, realFftMagnitudesUnscaled, welchPowerSpectrumPeriodicHann } from '@atomos/dsp';
+import { combineDbm, dbmToMilliwatts, decodeComplexChannels, equivalentNoiseBandwidthBins, hannPeriodic, hannSymmetric, milliwattsToDbm, realFftMagnitudesUnscaled, welchPowerSpectrumPeriodicHann } from '@atomos/dsp';
 import type {
   AdjacentChannelMeasurement,
   AnalysisModeDefinition,
@@ -1405,7 +1405,9 @@ const HOST_DERIVED_SPECTRUM_MAXIMUM_FFT_SIZE = 4_096;
  * never required a native swept-spectrum acquisition. Returned power is
  * relative/unnormalized-reference (not calibrated dBm); callers must label
  * it using the source measurement's own power reference (Neptune's
- * `powerReference: 'uncalibrated-dbfs-relative'`, for example).
+ * `powerReference: 'uncalibrated-dbfs-relative'`, for example). Wire-format
+ * decoding, ADC full-scale validation, and non-finite rejection follow
+ * Atom-DSP's `decodeComplexChannels` contract.
  */
 export function deriveSpectrumFromComplexIq(capture: {
   readonly samples: Uint8Array;
@@ -1424,17 +1426,9 @@ export function deriveSpectrumFromComplexIq(capture: {
   while (fftSize * 2 <= capture.sampleCount && fftSize * 2 <= HOST_DERIVED_SPECTRUM_MAXIMUM_FFT_SIZE) fftSize *= 2;
   if (fftSize < 4) throw new Error('Spectrum projection requires at least four complex I/Q samples');
 
-  const view = new DataView(capture.samples.buffer, capture.samples.byteOffset, capture.samples.byteLength);
-  const re = new Float64Array(capture.sampleCount);
-  const im = new Float64Array(capture.sampleCount);
-  for (let index = 0; index < capture.sampleCount; index++) {
-    const [inPhase, quadrature] = decodeComplexSample(view, index, capture.sampleFormat, {
-      fullScaleCode: capture.adcFullScaleCode,
-    });
-    if (!Number.isFinite(inPhase) || !Number.isFinite(quadrature)) throw new RangeError(`I/Q sample ${index} contains a non-finite component`);
-    re[index] = inPhase;
-    im[index] = quadrature;
-  }
+  const { real: re, imaginary: im } = decodeComplexChannels(capture.samples, capture.sampleFormat, {
+    fullScaleCode: capture.adcFullScaleCode,
+  });
 
   const window = hannPeriodic(fftSize);
   const windowSumSquares = window.reduce((sum, value) => sum + value * value, 0);
