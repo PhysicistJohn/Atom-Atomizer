@@ -44,9 +44,10 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
   it('discovers, connects, configures, and acquires a contract-valid SignalLab sweep', async () => {
     const { api, session } = await connectSignalLab();
     expect(instrumentSessionSnapshotSchema.parse(session).candidate.sourceKind).toBe('signal-lab');
+    expect(session.provenance).toMatchObject({ sourceKind: 'signal-lab', contractVersion: 3 });
     const signalLab = session.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
     if (signalLab?.kind !== 'signal-lab-profile-selection') throw new Error('SignalLab feature missing');
-    expect(signalLab.profiles.length).toBeGreaterThan(10);
+    expect(signalLab.profiles).toHaveLength(44);
     expect(signalLab.profiles[0]).toEqual(expect.objectContaining({ profileId: 'cw', label: expect.any(String) }));
     expect(signalLab.channel).toEqual(expect.objectContaining({ model: 'awgn' }));
     expect(signalLab.iqProfiles.map(({ profileId }) => profileId)).toContain('nr-n78-tdd-100m');
@@ -115,6 +116,37 @@ describe('Atomizer browser edition on the shared instrument stack', () => {
     const floats = new Float32Array(measurement.samples.buffer, measurement.samples.byteOffset, 2_048);
     expect(floats.every((value) => Number.isFinite(value))).toBe(true);
     expect(floats.some((value) => value !== 0)).toBe(true);
+  });
+
+  it('acquires an unbounded SignalLab composition with the v3 continuous-origin receipt boundary', async () => {
+    const { api } = await connectSignalLab();
+    await api.executeFeature({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'bluetooth-classic-connected-longdwell',
+    });
+    await api.configure({
+      kind: 'complex-iq',
+      centerHz: 2_441_000_000,
+      sampleRateHz: 80_000_000,
+      bandwidthHz: 79_000_000,
+      sampleCount: 1_024,
+      sampleFormat: 'cf32le',
+    });
+
+    const measurement = instrumentMeasurementSchema.parse(await api.acquire());
+    if (measurement.kind !== 'complex-iq') throw new Error('Expected unbounded complex-I/Q measurement');
+    expect(measurement).toMatchObject({
+      profileReferenceCenterHz: 2_441_000_000,
+      nativeSampleRateHz: 80_000_000,
+      signalBandwidthHz: 79_000_000,
+      canonicalArtifactSha256: null,
+      transformReceipt: {
+        sourceArtifactSha256: null,
+        sourceBoundaryPolicy: 'continuous-session-origin-zero-extended',
+        sourcePeriodSamples: null,
+      },
+    });
   });
 
   it('streams measurement events continuously until stopped', async () => {

@@ -32,7 +32,7 @@ import {
   type MeasurementSourceStatus,
 } from '../../../../../Atom-SignalLab/src/measurement-contract.js';
 import { base64ToBytes, sha256HexOfBytes } from '../../../../../Atom-SignalLab/src/platform-bytes.js';
-import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v2.json' with { type: 'json' };
+import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v3.json' with { type: 'json' };
 
 export const SIGNAL_LAB_INSTRUMENT_DRIVER_ID = 'signal-lab' as const;
 export const SIGNAL_LAB_INSTRUMENT_CANDIDATE_ID = 'signal-lab:default' as const;

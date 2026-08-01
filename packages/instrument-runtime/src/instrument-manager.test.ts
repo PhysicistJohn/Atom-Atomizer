@@ -2020,7 +2020,7 @@ describe('InstrumentManager feature boundary', () => {
         session = new StubSession(candidate, initial);
         session.onFeature = async (command) => {
           const expandedSignalBandwidthHz = 380_160_000;
-          // The v2 complex-I/Q ceiling is a fixed 491.52 MHz, wide enough for the
+          // The v3 complex-I/Q ceiling is a fixed 491.52 MHz, wide enough for the
           // largest legal custom NR build (FR2 / 120 kHz SCS / 400 MHz = 264 RB
           // = 380.16 MHz occupied). A custom build therefore republishes only
           // its own descriptor and I/Q transport; acquisitions do not move.
@@ -3329,7 +3329,7 @@ function provenanceFor(candidate: InstrumentCandidate): InstrumentSessionProvena
       execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge',
       qualification: 'synthetic-visual-projection', verifiedAt: CAPTURED_AT,
       producerConfigurationEpoch: 'producer-epoch:1',
-      contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
+      contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 3,
       contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
     };

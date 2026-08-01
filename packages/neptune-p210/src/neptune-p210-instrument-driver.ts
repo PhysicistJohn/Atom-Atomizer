@@ -153,6 +153,14 @@ export const NEPTUNE_P210_MIN_CAPTURE_INTERVAL_MS = 200;
 export const NEPTUNE_P210_MAX_CONSECUTIVE_CAPTURE_FAILURES = 3;
 
 /**
+ * The configuration contract and IIO setter are integer-Hz based (the
+ * transport rounds its write before issuing `iio_attr`).  Permit only this
+ * tiny readback delta for device-side integer quantization; anything larger
+ * means the driver cannot honestly claim the requested receiver tune.
+ */
+export const NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ = 1;
+
+/**
  * The minimal transport surface this driver depends on. Deliberately a
  * narrow structural interface (not the concrete `NeptuneIioTransport` class)
  * so tests can inject a fully in-memory fake instead of spawning real
@@ -173,6 +181,7 @@ export interface NeptuneTransportLike {
     options?: AttributeCommandOptions,
   ): Promise<AttributeReadResult>;
   setCenterFrequencyHz(uri: string, hz: number, options?: AttributeCommandOptions): Promise<void>;
+  getCenterFrequencyHz(uri: string, options?: AttributeCommandOptions): Promise<number>;
   setSampleRateHz(uri: string, hz: number, options?: AttributeCommandOptions): Promise<void>;
   setRfBandwidthHz(uri: string, hz: number, options?: AttributeCommandOptions): Promise<void>;
   capture(params: CaptureParams): Promise<CaptureResult>;
@@ -724,7 +733,16 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     // rate, and RF bandwidth are real AD9361 attributes and are each
     // written here individually, so a partial failure surfaces immediately
     // from configure() rather than being silently deferred to acquire().
-    await this.#transport.setCenterFrequencyHz(this.#endpoint, configuration.centerHz);
+    const requestedCenterHz = Math.round(configuration.centerHz);
+    await this.#transport.setCenterFrequencyHz(this.#endpoint, requestedCenterHz);
+    const observedCenterHz = await this.#transport.getCenterFrequencyHz(this.#endpoint);
+    if (!Number.isFinite(observedCenterHz)
+      || Math.abs(observedCenterHz - requestedCenterHz) > NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ) {
+      throw new Error(
+        `Neptune P210 RX LO readback ${observedCenterHz} Hz does not match requested ${requestedCenterHz} Hz `
+          + `within ${NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ} Hz`,
+      );
+    }
     await this.#transport.setSampleRateHz(this.#endpoint, configuration.sampleRateHz);
     await this.#transport.setRfBandwidthHz(this.#endpoint, configuration.bandwidthHz);
 

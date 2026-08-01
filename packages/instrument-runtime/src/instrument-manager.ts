@@ -1,5 +1,6 @@
 import { structuralEqual } from './structural-equal.js';
 import {
+  SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
@@ -1369,8 +1370,9 @@ function assertMeasurementBinding(
     if (measurement.resolutionBandwidthHz !== null || measurement.attenuationDb !== null) {
       throw new InstrumentManagerError('driver-contract', 'SignalLab measurements must not claim physical RBW or attenuation readback');
     }
-    if (active.session.provenance.contractVersion === 2 && measurement.kind === 'complex-iq') {
-      assertSignalLabV2IqBinding(measurement, active);
+    if (active.session.provenance.contractVersion === SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION
+      && measurement.kind === 'complex-iq') {
+      assertSignalLabV3IqBinding(measurement, active);
     }
   } else if (measurement.producerConfigurationEpoch !== undefined) {
     throw new InstrumentManagerError('driver-contract', 'Non-SignalLab measurement claimed a producer configuration epoch');
@@ -1444,7 +1446,7 @@ function expectedMeasurementQualification(
     : 'standards-derived-complex-baseband';
 }
 
-function assertSignalLabV2IqBinding(
+function assertSignalLabV3IqBinding(
   measurement: Extract<InstrumentMeasurement, { kind: 'complex-iq' }>,
   active: ActiveSession,
 ): void {
@@ -1456,7 +1458,7 @@ function assertSignalLabV2IqBinding(
     ? source.iqProfiles.find((profile) => profile.profileId === source.selectedProfileId)
     : undefined;
   if (!isCompleteSignalLabDescriptor(selected) || !transport) {
-    throw new InstrumentManagerError('driver-contract', 'SignalLab v2 I/Q measurement lacks its governed profile transport');
+    throw new InstrumentManagerError('driver-contract', 'SignalLab v3 I/Q measurement lacks its governed profile transport');
   }
   if (measurement.transformReceipt?.outputSamplesSha256 !== sha256HexOfBytes(measurement.samples)) {
     throw new InstrumentManagerError(
@@ -1479,7 +1481,7 @@ function assertSignalLabV2IqBinding(
   if (measurement.nativeSampleRateHz !== expectedNativeRate) {
     throw new InstrumentManagerError('driver-contract', 'SignalLab I/Q native-rate evidence does not match the admitted profile transport');
   }
-  const expectedBoundaryPolicy = transport.replay === 'continuous'
+  const expectedBoundaryPolicy = transport.replay === 'continuous' || transport.replay === 'unbounded'
     ? 'continuous-session-origin-zero-extended'
     : transport.replay === 'cyclic'
       ? 'cyclic-modular'
@@ -1501,7 +1503,7 @@ function assertSignalLabV2IqBinding(
   // capture too narrow to hold that span is reporting impossible geometry.
   const outputCarrierOffsetHz = measurement.outputCarrierOffsetHz;
   if (outputCarrierOffsetHz === undefined) {
-    throw new InstrumentManagerError('driver-contract', 'SignalLab v2 I/Q measurement omitted its output carrier offset');
+    throw new InstrumentManagerError('driver-contract', 'SignalLab v3 I/Q measurement omitted its output carrier offset');
   }
   const requiredCaptureBandwidthHz =
     2 * Math.abs(outputCarrierOffsetHz) + transport.signalBandwidthHz;

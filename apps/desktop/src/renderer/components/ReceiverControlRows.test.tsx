@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnalyzerConfig, InstrumentAcquisitionCapability, ZeroSpanConfig } from '@tinysa/contracts';
 import { AnalyzerInspector } from './AnalyzerInspector.js';
@@ -45,6 +51,96 @@ const zero: ZeroSpanConfig = {
 afterEach(cleanup);
 
 describe('capability-derived receiver controls', () => {
+  it('emits independently editable center, points, and sweep-time patches', () => {
+    const onChange = vi.fn();
+    render(
+      <AnalyzerInspector
+        config={analyzer}
+        capability={spectrumCapability}
+        disabled={false}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
+    let editor = screen.getByRole('dialog', {
+      name: /Stop frequency numeric entry/i,
+    });
+    fireEvent.change(
+      within(editor).getByRole('textbox', { name: 'Stop frequency' }),
+      { target: { value: '110' } },
+    );
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply MHz$/i }),
+    );
+    expect(onChange).toHaveBeenLastCalledWith({ stopHz: 110_000_000 });
+
+    fireEvent.click(screen.getByLabelText('Edit Center frequency'));
+    editor = screen.getByRole('dialog', {
+      name: /Center frequency numeric entry/i,
+    });
+    fireEvent.change(
+      within(editor).getByRole('textbox', { name: 'Center frequency' }),
+      { target: { value: '100' } },
+    );
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply MHz$/i }),
+    );
+    expect(onChange).toHaveBeenLastCalledWith({
+      startHz: 90_000_000,
+      stopHz: 110_000_000,
+    });
+
+    fireEvent.click(screen.getByLabelText('Edit Sweep points'));
+    editor = screen.getByRole('dialog', {
+      name: /Sweep points numeric entry/i,
+    });
+    const points = within(editor).getByRole('textbox', {
+      name: 'Sweep points',
+    });
+    fireEvent.change(points, { target: { value: '320' } });
+    fireEvent.keyDown(points, { key: 'Enter' });
+    expect(onChange).toHaveBeenLastCalledWith({ points: 320 });
+
+    fireEvent.click(screen.getByLabelText('Edit Sweep time'));
+    editor = screen.getByRole('dialog', {
+      name: /Sweep time numeric entry/i,
+    });
+    fireEvent.change(
+      within(editor).getByRole('textbox', { name: 'Sweep time' }),
+      { target: { value: '100' } },
+    );
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply ms$/i }),
+    );
+    expect(onChange).toHaveBeenLastCalledWith({ sweepTimeSeconds: 0.1 });
+  });
+
+  it('accepts a natural span aligned to the capability frequency lattice', () => {
+    const onChange = vi.fn();
+    render(
+      <AnalyzerInspector
+        config={analyzer}
+        capability={spectrumCapability}
+        disabled={false}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Edit Span'));
+    const editor = screen.getByRole('dialog', { name: /Span numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Span' }), {
+      target: { value: '30' },
+    });
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply MHz$/i }),
+    );
+    expect(onChange).toHaveBeenCalledWith({
+      startHz: 83_000_000,
+      stopHz: 113_000_000,
+    });
+  });
+
   it('renders every analyzer receiver control with accessible staged values', () => {
     const onChange = vi.fn();
     render(<AnalyzerInspector config={analyzer} capability={spectrumCapability} disabled={false} onChange={onChange}/>);

@@ -77,7 +77,7 @@ export class AgentExecutor {
         sessionId: active.sessionId,
       } : null,
       firmwareTwin: { owner: 'tinysa-firmware', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
-      signalLab: { owner: 'tinysa-signal-lab', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v2-in-process', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+      signalLab: { owner: 'tinysa-signal-lab', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v3-in-process', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
     } as const;
   }
 

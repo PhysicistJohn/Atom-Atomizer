@@ -51,10 +51,10 @@ export function ChannelAnalysisView({ sweep, configuration, display, spectrumCap
       {measurement.error && <div className="measurement-error" role="alert"><strong>Measurement unavailable</strong><span>{measurement.error}</span></div>}
     </div>
     <aside className="channel-console">
-      <div className="channel-console-title"><span><Brackets size={14}/></span><strong>Channel setup</strong><button type="button" disabled={!sweep} title={sweep ? 'Strongest prominence-qualified trace component; no protocol or channel-plan inference.' : 'Acquire a spectrum or I/Q buffer first.'} aria-label="Fit channel windows to strongest response in current sweep" onClick={fitCurrentResponse} data-agent-exclusion="human-derived-fit"><ScanSearch size={13}/>Fit response</button></div>
+      <div className="channel-console-title"><span><Brackets size={14}/></span><strong>Channel setup</strong><button type="button" disabled={!sweep} title={sweep ? 'Align analysis windows to the strongest prominence-qualified response; no protocol or channel-plan inference.' : 'Acquire a spectrum or I/Q buffer first.'} aria-label="Fit analysis windows to strongest signal in current sweep" onClick={fitCurrentResponse} data-agent-exclusion="human-derived-fit"><ScanSearch size={13}/>Fit strongest signal</button></div>
       {fitStatus && <div className={`channel-fit-status ${fitStatus.kind}`} role="status">{fitStatus.message}</div>}
       <div className="channel-form parameter-stack">
-        <NumberControl label="Center frequency" value={configuration.centerHz} minimum={0} controlId="channel.center" onValue={(centerHz) => onConfiguration({ ...configuration, centerHz })}/>
+        <NumberControl label="Analysis center" value={configuration.centerHz} minimum={0} controlId="channel.center" onValue={(centerHz) => onConfiguration({ ...configuration, centerHz })}/>
         <NumberControl label="Main bandwidth" value={configuration.mainBandwidthHz} minimum={1} controlId="channel.main-bandwidth" onValue={(mainBandwidthHz) => onConfiguration({
           ...configuration,
           mainBandwidthHz,
@@ -70,7 +70,7 @@ export function ChannelAnalysisView({ sweep, configuration, display, spectrumCap
         <EditableParameter label="Occupied power" value={configuration.occupiedPowerPercent} displayValue={`${configuration.occupiedPowerPercent}%`} unit="%" minimum={10} maximum={99.9} step={0.1} controlId="channel.occupied-power" onCommit={(value) => onConfiguration({ ...configuration, occupiedPowerPercent: Number(value) })}/>
         <SelectParameter label="OBW noise treatment" value={configuration.obwNoiseCorrection} options={[{ value: 'none', label: 'Total displayed power' }, { value: 'robust-floor', label: 'Subtract robust floor' }]} controlId="channel.obw-noise" onValue={(value) => onConfiguration({ ...configuration, obwNoiseCorrection: value as ChannelMeasurementConfiguration['obwNoiseCorrection'] })}/>
       </div>
-      <div className="channel-contract-note"><BarChart3 size={14}/><p>{sweep?.powerReference === 'uncalibrated-dbfs-relative' ? 'Host-derived FFT · uncalibrated dBFS-relative levels; dB ratios remain valid.' : 'RBW-normalized scalar sweep · source-qualified dBm.'}</p></div>
+      <div className="channel-contract-note"><BarChart3 size={14}/><p>{sweep?.powerReference === 'uncalibrated-dbfs-relative' ? 'Host-derived FFT · uncalibrated dBFS-relative levels; dB ratios remain valid.' : 'RBW-normalized scalar sweep · source-qualified dBm.'}</p><p>Analysis center positions measurement windows only; it does not retune the receiver.</p></div>
     </aside>
   </section>;
 }

@@ -172,7 +172,7 @@ const signalLabIqProfiles = signalLabProfiles.map((profile) => ({
 }));
 const signalLabSession: InstrumentSessionSnapshot = {
   sessionId: 'signal-session', driverId: 'signal-lab', candidate: signalLabCandidate,
-  provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2, contractSha256: HASH, catalogSha256: HASH, generatorContractBindingSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+  provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 3, contractSha256: HASH, catalogSha256: HASH, generatorContractBindingSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
   capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 17_922_600_000 }, points: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm' }, { kind: 'detected-power-timeseries', centerFrequencyHz: { min: 1, max: 17_922_600_000, step: 1 }, sampleCount: { min: 20, max: 450 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: syntheticScalarCapability(), powerUnit: 'dBm', timing: 'uniform' }, testComplexIqCapability], features: [{ kind: 'signal-lab-profile-selection', profiles: signalLabProfiles, selectedProfileId: 'cw', channel: DEFAULT_REPLAY_CHANNEL, iqProfiles: signalLabIqProfiles }] },
   rfOutput: 'not-supported',
   rfOutputQualification: 'not-applicable',
@@ -1001,7 +1001,7 @@ describe('operator vertical slice', () => {
         transport: 'signal-lab-measurement-bridge',
         qualification: 'synthetic-visual-projection',
         contractId: 'tinysa-signal-lab-atomizer-measurement',
-        contractVersion: 2,
+        contractVersion: 3,
         contractSha256: HASH,
         catalogSha256: HASH,
         generatorContractBindingSha256: HASH,
@@ -1096,13 +1096,13 @@ describe('operator vertical slice', () => {
     expect(window.atomizerInstrument.startStreaming).not.toHaveBeenCalled();
     expect(screen.getByText(/Global · I\/Q \+ spectrum/i)).toBeTruthy();
 
-    const editCenter = screen.getByLabelText('Edit Center frequency');
+    const editCenter = screen.getByLabelText('Edit Receiver tune');
     expect(editCenter.hasAttribute('disabled')).toBe(false);
     fireEvent.click(editCenter);
-    const editor = screen.getByRole('dialog', { name: /Center frequency numeric entry/i });
-    fireEvent.change(within(editor).getByRole('textbox', { name: 'Center frequency' }), { target: { value: '101' } });
+    const editor = screen.getByRole('dialog', { name: /Receiver tune numeric entry/i });
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Receiver tune' }), { target: { value: '101' } });
     fireEvent.click(within(editor).getByRole('button', { name: /^Apply MHz$/i }));
-    expect(screen.getByLabelText('Edit Center frequency').textContent).toContain('101 MHz');
+    expect(screen.getByLabelText('Edit Receiver tune').textContent).toContain('101 MHz');
 
     await act(async () => {
       const first = pending[0]!;
@@ -1672,7 +1672,7 @@ describe('operator vertical slice', () => {
         expect(screen.getByLabelText('Edit Color floor').getAttribute('aria-disabled')).toBe('false');
       } else if (route === 'Channel') {
         await screen.findByText(/Channel setup/i);
-        expect(screen.getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+        expect(screen.getByLabelText('Edit Analysis center').getAttribute('aria-disabled')).toBe('false');
       } else if (route === 'I/Q') {
         await screen.findByRole('region', { name: /Complex I\/Q workspace/i });
       } else if (route === 'Detect') {
@@ -2485,11 +2485,10 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     expect(container.querySelector('.acquisition-dock')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
-    const measurementTabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
-    for (const control of ['Markers', 'Traces', 'Display']) expect(measurementTabs.getByRole('button', { name: new RegExp(control, 'i') })).toBeTruthy();
-    fireEvent.click(measurementTabs.getByRole('button', { name: /Markers/i }));
+    expect(container.querySelector('.measurement-tabs')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Markers$/i }));
     expect(await screen.findByRole('button', { name: /^Peak$/i })).toBeTruthy();
-    fireEvent.click(measurementTabs.getByRole('button', { name: /Traces/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
     expect(await screen.findByText('TRACE 4')).toBeTruthy();
     fireEvent.click(within(navigation).getByRole('button', { name: /^Detect$/i }));
     expect(container.querySelector('.classification-workspace')).not.toBeNull();
@@ -2544,9 +2543,8 @@ describe('operator vertical slice', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Sweep setup$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
     assertRenderedContracts();
-    const tabs = within(container.querySelector('.measurement-tabs') as HTMLElement);
     for (const panel of ['Traces', 'Display', 'Markers']) {
-      fireEvent.click(tabs.getByRole('button', { name: new RegExp(panel, 'i') }));
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${panel}$`, 'i') }));
       assertRenderedContracts();
     }
     for (const workspace of ['Detect', 'Generate', 'Device', 'Spectrum']) {

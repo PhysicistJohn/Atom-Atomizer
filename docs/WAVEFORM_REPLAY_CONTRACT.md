@@ -1,19 +1,20 @@
 # SignalLab measurement and stimulus ownership notice
 
-Status: ownership shim; updated for trio composition v5 on 2026-07-27.
+Status: ownership shim; updated for trio composition v7 on 2026-08-01.
 
-Waveform descriptors, the 42-profile closed catalog, AWGN/Rayleigh scalar-channel behavior, explicit receiver-I/Q impairments, high-level synthetic measurements, and stimulus intent are owned by the independent `../Atom-SignalLab` repository. Twelve public observable profiles share SignalLab's executable canonical-scenario source with the classifier corpus; the remaining 30 profiles are not classifier truth. Its normative boundary is [SignalLab CONTRACTS](../../Atom-SignalLab/CONTRACTS.md).
+Waveform descriptors, the 44-profile closed catalog, AWGN/Rayleigh scalar-channel behavior, explicit receiver-I/Q impairments, high-level synthetic measurements, and stimulus intent are owned by the independent `../Atom-SignalLab` repository. Twelve public observable profiles share SignalLab's executable canonical-scenario source with the classifier corpus; the remaining 32 profiles are not classifier truth. Its normative boundary is [SignalLab CONTRACTS](../../Atom-SignalLab/CONTRACTS.md).
 
 The closed catalog omits named test models whose required power-balanced
 allocation, per-slot PRB sequence, subslot/slot timing, or SBFD spectral
 partition is not implemented. Those omissions are unsupported capability, not
 negative evidence about the standards families.
 
-Atomizer does not duplicate SignalLab synthesis code. Its `signal-lab` driver bundles SignalLab's platform-neutral service and strict version-2 contract directly into both editions. It admits bounded swept-spectrum and detected-power results qualified `synthetic-visual-projection`, plus bounded deterministic `cf32le` complex-I/Q for all 42 closed profiles.
+Atomizer does not duplicate SignalLab synthesis code. Its `signal-lab` driver bundles SignalLab's platform-neutral service and strict version-3 contract directly into both editions. It admits bounded swept-spectrum and detected-power results qualified `synthetic-visual-projection`, plus bounded deterministic `cf32le` complex-I/Q for all 44 closed profiles.
 
 The I/Q catalog has three explicit classes:
 
 - 31 content-addressed fixed digital artifacts. Exact clean native bytes are `independently-verified-digital-baseband`; clean resampling, fractional delay, or frequency translation is `derived-from-independently-verified-digital-baseband`.
+- Two Bluetooth long-dwell unbounded native-rate compositions. They carry no canonical artifact, cyclic period, or terminal capture bound; clean output remains `standards-derived-complex-baseband` and derived FIR support zero-extends only before session origin.
 - CW, AM, FM, and five constellation references are rate-flexible analytic laboratory generators qualified `analytic-complex-baseband`.
 - Three custom standards builders are rate-flexible engineering projections qualified `standards-derived-complex-baseband`.
 
@@ -27,4 +28,4 @@ The active measurement edge does not apply stimulus to executable firmware. Sign
 
 The physical ZS407 and executable twin are separately selectable sources behind Atomizer's `tinysa-zs407` driver. The twin is owned by `../Atom-Firmware`, executes pinned firmware over `renode-monitor-bridge`, and explicitly does not model USB transactions. Neither source is an automatic substitute for SignalLab or for the other TinySA source kind.
 
-The cross-repository source of truth is [trio-composition-v5.json](../contracts/trio-composition-v5.json). Any activation of a SignalLab stimulus sink requires a new coordinated trio contract version.
+The cross-repository source of truth is [trio-composition-v7.json](../contracts/trio-composition-v7.json). Any activation of a SignalLab stimulus sink requires a new coordinated trio contract version.

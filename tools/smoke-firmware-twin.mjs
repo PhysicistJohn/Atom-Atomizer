@@ -6,11 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const firmwareRoot = resolve(root, '../Atom-Firmware');
-const activeTrioContract = 'trio-composition-v5.json';
+const activeTrioContract = 'trio-composition-v7.json';
 const manifest = JSON.parse(await readFile(resolve(root, 'contracts', activeTrioContract), 'utf8'));
-if (manifest.contractVersion !== 5
+if (manifest.contractVersion !== 7
   || manifest.$id !== `https://tinysa.local/contracts/${activeTrioContract}`) {
-  throw new Error(`Firmware-twin smoke requires the active trio composition v5 contract, received ${JSON.stringify({ contractVersion: manifest.contractVersion, $id: manifest.$id })}`);
+  throw new Error(`Firmware-twin smoke requires the active trio composition v7 contract, received ${JSON.stringify({ contractVersion: manifest.contractVersion, $id: manifest.$id })}`);
 }
 const declared = manifest.parties.firmware;
 const child = spawn(process.execPath, [resolve(firmwareRoot, 'tools/atomizer-twin-bridge.mjs')], {

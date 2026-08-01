@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v2.json' with { type: 'json' };
+import contractDocument from '../../../../../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v3.json' with { type: 'json' };
 import { admitInProcessSignalLabContractDocument } from './in-process-signal-lab-driver.js';
 
 describe('in-process SignalLab contract admission', () => {

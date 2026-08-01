@@ -254,7 +254,7 @@ describe('desktop navigation and compact measurement layout', () => {
     const overlay = within(view.container).getByRole('region', { name: 'Capture setup panel' });
     expect(setup.getAttribute('aria-expanded')).toBe('true');
     expect(within(overlay).getByText('DRIVER ADVERTISED')).toBeTruthy();
-    expect(within(overlay).getByLabelText('Edit Center frequency').getAttribute('aria-disabled')).toBe('false');
+    expect(within(overlay).getByLabelText('Edit Receiver tune').getAttribute('aria-disabled')).toBe('false');
     expect(within(overlay).getByText('ci16le')).toBeTruthy();
     fireEvent.click(within(overlay).getByRole('button', { name: 'Close Capture setup' }));
     expect(within(view.container).queryByRole('region', { name: 'Capture setup panel' })).toBeNull();
@@ -265,13 +265,14 @@ describe('desktop navigation and compact measurement layout', () => {
     fireEvent.click(tracesButton);
     const traceDrawer = within(view.container).getByRole('region', { name: 'Trace controls panel' });
     await waitFor(() => expect(document.activeElement).toBe(traceDrawer));
-    expect(within(traceDrawer).getByRole('button', { name: /Traces1\/4/i }).getAttribute('aria-pressed')).toBe('true');
     expect(within(traceDrawer).getByText('TRACE 4')).toBeTruthy();
-    const markersTab = within(traceDrawer).getByRole('button', { name: /Markers0\/8/i });
-    markersTab.focus();
-    fireEvent.click(markersTab);
+    expect(within(traceDrawer).queryByRole('navigation', { name: 'Measurement controls' })).toBeNull();
+    expect(within(traceDrawer).queryByRole('button', { name: /Markers0\/8/i })).toBeNull();
+
+    const markersButton = within(view.container).getByRole('button', { name: 'Markers' });
+    fireEvent.click(markersButton);
     await waitFor(() => expect(within(view.container).getByRole('region', { name: 'Marker controls panel' })).toBeTruthy());
-    expect(document.activeElement).toBe(markersTab);
+    expect(markersButton.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('binds the DEV marker readout diagnostic to its source sweep', () => {
@@ -299,8 +300,12 @@ describe('desktop navigation and compact measurement layout', () => {
       onDisplay={vi.fn()}
       onAutoScale={vi.fn()}
     />);
+    expect(within(view.container).getByRole('navigation', { name: 'Measurement controls' })).toBeTruthy();
+    expect(within(view.container).getByRole('button', { name: /Markers1\/8/i })).toBeTruthy();
     expect(within(view.container).getByLabelText('Marker M1 current reading')
       .getAttribute('aria-description')).toBe('sourceSweepId=sweep-current-42');
+    fireEvent.click(within(view.container).getByRole('button', { name: /Traces1\/4/i }));
+    expect(within(view.container).getByText('TRACE 4')).toBeTruthy();
   });
 
 });

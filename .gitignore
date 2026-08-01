@@ -9,5 +9,4 @@ release/
 .env.*
 !.env.example
 .wrangler/
-.openai/
 *.tsbuildinfo

@@ -113,10 +113,6 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     focusDrawerRef.current = true;
     setDrawer(next);
   };
-  const selectDockPanel = (next: MeasurementDockPanel) => {
-    focusDrawerRef.current = false;
-    setDrawer(next);
-  };
   useEffect(() => {
     if (!drawer) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -169,7 +165,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
           ? hasIqCaptureSetup
             ? <IqCaptureSetup configuration={props.iqConfiguration!} capability={props.iqCapability} busy={props.busy && !props.streaming} onChange={props.onIqConfiguration!}/>
             : <AnalyzerInspector config={props.analyzer} capability={props.spectrumCapability} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
-          : <MeasurementDock panel={drawer} onPanel={selectDockPanel} traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
+          : <MeasurementDock panel={drawer} showTabs={false} traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }</div>
       </div>}
       <div className="measurement-stage-content" aria-label="Measurement view">

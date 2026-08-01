@@ -17,6 +17,7 @@ interface PendingRecovery {
 }
 
 export const IQ_RECOVERY_MINIMUM_PERIOD_MILLISECONDS = 250;
+export const IQ_RECOVERY_WORKER_RESPONSE_TIMEOUT_MILLISECONDS = 15_000;
 
 export interface IqRecoveryScheduling {
   readonly minimumPeriodMilliseconds: number;
@@ -158,6 +159,7 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
   private readonly pending = new Map<number, {
     readonly resolve: (result: RecoveredConstellation) => void;
     readonly reject: (reason: unknown) => void;
+    readonly timeout: ReturnType<typeof setTimeout>;
   }>();
 
   async recover(capture: ComplexIqMeasurement): Promise<RecoveredConstellation> {
@@ -165,9 +167,19 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
     const request: IqRecoveryWorkerRequest = { id: ++this.nextId, real, imaginary };
     const worker = this.requireWorker();
     return new Promise((resolve, reject) => {
-      this.pending.set(request.id, { resolve, reject });
+      const timeout = globalThis.setTimeout(() => {
+        if (!this.pending.has(request.id)) return;
+        this.failWorker(
+          worker,
+          new Error(
+            `I/Q recovery worker did not respond within ${IQ_RECOVERY_WORKER_RESPONSE_TIMEOUT_MILLISECONDS / 1_000} seconds`,
+          ),
+        );
+      }, IQ_RECOVERY_WORKER_RESPONSE_TIMEOUT_MILLISECONDS);
+      this.pending.set(request.id, { resolve, reject, timeout });
       try { worker.postMessage(request, [real.buffer, imaginary.buffer]); }
       catch (failure) {
+        globalThis.clearTimeout(timeout);
         this.pending.delete(request.id);
         reject(failure);
       }
@@ -175,10 +187,10 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
   }
 
   dispose(): void {
-    this.worker?.terminate();
+    const worker = this.worker;
     this.worker = undefined;
-    for (const { reject } of this.pending.values()) reject(new Error('I/Q recovery worker disposed'));
-    this.pending.clear();
+    worker?.terminate();
+    this.rejectAll(new Error('I/Q recovery worker disposed'));
   }
 
   private requireWorker(): Worker {
@@ -192,18 +204,34 @@ class BrowserIqRecoveryExecutor implements IqRecoveryExecutor {
       const pending = this.pending.get(response.id);
       if (!pending) return;
       this.pending.delete(response.id);
+      globalThis.clearTimeout(pending.timeout);
       if (response.ok) pending.resolve(response.result);
       else pending.reject(new Error(response.error));
     };
     worker.onerror = (event) => {
-      const failure = new Error(event.message || 'I/Q recovery worker failed');
-      for (const { reject } of this.pending.values()) reject(failure);
-      this.pending.clear();
-      worker.terminate();
-      if (this.worker === worker) this.worker = undefined;
+      this.failWorker(
+        worker,
+        new Error(event.message || 'I/Q recovery worker failed'),
+      );
     };
     this.worker = worker;
     return worker;
+  }
+
+  private failWorker(worker: Worker, failure: Error): void {
+    if (this.worker !== worker) return;
+    this.worker = undefined;
+    worker.terminate();
+    this.rejectAll(failure);
+  }
+
+  private rejectAll(failure: Error): void {
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const request of pending) {
+      globalThis.clearTimeout(request.timeout);
+      request.reject(failure);
+    }
   }
 }
 
@@ -217,7 +245,7 @@ class InlineIqRecoveryExecutor implements IqRecoveryExecutor {
   dispose(): void {}
 }
 
-function createIqRecoveryExecutor(): IqRecoveryExecutor {
+export function createIqRecoveryExecutor(): IqRecoveryExecutor {
   return typeof Worker === 'undefined'
     ? new InlineIqRecoveryExecutor()
     : new BrowserIqRecoveryExecutor();

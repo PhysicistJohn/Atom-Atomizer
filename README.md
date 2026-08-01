@@ -69,7 +69,7 @@ The live system is deliberately split into four independently versioned reposito
 | `Atom-SignalLab` | High-level synthetic measurement producer, bounded deterministic clean/receiver-impaired complex-I/Q producer, scalar-classification corpus, visual waveform descriptors, seeded scalar channel and receiver-I/Q models, stimulus intent | Active versioned in-process measurement edge to Atomizer; Firmware stimulus sink remains reserved |
 | `Atom-Flasher` | Standalone physical firmware discovery, preflight, DFU, write journaling, and recovery | Safety chain pinned by its own immutable contract test and safety suite; no Atomizer runtime edge |
 
-The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v5.json](./contracts/trio-composition-v5.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
+The normative Atomizer/Firmware/SignalLab runtime composition is byte-identical in those three repositories at [trio-composition-v7.json](./contracts/trio-composition-v7.json). Physical USB, the Renode monitor bridge, and SignalLab simulation are never represented as the same transport or evidence class. Firmware installation is outside that runtime graph and belongs exclusively to the standalone sibling application at `../Atom-Flasher`; Atomizer does not download firmware, enter DFU, or expose a flash API.
 
 [Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP) is a shared numerical
 implementation dependency, not a source, transport, instrument, or evidence
@@ -77,7 +77,7 @@ class, so it is deliberately outside that runtime-composition contract.
 
 USB ownership is session-scoped: Atomizer owns CDC analyzer/generator operation, while Atom-Flasher owns CDC discovery and preflight, DFU admission and write, and CDC post-write verification for the complete firmware-update session. The two applications must never access the same physical device simultaneously. Atomizer requests the operating system's exclusive native serial lock (`lock: true`) for every admitted CDC open, so a second native owner must fail rather than share bytes. Disconnect or close Atomizer before opening a Flasher update session, and finish or safely exit that session before reconnecting Atomizer.
 
-Composition v5 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
+Composition v7 has no cross-application handoff protocol or durable shared lease. The native lock is the current enforcement boundary and the explicit local-human disconnect is the current handoff; Flasher's write mutex governs updater processes, not an active Atomizer CDC session. Adding automatic coordinated handoff would require a newly versioned Atomizer↔Flasher edge and matching changes in both applications. Neither app may infer ownership merely because a port disappeared or a DFU endpoint appeared.
 
 For owner-built firmware, Atom-Flasher's native manifest picker starts in the
 sibling `../Atom-Firmware` checkout when that directory exists. It remembers a
@@ -132,8 +132,8 @@ npm --prefix ../Atom-SignalLab run dev
 into the main-process build; the packaged app carries no separate `signal-lab`
 resource root.
 
-It owns a 42-profile closed catalog: 12 public canonized scalar-observable
-profiles share the classifier's executable known-scenario source, while 30
+It owns a 44-profile closed catalog: 12 public canonized scalar-observable
+profiles share the classifier's executable known-scenario source, while 32
 remaining visual/standards stimulus profiles stay outside classifier truth. It
 also owns deterministic AWGN/Rayleigh channel configuration, and the separate
 immutable 35-scenario `observable-scalar-corpus-v13` corpus of physics- and
@@ -144,10 +144,10 @@ reproduce their required power-balanced allocation, per-slot PRB sequence,
 subslot/slot timing, or SBFD spectral partition; a disclosure alone does not
 make an unimplemented standard model selectable.
 The retained generated Bayesian model pins that corpus for reproducible
-scalar-observable research. The active in-process v2 measurement service
+scalar-observable research. The active in-process v3 measurement service
 supplies swept-spectrum and detected-power observations qualified
 `synthetic-visual-projection` plus bounded deterministic `cf32le` complex-I/Q
-for all 42 closed profiles. Thirty-one profiles have content-addressed,
+for all 44 closed profiles. Thirty-one profiles have content-addressed,
 independently verified digital-baseband artifacts with exact native sample
 rate, signal bandwidth, RF-reference/profile-center, carrier-offset, and
 cyclic or one-shot replay declarations. Exact clean native bytes retain
@@ -157,7 +157,10 @@ or frequency translation retains explicit
 native byte identity. CW, AM, FM, and the five constellation references are
 rate-flexible analytic generators qualified `analytic-complex-baseband`; the
 three custom builders remain `standards-derived-complex-baseband` engineering
-projections. Every non-clean receiver preset is explicitly downgraded to
+projections. Two Bluetooth long-dwell compositions use an unbounded 80 MHz
+native timeline without a canonical artifact or terminal capture bound and
+remain `standards-derived-complex-baseband`; derived FIR support zero-extends
+only before the session origin. Every non-clean receiver preset is explicitly downgraded to
 `receiver-impaired-complex-baseband`.
 
 The I/Q method returns at most 65,536 complete samples. Each result separates
@@ -527,14 +530,32 @@ verifies generator output returns off.
 - `packages/agent`: exact Realtime configuration, closed tool/control topology, schemas, policies, approvals, and session verification.
 - `contracts`: cross-repository composition manifest.
 
-NeptuneSDR is not implemented or registered. Atomizer now has a driver-neutral,
-bounded complete-buffer complex-I/Q contract and renderer; this does not make
-source registration open-ended or imply Neptune support. First-class hardware
-support still requires a distinct source/provenance variant and driver,
-truthful device limits and sample-format/scaling evidence, and acceptance tests.
-Continuous acquisition additionally requires a later streaming contract with
-chunking, backpressure, cancellation, overrun behavior, and bounded retention.
-A complete single-buffer I/Q shape alone is not streaming support.
+NeptuneSDR/HAMGEEK P210 (AD9361) is registered as driver `neptune-p210`,
+declaring two source kinds: `neptune-p210` (physical board) and
+`neptune-p210-twin` (QEMU digital twin). It is receive-only complex-I/Q,
+single-channel: one bounded `complex-iq` acquisition capability
+(`ci16le`, up to 8,388,608 samples), no RF generator, no scalar
+swept-spectrum/detected-power acquisition, and no SignalLab profile-selection
+feature. `rfOutput` is always `not-supported`. Discovery combines best-effort
+libiio Bonjour/local-subnet scanning with direct re-probing of recently
+connected endpoints. A routed device can be entered once in the source dialog
+(for example `ip:10.0.0.250`) and is then remembered; the two endpoint
+environment variables remain optional bootstrap inputs, not GUI-app
+prerequisites.
+
+Every accepted buffer drives the I/Q workspace and a host-derived
+instantaneous spectrum, so the same physical source populates Spectrum,
+Waterfall, Channel, Detect, traces, markers, peak tracking, and bounded
+one-at-a-time continuous collection. Those derived levels are explicitly
+uncalibrated dBFS-relative, never dBm. Native captures export byte-exact SigMF
+(`.sigmf-meta`/`.sigmf-data`) with full session provenance. Physical
+`ip:10.0.0.250` has passed live connect, configure, bounded single/continuous
+capture, UI retune with hardware readback, and derived-view acceptance on
+2026-07-31. This is operational receive-path evidence, not RF calibration.
+Calibrated power, transmit/generator control, screen/touch/diagnostics,
+driver-native chunk streaming, and 2x2 MIMO remain unavailable; the QEMU twin
+also remains unvalidated end to end. See
+[docs/NEPTUNE_P210_CHARACTERIZATION.md](./docs/NEPTUNE_P210_CHARACTERIZATION.md).
 
 ## macOS live development app
 
@@ -546,10 +567,11 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 
 ## Normative contracts
 
-- [Trio composition](./contracts/trio-composition-v5.json)
+- [Trio composition](./contracts/trio-composition-v7.json)
 - [Atom AI, Realtime, tools, and computer use](./docs/AI_NATIVE_CONTRACTS.md)
 - [Firmware protocol](./docs/FIRMWARE_PROTOCOL_CONTRACT.md)
 - [Physical ZS407 characterization](./docs/PHYSICAL_ZS407_CHARACTERIZATION.md)
+- [Neptune P210 characterization](./docs/NEPTUNE_P210_CHARACTERIZATION.md)
 - [Historical firmware-update contract and standalone ownership handoff](./docs/FIRMWARE_UPDATE_CONTRACT.md)
 - [Markers, traces, display, and trigger](./docs/MEASUREMENT_CONTROLS_CONTRACT.md)
 - [Waterfall, channel measurements, OBW/ACP, and envelope STFT](./docs/ADVANCED_MEASUREMENTS_CONTRACT.md)
@@ -566,7 +588,7 @@ This installs `~/Applications/Atomizer Dev.app`, binds it to this checkout, adds
 - [Atom-DSP](https://github.com/PhysicistJohn/Atom-DSP): dependency-free numerical kernels and cross-language conformance vectors.
 - [Atom-Firmware](https://github.com/PhysicistJohn/Atom-Firmware): reproducibly built tinySA firmware research and modernization.
 - [Atom-Flasher](https://github.com/PhysicistJohn/Atom-Flasher): fail-closed firmware flasher.
-- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): QEMU-backed firmware-executing digital twin of the NeptuneSDR/HAMGEEK P210.
+- [Atom-NeptuneSDR-Twin](https://github.com/PhysicistJohn/Atom-NeptuneSDR-Twin): QEMU-backed firmware-executing digital twin of the NeptuneSDR/HAMGEEK P210, admitted by Atomizer's `neptune-p210` driver as the `neptune-p210-twin` source kind via `NEPTUNE_P210_TWIN_ENDPOINT`; not yet exercised end-to-end against Atomizer.
 - [Atom-SignalLab](https://github.com/PhysicistJohn/Atom-SignalLab): 3GPP and reference signal generation.
 - [Atom-TinySA-Twin](https://github.com/PhysicistJohn/Atom-TinySA-Twin): Renode digital twin booting real ZS407 firmware.
 - [Atom-Website](https://github.com/PhysicistJohn/Atom-Website): product site.

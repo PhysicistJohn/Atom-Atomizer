@@ -69,6 +69,46 @@ describe('parameter-row contract', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('keeps dynamic relational bounds separate from the capability step origin', () => {
+    const commit = vi.fn();
+    render(
+      <EditableParameter
+        label="Stop frequency"
+        value={108_000_000}
+        unit="Hz"
+        minimum={88_000_001}
+        maximum={120_000_000}
+        step={10}
+        stepBase={80_000_000}
+        onCommit={commit}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
+    let editor = screen.getByRole('dialog', {
+      name: /Stop frequency numeric entry/i,
+    });
+    let input = within(editor).getByRole('textbox', {
+      name: 'Stop frequency',
+    });
+    fireEvent.change(input, { target: { value: '110' } });
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply MHz$/i }),
+    );
+    expect(commit).toHaveBeenCalledWith('110000000');
+
+    fireEvent.click(screen.getByLabelText('Edit Stop frequency'));
+    editor = screen.getByRole('dialog', {
+      name: /Stop frequency numeric entry/i,
+    });
+    input = within(editor).getByRole('textbox', { name: 'Stop frequency' });
+    fireEvent.change(input, { target: { value: '110.000001' } });
+    fireEvent.click(
+      within(editor).getByRole('button', { name: /^Apply MHz$/i }),
+    );
+    expect(screen.getByRole('alert').textContent).toContain('10 Hz steps');
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps button keyboard activation distinct from input Enter', () => {
     const commit = vi.fn();
     const { container } = render(<EditableParameter label="Frequency" value={98_000_000} unit="Hz" onCommit={commit}/>);

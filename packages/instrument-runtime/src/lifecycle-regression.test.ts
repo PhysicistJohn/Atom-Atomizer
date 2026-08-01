@@ -250,7 +250,7 @@ class FakeSignalLabSession implements InstrumentSession {
       verifiedAt: CAPTURED_AT,
       producerConfigurationEpoch: `producer-epoch:${this.#epoch}`,
       contractId: 'tinysa-signal-lab-atomizer-measurement',
-      contractVersion: 2,
+      contractVersion: 3,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
       generatorContractBindingSha256: 'c'.repeat(64),

@@ -1,12 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import type { ComplexIqMeasurement } from '../complex-iq.js';
+import type {
+  IqRecoveryWorkerRequest,
+  IqRecoveryWorkerResponse,
+} from '../iq-recovery-worker-protocol.js';
 import {
   IQ_RECOVERY_MINIMUM_PERIOD_MILLISECONDS,
+  IQ_RECOVERY_WORKER_RESPONSE_TIMEOUT_MILLISECONDS,
   IqRecoveryController,
+  createIqRecoveryExecutor,
   type IqRecoveryExecutor,
   type IqRecoveryScheduling,
 } from './iq-recovery.js';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  FakeRecoveryWorker.instances.length = 0;
+});
 
 describe('I/Q constellation recovery', () => {
   it('runs one recovery at a time, drops queued intermediates, and resets across source scope', async () => {
@@ -86,7 +98,81 @@ describe('I/Q constellation recovery', () => {
     controller.dispose();
     expect(scheduler.pendingCount()).toBe(0);
   });
+
+  it('fails every request on a silent worker, ignores late replies, and recovers on a fresh worker', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('Worker', FakeRecoveryWorker as unknown as typeof Worker);
+    const executor = createIqRecoveryExecutor();
+    const first = executor.recover(capture('iq-silent-1', 1));
+    const second = executor.recover(capture('iq-silent-2', 2));
+    const silentWorker = FakeRecoveryWorker.instances[0]!;
+    const failuresPromise = Promise.allSettled([first, second]);
+
+    await vi.advanceTimersByTimeAsync(
+      IQ_RECOVERY_WORKER_RESPONSE_TIMEOUT_MILLISECONDS - 1,
+    );
+    expect(silentWorker.terminate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    const failures = await failuresPromise;
+    expect(failures).toEqual([
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /I\/Q recovery worker did not respond within 15 seconds/i,
+          ),
+        }),
+      }),
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({
+          message: expect.stringMatching(
+            /I\/Q recovery worker did not respond within 15 seconds/i,
+          ),
+        }),
+      }),
+    ]);
+    expect(silentWorker.terminate).toHaveBeenCalledOnce();
+    silentWorker.respond({ id: 1, ok: true, result: recovery(1) });
+    silentWorker.respond({ id: 2, ok: true, result: recovery(2) });
+
+    const retry = executor.recover(capture('iq-retry', 3));
+    const replacement = FakeRecoveryWorker.instances[1]!;
+    expect(replacement).not.toBe(silentWorker);
+    replacement.respond({ id: 3, ok: true, result: recovery(3) });
+    await expect(retry).resolves.toEqual(recovery(3));
+    executor.dispose();
+  });
 });
+
+class FakeRecoveryWorker {
+  static readonly instances: FakeRecoveryWorker[] = [];
+  onmessage: ((event: MessageEvent<IqRecoveryWorkerResponse>) => void) | null =
+    null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  readonly terminate = vi.fn();
+  lastMessage: IqRecoveryWorkerRequest | undefined;
+  lastTransfer: readonly Transferable[] | undefined;
+
+  constructor(
+    readonly url: URL,
+    readonly options?: WorkerOptions,
+  ) {
+    FakeRecoveryWorker.instances.push(this);
+  }
+
+  postMessage(
+    message: IqRecoveryWorkerRequest,
+    transfer: readonly Transferable[],
+  ): void {
+    this.lastMessage = message;
+    this.lastTransfer = transfer;
+  }
+
+  respond(response: IqRecoveryWorkerResponse): void {
+    this.onmessage?.(new MessageEvent('message', { data: response }));
+  }
+}
 
 class DeferredRecoveryExecutor implements IqRecoveryExecutor {
   readonly ids: string[] = [];

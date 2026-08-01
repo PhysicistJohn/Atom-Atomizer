@@ -26,6 +26,12 @@ export default function AtomizerWebPage() {
     if (signalLab) document.title = 'SignalLab — AtomOS';
     const appModule = import('../../desktop/src/renderer/AppShell.js');
 
+    void appModule.then(({ App }) => {
+      if (active) setLaunch({ App, signalLab });
+    }).catch((error) => {
+      console.error('[Atomizer Web] application shell failed to load', error);
+    });
+
     void (async () => {
       // SignalLab is the factory-default source on every browser host, so
       // connect it at startup the way the desktop app auto-connects its
@@ -40,8 +46,7 @@ export default function AtomizerWebPage() {
           console.error('[Atomizer Web] automatic SignalLab connection failed', error);
         }
       })();
-      const [{ App }] = await Promise.all([appModule, autoConnect]);
-      if (active) setLaunch({ App, signalLab });
+      await autoConnect;
     })();
     return () => { active = false; };
   }, []);

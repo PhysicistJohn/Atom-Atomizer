@@ -11,6 +11,7 @@ import {
   MAX_SCREEN_DIMENSION_V1,
   MAX_SIGNAL_LAB_PROFILES_V1,
   MAX_SWEPT_SPECTRUM_POINTS_V1,
+  SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION,
   SIGNAL_LAB_SCALAR_FREQUENCY_RANGE_V1,
   complexIqPayloadByteLength,
   instrumentCandidateDescriptorSchema,
@@ -641,6 +642,26 @@ describe('instrument boundary contracts', () => {
       ...capability,
       iqProfiles: [capability.iqProfiles[0], capability.iqProfiles[0]],
     }).success).toBe(false);
+    const unboundedCapability = {
+      ...capability,
+      iqProfiles: [{
+        ...capability.iqProfiles[0],
+        nativeSampleRateHz: 20_000_000,
+        nativeMinimumCaptureBandwidthHz: descriptor.occupiedBandwidthHz,
+        replay: 'unbounded' as const,
+        derivedTransportSupported: true,
+      }],
+    };
+    expect(signalLabProfileSelectionCapabilitySchema.parse(unboundedCapability))
+      .toEqual(unboundedCapability);
+    expect(signalLabProfileSelectionCapabilitySchema.safeParse({
+      ...unboundedCapability,
+      iqProfiles: [{
+        ...unboundedCapability.iqProfiles[0],
+        nativeSampleRateHz: null,
+        nativeMinimumCaptureBandwidthHz: null,
+      }],
+    }).success).toBe(false);
   });
 
   it('admits transform receipts whose native FIR support exceeds the output chunk', () => {
@@ -827,13 +848,17 @@ describe('instrument boundary contracts', () => {
       verifiedAt: '2026-07-14T18:00:00.000Z',
       producerConfigurationEpoch: 'producer-epoch:1',
       contractId: 'tinysa-signal-lab-atomizer-measurement' as const,
-      contractVersion: 2 as const,
+      contractVersion: SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
       generatorContractBindingSha256: 'c'.repeat(64),
       claims: { usbEmulated: false as const, firmwareExecuted: false as const, rfEmitted: false as const },
     };
     expect(instrumentSessionProvenanceSchema.parse(provenance)).toEqual(provenance);
+    expect(instrumentSessionProvenanceSchema.safeParse({
+      ...provenance,
+      contractVersion: 2,
+    }).success).toBe(false);
     const { producerConfigurationEpoch: _omitted, ...missingEpoch } = provenance;
     expect(instrumentSessionProvenanceSchema.safeParse(missingEpoch).success).toBe(false);
     expect(instrumentSessionProvenanceSchema.safeParse({
@@ -1426,7 +1451,7 @@ describe('instrument boundary contracts', () => {
     }).success).toBe(false);
   });
 
-  it('parses and round-trips Neptune P210 ADC evidence without mixing SignalLab v2 semantics', () => {
+  it('parses and round-trips Neptune P210 ADC evidence without mixing SignalLab v3 semantics', () => {
     const common = {
       schemaVersion: 1 as const,
       measurementId: 'measurement:neptune-p210',
@@ -1480,7 +1505,7 @@ describe('instrument boundary contracts', () => {
       adcSignificantBits: 16,
     }).success).toBe(false);
 
-    // Neptune ADC evidence and SignalLab v2 I/Q semantics are parallel,
+    // Neptune ADC evidence and SignalLab v3 I/Q semantics are parallel,
     // never-combined blocks.
     const mixed = instrumentMeasurementSchema.safeParse({
       ...withAdcEvidence,
@@ -1888,7 +1913,7 @@ function signalLabSnapshot() {
       verifiedAt: '2026-07-14T18:00:00.000Z',
       producerConfigurationEpoch: 'producer-epoch:1',
       contractId: 'tinysa-signal-lab-atomizer-measurement' as const,
-      contractVersion: 2 as const,
+      contractVersion: 3 as const,
       contractSha256: 'a'.repeat(64),
       catalogSha256: 'b'.repeat(64),
       generatorContractBindingSha256: 'c'.repeat(64),

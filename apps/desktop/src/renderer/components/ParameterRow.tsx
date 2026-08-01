@@ -8,7 +8,7 @@ export interface ParameterOption {
   label: string;
 }
 
-export function EditableParameter({ label, value, displayValue, unit, type = 'number', minimum, maximum, step, disabled = false, controlId, onCommit }: {
+export function EditableParameter({ label, value, displayValue, unit, type = 'number', minimum, maximum, step, stepBase, disabled = false, controlId, onCommit }: {
   label: string;
   value: string | number;
   displayValue?: string;
@@ -17,6 +17,12 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
   minimum?: number;
   maximum?: number;
   step?: number | string;
+  /**
+   * Origin of the admitted numeric lattice. Most controls use their minimum,
+   * but a dynamic relational minimum (for example, sweep stop > start) must
+   * not move the hardware capability's frequency lattice.
+   */
+  stepBase?: number;
   disabled?: boolean;
   controlId?: string;
   onCommit(value: string): void;
@@ -82,8 +88,14 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
         if (minimum !== undefined && baseValue < minimum) throw new Error(`${label} must be at least ${formatBound(minimum, unit)}`);
         if (maximum !== undefined && baseValue > maximum) throw new Error(`${label} must be at most ${formatBound(maximum, unit)}`);
         if (typeof step === 'number' && step > 0) {
-          const steps = (baseValue - (minimum ?? 0)) / step;
-          if (Math.abs(steps - Math.round(steps)) > 1e-9) throw new Error(`${label} must use ${formatBound(step, unit)} steps`);
+          const latticeOrigin = stepBase ?? minimum ?? 0;
+          if (!Number.isFinite(latticeOrigin)) {
+            throw new Error(`${label} step origin is outside the numeric range`);
+          }
+          const steps = (baseValue - latticeOrigin) / step;
+          if (Math.abs(steps - Math.round(steps)) > 1e-9) {
+            throw new Error(`${label} must use ${formatBound(step, unit)} steps`);
+          }
         }
         committed = String(baseValue);
       }

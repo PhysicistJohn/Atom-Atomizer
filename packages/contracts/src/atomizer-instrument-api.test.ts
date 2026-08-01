@@ -26,7 +26,7 @@ describe('Atomizer instrument API v1 contract', () => {
           transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection',
           verifiedAt: '2026-07-14T20:00:00.000Z',
           producerConfigurationEpoch: 'producer-epoch:1',
-          contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 2,
+          contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 3,
           contractSha256: 'a'.repeat(64), catalogSha256: 'b'.repeat(64), generatorContractBindingSha256: 'c'.repeat(64),
           claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false },
         },

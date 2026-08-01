@@ -26,7 +26,7 @@ export interface SignalLabStudioCapabilityProjection {
 }
 
 /**
- * Converts the complete, governed measurement-bridge-v2 capability state into
+ * Converts the complete, governed measurement-bridge-v3 capability state into
  * the shared Studio view without inventing catalog or channel evidence.
  */
 export function projectSignalLabStudioStatus(

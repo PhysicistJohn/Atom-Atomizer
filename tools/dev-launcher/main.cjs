@@ -176,7 +176,7 @@ function loadContract() {
     'apps/desktop/vite.config.ts',
     // The in-process SignalLab driver bundles these sibling-repo sources.
     '../Atom-SignalLab/src/measurement-service.ts',
-    '../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v2.json',
+    '../Atom-SignalLab/contracts/signal-lab-measurement-bridge-v3.json',
   ];
   for (const relativePath of requiredPaths) {
     const absolutePath = join(repoRoot, relativePath);

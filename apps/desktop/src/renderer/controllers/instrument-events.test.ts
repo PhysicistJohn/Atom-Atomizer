@@ -31,7 +31,7 @@ const SESSION: InstrumentSessionSnapshot = {
     verifiedAt: '2026-07-22T00:00:00.000Z',
     producerConfigurationEpoch: 'producer-epoch:1',
     contractId: 'tinysa-signal-lab-atomizer-measurement',
-    contractVersion: 2,
+    contractVersion: 3,
     contractSha256: HASH,
     catalogSha256: HASH,
     generatorContractBindingSha256: HASH,

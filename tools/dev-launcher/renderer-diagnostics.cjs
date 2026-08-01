@@ -64,7 +64,7 @@ function normalizeSignalLabSessionAdmission(value) {
     || provenance.transport !== 'signal-lab-measurement-bridge'
     || provenance.qualification !== 'synthetic-visual-projection'
     || provenance.contractId !== 'tinysa-signal-lab-atomizer-measurement'
-    || provenance.contractVersion !== 2
+    || provenance.contractVersion !== 3
     || !isSha256(provenance.contractSha256)
     || !isSha256(provenance.catalogSha256)
     || !isSha256(provenance.generatorContractBindingSha256)
@@ -87,7 +87,7 @@ function normalizeSignalLabSessionAdmission(value) {
       transport: 'signal-lab-measurement-bridge',
       qualification: 'synthetic-visual-projection',
       contractId: 'tinysa-signal-lab-atomizer-measurement',
-      contractVersion: 2,
+      contractVersion: 3,
       contractSha256: provenance.contractSha256,
       catalogSha256: provenance.catalogSha256,
       generatorContractBindingSha256: provenance.generatorContractBindingSha256,

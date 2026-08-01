@@ -28,6 +28,7 @@ import {
   NEPTUNE_P210_FALLBACK_CAPABILITY_RANGES,
   NEPTUNE_P210_MAX_CONSECUTIVE_CAPTURE_FAILURES,
   NEPTUNE_P210_MAX_SAMPLE_COUNT,
+  NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ,
   NEPTUNE_P210_TWIN_ENDPOINT_ENV_VAR,
   NeptuneP210InstrumentDriver,
   type NeptuneTransportLike,
@@ -48,11 +49,15 @@ const TWIN_ENDPOINT = 'ip:127.0.0.1';
 class FakeTransport implements NeptuneTransportLike {
   readonly calls: string[] = [];
   readonly setCenterFrequencyHzCalls: number[] = [];
+  readonly getCenterFrequencyHzCalls: string[] = [];
   readonly setSampleRateHzCalls: number[] = [];
   readonly setRfBandwidthHzCalls: number[] = [];
+  readonly captureCalls: CaptureParams[] = [];
+  centerFrequencyHzReadback = 2_400_000_000;
   probeContextImpl: (uri: string) => Promise<IioProbeResult> = async (uri) => okProbe(uri);
   getDeviceAttributeImpl: (uri: string, device: string, channel: string, attribute: string) => Promise<AttributeReadResult> =
     async () => { throw new Error('no _available attribute on this fake device'); };
+  getCenterFrequencyHzImpl: (uri: string) => Promise<number> = async () => this.centerFrequencyHzReadback;
   captureImpl: (params: CaptureParams) => Promise<CaptureResult> = async (params) => defaultCapture(params);
   scanNetworkImpl: () => Promise<readonly NetworkScanCandidate[]> = async () => [];
   disposeImpl: () => Promise<void> = async () => undefined;
@@ -70,6 +75,13 @@ class FakeTransport implements NeptuneTransportLike {
   async setCenterFrequencyHz(_uri: string, hz: number): Promise<void> {
     this.calls.push('setCenterFrequencyHz');
     this.setCenterFrequencyHzCalls.push(hz);
+    this.centerFrequencyHzReadback = Math.round(hz);
+  }
+
+  async getCenterFrequencyHz(uri: string): Promise<number> {
+    this.calls.push('getCenterFrequencyHz');
+    this.getCenterFrequencyHzCalls.push(uri);
+    return this.getCenterFrequencyHzImpl(uri);
   }
 
   async setSampleRateHz(_uri: string, hz: number): Promise<void> {
@@ -84,6 +96,7 @@ class FakeTransport implements NeptuneTransportLike {
 
   async capture(params: CaptureParams): Promise<CaptureResult> {
     this.calls.push('capture');
+    this.captureCalls.push(structuredClone(params));
     return this.captureImpl(params);
   }
 
@@ -602,14 +615,41 @@ describe('NeptuneP210InstrumentDriver pending-connection lease / cleanupPendingC
 });
 
 describe('NeptuneP210InstrumentSession configure()', () => {
-  it('sends every admitted field to the transport (center, rate, bandwidth)', async () => {
+  it('sends every admitted field to the transport and verifies the RX LO readback', async () => {
     const { transport, session } = await connectedSession();
     await session.configure(configureCommand(session.sessionId, {
       centerHz: 2_437_000_000, sampleRateHz: 20_000_000, bandwidthHz: 18_000_000, sampleCount: 8_192,
     }));
     expect(transport.setCenterFrequencyHzCalls).toEqual([2_437_000_000]);
+    expect(transport.getCenterFrequencyHzCalls).toEqual([PHYSICAL_ENDPOINT]);
     expect(transport.setSampleRateHzCalls).toEqual([20_000_000]);
     expect(transport.setRfBandwidthHzCalls).toEqual([18_000_000]);
+  });
+
+  it('accepts only the one-Hz RX LO readback allowance for integer device quantization', async () => {
+    const { transport, session } = await connectedSession();
+    transport.getCenterFrequencyHzImpl = async () => 2_437_000_000 + NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ;
+
+    await expect(session.configure(configureCommand(session.sessionId, { centerHz: 2_437_000_000 })))
+      .resolves.toBeUndefined();
+  });
+
+  it('fails closed when the RX LO readback materially differs from the requested tune', async () => {
+    const { transport, session } = await connectedSession();
+    const firstCenterHz = 2_400_000_000;
+    const rejectedCenterHz = 2_437_000_000;
+    await session.configure(configureCommand(session.sessionId, { centerHz: firstCenterHz }));
+    const rateWritesBeforeRejectedRetune = transport.setSampleRateHzCalls.length;
+    const bandwidthWritesBeforeRejectedRetune = transport.setRfBandwidthHzCalls.length;
+    transport.getCenterFrequencyHzImpl = async () => rejectedCenterHz + NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ + 1;
+
+    await expect(session.configure(configureCommand(session.sessionId, { centerHz: rejectedCenterHz })))
+      .rejects.toThrow(/RX LO readback .* does not match requested 2437000000 Hz/);
+    // The readback must stop this configuration before unrelated receiver
+    // settings are applied, and must revoke the formerly valid A binding.
+    expect(transport.setSampleRateHzCalls).toHaveLength(rateWritesBeforeRejectedRetune);
+    expect(transport.setRfBandwidthHzCalls).toHaveLength(bandwidthWritesBeforeRejectedRetune);
+    await expect(session.acquire()).rejects.toThrow(/not configured/);
   });
 
   it('rejects a sample format other than ci16le explicitly, never substituting it silently', async () => {
@@ -656,6 +696,23 @@ describe('NeptuneP210InstrumentSession configure()', () => {
     await expect(session.configure(configureCommand(session.sessionId, { sampleRateHz: 5_000_000, bandwidthHz: 4_000_000 })))
       .rejects.toThrow(/device rejected sample rate/);
     await expect(session.acquire()).rejects.toThrow(/not configured/);
+  });
+
+  it('propagates sequential RX retunes into both capture requests and measurements', async () => {
+    const { transport, session } = await connectedSession();
+    const firstCenterHz = 2_400_000_000;
+    const secondCenterHz = 2_437_000_000;
+
+    await session.configure(configureCommand(session.sessionId, { centerHz: firstCenterHz }));
+    const first = await session.acquire();
+    await session.configure(configureCommand(session.sessionId, { centerHz: secondCenterHz }));
+    const second = await session.acquire();
+    if (first.kind !== 'complex-iq' || second.kind !== 'complex-iq') throw new Error('unreachable');
+
+    expect(transport.setCenterFrequencyHzCalls).toEqual([firstCenterHz, secondCenterHz]);
+    expect(transport.getCenterFrequencyHzCalls).toEqual([PHYSICAL_ENDPOINT, PHYSICAL_ENDPOINT]);
+    expect(transport.captureCalls.map((params) => params.centerFrequencyHz)).toEqual([firstCenterHz, secondCenterHz]);
+    expect([first.centerHz, second.centerHz]).toEqual([firstCenterHz, secondCenterHz]);
   });
 });
 

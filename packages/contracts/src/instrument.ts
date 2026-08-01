@@ -6,6 +6,7 @@ import {
 } from './firmware-provenance.js';
 
 export const INSTRUMENT_CONTRACT_VERSION = 1 as const;
+export const SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION = 3 as const;
 export const MAX_COMPLEX_IQ_BYTES_V1 = 64 * 1024 * 1024;
 export const MAX_COMPLEX_IQ_SAMPLES_V1 = MAX_COMPLEX_IQ_BYTES_V1 / 8;
 export const MAX_COMPLEX_IQ_SAMPLE_FORMATS_V1 = 4;
@@ -885,7 +886,7 @@ export const signalLabIqProfileCapabilitySchema = z.object({
    * Null for rate-flexible generators, which have no native artifact.
    */
   nativeMinimumCaptureBandwidthHz: sampleRateHzSchema.nullable(),
-  replay: z.enum(['continuous', 'cyclic', 'one-shot']),
+  replay: z.enum(['continuous', 'cyclic', 'one-shot', 'unbounded']),
   /** Native-domain period used for modular FIR support and exact replay. */
   nativePeriodSamples: z.number().int().positive().max(MAX_COMPLEX_IQ_SAMPLES_V1).optional(),
   /** Native-domain bound; output-domain limits scale with the requested rate. */
@@ -988,7 +989,7 @@ export const signalLabChannelStateSchema = z.object({
   noiseFloorDbm: z.number().finite().min(-150).max(-30),
   seed: z.number().int().min(1).max(0xffff_ffff),
   fadingRateHz: z.number().finite().min(0.1).max(100),
-  /** Explicit v2 complex-I/Q receiver preset, including the clean state. */
+  /** Explicit v3 complex-I/Q receiver preset, including the clean state. */
   receiverImpairment: signalLabReceiverImpairmentPresetSchema,
 }).strict();
 export type SignalLabChannelState = z.infer<typeof signalLabChannelStateSchema>;
@@ -1026,7 +1027,7 @@ export const signalLabProfileSelectionCapabilitySchema = z.object({
     context.addIssue({
       code: 'custom',
       path: ['iqProfiles'],
-      message: 'Measurement-bridge v2 requires exactly one I/Q transport for every governed catalog profile',
+      message: 'Measurement-bridge v3 requires exactly one I/Q transport for every governed catalog profile',
     });
   }
 });
@@ -1105,7 +1106,7 @@ export function instrumentCapabilitySourceBindingIssues(
       if (!advertisesIq) {
         issues.push({
           path: ['features', 0, 'iqProfiles'],
-          message: 'SignalLab v2 must advertise complex-I/Q acquisition with its per-profile transports',
+          message: 'SignalLab v3 must advertise complex-I/Q acquisition with its per-profile transports',
         });
       }
       if (iqCapability?.kind === 'complex-iq' && profileFeature.iqProfiles) {
@@ -1383,7 +1384,7 @@ export const signalLabInstrumentSessionProvenanceSchema = z.object({
   verifiedAt: instrumentTimestampSchema,
   producerConfigurationEpoch: instrumentOpaqueIdSchema,
   contractId: z.literal('tinysa-signal-lab-atomizer-measurement'),
-  contractVersion: z.literal(2),
+  contractVersion: z.literal(SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION),
   contractSha256: z.string().regex(/^[a-f0-9]{64}$/),
   catalogSha256: z.string().regex(/^[a-f0-9]{64}$/),
   generatorContractBindingSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -2094,7 +2095,7 @@ export const signalLabIqTransformReceiptSchema = z.object({
     context.addIssue({
       code: 'custom',
       path: ['sourceArtifactSha256'],
-      message: 'Continuous generated sources do not identify a canonical artifact',
+      message: 'Continuous and unbounded generated sources do not identify a canonical artifact',
     });
   }
   if (receipt.sourceBoundaryPolicy !== 'continuous-session-origin-zero-extended'
@@ -2277,7 +2278,7 @@ export const complexIqMeasurementSchema = z.object({
   channelApplication: z.enum(['not-applied', 'receiver-impairment-preset']).optional(),
   /**
    * Neptune P210-only AD9361 front-end evidence. Parallel to, and never
-   * combined with, the SignalLab v2 semantic block above: omitted by v1,
+   * combined with, the SignalLab v3 semantic block above: omitted by v1,
    * SignalLab, and every driver other than the P210/twin. The AD9361 RX ADC
    * packs 12 significant bits into a 16-bit sample slot with a fixed
    * full-scale code of 2048. There is no generic power-unit field on
@@ -2327,7 +2328,7 @@ export const complexIqMeasurementSchema = z.object({
     context.addIssue({
       code: 'custom',
       path: ['adcFullScaleCode'],
-      message: 'Neptune P210 ADC evidence must not be combined with SignalLab v2 I/Q semantics',
+      message: 'Neptune P210 ADC evidence must not be combined with SignalLab v3 I/Q semantics',
     });
   }
   if (neptuneAdcEvidenceCount !== 0 && neptuneAdcEvidenceCount !== neptuneAdcEvidenceKeys.length) {
@@ -2341,7 +2342,7 @@ export const complexIqMeasurementSchema = z.object({
     context.addIssue({
       code: 'custom',
       path: ['payloadKind'],
-      message: 'SignalLab v2 I/Q semantics must be present atomically',
+      message: 'SignalLab v3 I/Q semantics must be present atomically',
     });
     return;
   }
@@ -2644,7 +2645,7 @@ export const instrumentSessionSnapshotSchema = z.object({
             context.addIssue({
               code: 'custom',
               path: ['capabilities', 'features', 0, 'iqProfiles'],
-              message: 'Measurement-bridge v2 requires per-profile I/Q transports',
+              message: 'Measurement-bridge v3 requires per-profile I/Q transports',
             });
           }
           for (const [profileIndex, profile] of feature.profiles.entries()) {
@@ -2652,7 +2653,7 @@ export const instrumentSessionSnapshotSchema = z.object({
               context.addIssue({
                 code: 'custom',
                 path: ['capabilities', 'features', 0, 'profiles', profileIndex],
-                message: 'Measurement-bridge v2 requires complete governed waveform descriptors',
+                message: 'Measurement-bridge v3 requires complete governed waveform descriptors',
               });
             }
           }

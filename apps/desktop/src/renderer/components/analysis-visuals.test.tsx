@@ -151,7 +151,9 @@ describe('analysis visual contracts', () => {
       onConfiguration={onConfiguration}
     />);
 
-    fireEvent.click(within(view.container).getByRole('button', { name: 'Fit channel windows to strongest response in current sweep' }));
+    expect(within(view.container).getByLabelText('Edit Analysis center')).toBeTruthy();
+    expect(within(view.container).getByText(/Analysis center positions measurement windows only; it does not retune the receiver/i)).toBeTruthy();
+    fireEvent.click(within(view.container).getByRole('button', { name: 'Fit analysis windows to strongest signal in current sweep' }));
 
     expect(onConfiguration).toHaveBeenCalledOnce();
     expect(onConfiguration).toHaveBeenCalledWith(expect.objectContaining({ centerHz: expect.any(Number), mainBandwidthHz: expect.any(Number) }));

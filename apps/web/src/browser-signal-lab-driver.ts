@@ -41,7 +41,10 @@ function createSignalLabWorker(): SignalLabWorkerPort {
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: unknown) => void;
+  readonly timeout: ReturnType<typeof setTimeout>;
 }
+
+export const BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS = 15_000;
 
 export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
   readonly driverId = BROWSER_SIGNAL_LAB_DRIVER_ID;
@@ -55,7 +58,6 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
 
   constructor(workerFactory: SignalLabWorkerFactory = createSignalLabWorker) {
     this.#workerFactory = workerFactory;
-    this.#startWorker();
   }
 
   async discover(): Promise<InstrumentDriverDiscoveryResult> {
@@ -101,7 +103,7 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
 
   async disconnect(session: BrowserSignalLabWorkerSession): Promise<void> {
     if (this.#session !== session) return;
-    if (this.#acknowledgeTerminatedWorker()) {
+    if (this.#acknowledgeTerminatedWorker(true)) {
       this.#session = undefined;
       return;
     }
@@ -111,7 +113,7 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
       // If the Worker died while processing disconnect, termination itself
       // released the browser-side resource owner. Preserve ordinary remote
       // disconnect failures, but make this terminal transport case idempotent.
-      if (!this.#acknowledgeTerminatedWorker()) throw value;
+      if (!this.#acknowledgeTerminatedWorker(true)) throw value;
     }
     if (this.#session === session) this.#session = undefined;
   }
@@ -123,12 +125,25 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
     catch (value) { return Promise.reject(value); }
     const requestId = this.#nextRequestId++;
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(requestId, { resolve: (value) => resolve(value as T), reject });
+      const timeout = globalThis.setTimeout(() => {
+        if (!this.#pending.has(requestId) || this.#worker !== worker) return;
+        this.#fail(
+          new Error(
+            `SignalLab worker did not respond to ${method} within ${BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS / 1_000} seconds`,
+          ),
+        );
+      }, BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS);
+      this.#pending.set(requestId, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout,
+      });
       try {
         worker.postMessage({ kind: 'request', requestId, method, ...(payload === undefined ? {} : { payload }) });
       } catch (value) {
-        this.#pending.delete(requestId);
-        reject(value);
+        // Keep this request in the pending map so #fail rejects its promise
+        // together with every other request owned by the poisoned worker.
+        this.#fail(value instanceof Error ? value : new Error(String(value)));
       }
     });
   }
@@ -150,8 +165,11 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
     return worker;
   }
 
-  #acknowledgeTerminatedWorker(): boolean {
+  #acknowledgeTerminatedWorker(
+    permitOwnedSessionRelease = false,
+  ): boolean {
     if (this.#worker) return false;
+    if (this.#session && !permitOwnedSessionRelease) return false;
     this.#fatalError = undefined;
     return true;
   }
@@ -164,6 +182,7 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
     const pending = this.#pending.get(message.requestId);
     if (!pending) return;
     this.#pending.delete(message.requestId);
+    globalThis.clearTimeout(pending.timeout);
     if (message.ok) pending.resolve(message.result);
     else {
       const error = new Error(message.error.message);
@@ -183,7 +202,10 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
       worker.onmessageerror = null;
       worker.terminate();
     }
-    for (const pending of this.#pending.values()) pending.reject(error);
+    for (const pending of this.#pending.values()) {
+      globalThis.clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
     this.#pending.clear();
     this.#session?.acceptEvent({
       type: 'error',

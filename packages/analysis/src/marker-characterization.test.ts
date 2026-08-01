@@ -266,7 +266,9 @@ describe('canonical SignalLab marker-local stress matrix', () => {
     { name: 'Wi-Fi HR-DSSS', profile: 'wifi-hr-dsss-11m', allowedWidths: ['resolved-wideband'], expectedAvailabilityCount: 16, expectedAvailabilityRate: 1 },
     { name: 'Wi-Fi OFDM', profile: 'wifi-ofdm-20m', allowedWidths: ['resolved-wideband'], expectedAvailabilityCount: 16, expectedAvailabilityRate: 1 },
     { name: 'Bluetooth Classic local hop', profile: 'bluetooth-classic-connected', allowedWidths: ['resolution-limited-narrow', 'resolved-wideband'], expectedAvailabilityCount: 12, expectedAvailabilityRate: 0.75 },
+    { name: 'Bluetooth Classic long-dwell local hop', profile: 'bluetooth-classic-connected-longdwell', allowedWidths: ['resolution-limited-narrow', 'resolved-wideband'], expectedAvailabilityCount: 12, expectedAvailabilityRate: 0.75 },
     { name: 'Bluetooth LE local advertisement', profile: 'bluetooth-le-advertising', allowedWidths: ['resolution-limited-narrow', 'resolved-wideband'], expectedAvailabilityCount: 2, expectedAvailabilityRate: 0.125 },
+    { name: 'Bluetooth LE long-dwell local advertisement', profile: 'bluetooth-le-advertising-longdwell', allowedWidths: ['resolution-limited-narrow', 'resolved-wideband'], expectedAvailabilityCount: 2, expectedAvailabilityRate: 0.125 },
   ] satisfies ReadonlyArray<{
     name: string;
     profile: SynthesizedSignalProfile;
@@ -275,8 +277,8 @@ describe('canonical SignalLab marker-local stress matrix', () => {
     expectedAvailabilityRate: number;
   }>;
 
-  it('covers exactly the twelve canonized replay profiles from the shared source map', () => {
-    expect(Object.keys(CANONIZED_REPLAY_PROFILE_SCENARIOS)).toHaveLength(12);
+  it('covers exactly the fourteen canonized replay profiles from the shared source map', () => {
+    expect(Object.keys(CANONIZED_REPLAY_PROFILE_SCENARIOS)).toHaveLength(14);
     expect(cases.map(({ profile }) => profile).sort())
       .toEqual(Object.keys(CANONIZED_REPLAY_PROFILE_SCENARIOS).sort());
   });
@@ -322,7 +324,7 @@ describe('canonical SignalLab marker-local stress matrix', () => {
   it('exercises all sixteen production-resolution looks for every non-canonized selectable profile', () => {
     const canonized = new Set(Object.keys(CANONIZED_REPLAY_PROFILE_SCENARIOS));
     const nonCanonized = SYNTHESIZED_SIGNAL_PROFILES.filter((profile) => !canonized.has(profile));
-    expect(SYNTHESIZED_SIGNAL_PROFILES).toHaveLength(42);
+    expect(SYNTHESIZED_SIGNAL_PROFILES).toHaveLength(44);
     expect(nonCanonized).toHaveLength(30);
 
     for (const profile of nonCanonized) {

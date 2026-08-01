@@ -1,7 +1,9 @@
-import { accessSync, constants as fsConstants } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { accessSync, constants as fsConstants, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter as pathDelimiter, join } from 'node:path';
+import { delimiter as pathDelimiter, dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
 
 import {
   deriveSpectrumFromComplexIq,
@@ -12,7 +14,27 @@ import {
 } from '@tinysa/analysis';
 import { sweepExportSweepSchema } from '@tinysa/contracts';
 import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
-import { createNeptuneIioTransport, NeptuneP210InstrumentDriver } from '@tinysa/neptune-p210';
+import {
+  createNeptuneIioTransport,
+  NEPTUNE_IIO_NAMES,
+  NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ,
+  NeptuneP210InstrumentDriver,
+} from '@tinysa/neptune-p210';
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const trioContract = JSON.parse(readFileSync(
+  join(root, 'contracts', 'trio-composition-v7.json'),
+  'utf8',
+));
+const neptuneEdge = trioContract.edges?.find(
+  (edge) => edge.producer === 'neptune-p210' && edge.consumer === 'atomizer',
+);
+if (trioContract.contractVersion !== 7
+  || trioContract.parties?.atomizer?.agentSurfaceVersion !== 11
+  || neptuneEdge?.status !== 'active'
+  || neptuneEdge.transport !== 'libiio-network-through-neptune-p210-driver') {
+  throw new Error('Neptune smoke requires the active truthful trio composition v7 edge');
+}
 
 const DEFAULT_ENDPOINT = 'ip:10.0.0.250';
 const CAPTURE_CONFIGURATION = Object.freeze({
@@ -23,6 +45,10 @@ const CAPTURE_CONFIGURATION = Object.freeze({
   sampleCount: 4_096,
   sampleFormat: 'ci16le',
 });
+const RETUNE_CONFIGURATION = Object.freeze({
+  ...CAPTURE_CONFIGURATION,
+  centerHz: 100_000_000,
+});
 const STAGE_TIMEOUT_MS = Object.freeze({
   manualEndpoint: 15_000,
   discovery: 20_000,
@@ -32,6 +58,10 @@ const STAGE_TIMEOUT_MS = Object.freeze({
   deriveSpectrum: 10_000,
   acquireSecond: 15_000,
   deriveSecondSpectrum: 10_000,
+  configureRetune: 25_000,
+  readbackRxLo: 10_000,
+  acquireRetune: 15_000,
+  deriveRetuneSpectrum: 10_000,
   disconnect: 15_000,
 });
 
@@ -62,11 +92,16 @@ const report = {
   execution: 'physical-receive-only',
   endpointBootstrap: 'manual-driver-api-with-ephemeral-recent-device-store',
   environmentEndpointRequired: false,
+  trioComposition: {
+    contractVersion: trioContract.contractVersion,
+    neptuneEdge: neptuneEdge.status,
+  },
   configuration: CAPTURE_CONFIGURATION,
   timingsMs: timings,
 };
 
 let manager;
+let directReadbackTransport;
 let primaryError;
 let disconnectError;
 
@@ -80,6 +115,13 @@ try {
     iioReaddev: resolveExecutable('iio_readdev'),
   };
   report.libiioTools = toolPaths;
+  // This is intentionally a separate concrete `NeptuneIioTransport` from
+  // the manager's private session transport. Its direct `iio_attr` RX-LO
+  // readbacks are independent device evidence, not driver metadata.
+  directReadbackTransport = createNeptuneIioTransport({
+    iioAttrPath: toolPaths.iioAttr,
+    iioReaddevPath: toolPaths.iioReaddev,
+  });
 
   const recentDevicesStore = new EphemeralRecentDeviceStore();
   const driver = new NeptuneP210InstrumentDriver({
@@ -356,6 +398,129 @@ try {
     })),
   };
 
+  // Preserve the existing 99 MHz detector/channel proof above, then prove a
+  // distinct manager reconfiguration really reaches the physical RX LO and
+  // yields a separately-derived I/Q spectrum at 100 MHz.
+  const rxLoBeforeRetuneHz = await timed(
+    timings,
+    'readback99MHzBeforeRetune',
+    STAGE_TIMEOUT_MS.readbackRxLo,
+    () => readRxLo(directReadbackTransport, endpoint),
+  );
+  requireRxLoReadback(rxLoBeforeRetuneHz.numeric, CAPTURE_CONFIGURATION.centerHz, 'direct RX LO before 100 MHz retune');
+
+  const admittedRetune = await timed(
+    timings,
+    'configureRetune',
+    STAGE_TIMEOUT_MS.configureRetune,
+    () => manager.configure(RETUNE_CONFIGURATION),
+  );
+  requireConfigurationMatch(admittedRetune.configuration, RETUNE_CONFIGURATION, 'manager-admitted 100 MHz configuration');
+  const retunedSnapshot = manager.snapshot();
+  if (!retunedSnapshot?.configuration) throw new Error('Manager snapshot omitted the admitted 100 MHz configuration');
+  requireConfigurationMatch(retunedSnapshot.configuration.configuration, RETUNE_CONFIGURATION, '100 MHz session configuration snapshot');
+
+  const rxLoBeforeRetuneCaptureHz = await timed(
+    timings,
+    'readback100MHzBeforeCapture',
+    STAGE_TIMEOUT_MS.readbackRxLo,
+    () => readRxLo(directReadbackTransport, endpoint),
+  );
+  requireRxLoReadback(rxLoBeforeRetuneCaptureHz.numeric, RETUNE_CONFIGURATION.centerHz, 'direct RX LO before 100 MHz capture');
+
+  const retunedMeasurement = await timed(
+    timings,
+    'acquireRetune',
+    STAGE_TIMEOUT_MS.acquireRetune,
+    () => manager.acquire(),
+  );
+  requireComplexCaptureGeometry(retunedMeasurement, RETUNE_CONFIGURATION);
+  if (retunedMeasurement.sessionId !== session.sessionId) {
+    throw new Error(`100 MHz measurement session ${retunedMeasurement.sessionId} does not match active session ${session.sessionId}`);
+  }
+  if (retunedMeasurement.configurationRevision !== admittedRetune.configurationRevision) {
+    throw new Error(
+      `100 MHz measurement configuration revision ${retunedMeasurement.configurationRevision} does not match admitted ${admittedRetune.configurationRevision}`,
+    );
+  }
+  if (retunedMeasurement.sequence <= secondMeasurement.sequence) {
+    throw new Error(`100 MHz measurement sequence ${retunedMeasurement.sequence} did not advance after 99 MHz sequence ${secondMeasurement.sequence}`);
+  }
+
+  const rxLoAfterRetuneCaptureHz = await timed(
+    timings,
+    'readback100MHzAfterCapture',
+    STAGE_TIMEOUT_MS.readbackRxLo,
+    () => readRxLo(directReadbackTransport, endpoint),
+  );
+  requireRxLoReadback(rxLoAfterRetuneCaptureHz.numeric, RETUNE_CONFIGURATION.centerHz, 'direct RX LO after 100 MHz capture');
+  if (rxLoBeforeRetuneHz.numeric === rxLoAfterRetuneCaptureHz.numeric) {
+    throw new Error(`Direct RX LO did not change across the requested 99 MHz -> 100 MHz retune (${rxLoAfterRetuneCaptureHz.numeric} Hz)`);
+  }
+
+  const retunedSpectrum = await timed(
+    timings,
+    'deriveRetuneSpectrum',
+    STAGE_TIMEOUT_MS.deriveRetuneSpectrum,
+    () => Promise.resolve(deriveSpectrumFromComplexIq({
+      samples: retunedMeasurement.samples,
+      sampleCount: retunedMeasurement.sampleCount,
+      sampleFormat: retunedMeasurement.sampleFormat,
+      centerHz: retunedMeasurement.centerHz,
+      sampleRateHz: retunedMeasurement.sampleRateHz,
+      adcFullScaleCode: retunedMeasurement.adcFullScaleCode,
+    })),
+  );
+  const initialIqSha256 = sha256Hex(measurement.samples);
+  const retunedIqSha256 = sha256Hex(retunedMeasurement.samples);
+  const initialSpectrumPowerSha256 = spectrumPowerSha256(spectrum);
+  const retunedSpectrumPowerSha256 = spectrumPowerSha256(retunedSpectrum);
+  const rawIqIdentical = initialIqSha256 === retunedIqSha256;
+  const spectrumPowerIdentical = initialSpectrumPowerSha256 === retunedSpectrumPowerSha256;
+  const exactCaptureIdentity = rawIqIdentical && spectrumPowerIdentical;
+  report.retune100MHz = {
+    configurationEvidence: {
+      revision: admittedRetune.configurationRevision,
+      configuredAt: admittedRetune.configuredAt,
+      admitted: admittedRetune.configuration,
+      snapshot: retunedSnapshot.configuration.configuration,
+    },
+    directRxLoReadback: {
+      transport: `NeptuneIioTransport.getDeviceAttribute(${NEPTUNE_IIO_NAMES.phyDevice}/${NEPTUNE_IIO_NAMES.loChannel}/${NEPTUNE_IIO_NAMES.attributes.centerFrequencyHz})`,
+      toleranceHz: NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ,
+      beforeRetune: rxLoBeforeRetuneHz,
+      beforeCapture: rxLoBeforeRetuneCaptureHz,
+      afterCapture: rxLoAfterRetuneCaptureHz,
+    },
+    capture: summarizeCapture(retunedMeasurement),
+    spectrum: summarizeSpectrum(
+      retunedSpectrum,
+      retunedMeasurement.powerReference,
+      retunedMeasurement.centerHz,
+    ),
+    comparison: {
+      requestedDeltaHz: RETUNE_CONFIGURATION.centerHz - CAPTURE_CONFIGURATION.centerHz,
+      observedDeltaHz: rxLoAfterRetuneCaptureHz.numeric - rxLoBeforeRetuneHz.numeric,
+      initialIqSha256,
+      retunedIqSha256,
+      initialSpectrumPowerSha256,
+      retunedSpectrumPowerSha256,
+      rawIqIdentical,
+      spectrumPowerIdentical,
+      exactCaptureIdentity,
+    },
+  };
+  // A verified RX-LO change is the hardware-tuning proof. This additional
+  // conservative guard catches the separate regression where Atomizer
+  // republishes the exact same capture at a new center: require BOTH the raw
+  // I/Q and derived power spectrum to differ, rather than treating a changed
+  // digest by itself as RF-content proof.
+  if (exactCaptureIdentity) {
+    throw new Error(
+      '99 MHz and 100 MHz captures have identical raw-I/Q and spectrum-power SHA-256 digests despite verified RX LO readback change',
+    );
+  }
+
   report.status = 'PASS';
 } catch (error) {
   primaryError = error;
@@ -435,6 +600,84 @@ function requireComplexCaptureGeometry(measurement, expected) {
     || measurement.samples.byteLength !== expectedBytes) {
     throw new Error(`Subsequent capture geometry mismatch: complete=${measurement.complete}, samples=${measurement.sampleCount}, bytes=${measurement.samples.byteLength}`);
   }
+}
+
+function requireRxLoReadback(observedHz, expectedHz, label) {
+  const requestedHz = Math.round(expectedHz);
+  if (!Number.isFinite(observedHz)
+    || Math.abs(observedHz - requestedHz) > NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ) {
+    throw new Error(
+      `${label} was ${observedHz} Hz; expected ${requestedHz} Hz within ${NEPTUNE_P210_RX_LO_READBACK_TOLERANCE_HZ} Hz`,
+    );
+  }
+}
+
+async function readRxLo(transport, endpoint) {
+  return transport.getDeviceAttribute(
+    endpoint,
+    NEPTUNE_IIO_NAMES.phyDevice,
+    NEPTUNE_IIO_NAMES.loChannel,
+    NEPTUNE_IIO_NAMES.attributes.centerFrequencyHz,
+  );
+}
+
+function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function summarizeCapture(measurement) {
+  return {
+    measurementId: measurement.measurementId,
+    sequence: measurement.sequence,
+    capturedAt: measurement.capturedAt,
+    elapsedMilliseconds: measurement.elapsedMilliseconds,
+    centerHz: measurement.centerHz,
+    sampleRateHz: measurement.sampleRateHz,
+    bandwidthHz: measurement.bandwidthHz,
+    sampleFormat: measurement.sampleFormat,
+    sampleCount: measurement.sampleCount,
+    bytes: measurement.samples.byteLength,
+    iqSha256: sha256Hex(measurement.samples),
+  };
+}
+
+function summarizeSpectrum(spectrum, powerReference, centerHz) {
+  if (spectrum.frequencyHz.length !== spectrum.fftSize
+    || spectrum.powerDbm.length !== spectrum.fftSize
+    || spectrum.fftSize < 4
+    || !Number.isFinite(spectrum.actualRbwHz)
+    || spectrum.actualRbwHz <= 0) {
+    throw new Error('100 MHz host spectrum projection returned invalid geometry');
+  }
+  let peakIndex = 0;
+  for (let index = 0; index < spectrum.powerDbm.length; index += 1) {
+    const frequencyHz = spectrum.frequencyHz[index];
+    const power = spectrum.powerDbm[index];
+    if (!Number.isFinite(frequencyHz) || !Number.isFinite(power)) {
+      throw new Error(`100 MHz host spectrum projection contains a non-finite value at bin ${index}`);
+    }
+    if (power > spectrum.powerDbm[peakIndex]) peakIndex = index;
+  }
+  return {
+    evidence: '@tinysa/analysis deriveSpectrumFromComplexIq',
+    fftSize: spectrum.fftSize,
+    points: spectrum.frequencyHz.length,
+    startFrequencyHz: spectrum.frequencyHz[0],
+    stopFrequencyHz: spectrum.frequencyHz.at(-1),
+    actualRbwHz: spectrum.actualRbwHz,
+    peakFrequencyHz: spectrum.frequencyHz[peakIndex],
+    peakOffsetHz: spectrum.frequencyHz[peakIndex] - centerHz,
+    peakRelativePowerDbfs: spectrum.powerDbm[peakIndex],
+    powerReference,
+    powerDbfsSha256: spectrumPowerSha256(spectrum),
+  };
+}
+
+function spectrumPowerSha256(spectrum) {
+  const packedPowers = new Float64Array(spectrum.powerDbm);
+  return createHash('sha256')
+    .update(new Uint8Array(packedPowers.buffer, packedPowers.byteOffset, packedPowers.byteLength))
+    .digest('hex');
 }
 
 function projectHostSweep(measurement, spectrum, session) {

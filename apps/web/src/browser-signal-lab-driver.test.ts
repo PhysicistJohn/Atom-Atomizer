@@ -1,7 +1,11 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AtomizerInstrumentEvent, InstrumentCandidate } from '@tinysa/contracts';
-import { BrowserSignalLabWorkerDriver, type SignalLabWorkerPort } from './browser-signal-lab-driver.js';
+import {
+  BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS,
+  BrowserSignalLabWorkerDriver,
+  type SignalLabWorkerPort,
+} from './browser-signal-lab-driver.js';
 import type { SignalLabWorkerMessage, SignalLabWorkerRequest } from './signal-lab-worker-protocol.js';
 import { installSignalLabWorkerEndpoint, type SignalLabWorkerScope } from './signal-lab-worker-runtime.js';
 import { createBrowserInstrumentApi } from './web-bridge.js';
@@ -20,6 +24,8 @@ class LoopbackSignalLabWorker implements SignalLabWorkerPort {
   terminateCalls = 0;
   #terminated = false;
   #failNextMethod: SignalLabWorkerRequest['method'] | undefined;
+  #throwNextMethod: SignalLabWorkerRequest['method'] | undefined;
+  #silenceNextMethod: SignalLabWorkerRequest['method'] | undefined;
   readonly #scope: SignalLabWorkerScope;
 
   constructor() {
@@ -39,9 +45,17 @@ class LoopbackSignalLabWorker implements SignalLabWorkerPort {
 
   postMessage(message: SignalLabWorkerRequest, transfer: readonly Transferable[] = []): void {
     if (this.#terminated) throw new Error('Loopback SignalLab worker is terminated');
+    if (this.#throwNextMethod === message.method) {
+      this.#throwNextMethod = undefined;
+      throw new Error(`SignalLab postMessage failed during ${message.method}`);
+    }
     if (this.#failNextMethod === message.method) {
       this.#failNextMethod = undefined;
       queueMicrotask(() => this.emitError(`SignalLab worker failed during ${message.method}`));
+      return;
+    }
+    if (this.#silenceNextMethod === message.method) {
+      this.#silenceNextMethod = undefined;
       return;
     }
     const delivered = structuredClone(message, { transfer: [...transfer] });
@@ -57,12 +71,38 @@ class LoopbackSignalLabWorker implements SignalLabWorkerPort {
     this.#failNextMethod = method;
   }
 
+  throwNextRequest(method: SignalLabWorkerRequest['method']): void {
+    this.#throwNextMethod = method;
+  }
+
+  silenceNextRequest(method: SignalLabWorkerRequest['method']): void {
+    this.#silenceNextMethod = method;
+  }
+
+  emitMessage(message: SignalLabWorkerMessage): void {
+    this.onmessage?.({ data: message } as MessageEvent<SignalLabWorkerMessage>);
+  }
+
   emitError(message = 'SignalLab worker failed'): void {
     this.onerror?.({ message, preventDefault() {} } as ErrorEvent);
   }
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('BrowserSignalLabWorkerDriver', () => {
+  it('constructs without starting browser transport and creates it lazily on discovery', async () => {
+    const factory = vi.fn(() => new LoopbackSignalLabWorker());
+    const driver = new BrowserSignalLabWorkerDriver(factory);
+
+    expect(factory).not.toHaveBeenCalled();
+    const discovery = await driver.discover();
+    expect(factory).toHaveBeenCalledOnce();
+    expect(discovery.candidates).toHaveLength(1);
+  });
+
   it('refreshes session state and transfers I/Q bytes while manual acquisition emits no duplicate measurement event', async () => {
     const worker = new LoopbackSignalLabWorker();
     const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => worker));
@@ -210,11 +250,15 @@ describe('BrowserSignalLabWorkerDriver', () => {
       (capability) => capability.kind === 'signal-lab-profile-selection',
     );
     if (feature?.kind !== 'signal-lab-profile-selection' || !feature.iqProfiles) {
-      throw new Error('Expected SignalLab v2 profile transports');
+      throw new Error('Expected SignalLab v3 profile transports');
     }
-    const fixed = feature.iqProfiles.filter((profile) => profile.nativeSampleRateHz !== null);
-    expect(fixed).toHaveLength(31);
-    for (const profile of fixed) {
+    const contentBound = feature.iqProfiles.filter(
+      (profile) => profile.nativeSampleRateHz !== null && profile.replay !== 'unbounded',
+    );
+    const unbounded = feature.iqProfiles.filter((profile) => profile.replay === 'unbounded');
+    expect(contentBound).toHaveLength(31);
+    expect(unbounded).toHaveLength(2);
+    for (const profile of contentBound) {
       await api.executeFeature({
         kind: 'signal-lab-profile-selection',
         action: 'select-profile',
@@ -434,7 +478,7 @@ describe('BrowserSignalLabWorkerDriver', () => {
       },
     });
     if (returned.kind !== 'complex-iq' || returned.transformReceipt === undefined) {
-      throw new Error('Expected SignalLab v2 I/Q receipt');
+      throw new Error('Expected SignalLab v3 I/Q receipt');
     }
     expect(returned.transformReceipt.outputStartSourceSampleDenominator).not.toBe('1');
     await api.disconnect();
@@ -524,9 +568,9 @@ describe('BrowserSignalLabWorkerDriver', () => {
     const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => {
       const worker = new LoopbackSignalLabWorker();
       workers.push(worker);
+      if (workers.length === 1) worker.failNextRequest('discover');
       return worker;
     }));
-    workers[0]!.failNextRequest('discover');
 
     const failed = await api.discover();
     expect(failed.candidates).toHaveLength(0);
@@ -539,6 +583,91 @@ describe('BrowserSignalLabWorkerDriver', () => {
     expect(workers).toHaveLength(2);
     expect(recovered.candidates).toHaveLength(1);
     expect(recovered.failures).toHaveLength(0);
+  });
+
+  it('times out a silent sessionless Worker, ignores its late reply, and lazily restarts discovery', async () => {
+    vi.useFakeTimers();
+    const workers: LoopbackSignalLabWorker[] = [];
+    const driver = new BrowserSignalLabWorkerDriver(() => {
+      const worker = new LoopbackSignalLabWorker();
+      workers.push(worker);
+      if (workers.length === 1) worker.silenceNextRequest('discover');
+      return worker;
+    });
+    const first = driver.discover();
+    const firstFailure = expect(first).rejects.toThrow(
+      /SignalLab worker did not respond to discover within 15 seconds/i,
+    );
+
+    await vi.advanceTimersByTimeAsync(
+      BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS - 1,
+    );
+    expect(workers[0]!.terminateCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await firstFailure;
+    expect(workers[0]!.terminateCalls).toBe(1);
+
+    workers[0]!.emitMessage({
+      kind: 'response',
+      requestId: 1,
+      ok: true,
+      result: { candidates: [], failures: [] },
+    });
+    const recovered = await driver.discover();
+    expect(workers).toHaveLength(2);
+    expect(recovered.candidates).toHaveLength(1);
+  });
+
+  it('rejects a synchronously failed postMessage and lazily restarts discovery', async () => {
+    const workers: LoopbackSignalLabWorker[] = [];
+    const driver = new BrowserSignalLabWorkerDriver(() => {
+      const worker = new LoopbackSignalLabWorker();
+      workers.push(worker);
+      if (workers.length === 1) worker.throwNextRequest('discover');
+      return worker;
+    });
+
+    await expect(driver.discover()).rejects.toThrow(
+      /SignalLab postMessage failed during discover/i,
+    );
+    expect(workers[0]!.terminateCalls).toBe(1);
+
+    const recovered = await driver.discover();
+    expect(workers).toHaveLength(2);
+    expect(recovered.candidates).toHaveLength(1);
+  });
+
+  it('does not restart a timed-out connected Worker until the dead session is safely disconnected', async () => {
+    vi.useFakeTimers();
+    const workers: LoopbackSignalLabWorker[] = [];
+    const driver = new BrowserSignalLabWorkerDriver(() => {
+      const worker = new LoopbackSignalLabWorker();
+      workers.push(worker);
+      return worker;
+    });
+    const api = createBrowserInstrumentApi(driver);
+    const candidate = (await api.discover()).candidates[0]!;
+    const session = await driver.connect(candidate);
+    workers[0]!.silenceNextRequest('acquire');
+    const acquire = session.acquire();
+    const acquireFailure = expect(acquire).rejects.toThrow(
+      /SignalLab worker did not respond to acquire within 15 seconds/i,
+    );
+
+    await vi.advanceTimersByTimeAsync(
+      BROWSER_SIGNAL_LAB_WORKER_RESPONSE_TIMEOUT_MILLISECONDS,
+    );
+    await acquireFailure;
+    await expect(driver.discover()).rejects.toThrow(
+      /SignalLab worker did not respond to acquire within 15 seconds/i,
+    );
+    expect(workers).toHaveLength(1);
+
+    await session.disconnect();
+    expect(workers).toHaveLength(1);
+    const recovered = await driver.discover();
+    expect(workers).toHaveLength(2);
+    expect(recovered.candidates).toHaveLength(1);
   });
 
   it('tears down a connected session locally after Worker onerror and reconnects with a fresh Worker', async () => {

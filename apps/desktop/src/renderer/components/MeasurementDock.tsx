@@ -27,6 +27,13 @@ export interface MeasurementDockProps {
   panel?: MeasurementDockPanel;
   initialPanel?: MeasurementDockPanel;
   onPanel?(panel: MeasurementDockPanel): void;
+  /**
+   * The spectrum workspace already exposes direct Markers, Traces, and
+   * Display buttons in its utility bar. Hide this duplicate selector when the
+   * dock is used inside that controlled drawer; standalone consumers retain
+   * the normal local tab navigation.
+   */
+  showTabs?: boolean;
   traces: TraceBankConfiguration;
   frames: readonly TraceFrame[];
   firmwareFrames: readonly FirmwareTraceFrame[];
@@ -52,6 +59,7 @@ export interface MeasurementDockProps {
 export function MeasurementDock(props: MeasurementDockProps) {
   const [uncontrolledPanel, setUncontrolledPanel] = useState<MeasurementDockPanel>(props.initialPanel ?? 'markers');
   const panel = props.panel ?? uncontrolledPanel;
+  const showTabs = props.showTabs ?? true;
   const selectPanel = (next: MeasurementDockPanel) => {
     if (props.panel === undefined) setUncontrolledPanel(next);
     props.onPanel?.(next);
@@ -67,11 +75,11 @@ export function MeasurementDock(props: MeasurementDockProps) {
   const visibleTraces = props.traces.filter((trace) => trace.mode !== 'blank');
 
   return <section className="measurement-dock" aria-label="Markers, traces, and display controls">
-    <nav className="measurement-tabs" aria-label="Measurement controls">
+    {showTabs && <nav className="measurement-tabs" aria-label="Measurement controls">
       <button type="button" aria-pressed={panel === 'markers'} className={panel === 'markers' ? 'active' : ''} onClick={() => selectPanel('markers')} data-agent-control="measurement.markers"><Crosshair size={15}/><span>Markers</span><em>{enabledMarkers.length}/8</em></button>
       <button type="button" aria-pressed={panel === 'traces'} className={panel === 'traces' ? 'active' : ''} onClick={() => selectPanel('traces')} data-agent-control="measurement.traces"><BarChart3 size={15}/><span>Traces</span><em>{visibleTraces.length}/4</em></button>
       <button type="button" aria-pressed={panel === 'display'} className={panel === 'display' ? 'active' : ''} onClick={() => selectPanel('display')} data-agent-control="measurement.display"><Gauge size={15}/><span>Display</span><em>{props.display.decibelsPerDivision} dB/div</em></button>
-    </nav>
+    </nav>}
 
     {panel === 'markers' && <div className="measurement-panel marker-panel">
       <div className="marker-selector" aria-label="Active marker">{props.markers.map((marker) => {

@@ -32,6 +32,7 @@ import {
   type ComplexIqConfiguration,
   type ComplexIqMeasurement,
 } from '../complex-iq.js';
+import { formatFrequency } from '../format.js';
 import { resolveVisibleClassificationTargetSelection } from '../classification-target-selection.js';
 import { resolveRuntimeAdmittedCaptureTarget } from './classification-helpers.js';
 import { acquisitionModeForSession, HISTORY_LIMIT, selectIqCapability } from '../store.js';
@@ -722,6 +723,7 @@ export class AcquisitionController {
   stageIqConfiguration(input: ComplexIqConfiguration): void {
     const k = this.k;
     try {
+      const previous = k.state.iqConfiguration;
       const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'complex-iq');
       const signalLab = k.state.instrument.session?.capabilities.features.find(
         (candidate) => candidate.kind === 'signal-lab-profile-selection',
@@ -734,9 +736,26 @@ export class AcquisitionController {
           ? reconcileSignalLabTransportComplexIqConfiguration(capability, profile, input)
           : reconcileComplexIqConfiguration(capability, input)
         : complexIqConfigurationSchema.parse(input);
-      if (sameComplexIqConfiguration(next, k.state.iqConfiguration)) return;
+      if (sameComplexIqConfiguration(next, previous)) return;
+      const tuneChanged = next.centerHz !== previous.centerHz;
       k.iqConfigurationRevision.current++;
-      k.set({ iqConfiguration: next, error: undefined });
+      // The visible Spectrum, Waterfall, Channel, detection, and I/Q preview
+      // are all derived from the prior capture geometry. Leaving them on
+      // screen after a receiver retune made the new staged tune look like it
+      // had no effect. Clear that evidence before the next Single/Run and
+      // center fresh channel-analysis windows on the newly staged receiver
+      // tune. Operators can still deliberately move the analysis window once
+      // a new trace exists.
+      k.invalidateAcquiredEvidence();
+      k.set({
+        iqConfiguration: next,
+        iqCapture: undefined,
+        ...(tuneChanged
+          ? { channelConfiguration: { ...k.state.channelConfiguration, centerHz: next.centerHz } }
+          : {}),
+        error: undefined,
+        notice: `${tuneChanged ? 'Receiver tune' : 'I/Q capture settings'} staged${tuneChanged ? ` at ${formatFrequency(next.centerHz)}` : ''}. Select Single or Run to acquire a fresh trace.`,
+      });
     } catch (value) {
       k.set({ error: `I/Q configuration failed: ${errorMessage(value)}` });
     }

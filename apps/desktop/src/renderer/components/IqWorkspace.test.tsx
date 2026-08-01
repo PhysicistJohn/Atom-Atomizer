@@ -2,7 +2,15 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstrumentAcquisitionCapability, InstrumentMeasurement } from '@tinysa/contracts';
-import { DEFAULT_COMPLEX_IQ_CONFIGURATION, previewComplexIq } from '../complex-iq.js';
+import {
+  DEFAULT_COMPLEX_IQ_CONFIGURATION,
+  previewComplexIq,
+  type ComplexIqPreview,
+} from '../complex-iq.js';
+import {
+  allRecordedCoordinates,
+  installRecordingCanvas,
+} from './canvas-test-recorder.js';
 import { IqWorkspace, type IqCaptureMeta } from './IqWorkspace.js';
 
 const capability: Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }> = {
@@ -61,7 +69,10 @@ function captureProps(): { preview: ReturnType<typeof previewComplexIq>; capture
   };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('complex I/Q workspace', () => {
   it('discloses an exact non-round GHz center to both the operator and accessibility tree', () => {
@@ -72,7 +83,7 @@ describe('complex I/Q workspace', () => {
       onChange={vi.fn()}
     />);
 
-    expect(screen.getByLabelText('Edit Center frequency').textContent).toContain('3.50001 GHz');
+    expect(screen.getByLabelText('Edit Receiver tune').textContent).toContain('3.50001 GHz');
   });
 
   it('renders bounded time/constellation previews and delegates acquisition to the sidebar', () => {
@@ -90,7 +101,7 @@ describe('complex I/Q workspace', () => {
     expect(screen.getByText(/analytic complex baseband/i)).toBeTruthy();
     expect(screen.getAllByText('0.00 dBFS')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
-    expect(screen.getByText(/Use sidebar Single/i)).toBeTruthy();
+    expect(screen.getByText(/Receiver tune applies on the next sidebar Single or Run/i)).toBeTruthy();
     const workspace = screen.getByRole('region', { name: 'Complex I/Q workspace' });
     expect(workspace.getAttribute('aria-description'))
       .toBe('captureId=iq-capture-1; sequence=1; centerHz=100000000');
@@ -151,6 +162,32 @@ describe('complex I/Q workspace', () => {
     expect(screen.getByText(/at least 4,096 complex samples.*Increase Complex samples/i)).toBeTruthy();
   });
 
+  it('offers an explicit analysis-capable sample count without rewriting a deliberate short capture', () => {
+    const onChange = vi.fn();
+    render(<IqWorkspace
+      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleCount: 2_048 }}
+      capability={capability}
+      busy={false}
+      onChange={onChange}
+    />);
+
+    expect(screen.getByText(/Modulation detection needs at least 4,096 complex samples/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Use 4,096 samples' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sampleCount: 4_096 }));
+  });
+
+  it('explains when a narrow physical passband cannot fill the plotted sample-rate span', () => {
+    render(<IqWorkspace
+      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleRateHz: 50_000_000, bandwidthHz: 200_000 }}
+      capability={{ ...capability, bandwidthMode: 'independent', sampleRateHz: { min: 100_000, max: 56_000_000, step: 1 } }}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+
+    expect(screen.getByText(/Capture bandwidth is .* while the plotted span follows the .* sample rate/i)).toBeTruthy();
+    expect(screen.getByText(/Only the center passband is physically admitted.*FM broadcast/i)).toBeTruthy();
+  });
+
   it('displays output placement separately from canonical profile lineage', () => {
     const props = captureProps();
     render(<IqWorkspace
@@ -199,6 +236,20 @@ describe('complex I/Q workspace', () => {
     />);
     expect(screen.getByText('AD9361 ADC evidence')).toBeTruthy();
     expect(screen.getByText(/12-bit · full scale 2048 · uncalibrated dbfs relative/i)).toBeTruthy();
+  });
+
+  it('distinguishes a staged receiver tune from the latest captured tune', () => {
+    const props = captureProps();
+    render(<IqWorkspace
+      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, centerHz: 101_000_000 }}
+      capability={capability}
+      {...props}
+      busy={false}
+      onChange={vi.fn()}
+    />);
+
+    expect(screen.getByText('Captured tune')).toBeTruthy();
+    expect(screen.getByText(/Receiver tune is staged at 101 MHz/i).textContent).toMatch(/latest capture is still 100 MHz.*Single or Run/i);
   });
 
   it('omits Neptune ADC evidence for captures that never carried it (SignalLab, TinySA)', () => {
@@ -261,4 +312,79 @@ describe('complex I/Q workspace', () => {
     expect(screen.getByText(/No truthful I\/Q generator/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
   });
+
+  it('sustains bounded 4,096-point live updates without replacing canvases or growing the DOM', () => {
+    vi.stubGlobal('requestAnimationFrame', undefined);
+    const recorder = installRecordingCanvas();
+    try {
+      const initial = stressPreview(0);
+      const view = render(<IqWorkspace
+        configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+        capability={capability}
+        preview={initial}
+        captureMeta={stressCaptureMeta(0)}
+        busy={false}
+        onChange={vi.fn()}
+      />);
+      const originalCanvases = [
+        ...view.container.querySelectorAll('canvas.iq-canvas'),
+      ];
+      expect(originalCanvases).toHaveLength(2);
+
+      for (let phase = 1; phase <= 120; phase++) {
+        for (const canvas of originalCanvases) {
+          recorder.contextFor(canvas as HTMLCanvasElement)?.reset();
+        }
+        view.rerender(<IqWorkspace
+          configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
+          capability={capability}
+          preview={stressPreview(phase)}
+          captureMeta={stressCaptureMeta(phase)}
+          busy={false}
+          onChange={vi.fn()}
+        />);
+        const canvases = [...view.container.querySelectorAll('canvas.iq-canvas')];
+        expect(canvases).toEqual(originalCanvases);
+        expect(view.container.querySelectorAll('.iq-workspace')).toHaveLength(1);
+        expect(view.container.querySelectorAll('.iq-chart')).toHaveLength(2);
+        for (const canvas of canvases) {
+          const context = recorder.contextFor(canvas as HTMLCanvasElement);
+          expect(context).toBeDefined();
+          expect(allRecordedCoordinates(context!).every(Number.isFinite)).toBe(
+            true,
+          );
+        }
+      }
+    } finally {
+      recorder.restore();
+    }
+  }, 30_000);
 });
+
+function stressPreview(phase: number): ComplexIqPreview {
+  const points = Array.from({ length: 4_096 }, (_, sampleIndex) => ({
+    sampleIndex,
+    i: Math.sin(sampleIndex * 0.013 + phase * 0.17),
+    q: Math.cos(sampleIndex * 0.017 - phase * 0.11),
+  }));
+  return {
+    points,
+    inspectedSampleCount: points.length,
+    rms: 1,
+    peak: Math.SQRT2,
+    dcI: 0,
+    dcQ: 0,
+  };
+}
+
+function stressCaptureMeta(phase: number): IqCaptureMeta {
+  return {
+    measurementId: `iq-live-${phase}`,
+    sequence: phase + 1,
+    centerHz: 100_000_000,
+    sampleCount: 1_048_576,
+    sampleRateHz: 56_000_000,
+    sampleFormat: 'cf32le',
+    qualification: 'analytic-complex-baseband',
+  };
+}
