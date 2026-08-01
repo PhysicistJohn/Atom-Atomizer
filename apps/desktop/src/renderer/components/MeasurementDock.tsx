@@ -15,7 +15,7 @@ import type {
   TraceFrame,
   TraceId,
 } from '@tinysa/contracts';
-import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
+import { formatFrequency, formatLabel, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import { EditableParameter, SelectParameter, ToggleParameter } from './ParameterRow.js';
 
@@ -218,7 +218,7 @@ function crossingUnavailableReason(reason: 'lower-crossing-not-observed' | 'uppe
 function formatSignedFrequency(value: number): string { return `${value >= 0 ? '+' : '−'}${formatFrequency(Math.abs(value))}`; }
 function traceModeLabel(value: TraceConfiguration['mode']): string {
   if (value === 'blank') return 'Off';
-  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase()).replace('Min ', 'Minimum ').replace('Max ', 'Maximum ');
+  return formatLabel(value).replace('Min ', 'Minimum ').replace('Max ', 'Maximum ');
 }
 function firmwareTraceRole(frame: FirmwareTraceFrame): string {
   const role = frame.role === 'measured' ? 'Measured' : frame.role === 'raw' ? 'Raw' : 'Stored';

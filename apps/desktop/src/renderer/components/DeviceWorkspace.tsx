@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { CheckCircle2, Cpu, Fingerprint, MonitorUp, RefreshCw, TerminalSquare } from 'lucide-react';
 import type { CanonicalInstrumentSurface, InstrumentFeatureCapability, InstrumentScreenFrame, InstrumentSessionSnapshot } from '@tinysa/contracts';
+import { formatLabel } from '../format.js';
 
 export interface InstrumentScreenPoint { x: number; y: number }
 
@@ -86,13 +87,13 @@ function identityPresentation(session: InstrumentSessionSnapshot | undefined, ca
   const provenance = session.provenance;
   return {
     title: session.candidate.displayName,
-    subtitle: `${executionLabel(provenance.execution)} · ${formatProvenanceLabel(provenance.transport)}`,
-    qualification: formatProvenanceLabel(provenance.qualification).toUpperCase(),
+    subtitle: `${executionLabel(provenance.execution)} · ${formatLabel(provenance.transport)}`,
+    qualification: formatLabel(provenance.qualification).toUpperCase(),
     facts: [
       { icon: <Fingerprint/>, label: 'Session', value: session.sessionId, detail: `Verified ${new Date(provenance.verifiedAt).toLocaleString()}` },
       { icon: <TerminalSquare/>, label: 'Execution', value: executionLabel(provenance.execution) },
-      { icon: <TerminalSquare/>, label: 'Transport', value: formatProvenanceLabel(provenance.transport) },
-      { icon: <CheckCircle2/>, label: 'Qualification', value: formatProvenanceLabel(provenance.qualification) },
+      { icon: <TerminalSquare/>, label: 'Transport', value: formatLabel(provenance.transport) },
+      { icon: <CheckCircle2/>, label: 'Qualification', value: formatLabel(provenance.qualification) },
     ],
   };
 }
@@ -126,10 +127,6 @@ function featureLabel(feature: InstrumentFeatureCapability): string {
 
 function executionLabel(execution: InstrumentSessionSnapshot['provenance']['execution']): string {
   return execution === 'physical' ? 'Physical instrument' : 'Virtual instrument';
-}
-
-function formatProvenanceLabel(value: string): string {
-  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function Fact({ icon, label, value, detail }: IdentityFact) { return <div className="device-fact"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong>{detail && <em>{detail}</em>}</div></div>; }

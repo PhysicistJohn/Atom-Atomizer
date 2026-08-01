@@ -34,6 +34,10 @@ export function formatPowerDensity(value: number, reference?: SweepPowerReferenc
     ? `${value.toFixed(1)} dBFS/Hz (relative)`
     : `${value.toFixed(1)} dBm/Hz`;
 }
+/** Turns driver-owned machine labels into concise operator-facing labels. */
+export function formatLabel(value: string): string {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
+}
 export function formatSpan(startHz: number, stopHz: number): string { return formatFrequency(stopHz - startHz); }
 export function median(values: readonly number[]): number {
   if (values.length === 0) return Number.NaN;

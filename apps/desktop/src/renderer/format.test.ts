@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { formatExactFrequency, formatFrequency, median, parseFrequency } from './format.js';
+import { formatExactFrequency, formatFrequency, formatLabel, median, parseFrequency } from './format.js';
 
 describe('operator formatting', () => {
   it('formats RF frequencies without false precision', () => {
     expect(formatFrequency(98_000_000)).toBe('98 MHz');
     expect(formatFrequency(7_300_000_000)).toBe('7.3 GHz');
+  });
+  it('formats machine labels without changing their words', () => {
+    expect(formatLabel('libiio-network')).toBe('Libiio Network');
+    expect(formatLabel('maximum-hold')).toBe('Maximum Hold');
   });
   it('discloses every whole-Hz digit when exact tuning must be verifiable', () => {
     expect(formatExactFrequency(3_500_010_000)).toBe('3.50001 GHz');

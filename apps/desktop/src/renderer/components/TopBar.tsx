@@ -1,5 +1,6 @@
 import { Cable, ChevronDown, LoaderCircle } from 'lucide-react';
 import type { AtomizerInstrumentState, InstrumentSessionSnapshot } from '@tinysa/contracts';
+import { formatLabel } from '../format.js';
 import { AtomicMark } from './AtomicMark.js';
 
 export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, onAgent }: {
@@ -73,14 +74,10 @@ function sessionLabels(session: InstrumentSessionSnapshot | undefined): { title:
   if (!session) return { title: 'No instrument', detail: 'Choose an instrument source' };
   return {
     title: session.candidate.displayName,
-    detail: `${executionLabel(session.provenance.execution)} · ${formatProvenanceLabel(session.provenance.transport)}`,
+    detail: `${executionLabel(session.provenance.execution)} · ${formatLabel(session.provenance.transport)}`,
   };
 }
 
 function executionLabel(execution: InstrumentSessionSnapshot['provenance']['execution']): string {
   return execution === 'physical' ? 'Physical session' : 'Virtual session';
-}
-
-function formatProvenanceLabel(value: string): string {
-  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
