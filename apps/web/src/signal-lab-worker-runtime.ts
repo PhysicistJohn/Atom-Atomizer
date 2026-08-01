@@ -1,4 +1,5 @@
 import type {
+  CanonicalOperationRequest,
   InstrumentCandidate,
   InstrumentConfigurationCommand,
   InstrumentFeatureCommand,
@@ -40,12 +41,14 @@ export function prepareMeasurementForTransfer(measurement: InstrumentMeasurement
 }
 
 function sessionDescriptor(session: InstrumentSession): SignalLabWorkerSessionDescriptor {
+  const canonicalSurface = session.canonicalSurface;
   return {
     sessionId: session.sessionId,
     driverId: 'signal-lab',
     candidate: session.candidate,
     provenance: session.provenance,
     capabilities: session.capabilities,
+    ...(canonicalSurface === undefined ? {} : { canonicalSurface }),
     rfOutput: session.rfOutput,
     ...(session.receiveOnlySafety ? { receiveOnlySafety: session.receiveOnlySafety } : {}),
   };
@@ -91,10 +94,26 @@ export function installSignalLabWorkerEndpoint(
           respond(request.requestId, sessionDescriptor(connected));
           return;
         }
-        case 'configure':
-          await requireSession().configure(request.payload as InstrumentConfigurationCommand);
-          respond(request.requestId, undefined);
+        case 'configure': {
+          const active = requireSession();
+          await active.configure(request.payload as InstrumentConfigurationCommand);
+          // A configuration changes effective values and the canonical surface
+          // revision. Return the fresh descriptor before the page-side manager
+          // reads its proxy session again.
+          respond(request.requestId, sessionDescriptor(active));
           return;
+        }
+        case 'resolve-canonical-operation': {
+          const active = requireSession();
+          if (!active.resolveCanonicalOperation) {
+            throw new Error('SignalLab worker session does not expose canonical operations');
+          }
+          respond(
+            request.requestId,
+            await active.resolveCanonicalOperation(request.payload as CanonicalOperationRequest),
+          );
+          return;
+        }
         case 'acquire': {
           const prepared = prepareMeasurementForTransfer(await requireSession().acquire());
           respond(request.requestId, prepared.measurement, prepared.transfer);

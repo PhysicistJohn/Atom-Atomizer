@@ -103,6 +103,54 @@ describe('BrowserSignalLabWorkerDriver', () => {
     expect(discovery.candidates).toHaveLength(1);
   });
 
+  it('carries canonical controls through the worker and refreshes them after applying one', async () => {
+    const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => new LoopbackSignalLabWorker()));
+    const session = await api.connect((await api.discover()).candidates[0]!);
+    if (!api.canonicalSurface || !api.executeCanonicalOperation) {
+      throw new Error('Browser instrument API omitted canonical operations');
+    }
+    const initialSurface = await api.canonicalSurface();
+    if (!initialSurface) throw new Error('Worker-backed SignalLab session omitted its canonical surface');
+    const capture = initialSurface.operations.find((operation) => operation.id === 'capture');
+    if (!capture) throw new Error('Worker-backed SignalLab session omitted its canonical capture operation');
+
+    const execution = await api.executeCanonicalOperation({
+      sessionId: session.sessionId,
+      surfaceRevision: initialSurface.revision,
+      operationId: capture.id,
+      parameters: capture.parameterIds.map((parameterId) => ({ parameterId, intent: { mode: 'auto' as const } })),
+    });
+
+    expect(execution.operationId).toBe('capture');
+    expect(execution.surface.revision).not.toBe(initialSurface.revision);
+    expect(execution.surface.operations.find((operation) => operation.id === 'capture')).toBeDefined();
+    await expect(api.canonicalSurface()).resolves.toEqual(execution.surface);
+    await expect(api.getState()).resolves.toMatchObject({
+      session: { configuration: { configuration: { kind: 'complex-iq' } } },
+    });
+
+    const selectSource = execution.surface.operations.find((operation) => operation.id === 'source.select-profile');
+    const profileParameter = selectSource === undefined
+      ? undefined
+      : execution.surface.parameters.find((parameter) => parameter.id === selectSource.parameterIds[0]);
+    if (!selectSource || profileParameter?.manual.kind !== 'enum') {
+      throw new Error('Worker-backed SignalLab session omitted canonical source selection');
+    }
+    const nextProfile = profileParameter.manual.options.find(
+      (option) => option.value !== profileParameter.effectiveValue,
+    );
+    if (!nextProfile) throw new Error('Worker-backed SignalLab session offered no alternate source selection');
+    const sourceExecution = await api.executeCanonicalOperation({
+      sessionId: session.sessionId,
+      surfaceRevision: execution.surface.revision,
+      operationId: selectSource.id,
+      parameters: [{ parameterId: profileParameter.id, intent: { mode: 'manual', value: nextProfile.value } }],
+    });
+    expect(sourceExecution.surface.revision).not.toBe(execution.surface.revision);
+    await expect(api.canonicalSurface()).resolves.toEqual(sourceExecution.surface);
+    await api.disconnect();
+  });
+
   it('refreshes session state and transfers I/Q bytes while manual acquisition emits no duplicate measurement event', async () => {
     const worker = new LoopbackSignalLabWorker();
     const api = createBrowserInstrumentApi(new BrowserSignalLabWorkerDriver(() => worker));

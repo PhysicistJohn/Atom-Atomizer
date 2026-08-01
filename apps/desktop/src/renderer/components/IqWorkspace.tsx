@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Activity, CircleDot, Cpu, Download, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
+import { Activity, CircleDot, Download, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
   type ComplexIqMeasurement,
@@ -7,7 +7,7 @@ import {
 } from '../complex-iq.js';
 import type { ModulationClassification, RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import type { GlobalClassificationIssue } from '../store.js';
-import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
+import { CanonicalOperationPanel, CanonicalOperationRequired } from './CanonicalOperationPanel.js';
 import type { CanonicalInstrumentSurface, CanonicalOperationParameterIntent } from '@tinysa/contracts';
 
 const MODULATION_LABELS: Record<string, string> = {
@@ -44,9 +44,6 @@ export function IqWorkspace({
   const [plotZoom, setPlotZoom] = useState(1);
   const capture = captureMeta;
   const durationSeconds = capture ? capture.sampleCount / capture.sampleRateHz : undefined;
-  const acquisitionOperationIds = canonicalSurface?.operations
-    .filter((operation) => operation.scope !== 'source')
-    .map((operation) => operation.id);
 
   return <div
     className="iq-workspace"
@@ -98,27 +95,13 @@ export function IqWorkspace({
     {canonicalSurface && onCanonicalOperation
       ? <CanonicalOperationPanel
           surface={canonicalSurface}
-          operationIds={acquisitionOperationIds}
+          placement="acquisition"
           busy={busy}
           className="iq-control-panel"
           onExecute={onCanonicalOperation}
         />
       : <CanonicalOperationRequired title="I/Q capture controls"/>}
   </div>;
-}
-
-/**
- * No renderer-owned fallback is permitted for an active instrument.  A
- * canonical operation carries the driver-owned manual domain, mandatory Auto
- * policy, effective value, and verification evidence as one atomic surface.
- */
-export function CanonicalOperationRequired({ title = 'Instrument controls' }: { title?: string }) {
-  return <section className="iq-control-panel">
-    <div className="panel-header"><div><Cpu size={14}/>{title}</div><span>DRIVER REQUIRED</span></div>
-    <div className="channel-contract-note" role="status" aria-label={`${title} unavailable`}>
-      <Activity size={14}/><p>The connected driver has not declared a canonical operation for this function. Atomizer has no mutable controls to render until the driver supplies parameter domains, an Auto policy, and verification evidence.</p>
-    </div>
-  </section>;
 }
 
 // Retained canvases with rAF latest-wins (same pattern as SpectrumPlot):

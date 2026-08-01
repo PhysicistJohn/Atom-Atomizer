@@ -1,4 +1,5 @@
 import type {
+  CanonicalInstrumentSurface,
   InstrumentCandidate,
   InstrumentCapabilities,
   InstrumentFeatureResult,
@@ -15,6 +16,7 @@ export type SignalLabWorkerMethod =
   | 'discover'
   | 'connect'
   | 'configure'
+  | 'resolve-canonical-operation'
   | 'acquire'
   | 'execute-feature'
   | 'disconnect'
@@ -33,6 +35,8 @@ export interface SignalLabWorkerSessionDescriptor {
   readonly candidate: InstrumentCandidate;
   readonly provenance: InstrumentSessionProvenance;
   readonly capabilities: InstrumentCapabilities;
+  /** Driver-declared mutable operations; absent only for a legacy session. */
+  readonly canonicalSurface?: CanonicalInstrumentSurface;
   readonly rfOutput: InstrumentRfOutputState;
   readonly receiveOnlySafety?: InstrumentReceiveOnlySafetyState;
 }

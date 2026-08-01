@@ -1,4 +1,6 @@
 import type {
+  CanonicalInstrumentSurface,
+  CanonicalOperationRequest,
   InstrumentCandidate,
   InstrumentCapabilities,
   InstrumentConfigurationCommand,
@@ -11,7 +13,7 @@ import type {
   InstrumentSessionEvent,
   InstrumentSessionProvenance,
 } from '@tinysa/contracts';
-import type { InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
+import type { CanonicalOperationResolution, InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
 import {
   BROWSER_SIGNAL_LAB_CANDIDATE_ID,
   BROWSER_SIGNAL_LAB_DRIVER_ID,
@@ -89,8 +91,12 @@ export class BrowserSignalLabWorkerDriver implements InstrumentDriver {
     }
   }
 
-  configure(command: InstrumentConfigurationCommand): Promise<void> {
+  configure(command: InstrumentConfigurationCommand): Promise<SignalLabWorkerSessionDescriptor> {
     return this.#request('configure', command);
+  }
+
+  resolveCanonicalOperation(request: CanonicalOperationRequest): Promise<CanonicalOperationResolution> {
+    return this.#request('resolve-canonical-operation', request);
   }
 
   acquire(): Promise<InstrumentMeasurement> {
@@ -232,12 +238,18 @@ class BrowserSignalLabWorkerSession implements InstrumentSession {
   get candidate(): InstrumentCandidate { return this.#descriptor.candidate; }
   get provenance(): InstrumentSessionProvenance { return this.#descriptor.provenance; }
   get capabilities(): InstrumentCapabilities { return this.#descriptor.capabilities; }
+  get canonicalSurface(): CanonicalInstrumentSurface | undefined { return this.#descriptor.canonicalSurface; }
   get rfOutput(): InstrumentRfOutputState { return this.#descriptor.rfOutput; }
   get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined { return this.#descriptor.receiveOnlySafety; }
 
   async configure(command: InstrumentConfigurationCommand): Promise<void> {
     this.#requireOpen();
-    await this.driver.configure(command);
+    this.#descriptor = await this.driver.configure(command);
+  }
+
+  async resolveCanonicalOperation(request: CanonicalOperationRequest): Promise<CanonicalOperationResolution> {
+    this.#requireOpen();
+    return this.driver.resolveCanonicalOperation(request);
   }
 
   async acquire(): Promise<InstrumentMeasurement> {

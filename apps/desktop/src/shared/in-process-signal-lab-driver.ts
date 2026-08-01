@@ -198,7 +198,6 @@ class InProcessSignalLabSession implements InstrumentSession {
   get canonicalSurface(): CanonicalInstrumentSurface {
     return signalLabCanonicalSurface({
       sessionId: this.sessionId,
-      candidate: this.candidate,
       provenance: this.#provenance,
       capabilities: this.#capabilities,
       status: this.#status,
@@ -215,14 +214,13 @@ class InProcessSignalLabSession implements InstrumentSession {
     if (request.sessionId !== this.sessionId) {
       throw new Error('Canonical SignalLab operation names a different session');
     }
-    const surface = this.canonicalSurface;
     switch (request.operationId) {
       case CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum:
         return {
           configuration: resolveCanonicalSignalLabSpectrum(
             canonicalSignalLabSpectrumCapability(this.#capabilities),
             this.#status,
-            canonicalOperationParameterIntentsFor(surface, request.operationId, request),
+            this.#canonicalOperationIntents(request.operationId, request),
           ),
         };
       case CANONICAL_SIGNAL_LAB_OPERATIONS.power:
@@ -230,34 +228,39 @@ class InProcessSignalLabSession implements InstrumentSession {
           configuration: resolveCanonicalSignalLabPowerObservation(
             canonicalSignalLabPowerCapability(this.#capabilities),
             this.#status,
-            canonicalOperationParameterIntentsFor(surface, request.operationId, request),
+            this.#canonicalOperationIntents(request.operationId, request),
           ),
         };
       case CANONICAL_SIGNAL_LAB_OPERATIONS.capture:
         return {
           configuration: resolveCanonicalSignalLabCapture(
-            this.#complexIqCapability(),
-            this.#selectedIqProfile(),
-            canonicalOperationParameterIntentsFor(surface, request.operationId, request),
+            canonicalSignalLabCaptureCapability(this.#capabilities),
+            canonicalSignalLabSelectedIqProfile(this.#capabilities),
+            this.#canonicalOperationIntents(request.operationId, request),
           ),
         };
       case CANONICAL_SIGNAL_LAB_OPERATIONS.sourceProfile:
-        return this.#resolveCanonicalSourceProfile(surface, request);
+        return this.#resolveCanonicalSourceProfile(request);
       case CANONICAL_SIGNAL_LAB_OPERATIONS.sourceChannel:
-        return this.#resolveCanonicalSourceChannel(surface, request);
+        return this.#resolveCanonicalSourceChannel(request);
       case CANONICAL_SIGNAL_LAB_OPERATIONS.sourceWaveform:
-        return this.#resolveCanonicalSourceWaveform(surface, request);
+        return this.#resolveCanonicalSourceWaveform(request);
       default:
         throw new RangeError(`SignalLab does not advertise canonical operation ${request.operationId}`);
     }
   }
 
+  #canonicalOperationIntents(
+    operationId: string,
+    request: CanonicalOperationRequest,
+  ): ReadonlyMap<string, CanonicalParameterIntent> {
+    return canonicalOperationParameterIntentsFor(this.canonicalSurface, operationId, request);
+  }
+
   #resolveCanonicalSourceProfile(
-    surface: CanonicalInstrumentSurface,
     request: CanonicalOperationRequest,
   ): CanonicalOperationResolution {
-    const intents = canonicalOperationParameterIntentsFor(
-      surface,
+    const intents = this.#canonicalOperationIntents(
       CANONICAL_SIGNAL_LAB_OPERATIONS.sourceProfile,
       request,
     );
@@ -280,11 +283,9 @@ class InProcessSignalLabSession implements InstrumentSession {
   }
 
   #resolveCanonicalSourceChannel(
-    surface: CanonicalInstrumentSurface,
     request: CanonicalOperationRequest,
   ): CanonicalOperationResolution {
-    const intents = canonicalOperationParameterIntentsFor(
-      surface,
+    const intents = this.#canonicalOperationIntents(
       CANONICAL_SIGNAL_LAB_OPERATIONS.sourceChannel,
       request,
     );
@@ -337,15 +338,13 @@ class InProcessSignalLabSession implements InstrumentSession {
   }
 
   #resolveCanonicalSourceWaveform(
-    surface: CanonicalInstrumentSurface,
     request: CanonicalOperationRequest,
   ): CanonicalOperationResolution {
     const selected = this.#status.profile;
     if (!isCustomWaveformProfile(selected)) {
       throw new RangeError('The connected source has no active customizable waveform');
     }
-    const intents = canonicalOperationParameterIntentsFor(
-      surface,
+    const intents = this.#canonicalOperationIntents(
       CANONICAL_SIGNAL_LAB_OPERATIONS.sourceWaveform,
       request,
     );
@@ -783,24 +782,6 @@ class InProcessSignalLabSession implements InstrumentSession {
     return capability;
   }
 
-  #complexIqCapability(): Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }> {
-    const capability = this.#capabilities.acquisitions.find((entry) => entry.kind === 'complex-iq');
-    if (capability?.kind !== 'complex-iq') throw new Error('SignalLab status omitted its complex-I/Q capability');
-    return capability;
-  }
-
-  #selectedIqProfile() {
-    const feature = this.#capabilities.features.find((entry) => entry.kind === 'signal-lab-profile-selection');
-    if (feature?.kind !== 'signal-lab-profile-selection') {
-      throw new Error('SignalLab status omitted its profile-selection capability');
-    }
-    const profile = feature.iqProfiles.find((candidate) => candidate.profileId === feature.selectedProfileId);
-    if (!profile) {
-      throw new Error(`SignalLab profile ${feature.selectedProfileId} has no admitted complex-I/Q transport`);
-    }
-    return profile;
-  }
-
   #acceptSourceSequence(sequence: number): void {
     if (!Number.isSafeInteger(sequence) || sequence <= this.#lastSourceSequence) {
       throw new Error('SignalLab measurement sequence did not advance');
@@ -875,10 +856,41 @@ type SignalLabIqProfile = Extract<InstrumentCapabilities['features'][number], { 
 type SignalLabSpectrumConfiguration = Extract<InstrumentConfiguration, { kind: 'swept-spectrum' }>;
 type SignalLabPowerConfiguration = Extract<InstrumentConfiguration, { kind: 'detected-power-timeseries' }>;
 type SignalLabCaptureConfiguration = Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
+type CanonicalSourceParameterDefinition = readonly [
+  id: string,
+  label: string,
+  group: string,
+  manual: CanonicalParameterManualDomain,
+  effectiveValue: CanonicalParameterScalarValue,
+  unit?: string,
+];
+type CanonicalAcquisitionOperationDefinition = readonly [
+  id: string,
+  label: string,
+  description: string,
+  parameterIds: readonly string[],
+  output: string,
+  primary?: boolean,
+];
+type CanonicalOperationDefinition = Readonly<{
+  id: string;
+  label: string;
+  description: string;
+  scope: NonNullable<CanonicalOperation['scope']>;
+  parameterIds: readonly string[];
+  outputs: readonly string[];
+  primary?: boolean;
+  confirmation?: CanonicalOperation['confirmation'];
+}>;
+
+const CANONICAL_ACQUISITION_OPERATIONS = [
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum, 'Sweep', 'Configure and acquire one scalar spectrum.', [CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStartHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStopHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumPoints], 'Spectrum', true],
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.power, 'Observe power', 'Configure and acquire one bounded power time series.', [CANONICAL_SIGNAL_LAB_PARAMETERS.powerCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.powerSamples], 'Power time series'],
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.capture, 'Capture', 'Configure and prepare one bounded complex-sample capture.', [CANONICAL_SIGNAL_LAB_PARAMETERS.captureCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSampleRateHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureBandwidthHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSamples], 'Complex I/Q'],
+] as const satisfies readonly CanonicalAcquisitionOperationDefinition[];
 
 function signalLabCanonicalSurface(input: Readonly<{
   sessionId: string;
-  candidate: InstrumentCandidate;
   provenance: InstrumentSessionProvenance;
   capabilities: InstrumentCapabilities;
   status: MeasurementSourceStatus;
@@ -891,9 +903,9 @@ function signalLabCanonicalSurface(input: Readonly<{
   const powerCapability = canonicalSignalLabPowerCapability(input.capabilities);
   const captureCapability = canonicalSignalLabCaptureCapability(input.capabilities);
   const profile = canonicalSignalLabSelectedIqProfile(input.capabilities);
-  const spectrumConfiguration = currentSignalLabSpectrumConfiguration(input.configuration);
-  const powerConfiguration = currentSignalLabPowerConfiguration(input.configuration);
-  const captureConfiguration = currentSignalLabCaptureConfiguration(input.configuration);
+  const spectrumConfiguration = currentSignalLabConfiguration(input.configuration, 'swept-spectrum');
+  const powerConfiguration = currentSignalLabConfiguration(input.configuration, 'detected-power-timeseries');
+  const captureConfiguration = currentSignalLabConfiguration(input.configuration, 'complex-iq');
   const automaticSpectrum = automaticSignalLabSpectrumConfiguration(spectrumCapability, input.status);
   const automaticPower = automaticSignalLabPowerConfiguration(powerCapability, input.status);
   const automaticCapture = automaticSignalLabCaptureConfiguration(captureCapability, profile);
@@ -939,51 +951,8 @@ function signalLabCanonicalSurface(input: Readonly<{
     },
     parameters,
     operations: [
-      {
-        id: CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum,
-        label: 'Sweep',
-        description: 'Configure and acquire one scalar spectrum.',
-        scope: 'acquisition',
-        parameterIds: [
-          CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStartHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStopHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumPoints,
-        ],
-        outputs: ['Spectrum'],
-        availability: input.closed ? 'unavailable' : 'available',
-        primary: true,
-        confirmation: 'none',
-      },
-      {
-        id: CANONICAL_SIGNAL_LAB_OPERATIONS.power,
-        label: 'Observe power',
-        description: 'Configure and acquire one bounded power time series.',
-        scope: 'acquisition',
-        parameterIds: [
-          CANONICAL_SIGNAL_LAB_PARAMETERS.powerCenterHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.powerSamples,
-        ],
-        outputs: ['Power time series'],
-        availability: input.closed ? 'unavailable' : 'available',
-        primary: false,
-        confirmation: 'none',
-      },
-      {
-        id: CANONICAL_SIGNAL_LAB_OPERATIONS.capture,
-        label: 'Capture',
-        description: 'Configure and prepare one bounded complex-sample capture.',
-        scope: 'acquisition',
-        parameterIds: [
-          CANONICAL_SIGNAL_LAB_PARAMETERS.captureCenterHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.captureSampleRateHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.captureBandwidthHz,
-          CANONICAL_SIGNAL_LAB_PARAMETERS.captureSamples,
-        ],
-        outputs: ['Complex I/Q'],
-        availability: input.closed ? 'unavailable' : 'available',
-        primary: false,
-        confirmation: 'none',
-      },
+      ...CANONICAL_ACQUISITION_OPERATIONS.map(([id, label, description, parameterIds, output, primary]) =>
+        canonicalOperation({ id, label, description, scope: 'acquisition', parameterIds, outputs: [output], primary }, input.closed)),
       ...source.operations,
     ],
   });
@@ -995,58 +964,14 @@ function canonicalSourceSurface(
   intents: ReadonlyMap<string, CanonicalParameterIntent>,
 ): { readonly parameters: readonly CanonicalParameter[]; readonly operations: readonly CanonicalOperation[] } {
   const capability = canonicalSignalLabSourceCapability(capabilities);
-  const sourceParameters: CanonicalParameter[] = [
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceProfile,
-      'Operating selection',
-      'Source',
-      { kind: 'enum', options: capability.profiles.map((profile) => ({ value: profile.profileId, label: profile.label })) },
-      status.profile,
-      intents,
-    ),
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelModel,
-      'Channel model',
-      'Source channel',
-      { kind: 'enum', options: CANONICAL_SOURCE_CHANNEL_MODE_VALUES.map((value) => ({ value, label: value.toUpperCase() })) },
-      status.channel.model,
-      intents,
-    ),
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelReceiverImpairment,
-      'Receiver impairment',
-      'Source channel',
-      { kind: 'enum', options: CANONICAL_RECEIVER_IMPAIRMENT_VALUES.map((value) => ({ value, label: humanizeCanonicalValue(value) })) },
-      status.channel.receiverImpairment,
-      intents,
-    ),
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelNoiseFloorDbm,
-      'Noise floor',
-      'Source channel',
-      { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_NOISE_FLOOR_RANGE },
-      status.channel.noiseFloorDbm,
-      intents,
-      'dBm',
-    ),
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelSeed,
-      'Deterministic seed',
-      'Source channel',
-      { kind: 'integer', range: CANONICAL_SOURCE_CHANNEL_SEED_RANGE },
-      status.channel.seed,
-      intents,
-    ),
-    canonicalSourceParameter(
-      CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelFadingRateHz,
-      'Fading rate',
-      'Source channel',
-      { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_FADING_RATE_RANGE },
-      status.channel.fadingRateHz,
-      intents,
-      'Hz',
-    ),
-  ];
+  const sourceParameters = canonicalSourceParameters(intents,
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceProfile, 'Operating selection', 'Source', { kind: 'enum', options: capability.profiles.map((profile) => ({ value: profile.profileId, label: profile.label })) }, status.profile],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelModel, 'Channel model', 'Source channel', { kind: 'enum', options: CANONICAL_SOURCE_CHANNEL_MODE_VALUES.map((value) => ({ value, label: value.toUpperCase() })) }, status.channel.model],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelReceiverImpairment, 'Receiver impairment', 'Source channel', { kind: 'enum', options: CANONICAL_RECEIVER_IMPAIRMENT_VALUES.map((value) => ({ value, label: humanizeCanonicalValue(value) })) }, status.channel.receiverImpairment],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelNoiseFloorDbm, 'Noise floor', 'Source channel', { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_NOISE_FLOOR_RANGE }, status.channel.noiseFloorDbm, 'dBm'],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelSeed, 'Deterministic seed', 'Source channel', { kind: 'integer', range: CANONICAL_SOURCE_CHANNEL_SEED_RANGE }, status.channel.seed],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelFadingRateHz, 'Fading rate', 'Source channel', { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_FADING_RATE_RANGE }, status.channel.fadingRateHz, 'Hz'],
+  );
   const operations: CanonicalOperation[] = [
     sourceOperation(CANONICAL_SIGNAL_LAB_OPERATIONS.sourceProfile, 'Select source', 'Choose an admitted operating selection.', [
       CANONICAL_SIGNAL_LAB_PARAMETERS.sourceProfile,
@@ -1088,16 +1013,27 @@ function sourceOperation(
   description: string,
   parameterIds: readonly string[],
 ): CanonicalOperation {
-  return {
+  return canonicalOperation({
     id,
     label,
     description,
     scope: 'source',
-    parameterIds: [...parameterIds],
+    parameterIds,
     outputs: ['Source state'],
-    availability: 'available',
-    primary: false,
-    confirmation: 'none',
+  });
+}
+
+function canonicalOperation(
+  definition: CanonicalOperationDefinition,
+  unavailable = false,
+): CanonicalOperation {
+  return {
+    ...definition,
+    parameterIds: [...definition.parameterIds],
+    outputs: [...definition.outputs],
+    availability: unavailable ? 'unavailable' : 'available',
+    primary: definition.primary ?? false,
+    confirmation: definition.confirmation ?? 'none',
   };
 }
 
@@ -1123,6 +1059,14 @@ function canonicalSourceParameter(
     effectiveValue,
     verification: requested.mode === 'auto' ? 'driver-selected' : 'driver-commanded',
   };
+}
+
+function canonicalSourceParameters(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  ...definitions: readonly CanonicalSourceParameterDefinition[]
+): CanonicalParameter[] {
+  return definitions.map(([id, label, group, manual, effectiveValue, unit]) =>
+    canonicalSourceParameter(id, label, group, manual, effectiveValue, intents, unit));
 }
 
 function boundedCanonicalOptions(options: readonly string[], effectiveValue: string) {
@@ -1173,26 +1117,29 @@ function canonicalSignalLabSelectedIqProfile(capabilities: InstrumentCapabilitie
   return profile;
 }
 
-function currentSignalLabSpectrumConfiguration(
+function currentSignalLabConfiguration(
   configuration: InstrumentConfiguration | undefined,
-): SignalLabSpectrumConfiguration | undefined {
-  return configuration?.kind === 'swept-spectrum' && configuration.controls.model === 'synthetic-scalar'
+  kind: 'swept-spectrum',
+): SignalLabSpectrumConfiguration | undefined;
+
+function currentSignalLabConfiguration(
+  configuration: InstrumentConfiguration | undefined,
+  kind: 'detected-power-timeseries',
+): SignalLabPowerConfiguration | undefined;
+
+function currentSignalLabConfiguration(
+  configuration: InstrumentConfiguration | undefined,
+  kind: 'complex-iq',
+): SignalLabCaptureConfiguration | undefined;
+
+function currentSignalLabConfiguration(
+  configuration: InstrumentConfiguration | undefined,
+  kind: InstrumentConfiguration['kind'],
+): InstrumentConfiguration | undefined {
+  if (configuration?.kind !== kind) return undefined;
+  return kind === 'complex-iq' || ('controls' in configuration && configuration.controls.model === 'synthetic-scalar')
     ? configuration
     : undefined;
-}
-
-function currentSignalLabPowerConfiguration(
-  configuration: InstrumentConfiguration | undefined,
-): SignalLabPowerConfiguration | undefined {
-  return configuration?.kind === 'detected-power-timeseries' && configuration.controls.model === 'synthetic-scalar'
-    ? configuration
-    : undefined;
-}
-
-function currentSignalLabCaptureConfiguration(
-  configuration: InstrumentConfiguration | undefined,
-): SignalLabCaptureConfiguration | undefined {
-  return configuration?.kind === 'complex-iq' ? configuration : undefined;
 }
 
 function automaticSignalLabSpectrumConfiguration(

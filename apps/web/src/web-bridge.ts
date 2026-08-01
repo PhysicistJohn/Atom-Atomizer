@@ -88,6 +88,8 @@ function createBrowserInstrumentApi(
     connect: (candidate) => host.connect(candidate),
     disconnect: () => host.disconnect(),
     configure: (configuration) => host.configure(configuration),
+    canonicalSurface: async () => host.canonicalSurface(),
+    executeCanonicalOperation: (request) => host.executeCanonicalOperation(request),
     acquire: () => host.acquire(),
     startStreaming: () => host.startStreaming(),
     stopStreaming: () => host.stopStreaming(),

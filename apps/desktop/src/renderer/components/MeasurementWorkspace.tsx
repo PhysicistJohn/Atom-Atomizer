@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Clock3, Crosshair, Gauge, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
 import type {
@@ -26,9 +26,8 @@ import type {
 import { calculateSweepMetrics } from '@tinysa/analysis';
 import type { AcquisitionState } from '../ui-contracts.js';
 import { formatFrequency, formatPowerLevel } from '../format.js';
-import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
+import { CanonicalOperationPanel, CanonicalOperationRequired } from './CanonicalOperationPanel.js';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
-import { CanonicalOperationRequired } from './IqWorkspace.js';
 import { MeasurementDock, type MeasurementDockPanel } from './MeasurementDock.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
@@ -88,17 +87,14 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     typeof item === 'object' && item !== null && item.state === 'active');
   const view = props.view === 'envelope-stft' ? 'spectrum' : props.view;
   const hasCanonicalOperation = props.canonicalSurface !== undefined && props.onCanonicalOperation !== undefined;
-  const acquisitionOperationIds = props.canonicalSurface?.operations
-    .filter((operation) => operation.scope !== 'source')
-    .map((operation) => operation.id);
   const setupLabel = 'Instrument setup';
   const traceToolsAvailable = view === 'spectrum';
-  const closeDrawer = (restoreFocus = true) => {
+  const closeDrawer = useCallback((restoreFocus = true) => {
     const focusTarget = returnFocusRef.current;
     focusDrawerRef.current = false;
     setDrawer(undefined);
     if (restoreFocus && focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
-  };
+  }, []);
   const toggleDrawer = (next: Drawer, trigger: HTMLButtonElement) => {
     if (drawer === next) {
       closeDrawer();
@@ -112,14 +108,11 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
     if (!drawer) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      const focusTarget = returnFocusRef.current;
-      focusDrawerRef.current = false;
-      setDrawer(undefined);
-      if (focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
+      closeDrawer();
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [drawer]);
+  }, [drawer, closeDrawer]);
   useEffect(() => {
     if (!drawer || !focusDrawerRef.current) return;
     focusDrawerRef.current = false;
@@ -158,7 +151,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
         <header className="measurement-drawer-header"><span>{drawer === 'setup' ? <SlidersHorizontal size={15}/> : drawer === 'markers' ? <Crosshair size={15}/> : drawer === 'display' ? <Gauge size={15}/> : <BarChart3 size={15}/>}<strong>{drawerTitle}</strong></span><button type="button" className="measurement-overlay-close" aria-label={`Close ${drawerTitle}`} data-agent-exclusion="human-overlay-dismiss" onClick={() => closeDrawer()}><X size={16}/></button></header>
         <div className="measurement-drawer-body">{drawer === 'setup'
           ? hasCanonicalOperation
-            ? <CanonicalOperationPanel surface={props.canonicalSurface!} operationIds={acquisitionOperationIds} busy={props.busy && !props.streaming} onExecute={props.onCanonicalOperation!}/>
+            ? <CanonicalOperationPanel surface={props.canonicalSurface!} placement="acquisition" busy={props.busy && !props.streaming} onExecute={props.onCanonicalOperation!}/>
             : <CanonicalOperationRequired title="Instrument controls"/>
           : <MeasurementDock panel={drawer} showTabs={false} traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }</div>

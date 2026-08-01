@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Activity, CheckCircle2, Cpu, SlidersHorizontal, Sparkles } from 'lucide-react';
 import type {
   CanonicalInstrumentSurface,
   CanonicalOperation,
@@ -15,8 +15,8 @@ export interface CanonicalOperationPanelProps {
   readonly surface: CanonicalInstrumentSurface;
   /** Defaults to the declared primary operation, then the first operation. */
   readonly operationId?: string;
-  /** Optional host placement filter; operation semantics remain driver-owned. */
-  readonly operationIds?: readonly string[];
+  /** Optional host placement; operation semantics remain driver-owned. */
+  readonly placement?: CanonicalOperationPlacement;
   readonly busy: boolean;
   readonly className?: string;
   /**
@@ -27,6 +27,9 @@ export interface CanonicalOperationPanelProps {
   onExecute(operationId: string, parameters: readonly CanonicalOperationParameterIntent[]): void | Promise<unknown>;
 }
 
+/** A presentation location, never a driver family or native control type. */
+export type CanonicalOperationPlacement = 'acquisition' | 'source';
+
 /**
  * A source-agnostic mutable-control surface.  The driver supplies both the
  * manual domain and the Auto policy for every parameter; Atomizer never
@@ -35,22 +38,21 @@ export interface CanonicalOperationPanelProps {
 export function CanonicalOperationPanel({
   surface,
   operationId,
-  operationIds,
+  placement,
   busy,
   className,
   onExecute,
 }: CanonicalOperationPanelProps) {
+  const operations = operationsForPlacement(surface.operations, placement);
   const [selectedOperationId, setSelectedOperationId] = useState<string | undefined>(
-    () => selectOperation(surface, operationId, operationIds)?.id,
+    () => operationId ?? defaultOperation(operations)?.id,
   );
-  const activeOperationId = operationId ?? selectedOperationId;
-  const operations = operationIds === undefined
-    ? surface.operations
-    : surface.operations.filter((candidate) => operationIds.includes(candidate.id));
-  const operation = selectOperation(surface, activeOperationId, operationIds);
+  const operation = operationId === undefined
+    ? operations.find((candidate) => candidate.id === selectedOperationId) ?? defaultOperation(operations)
+    : operations.find((candidate) => candidate.id === operationId);
   const resetKey = `${surface.revision}:${operation?.id ?? operationId ?? ''}`;
-  const operationFilterKey = operationIds?.join('\u0000') ?? '';
-  const [intents, setIntents] = useState<Readonly<Record<string, CanonicalParameterIntent>>>(() => initialIntents(surface, operation));
+  const parameters = operationParameters(surface, operation);
+  const [intents, setIntents] = useState<Readonly<Record<string, CanonicalParameterIntent>>>(() => initialIntents(parameters));
   const [executing, setExecuting] = useState(false);
   const [executionError, setExecutionError] = useState<string>();
   const [confirmationPending, setConfirmationPending] = useState(false);
@@ -58,7 +60,7 @@ export function CanonicalOperationPanel({
   // A new surface revision is a new driver truth.  Preserve deliberate edits
   // within a revision, but never carry them across a retune/configuration.
   useEffect(() => {
-    setIntents(initialIntents(surface, operation));
+    setIntents(initialIntents(parameters));
     setExecuting(false);
     setExecutionError(undefined);
     setConfirmationPending(false);
@@ -70,8 +72,8 @@ export function CanonicalOperationPanel({
   // primary operation again.
   useEffect(() => {
     if (operationId !== undefined) return;
-    setSelectedOperationId(selectOperation(surface, undefined, operationIds)?.id);
-  }, [surface.revision, operationId, operationFilterKey]);
+    setSelectedOperationId(defaultOperation(operations)?.id);
+  }, [surface.revision, operationId, placement]);
 
   if (!operation) {
     return <section className={`canonical-operation-panel ${className ?? ''}`.trim()} role="status">
@@ -79,25 +81,13 @@ export function CanonicalOperationPanel({
     </section>;
   }
 
+  // Retain the narrowed driver declaration for callbacks below.
   const activeOperation = operation;
-
-  const parameters = operation.parameterIds
-    .map((parameterId) => surface.parameters.find((parameter) => parameter.id === parameterId))
-    .filter((parameter): parameter is CanonicalParameter => parameter !== undefined);
   const parameterIntents = parameters.map((parameter) => ({
     parameterId: parameter.id,
     intent: intents[parameter.id] ?? parameter.requested,
   }));
-  const invalidParameter = parameters.find((parameter) => {
-    const intent = intents[parameter.id] ?? parameter.requested;
-    return intent.mode === 'manual' && manualValueIssue(parameter, intent.value) !== undefined;
-  });
-  const invalidParameterIssue = invalidParameter === undefined
-    ? undefined
-    : manualValueIssue(
-      invalidParameter,
-      manualIntentValue(invalidParameter, intents[invalidParameter.id] ?? invalidParameter.requested),
-    );
+  const invalidParameter = firstInvalidParameter(parameters, intents);
   const unavailable = operation.availability !== 'available';
   const disabled = busy || executing || unavailable || invalidParameter !== undefined;
 
@@ -174,8 +164,8 @@ export function CanonicalOperationPanel({
         />;
       })}
     </div>
-    {invalidParameter && invalidParameterIssue && <div className="inline-error" role="alert">
-      {invalidParameter.label}: {invalidParameterIssue}
+    {invalidParameter && <div className="inline-error" role="alert">
+      {invalidParameter.parameter.label}: {invalidParameter.issue}
     </div>}
     {executionError && <div className="inline-error" role="alert">{executionError}</div>}
     <div className="canonical-operation-note" role="status"><Sparkles size={14}/><p>Automatic values are resolved by the connected driver. Each effective value below includes its verification basis.</p></div>
@@ -200,6 +190,20 @@ export function CanonicalOperationPanel({
   </section>;
 }
 
+/**
+ * No renderer-owned fallback is permitted for an active instrument. A
+ * canonical operation is the atomic source of its manual domain, Auto policy,
+ * effective value, and verification evidence.
+ */
+export function CanonicalOperationRequired({ title = 'Instrument controls' }: { title?: string }) {
+  return <section className="iq-control-panel">
+    <div className="panel-header"><div><Cpu size={14}/>{title}</div><span>DRIVER REQUIRED</span></div>
+    <div className="channel-contract-note" role="status" aria-label={`${title} unavailable`}>
+      <Activity size={14}/><p>The connected driver has not declared a canonical operation for this function. Atomizer has no mutable controls to render until the driver supplies parameter domains, an Auto policy, and verification evidence.</p>
+    </div>
+  </section>;
+}
+
 function CanonicalParameterControl({
   parameter,
   intent,
@@ -218,7 +222,7 @@ function CanonicalParameterControl({
     <SelectParameter
       label={`${parameter.label} mode`}
       value={intent.mode}
-      options={[{ value: 'auto', label: 'Automatic' }, { value: 'manual', label: 'Manual' }]}
+      options={MODE_OPTIONS}
       disabled={disabled}
       onValue={(value) => onMode(value === 'manual' ? 'manual' : 'auto')}
     />
@@ -305,28 +309,39 @@ function ManualParameterControl({
   }
 }
 
-function selectOperation(
-  surface: CanonicalInstrumentSurface,
-  operationId?: string,
-  operationIds?: readonly string[],
-): CanonicalOperation | undefined {
-  const operations = operationIds === undefined
-    ? surface.operations
-    : surface.operations.filter((candidate) => operationIds.includes(candidate.id));
-  if (operationId !== undefined) return operations.find((operation) => operation.id === operationId);
+const MODE_OPTIONS = [{ value: 'auto', label: 'Automatic' }, { value: 'manual', label: 'Manual' }] as const;
+
+function operationsForPlacement(
+  operations: readonly CanonicalOperation[],
+  placement: CanonicalOperationPlacement | undefined,
+): readonly CanonicalOperation[] {
+  if (placement === 'source') return operations.filter(({ scope }) => scope === 'source' || scope === 'instrument');
+  return placement === 'acquisition' ? operations.filter(({ scope }) => scope !== 'source') : operations;
+}
+
+function defaultOperation(operations: readonly CanonicalOperation[]): CanonicalOperation | undefined {
   return operations.find((operation) => operation.primary) ?? operations[0];
 }
 
-function initialIntents(
-  surface: CanonicalInstrumentSurface,
-  operation: CanonicalOperation | undefined,
-): Readonly<Record<string, CanonicalParameterIntent>> {
-  if (!operation) return {};
+function operationParameters(surface: CanonicalInstrumentSurface, operation: CanonicalOperation | undefined): readonly CanonicalParameter[] {
+  if (!operation) return [];
   const byId = new Map(surface.parameters.map((parameter) => [parameter.id, parameter] as const));
-  return Object.fromEntries(operation.parameterIds.flatMap((parameterId) => {
-    const parameter = byId.get(parameterId);
-    return parameter ? [[parameter.id, parameter.requested] as const] : [];
-  }));
+  return operation.parameterIds.flatMap((parameterId) => byId.get(parameterId) ?? []);
+}
+
+function initialIntents(parameters: readonly CanonicalParameter[]): Readonly<Record<string, CanonicalParameterIntent>> {
+  return Object.fromEntries(parameters.map((parameter) => [parameter.id, parameter.requested]));
+}
+
+function firstInvalidParameter(
+  parameters: readonly CanonicalParameter[],
+  intents: Readonly<Record<string, CanonicalParameterIntent>>,
+): { parameter: CanonicalParameter; issue: string } | undefined {
+  for (const parameter of parameters) {
+    const intent = intents[parameter.id] ?? parameter.requested;
+    const issue = intent.mode === 'manual' ? manualValueIssue(parameter, intent.value) : undefined;
+    if (issue) return { parameter, issue };
+  }
 }
 
 function numericValue(value: CanonicalParameterScalarValue, fallback: CanonicalParameterScalarValue): number {
@@ -368,10 +383,6 @@ function manualValueIssue(parameter: CanonicalParameter, value: CanonicalParamet
       }
     }
   }
-}
-
-function manualIntentValue(parameter: CanonicalParameter, intent: CanonicalParameterIntent): CanonicalParameterScalarValue {
-  return intent.mode === 'manual' ? intent.value : parameter.effectiveValue;
 }
 
 function isOnLattice(value: number, origin: number, step: number): boolean {

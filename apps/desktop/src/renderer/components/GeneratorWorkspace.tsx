@@ -1,6 +1,5 @@
 import type { CanonicalInstrumentSurface, CanonicalOperationParameterIntent } from '@tinysa/contracts';
-import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
-import { CanonicalOperationRequired } from './IqWorkspace.js';
+import { CanonicalOperationPanel, CanonicalOperationRequired } from './CanonicalOperationPanel.js';
 
 /** This route is a placement for driver-declared source operations. */
 export function GeneratorWorkspace({ canonicalSurface, busy, onCanonicalOperation }: {
@@ -8,15 +7,13 @@ export function GeneratorWorkspace({ canonicalSurface, busy, onCanonicalOperatio
   busy: boolean;
   onCanonicalOperation?(operationId: string, parameters: readonly CanonicalOperationParameterIntent[]): void | Promise<unknown>;
 }) {
-  const sourceOperationIds = canonicalSurface?.operations
-    .filter((operation) => operation.scope === 'source' || operation.scope === 'instrument')
-    .map((operation) => operation.id);
+  const hasSourceOperation = canonicalSurface?.operations.some(({ scope }) => scope === 'source' || scope === 'instrument');
   return <div className="generator-layout">
     <section className="generator-controls canonical-source-controls">
-      {canonicalSurface && onCanonicalOperation && sourceOperationIds?.length
+      {canonicalSurface && onCanonicalOperation && hasSourceOperation
         ? <CanonicalOperationPanel
             surface={canonicalSurface}
-            operationIds={sourceOperationIds}
+            placement="source"
             busy={busy}
             onExecute={onCanonicalOperation}
           />
