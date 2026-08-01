@@ -7,7 +7,7 @@ import type {
   WaveformClassificationEvidence,
   ZeroSpanCapture,
 } from '@tinysa/contracts';
-import { instrumentTimestampSchema } from '@tinysa/contracts';
+import { instrumentTimestampSchema, matchesUniformFrequencyGrid } from '@tinysa/contracts';
 import { sameMeasurementIdentity } from './measurement-provenance.js';
 import {
   BAYESIAN_DETECTOR_MODEL,
@@ -1631,8 +1631,8 @@ function validateSweep(sweep: Sweep): void {
   const spanHz = sweep.actualStopHz - sweep.actualStartHz;
   const closedStepHz = spanHz / (sweep.frequencyHz.length - 1);
   const halfOpenStepHz = spanHz / sweep.frequencyHz.length;
-  if (!matchesObservableGrid(sweep.frequencyHz, sweep.actualStartHz, closedStepHz)
-    && !matchesObservableGrid(sweep.frequencyHz, sweep.actualStartHz, halfOpenStepHz)) {
+  if (!matchesUniformFrequencyGrid(sweep.frequencyHz, sweep.actualStartHz, closedStepHz)
+    && !matchesUniformFrequencyGrid(sweep.frequencyHz, sweep.actualStartHz, halfOpenStepHz)) {
     throw new Error('Observable classification rejects materially incomplete or out-of-range sweep geometry');
   }
   if (sweep.resolutionBandwidthQualification === 'synthetic-grid-equivalent') {
@@ -1642,17 +1642,6 @@ function validateSweep(sweep: Sweep): void {
       throw new Error('Observable synthetic resolution scale must equal the frequency-grid spacing');
     }
   }
-}
-
-function matchesObservableGrid(
-  frequencyHz: readonly number[],
-  startHz: number,
-  stepHz: number,
-): boolean {
-  const toleranceHz = Math.max(1, Math.abs(stepHz) * 1e-9);
-  return Number.isFinite(stepHz)
-    && stepHz > 0
-    && frequencyHz.every((frequency, index) => Math.abs(frequency - (startHz + stepHz * index)) <= toleranceHz);
 }
 
 function validateZeroSpan(capture: ZeroSpanCapture): void {

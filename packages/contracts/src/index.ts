@@ -1621,11 +1621,12 @@ function matchesRequestedExportGrid(
 ): boolean {
   if (frequencyHz.length < 2) return false;
   const spanHz = stopHz - startHz;
-  return matchesExportUniformGrid(frequencyHz, startHz, spanHz / (frequencyHz.length - 1))
-    || matchesExportUniformGrid(frequencyHz, startHz, spanHz / frequencyHz.length);
+  return matchesUniformFrequencyGrid(frequencyHz, startHz, spanHz / (frequencyHz.length - 1))
+    || matchesUniformFrequencyGrid(frequencyHz, startHz, spanHz / frequencyHz.length);
 }
 
-function matchesExportUniformGrid(
+/** Accepts a finite, positive, evenly spaced grid within the shared RF tolerance. */
+export function matchesUniformFrequencyGrid(
   frequencyHz: readonly number[],
   startHz: number,
   stepHz: number,

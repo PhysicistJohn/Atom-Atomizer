@@ -16,6 +16,7 @@ import {
   instrumentFeatureResultSchema,
   instrumentManagerEventSchema,
   instrumentMeasurementSchema,
+  matchesUniformFrequencyGrid,
   instrumentOpaqueIdSchema,
   instrumentSessionSnapshotSchema,
   instrumentTimestampSchema,
@@ -1760,19 +1761,8 @@ function matchesRequestedSpectrumGrid(
   const spanHz = stopHz - startHz;
   const closedStepHz = spanHz / (frequencyHz.length - 1);
   const halfOpenStepHz = spanHz / frequencyHz.length;
-  return matchesUniformGrid(frequencyHz, startHz, closedStepHz)
-    || matchesUniformGrid(frequencyHz, startHz, halfOpenStepHz);
-}
-
-function matchesUniformGrid(
-  frequencyHz: readonly number[],
-  startHz: number,
-  stepHz: number,
-): boolean {
-  const toleranceHz = Math.max(1, Math.abs(stepHz) * 1e-9);
-  return Number.isFinite(stepHz)
-    && stepHz > 0
-    && frequencyHz.every((frequency, index) => Math.abs(frequency - (startHz + stepHz * index)) <= toleranceHz);
+  return matchesUniformFrequencyGrid(frequencyHz, startHz, closedStepHz)
+    || matchesUniformFrequencyGrid(frequencyHz, startHz, halfOpenStepHz);
 }
 
 function faultedSessionError(active: ActiveSession): InstrumentManagerError {
