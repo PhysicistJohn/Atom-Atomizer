@@ -129,6 +129,14 @@ describe('in-process SignalLab canonical surface', () => {
       if (!candidate) throw new Error('SignalLab discovery returned no candidate');
       const connected = await manager.connect(candidate);
       const initial = requireCanonicalSurface(manager);
+      expect(requireParameter(initial, 'source.channel.noise-floor').manual).toEqual({
+        kind: 'number',
+        range: { min: -150, max: -30 },
+      });
+      expect(requireParameter(initial, 'source.channel.fading-rate').manual).toEqual({
+        kind: 'number',
+        range: { min: 0.1, max: 100 },
+      });
       const profile = await manager.executeCanonicalOperation(canonicalRequest(
         connected.sessionId,
         initial,
@@ -149,14 +157,22 @@ describe('in-process SignalLab canonical surface', () => {
         {
           'source.channel.model': 'rayleigh',
           'source.channel.receiver-impairment': 'phase-noise',
-          'source.channel.noise-floor': -96.5,
+          'source.channel.noise-floor': -96.37,
           'source.channel.seed': 99,
-          'source.channel.fading-rate': 3.5,
+          'source.channel.fading-rate': 3.25,
         },
       ));
       expect(requireParameter(channel.surface, 'source.channel.model')).toMatchObject({
         requested: { mode: 'manual', value: 'rayleigh' },
         effectiveValue: 'rayleigh',
+      });
+      expect(requireParameter(channel.surface, 'source.channel.noise-floor')).toMatchObject({
+        requested: { mode: 'manual', value: -96.37 },
+        effectiveValue: -96.37,
+      });
+      expect(requireParameter(channel.surface, 'source.channel.fading-rate')).toMatchObject({
+        requested: { mode: 'manual', value: 3.25 },
+        effectiveValue: 3.25,
       });
 
       const custom = await manager.executeCanonicalOperation(canonicalRequest(

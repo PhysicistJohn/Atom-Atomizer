@@ -102,7 +102,6 @@ describe('canonical operation panel', () => {
     expect(screen.getByRole('button', { name: /Enabled value/i })).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'Label value' })).toBeTruthy();
     expect(screen.getAllByText('Device readback')).toHaveLength(1);
-    expect(screen.getByText(/Automatic values are resolved by the connected driver/i)).toBeTruthy();
   });
 
   it('returns complete generic intents, including edits from each manual domain', () => {
@@ -159,6 +158,51 @@ describe('canonical operation panel', () => {
     expect(onExecute).toHaveBeenCalledWith('measure', [
       { parameterId: 'samples', intent: { mode: 'manual', value: 1_024 } },
     ]);
+  });
+
+  it('retains a selected operation across a fresh surface only while it remains in this placement', () => {
+    const initial = surface();
+    initial.operations[0] = { ...initial.operations[0]!, scope: 'acquisition' };
+    initial.operations.push(
+      {
+        id: 'measure',
+        label: 'Measure',
+        scope: 'acquisition',
+        parameterIds: ['samples'],
+        outputs: ['Measurement'],
+        availability: 'available',
+        primary: false,
+        confirmation: 'none',
+      },
+      {
+        id: 'source',
+        label: 'Source',
+        scope: 'source',
+        parameterIds: ['samples'],
+        outputs: ['Signal'],
+        availability: 'available',
+        primary: false,
+        confirmation: 'none',
+      },
+    );
+    const view = render(<CanonicalOperationPanel surface={initial} placement="acquisition" busy={false} onExecute={vi.fn()}/>);
+    const picker = screen.getByRole('combobox', { name: 'Operation' }) as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: 'measure' } });
+    expect(picker.value).toBe('measure');
+
+    const refreshed = { ...initial, revision: 'canonical-surface-2' };
+    view.rerender(<CanonicalOperationPanel surface={refreshed} placement="acquisition" busy={false} onExecute={vi.fn()}/>);
+    expect((screen.getByRole('combobox', { name: 'Operation' }) as HTMLSelectElement).value).toBe('measure');
+
+    const moved = {
+      ...refreshed,
+      revision: 'canonical-surface-3',
+      operations: refreshed.operations.map((operation) => operation.id === 'measure'
+        ? { ...operation, scope: 'source' as const }
+        : operation),
+    };
+    view.rerender(<CanonicalOperationPanel surface={moved} placement="acquisition" busy={false} onExecute={vi.fn()}/>);
+    expect(screen.getByRole('button', { name: 'Apply Capture' })).toBeTruthy();
   });
 
   it('uses the driver-declared high-impact confirmation without an operation-name branch', () => {

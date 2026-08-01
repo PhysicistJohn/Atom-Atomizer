@@ -142,13 +142,11 @@ function TracePanel(props: MeasurementDockProps) {
   if (!trace) throw new Error(`Trace ${props.activeTraceId} does not exist`);
   const frame = props.frames.find((item) => item.traceId === trace.id);
   const firmwareOverlays = props.firmwareFrames.filter((item) => item.traceId !== 1);
-  const traceEnabled = trace.mode !== 'blank';
   return <div className="measurement-panel trace-panel">
     <div className="trace-selector">{props.traces.map((item) => <button key={item.id} className={`t${item.id} ${item.id === trace.id ? 'active' : ''}`} onClick={() => props.onActiveTrace(item.id)} data-agent-control={`trace.${item.id}.select`}><i className={`trace-color t${item.id}`}/><span>TRACE {item.id}</span></button>)}</div>
     <div className="trace-readout"><span><i className={`trace-color t${trace.id}`}/><small>TRACE {trace.id}</small></span><strong>{traceModeLabel(trace.mode)}</strong><em>{frame ? `${frame.sweepCount} sweep${frame.sweepCount === 1 ? '' : 's'} captured` : 'No data captured'}</em></div>
     <div className="parameter-stack trace-settings">
-      <ToggleParameter label={`Trace ${trace.id}`} value={traceEnabled} controlId={`trace.${trace.id}.enabled`} onToggle={(enabled) => props.onTrace({ ...trace, mode: enabled ? 'clear-write' : 'blank' })}/>
-      {traceEnabled && <SelectParameter label="Trace mode" value={trace.mode} options={[{ value: 'clear-write', label: 'Clear / Write' }, { value: 'max-hold', label: 'Maximum Hold' }, { value: 'min-hold', label: 'Minimum Hold' }, { value: 'average', label: 'Average' }, { value: 'view', label: 'View / Freeze' }]} controlId={`trace.${trace.id}.mode`} onValue={(value) => props.onTrace({ ...trace, mode: value as TraceConfiguration['mode'] })}/>}
+      <SelectParameter label="Trace mode" value={trace.mode} options={[{ value: 'blank', label: 'Off' }, { value: 'clear-write', label: 'Clear / Write' }, { value: 'max-hold', label: 'Maximum Hold' }, { value: 'min-hold', label: 'Minimum Hold' }, { value: 'average', label: 'Average' }, { value: 'view', label: 'View / Freeze' }]} controlId={`trace.${trace.id}.mode`} onValue={(value) => props.onTrace({ ...trace, mode: value as TraceConfiguration['mode'] })}/>
       {trace.mode === 'average' && <EditableParameter label="Average count" value={trace.averageCount} displayValue={`${trace.averageCount} sweeps`} minimum={2} maximum={100} step={1} controlId={`trace.${trace.id}.average-count`} onCommit={(value) => props.onTrace({ ...trace, averageCount: Number(value) })}/>}
     </div>
     <div className="panel-action"><button className="secondary full" onClick={() => props.onTraceReset(trace.id)} data-agent-control={`trace.${trace.id}.reset`}><RotateCcw size={14}/>Reset Trace {trace.id}</button></div>

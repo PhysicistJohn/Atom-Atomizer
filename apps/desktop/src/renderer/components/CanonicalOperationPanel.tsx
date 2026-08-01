@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, Cpu, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Activity, CheckCircle2, Cpu, SlidersHorizontal } from 'lucide-react';
 import type {
   CanonicalInstrumentSurface,
   CanonicalOperation,
@@ -67,12 +67,13 @@ export function CanonicalOperationPanel({
   }, [resetKey]);
 
   // An operation ID passed by a host intentionally pins the panel. Otherwise
-  // surface operations are peer choices: no source family determines which
-  // one is rendered, and a refreshed surface chooses its driver-declared
-  // primary operation again.
+  // keep a deliberate peer choice across fresh driver truth when it is still
+  // declared at this presentation location; fall back only when it is gone.
   useEffect(() => {
     if (operationId !== undefined) return;
-    setSelectedOperationId(defaultOperation(operations)?.id);
+    setSelectedOperationId((current) => operations.some((operation) => operation.id === current)
+      ? current
+      : defaultOperation(operations)?.id);
   }, [surface.revision, operationId, placement]);
 
   if (!operation) {
@@ -168,7 +169,6 @@ export function CanonicalOperationPanel({
       {invalidParameter.parameter.label}: {invalidParameter.issue}
     </div>}
     {executionError && <div className="inline-error" role="alert">{executionError}</div>}
-    <div className="canonical-operation-note" role="status"><Sparkles size={14}/><p>Automatic values are resolved by the connected driver. Each effective value below includes its verification basis.</p></div>
     {confirmationPending && <div className="canonical-operation-confirmation" role="alert">
       <p>This driver-declared operation can affect the connected hardware. Confirm the connected path before applying it.</p>
       <div>

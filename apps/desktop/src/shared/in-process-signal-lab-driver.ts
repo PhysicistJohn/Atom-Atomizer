@@ -28,10 +28,19 @@ import {
   type InstrumentSessionProvenance,
 } from '@tinysa/contracts';
 import {
+  canonicalIntegerParameter,
+  canonicalRangeValue,
+  humanizeCanonicalOption,
+  maximumReachableRangeValue,
   parseInstrumentConfigurationCommand,
   parseInstrumentFeatureCommand,
   parseInstrumentFeatureResult,
   parseInstrumentMeasurement,
+  requireCanonicalRange,
+  resolveCanonicalEnumIntent as resolveCanonicalEnumIntentShared,
+  resolveCanonicalInteger,
+  resolveCanonicalRangedNumberIntent,
+  type CanonicalNumericRange as NumericRange,
   type CanonicalOperationResolution,
   type InstrumentDriver,
   type InstrumentSession,
@@ -830,7 +839,6 @@ const CANONICAL_SIGNAL_LAB_PARAMETERS = {
   sourceChannelFadingRateHz: 'source.channel.fading-rate',
 } as const;
 
-const CANONICAL_AUTO_DESCRIPTION = 'The connected driver selects a valid setting when Auto is requested.';
 const CANONICAL_SOURCE_AUTO_DESCRIPTION = 'The connected driver resolves Auto from its current admitted source state.';
 const CANONICAL_RECEIVER_IMPAIRMENT_VALUES = [
   'clean',
@@ -844,11 +852,10 @@ const CANONICAL_RECEIVER_IMPAIRMENT_VALUES = [
   'composite',
 ] as const;
 const CANONICAL_SOURCE_CHANNEL_MODE_VALUES = ['awgn', 'rayleigh'] as const;
-const CANONICAL_SOURCE_CHANNEL_NOISE_FLOOR_RANGE = { min: -150, max: -30, step: 0.1 } as const;
+const CANONICAL_SOURCE_CHANNEL_NOISE_FLOOR_RANGE = { min: -150, max: -30 } as const;
 const CANONICAL_SOURCE_CHANNEL_SEED_RANGE = { min: 1, max: 0xffff_ffff, step: 1 } as const;
-const CANONICAL_SOURCE_CHANNEL_FADING_RATE_RANGE = { min: 0.1, max: 100, step: 0.1 } as const;
+const CANONICAL_SOURCE_CHANNEL_FADING_RATE_RANGE = { min: 0.1, max: 100 } as const;
 
-type NumericRange = Readonly<{ min: number; max: number; step?: number }>;
 type SignalLabSpectrumCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'swept-spectrum' }>;
 type SignalLabPowerCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'detected-power-timeseries' }>;
 type SignalLabCaptureCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }>;
@@ -935,7 +942,7 @@ function signalLabCanonicalSurface(input: Readonly<{
     presentation: {
       title: 'Measurement interface',
       subtitle: 'Connected source',
-      qualification: humanizeCanonicalValue(input.provenance.qualification),
+      qualification: humanizeCanonicalOption(input.provenance.qualification),
       facts: [
         {
           label: 'Scalar timing',
@@ -967,7 +974,7 @@ function canonicalSourceSurface(
   const sourceParameters = canonicalSourceParameters(intents,
     [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceProfile, 'Operating selection', 'Source', { kind: 'enum', options: capability.profiles.map((profile) => ({ value: profile.profileId, label: profile.label })) }, status.profile],
     [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelModel, 'Channel model', 'Source channel', { kind: 'enum', options: CANONICAL_SOURCE_CHANNEL_MODE_VALUES.map((value) => ({ value, label: value.toUpperCase() })) }, status.channel.model],
-    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelReceiverImpairment, 'Receiver impairment', 'Source channel', { kind: 'enum', options: CANONICAL_RECEIVER_IMPAIRMENT_VALUES.map((value) => ({ value, label: humanizeCanonicalValue(value) })) }, status.channel.receiverImpairment],
+    [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelReceiverImpairment, 'Receiver impairment', 'Source channel', { kind: 'enum', options: CANONICAL_RECEIVER_IMPAIRMENT_VALUES.map((value) => ({ value, label: humanizeCanonicalOption(value) })) }, status.channel.receiverImpairment],
     [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelNoiseFloorDbm, 'Noise floor', 'Source channel', { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_NOISE_FLOOR_RANGE }, status.channel.noiseFloorDbm, 'dBm'],
     [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelSeed, 'Deterministic seed', 'Source channel', { kind: 'integer', range: CANONICAL_SOURCE_CHANNEL_SEED_RANGE }, status.channel.seed],
     [CANONICAL_SIGNAL_LAB_PARAMETERS.sourceChannelFadingRateHz, 'Fading rate', 'Source channel', { kind: 'number', range: CANONICAL_SOURCE_CHANNEL_FADING_RATE_RANGE }, status.channel.fadingRateHz, 'Hz'],
@@ -1151,7 +1158,7 @@ function automaticSignalLabSpectrumConfiguration(
   let stopHz = canonicalIntegerClosest(capability.frequencyHz, status.waveform.centerHz + spanHz / 2);
   if (stopHz <= startHz) {
     startHz = canonicalIntegerClosest(capability.frequencyHz, capability.frequencyHz.min);
-    stopHz = canonicalIntegerMaximum(capability.frequencyHz);
+    stopHz = maximumReachableRangeValue(capability.frequencyHz);
   }
   if (stopHz <= startHz) throw new Error('SignalLab spectrum capability does not admit a nonzero span');
   return {
@@ -1321,28 +1328,6 @@ function resolveCanonicalSignalLabCapture(
   };
 }
 
-function canonicalIntegerParameter(
-  id: string,
-  label: string,
-  group: string,
-  unit: string,
-  range: NumericRange,
-  configuredValue: number | undefined,
-  automaticValue: number,
-): CanonicalParameter {
-  return {
-    id,
-    label,
-    group,
-    unit,
-    manual: { kind: 'integer', range: canonicalRange(range) },
-    auto: { resolver: 'driver', description: CANONICAL_AUTO_DESCRIPTION },
-    requested: configuredValue === undefined ? { mode: 'auto' } : { mode: 'manual', value: configuredValue },
-    effectiveValue: configuredValue ?? automaticValue,
-    verification: configuredValue === undefined ? 'driver-selected' : 'driver-commanded',
-  };
-}
-
 type CanonicalIntegerParameterDefinition = readonly [
   id: string,
   label: string,
@@ -1357,7 +1342,16 @@ function canonicalIntegerParameters(
   definitions: readonly CanonicalIntegerParameterDefinition[],
 ): CanonicalParameter[] {
   return definitions.map(([id, label, group, unit, range, configuredValue, automaticValue]) =>
-    canonicalIntegerParameter(id, label, group, unit, range, configuredValue, automaticValue));
+    canonicalIntegerParameter(
+      id,
+      label,
+      group,
+      unit,
+      range,
+      configuredValue === undefined ? { mode: 'auto' } : { mode: 'manual', value: configuredValue },
+      configuredValue ?? automaticValue,
+      configuredValue === undefined ? 'driver-selected' : 'driver-commanded',
+    ));
 }
 
 function resolveCanonicalIntegerIntent(
@@ -1367,14 +1361,7 @@ function resolveCanonicalIntegerIntent(
   range: NumericRange,
   label: string,
 ): number {
-  const intent = intents.get(parameterId);
-  if (!intent) throw new RangeError(`${label} intent is missing`);
-  const value = intent.mode === 'auto' ? automaticValue : intent.value;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new TypeError(`${label} must be a safe integer`);
-  }
-  requireCanonicalIntegerRange(value, range, label);
-  return value;
+  return resolveCanonicalInteger(intents.get(parameterId), automaticValue, range, label);
 }
 
 function resolveCanonicalEnumIntent(
@@ -1384,12 +1371,7 @@ function resolveCanonicalEnumIntent(
   allowed: readonly string[],
   label: string,
 ): string {
-  const intent = intents.get(parameterId);
-  const value = intent?.mode === 'manual' ? intent.value : automaticValue;
-  if (typeof value !== 'string' || !allowed.includes(value)) {
-    throw new RangeError(`${label} must be an advertised setting`);
-  }
-  return value;
+  return resolveCanonicalEnumIntentShared(intents, parameterId, allowed, automaticValue, label);
 }
 
 function resolveCanonicalNumberIntent(
@@ -1399,12 +1381,15 @@ function resolveCanonicalNumberIntent(
   range: NumericRange,
   label: string,
 ): number {
-  const intent = intents.get(parameterId);
-  const value = intent?.mode === 'manual' ? intent.value : automaticValue;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < range.min || value > range.max) {
-    throw new RangeError(`${label} is outside the admitted setting range`);
-  }
-  return value;
+  return resolveCanonicalRangedNumberIntent(
+    intents,
+    parameterId,
+    automaticValue,
+    range,
+    `${label} is outside the admitted setting range`,
+    false,
+    label,
+  );
 }
 
 function canonicalCustomWaveformParameterId(key: string): string {
@@ -1441,7 +1426,7 @@ function canonicalCustomWaveformIntents(
 }
 
 function canonicalIntegerClosest(range: NumericRange, preferred: number): number {
-  return canonicalIntegerClosestWithin(range, preferred, canonicalIntegerMaximum(range), 'Automatic selection');
+  return canonicalRangeValue(range, preferred, 'Automatic selection is not a safe integer');
 }
 
 function canonicalIntegerClosestWithin(
@@ -1450,61 +1435,19 @@ function canonicalIntegerClosestWithin(
   maximum: number,
   label: string,
 ): number {
-  const { minimum, maximumReachable, step } = canonicalIntegerRangeBounds(range, label);
-  const admittedMaximum = Math.min(maximumReachable, maximum);
-  if (admittedMaximum < minimum) throw new RangeError(`${label} has no admitted values`);
-  const bounded = Math.min(admittedMaximum, Math.max(minimum, preferred));
-  const steps = Math.min(
-    Math.floor((admittedMaximum - minimum) / step),
-    Math.max(0, Math.round((bounded - minimum) / step)),
-  );
-  const value = minimum + steps * step;
-  requireCanonicalIntegerRange(value, range, label);
+  const admittedMaximum = Math.min(maximumReachableRangeValue(range), maximum);
+  if (admittedMaximum < range.min) throw new RangeError(`${label} has no admitted values`);
+  const value = canonicalRangeValue({ ...range, max: admittedMaximum }, preferred, `${label} is not a safe integer`);
   if (value > maximum) throw new RangeError(`${label} exceeds its source-specific output bound`);
   return value;
 }
 
 function canonicalIntegerAtLeast(range: NumericRange, required: number, label: string): number {
-  const { minimum, maximumReachable, step } = canonicalIntegerRangeBounds(range, label);
-  const steps = Math.max(0, Math.ceil((required - minimum) / step));
-  const value = minimum + steps * step;
-  if (value > maximumReachable || value < required) {
+  const step = range.step ?? 1;
+  const value = range.min + Math.max(0, Math.ceil((required - range.min) / step)) * step;
+  if (!Number.isSafeInteger(value) || value > maximumReachableRangeValue(range) || value < required) {
     throw new RangeError(`${label} cannot satisfy the required ${required}`);
   }
-  requireCanonicalIntegerRange(value, range, label);
+  requireCanonicalRange(value, range, label);
   return value;
-}
-
-function canonicalIntegerMaximum(range: NumericRange): number {
-  return canonicalIntegerRangeBounds(range, 'Automatic selection').maximumReachable;
-}
-
-function canonicalIntegerRangeBounds(range: NumericRange, label: string): {
-  readonly minimum: number;
-  readonly maximumReachable: number;
-  readonly step: number;
-} {
-  if (!Number.isSafeInteger(range.min) || !Number.isSafeInteger(range.max) || range.min > range.max) {
-    throw new RangeError(`${label} range must use ordered safe integers`);
-  }
-  const step = range.step ?? 1;
-  if (!Number.isSafeInteger(step) || step < 1) throw new RangeError(`${label} range step must be a positive safe integer`);
-  const maximumReachable = range.min + Math.floor((range.max - range.min) / step) * step;
-  if (!Number.isSafeInteger(maximumReachable)) throw new RangeError(`${label} range maximum is not a safe integer`);
-  return { minimum: range.min, maximumReachable, step };
-}
-
-function requireCanonicalIntegerRange(value: number, range: NumericRange, label: string): void {
-  const { minimum, maximumReachable, step } = canonicalIntegerRangeBounds(range, label);
-  if (value < minimum || value > maximumReachable || (value - minimum) % step !== 0) {
-    throw new RangeError(`${label} ${value} is outside the admitted setting range`);
-  }
-}
-
-function canonicalRange(range: NumericRange): { min: number; max: number; step?: number } {
-  return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
-}
-
-function humanizeCanonicalValue(value: string): string {
-  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
