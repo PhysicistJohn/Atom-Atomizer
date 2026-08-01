@@ -1,30 +1,20 @@
 import {
   atomizerInstrumentEventSchema,
-  analyzerConfigSchema,
-  zeroSpanConfigSchema,
   type AtomizerInstrumentEvent,
   type AtomizerInstrumentState,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationParameterIntent,
+  type CanonicalOperationResult,
   type InstrumentConfigurationState,
   type InstrumentFeatureRequest,
   type InstrumentFeatureResult,
   type InstrumentSessionSnapshot,
-  type SignalLabChannelState,
 } from '@tinysa/contracts';
-import {
-  reconcileAnalyzerConfiguration,
-  reconcileDetectedPowerConfiguration,
-} from '../instrument-configuration.js';
-import {
-  reconcileComplexIqConfiguration,
-  reconcileSignalLabProfileComplexIqConfiguration,
-  sameComplexIqConfiguration,
-} from '../complex-iq.js';
 import {
   errorMessage,
   featureResultAcknowledgesRequest,
   invalidatingFeatureReason,
   isInvalidatingFeatureRequest,
-  sameAnalyzerConfiguration,
   sameStructuredValue,
   INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS,
   type ConfigurationInvalidatedEvent,
@@ -133,7 +123,7 @@ export class InstrumentEventsController {
     }
     else if (event.type === 'feature-result') {
       if (k.state.instrument.session?.sessionId !== event.session.sessionId) return;
-      this.acceptInstrumentState({ ...k.state.instrument, session: event.session }, event.result.kind === 'signal-lab-profile-selection');
+      this.acceptInstrumentState({ ...k.state.instrument, session: event.session }, true);
       this.acceptFeatureResult(event.result);
       this.observeInvalidatingFeatureLifecycle(event);
     }
@@ -165,38 +155,18 @@ export class InstrumentEventsController {
     }
   }
 
-  acceptInstrumentState(next: AtomizerInstrumentState, initializeSelection = false): void {
+  acceptInstrumentState(next: AtomizerInstrumentState, refreshCanonicalSurface = false): void {
     const k = this.k;
     const previousSessionId = k.state.instrument.session?.sessionId;
     const admittedSession = next.session;
-    const admittedProvenance = admittedSession?.provenance;
-    if (admittedSession
-      && admittedSession.sessionId !== previousSessionId
-      && admittedProvenance?.sourceKind === 'signal-lab') {
-      const provenance = admittedProvenance;
-      console.info(`[ATOMIZER-SIGNAL-LAB-SESSION] ${JSON.stringify({
-        schemaVersion: 1,
-        event: 'admitted',
-        sessionId: admittedSession.sessionId,
-        driverId: admittedSession.driverId,
-        provenance: {
-          sourceKind: provenance.sourceKind,
-          sourceId: provenance.sourceId,
-          execution: provenance.execution,
-          transport: provenance.transport,
-          qualification: provenance.qualification,
-          contractId: provenance.contractId,
-          contractVersion: provenance.contractVersion,
-          contractSha256: provenance.contractSha256,
-          catalogSha256: provenance.catalogSha256,
-          generatorContractBindingSha256: provenance.generatorContractBindingSha256,
-          claims: provenance.claims,
-        },
-      })}`);
-    }
     if (next.session?.sessionId !== previousSessionId) k.invalidateAcquiredEvidence(true);
-    k.set({ instrument: next });
-    if (next.session && (initializeSelection || next.session.sessionId !== previousSessionId)) this.initializeSessionSelection(next.session);
+    k.set({
+      instrument: next,
+      ...(next.session?.sessionId === previousSessionId ? {} : { canonicalSurface: undefined }),
+    });
+    if (next.session && (refreshCanonicalSurface || next.session.sessionId !== previousSessionId)) {
+      this.refreshCanonicalSurface(next.session.sessionId);
+    }
   }
 
   acceptSession(next: InstrumentSessionSnapshot): void {
@@ -216,6 +186,65 @@ export class InstrumentEventsController {
       return;
     }
     this.acceptInstrumentState({ ...k.state.instrument, session: { ...active, configuration } });
+    this.refreshCanonicalSurface(configuration.sessionId);
+  }
+
+  /**
+   * Resolve a generic operation against the current driver surface.  The
+   * renderer sends only its chosen Auto/manual intents; the driver is solely
+   * responsible for translating those into device controls and for returning
+   * the resulting effective values and their verification.
+   */
+  async executeCanonicalOperation(
+    surface: CanonicalInstrumentSurface,
+    operationId: string,
+    parameters: readonly CanonicalOperationParameterIntent[],
+  ): Promise<CanonicalOperationResult> {
+    const k = this.k;
+    const execute = window.atomizerInstrument.executeCanonicalOperation;
+    if (!execute) throw new Error('The connected instrument does not publish generic operations yet');
+    try {
+      return await k.acquisition.runInstrumentTransaction('execute-canonical-operation', async () => {
+        const session = k.requireConnected();
+        // A generic operation may retune or otherwise replace the admitted
+        // measurement geometry. Never leave evidence from the old geometry
+        // visible while its driver-owned configuration is being applied.
+        k.invalidateAcquiredEvidence(true);
+        const result = await execute({
+          sessionId: session.sessionId,
+          surfaceRevision: surface.revision,
+          operationId,
+          parameters: [...parameters],
+        });
+        if (k.state.instrument.session?.sessionId !== result.sessionId) {
+          throw new Error('Generic operation acknowledgement belongs to a stale instrument session');
+        }
+        k.set({
+          canonicalSurface: result.surface,
+          error: undefined,
+          notice: 'Instrument operation applied',
+        });
+        return result;
+      });
+    } catch (value) {
+      if (k.state.instrument.session) k.set({ error: errorMessage(value) });
+      throw value;
+    }
+  }
+
+  /** Latest-wins refresh so a late IPC response can never restore a prior session's controls. */
+  refreshCanonicalSurface(sessionId: string): void {
+    // Isolated controller tests intentionally exercise lifecycle admission
+    // without an Electron preload.  A real renderer always has this bridge.
+    const read = window.atomizerInstrument?.canonicalSurface;
+    if (!read) return;
+    void read().then((surface) => {
+      if (this.k.state.instrument.session?.sessionId !== sessionId) return;
+      this.k.set({ canonicalSurface: surface });
+    }).catch((value) => {
+      if (this.k.state.instrument.session?.sessionId !== sessionId) return;
+      this.k.set({ canonicalSurface: undefined, error: `Could not refresh instrument controls: ${errorMessage(value)}` });
+    });
   }
 
   acceptFeatureResult(result: InstrumentFeatureResult): void {
@@ -223,24 +252,6 @@ export class InstrumentEventsController {
     if (k.state.instrument.session?.sessionId !== result.sessionId) return;
     if (result.kind === 'screen') k.set({ screenFrame: result.frame });
     else if (result.kind === 'diagnostics') k.set({ diagnostics: result.lines });
-    else if (result.kind === 'signal-lab-profile-selection') {
-      k.invalidateAcquiredEvidence(true);
-      const active = k.state.instrument.session;
-      if (result.action === 'select-profile') {
-        if (active) this.initializeSessionSelection(active, result.profileId, k.state.selectedSignalLabChannel);
-      } else if (result.action === 'configure-channel') {
-        k.set({ selectedSignalLabChannel: result.channel });
-      } else if (active) {
-        // A custom build republishes both the `custom-${standard}` descriptor
-        // and its matching I/Q transport, so occupied bandwidth, recommended
-        // span, signal bandwidth, and the profile reference center can all move
-        // together. Reconcile the staged analyzer/zero-span/I/Q geometry and the
-        // Studio view against the refreshed capability, exactly as a profile
-        // switch does. The operator's own profile selection and channel state
-        // are not what this action changes, so both are carried across.
-        this.initializeSessionSelection(active, k.state.selectedProfile, k.state.selectedSignalLabChannel);
-      }
-    }
   }
 
   async executeInstrumentFeature(request: InstrumentFeatureRequest): Promise<InstrumentFeatureResult> {
@@ -264,10 +275,7 @@ export class InstrumentEventsController {
         // caller reserve/configure the replacement acquisition revision.
         return execution.result;
       }
-      this.acceptInstrumentState(
-        { ...k.state.instrument, session: execution.session },
-        execution.result.kind === 'signal-lab-profile-selection',
-      );
+      this.acceptInstrumentState({ ...k.state.instrument, session: execution.session }, true);
       this.acceptFeatureResult(execution.result);
       return execution.result;
     } catch (value) {
@@ -378,73 +386,4 @@ export class InstrumentEventsController {
     expected.reject(reason);
   }
 
-  initializeSessionSelection(next: InstrumentSessionSnapshot, selectedProfileId?: string, selectedChannel?: SignalLabChannelState): void {
-    const k = this.k;
-    const profileCapability = next.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
-    const profileId = selectedProfileId ?? profileCapability?.selectedProfileId;
-    k.set({ selectedProfile: profileId, selectedSignalLabChannel: selectedChannel ?? profileCapability?.channel });
-    const selectedProfileEntry = profileCapability?.profiles.find((profile) => profile.profileId === profileId);
-    const detectedPower = next.capabilities.acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
-    if (selectedProfileEntry) k.measurement.updateZeroSpanConfiguration((current) => {
-      const staged = zeroSpanConfigSchema.parse({ ...current, frequencyHz: selectedProfileEntry.centerFrequencyHz });
-      return detectedPower?.kind === 'detected-power-timeseries'
-        ? reconcileDetectedPowerConfiguration(detectedPower, staged)
-        : staged;
-    });
-    else if (detectedPower?.kind === 'detected-power-timeseries') {
-      k.measurement.updateZeroSpanConfiguration((current) => reconcileDetectedPowerConfiguration(detectedPower, current));
-    }
-    const spectrum = next.capabilities.acquisitions.find((capability) => capability.kind === 'swept-spectrum');
-    if (!spectrum) {
-      k.invalidateAcquiredEvidence();
-    } else {
-      const current = k.state.analyzer;
-      const maximumSpanHz = spectrum.frequencyHz.max - spectrum.frequencyHz.min;
-      const profileSpanHz = selectedProfileEntry ? Math.min(selectedProfileEntry.recommendedSpanHz, maximumSpanHz) : undefined;
-      const profileStartHz = selectedProfileEntry && profileSpanHz !== undefined
-        ? Math.max(
-          spectrum.frequencyHz.min,
-          Math.min(Math.round(selectedProfileEntry.centerFrequencyHz - profileSpanHz / 2), spectrum.frequencyHz.max - profileSpanHz),
-        )
-        : undefined;
-      const startHz = profileStartHz ?? Math.max(spectrum.frequencyHz.min, Math.min(current.startHz, spectrum.frequencyHz.max - 1));
-      const stopHz = profileStartHz !== undefined && profileSpanHz !== undefined
-        ? profileStartHz + profileSpanHz
-        : Math.max(startHz + 1, Math.min(current.stopHz, spectrum.frequencyHz.max));
-      const points = Math.max(spectrum.points.min, Math.min(current.points, spectrum.points.max));
-      const staged = analyzerConfigSchema.parse({
-        ...current,
-        startHz,
-        stopHz,
-        points,
-      });
-      const reconciled = reconcileAnalyzerConfiguration(spectrum, staged);
-      if (!sameAnalyzerConfiguration(current, reconciled)) {
-        k.analyzerRevision.current++;
-        k.set({ analyzer: reconciled });
-      }
-    }
-    const iq = next.capabilities.acquisitions.find((capability) => capability.kind === 'complex-iq');
-    if (iq?.kind === 'complex-iq') {
-      const iqProfile = profileCapability?.iqProfiles.find((profile) => profile.profileId === profileId);
-      const reconciled = selectedProfileEntry && iqProfile
-        ? reconcileSignalLabProfileComplexIqConfiguration(
-            iq,
-            iqProfile,
-            k.state.iqConfiguration,
-          )
-        : reconcileComplexIqConfiguration(
-            iq,
-            selectedProfileEntry
-              ? { ...k.state.iqConfiguration, centerHz: selectedProfileEntry.centerFrequencyHz }
-              : k.state.iqConfiguration,
-          );
-      if (!sameComplexIqConfiguration(reconciled, k.state.iqConfiguration)) {
-        k.iqConfigurationRevision.current++;
-        k.set({ iqConfiguration: reconciled });
-      }
-    } else {
-      k.set({ iqCapture: undefined });
-    }
-  }
 }

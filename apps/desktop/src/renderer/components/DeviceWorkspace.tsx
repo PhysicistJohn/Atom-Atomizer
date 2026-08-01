@@ -1,18 +1,16 @@
 import { useEffect, useRef } from 'react';
-import { AlertTriangle, CheckCircle2, Cpu, Fingerprint, FlaskConical, MonitorUp, RefreshCw, TerminalSquare, Usb } from 'lucide-react';
-import type { InstrumentScreenFrame, InstrumentSessionSnapshot } from '@tinysa/contracts';
-import { SelectParameter } from './ParameterRow.js';
+import { CheckCircle2, Cpu, Fingerprint, MonitorUp, RefreshCw, TerminalSquare } from 'lucide-react';
+import type { CanonicalInstrumentSurface, InstrumentFeatureCapability, InstrumentScreenFrame, InstrumentSessionSnapshot } from '@tinysa/contracts';
 
 export interface InstrumentScreenPoint { x: number; y: number }
 
-export function DeviceWorkspace({ session, diagnostics, frame, busy, touchBusy, selectedProfile, onProfile, onRefresh, onCapture, onTap }: {
+export function DeviceWorkspace({ session, canonicalSurface, diagnostics, frame, busy, touchBusy, onRefresh, onCapture, onTap }: {
   session?: InstrumentSessionSnapshot;
+  canonicalSurface?: CanonicalInstrumentSurface;
   diagnostics: readonly string[];
   frame?: InstrumentScreenFrame;
   busy: boolean;
   touchBusy: boolean;
-  selectedProfile?: string;
-  onProfile(profileId: string): void;
   onRefresh(): void;
   onCapture(): void;
   onTap(point: InstrumentScreenPoint): void;
@@ -25,7 +23,6 @@ export function DeviceWorkspace({ session, diagnostics, frame, busy, touchBusy, 
 
   const screen = session?.capabilities.features.find((feature) => feature.kind === 'screen');
   const touch = session?.capabilities.features.find((feature) => feature.kind === 'touch');
-  const profile = session?.capabilities.features.find((feature) => feature.kind === 'signal-lab-profile-selection');
   const diagnosticCapability = session?.capabilities.features.find((feature) => feature.kind === 'diagnostics');
   const point = (event: React.PointerEvent<HTMLCanvasElement>): InstrumentScreenPoint => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -37,17 +34,12 @@ export function DeviceWorkspace({ session, diagnostics, frame, busy, touchBusy, 
     };
   };
 
-  const identity = identityPresentation(session);
+  const identity = identityPresentation(session, canonicalSurface);
   return <div className="device-layout">
     <section className="device-overview">
-      <div className="panel-header"><div>{session?.provenance.sourceKind === 'signal-lab' ? <FlaskConical size={14}/> : <Cpu size={14}/>}Instrument source</div><span>{identity.qualification}</span></div>
+      <div className="panel-header"><div><Cpu size={14}/>Connected instrument</div><span>{identity.qualification}</span></div>
       <div className="identity-hero"><div className="identity-chip"><span/><span/><span/><Cpu size={34}/></div><div><h2>{identity.title}</h2><p>{identity.subtitle}</p></div></div>
-      {session?.provenance.sourceKind === 'serial-port'
-        && (session.provenance.device.firmwareQualification === 'custom-unqualified'
-          || session.provenance.device.firmwareQualification === 'custom-source-qualified-receive-only')
-        && <div className="custom-firmware-warning" role="status"><AlertTriangle size={15}/><span><strong>{session.provenance.device.firmwareQualification === 'custom-source-qualified-receive-only' ? 'Custom firmware · source-qualified receive only' : 'Custom firmware · source unqualified'}</strong><small>{session.provenance.device.firmwareWarning}</small></span></div>}
       <div className="device-facts">{identity.facts.map((fact) => <Fact key={fact.label} icon={fact.icon} label={fact.label} value={fact.value} detail={fact.detail}/>)}</div>
-      {profile && <div className="parameter-stack" data-agent-exclusion="human-signal-profile-boundary"><SelectParameter label="SignalLab profile" value={selectedProfile ?? profile.selectedProfileId} options={profile.profiles.map(({ profileId, centerFrequencyHz }) => ({ value: profileId, label: `${profileId} · ${(centerFrequencyHz / 1e6).toFixed(3)} MHz` }))} disabled={busy} onValue={(value) => onProfile(String(value))}/></div>}
       <div className="device-actions"><button data-agent-control="device.refresh-diagnostics" className="secondary" disabled={!diagnosticCapability || busy} onClick={onRefresh}><RefreshCw size={14}/>Refresh diagnostics</button></div>
       {diagnostics.length > 0 && <pre className="diagnostic-lines" aria-label="Instrument diagnostics">{diagnostics.join('\n')}</pre>}
     </section>
@@ -71,70 +63,73 @@ export function DeviceWorkspace({ session, diagnostics, frame, busy, touchBusy, 
     </section>
 
     <section className="capability-ledger"><div className="panel-header"><div><CheckCircle2 size={14}/>Capabilities</div><span>DRIVER DECLARED</span></div><div className="ledger-grid">
-      <Ledger label="Acquisition" value={session?.capabilities.acquisitions.map((capability) => capability.kind).join(' · ') || '—'}/>
-      <Ledger label="Features" value={session?.capabilities.features.map((feature) => feature.kind).join(' · ') || 'None'}/>
-      <Ledger label="Source" value={session?.provenance.sourceKind ?? '—'}/>
+      <Ledger label="Acquisition" value={session?.capabilities.acquisitions.map(acquisitionLabel).join(' · ') || '—'}/>
+      <Ledger label="Features" value={session?.capabilities.features.map(featureLabel).join(' · ') || 'None'}/>
+      <Ledger label="Execution" value={session ? executionLabel(session.provenance.execution) : '—'}/>
       <Ledger label="Qualification" value={session?.provenance.qualification.replaceAll('-', ' ') ?? '—'}/>
     </div></section>
   </div>;
 }
 
 interface IdentityFact { icon: React.ReactNode; label: string; value: string; detail?: string }
-function identityPresentation(session: InstrumentSessionSnapshot | undefined): { title: string; subtitle: string; qualification: string; facts: readonly IdentityFact[] } {
+function identityPresentation(session: InstrumentSessionSnapshot | undefined, canonicalSurface: CanonicalInstrumentSurface | undefined): { title: string; subtitle: string; qualification: string; facts: readonly IdentityFact[] } {
   if (!session) return { title: 'Not connected', subtitle: 'Choose an instrument source', qualification: 'UNAVAILABLE', facts: [] };
+  if (canonicalSurface) {
+    const presentation = canonicalSurface.presentation;
+    return {
+      title: presentation.title,
+      subtitle: presentation.subtitle ?? 'Connected instrument interface',
+      qualification: presentation.qualification,
+      facts: presentation.facts.map((fact, index) => ({ ...fact, icon: canonicalFactIcon(index) })),
+    };
+  }
   const provenance = session.provenance;
-  if (provenance.sourceKind === 'signal-lab') return {
-    title: session.candidate.displayName,
-    subtitle: 'Synthetic scalar measurement source; no device identity is asserted',
-    qualification: 'SYNTHETIC',
-    facts: [
-      { icon: <Fingerprint/>, label: 'Contract', value: `${provenance.contractId} v${provenance.contractVersion}`, detail: provenance.contractSha256.slice(0, 16) },
-      { icon: <FlaskConical/>, label: 'Catalog', value: provenance.catalogSha256.slice(0, 16), detail: `Generator/contract binding ${provenance.generatorContractBindingSha256.slice(0, 16)}` },
-      { icon: <Usb/>, label: 'USB identity', value: 'Not claimed', detail: 'usbEmulated=false' },
-      { icon: <TerminalSquare/>, label: 'Firmware / RF', value: 'Not claimed', detail: 'firmwareExecuted=false · rfEmitted=false' },
-    ],
-  };
-  if (provenance.sourceKind === 'tinysa-firmware-twin') return {
-    title: provenance.device.model,
-    subtitle: `${provenance.device.hardwareVersion} · ${provenance.device.firmwareVersion}`,
-    qualification: 'EXECUTABLE TWIN',
-    facts: [
-      { icon: <Fingerprint/>, label: 'Firmware repository', value: provenance.repositoryCommit.slice(0, 12), detail: provenance.firmwareBinarySha256.slice(0, 16) },
-      { icon: <TerminalSquare/>, label: 'Bridge', value: provenance.bridge },
-      { icon: <Usb/>, label: 'USB transactions', value: 'Not modeled' },
-    ],
-  };
-  if (provenance.sourceKind === 'neptune-p210') return {
-    title: session.candidate.displayName,
-    subtitle: 'NeptuneSDR/HAMGEEK P210 (AD9361) · libiio network · complex I/Q only, no RF output',
-    qualification: 'DEVICE OBSERVED',
-    facts: [
-      { icon: <TerminalSquare/>, label: 'Endpoint', value: provenance.endpoint, detail: provenance.contextDescription },
-      { icon: <TerminalSquare/>, label: 'Transport', value: provenance.transport },
-      { icon: <Usb/>, label: 'USB identity', value: 'Not claimed', detail: 'Reached over the network, never a local USB/serial device' },
-    ],
-  };
-  if (provenance.sourceKind === 'neptune-p210-twin') return {
-    title: session.candidate.displayName,
-    subtitle: `QEMU digital twin · ${provenance.profile} · physical RF not modeled`,
-    qualification: 'FIRMWARE-EXECUTED TWIN',
-    facts: [
-      { icon: <TerminalSquare/>, label: 'Endpoint', value: provenance.endpoint },
-      { icon: <TerminalSquare/>, label: 'Profile', value: provenance.profile },
-      { icon: <Usb/>, label: 'Physical RF', value: 'Not modeled', detail: 'Proves only the digital IIO/FFT contact' },
-    ],
-  };
-  const port = provenance.serialPort;
   return {
-    title: provenance.device.model,
-    subtitle: `${provenance.device.hardwareVersion} · ${provenance.device.firmwareVersion}`,
-    qualification: provenance.device.usbIdentityVerified ? 'USB VERIFIED' : 'USB UNVERIFIED',
+    title: session.candidate.displayName,
+    subtitle: `${executionLabel(provenance.execution)} · ${formatProvenanceLabel(provenance.transport)}`,
+    qualification: formatProvenanceLabel(provenance.qualification).toUpperCase(),
     facts: [
-      { icon: <Usb/>, label: 'USB identity', value: port.vendorId && port.productId ? `${port.vendorId}:${port.productId}` : 'Unverified', detail: port.product ?? port.path },
-      { icon: <Fingerprint/>, label: 'Firmware source', value: provenance.device.firmwareSourceCommit?.slice(0, 12) ?? (provenance.device.firmwareReportedRevision ? `unresolved · ${provenance.device.firmwareReportedRevision}` : 'Unresolved') },
-      { icon: <TerminalSquare/>, label: 'Transport', value: provenance.transport },
+      { icon: <Fingerprint/>, label: 'Session', value: session.sessionId, detail: `Verified ${new Date(provenance.verifiedAt).toLocaleString()}` },
+      { icon: <TerminalSquare/>, label: 'Execution', value: executionLabel(provenance.execution) },
+      { icon: <TerminalSquare/>, label: 'Transport', value: formatProvenanceLabel(provenance.transport) },
+      { icon: <CheckCircle2/>, label: 'Qualification', value: formatProvenanceLabel(provenance.qualification) },
     ],
   };
+}
+
+function canonicalFactIcon(index: number): React.ReactNode {
+  switch (index % 3) {
+    case 0: return <Fingerprint/>;
+    case 1: return <TerminalSquare/>;
+    default: return <CheckCircle2/>;
+  }
+}
+
+function acquisitionLabel(capability: InstrumentSessionSnapshot['capabilities']['acquisitions'][number]): string {
+  switch (capability.kind) {
+    case 'swept-spectrum': return 'Spectrum capture';
+    case 'detected-power-timeseries': return 'Power sampling';
+    case 'complex-iq': return 'Complex I/Q capture';
+  }
+  return 'Driver acquisition';
+}
+
+function featureLabel(feature: InstrumentFeatureCapability): string {
+  switch (feature.kind) {
+    case 'rf-generator': return 'RF generation';
+    case 'screen': return 'Screen capture';
+    case 'touch': return 'Remote touch';
+    case 'diagnostics': return 'Diagnostics';
+  }
+  return 'Driver function';
+}
+
+function executionLabel(execution: InstrumentSessionSnapshot['provenance']['execution']): string {
+  return execution === 'physical' ? 'Physical instrument' : 'Virtual instrument';
+}
+
+function formatProvenanceLabel(value: string): string {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function Fact({ icon, label, value, detail }: IdentityFact) { return <div className="device-fact"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong>{detail && <em>{detail}</em>}</div></div>; }

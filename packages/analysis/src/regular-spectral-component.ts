@@ -1,3 +1,4 @@
+import { combineDbm } from '@atomos/dsp';
 import type { DetectedSignal, Sweep } from '@tinysa/contracts';
 
 export const REGULAR_SPECTRAL_COMPONENT_MODEL_ID =
@@ -174,14 +175,10 @@ export function regularSpectralComponentAssociations(
           if (centers.some((center) => center.frequencyHz > firstFrequencyHz
             && center.frequencyHz < lastFrequencyHz
             && !selectedIndices.has(center.candidateIndex))) continue;
-          const summedPeakMilliwatts = selectedCenters.reduce(
-            (sum, center) => sum + dbmToMilliwatts(center.peakDbm),
-            0,
-          );
           const hypothesis = {
             indices: sortedIndices,
             spanHz,
-            summedPeakDbm: milliwattsToDbm(summedPeakMilliwatts),
+            summedPeakDbm: combineDbm(selectedCenters.map((center) => center.peakDbm)),
             spacingHz,
             latticeAnchorHz: firstFrequencyHz,
           };
@@ -257,8 +254,6 @@ function maximalRegularStepRuns<T>(
   return runs;
 }
 
-function dbmToMilliwatts(value: number): number { return 10 ** (value / 10); }
-function milliwattsToDbm(value: number): number { return 10 * Math.log10(Math.max(Number.MIN_VALUE, value)); }
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);

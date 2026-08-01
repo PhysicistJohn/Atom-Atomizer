@@ -1,8 +1,8 @@
 import {
-  analyzerConfigPatchSchema,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationParameterIntent,
   channelMeasurementConfigurationSchema,
   envelopeStftConfigurationSchema,
-  generatorConfigSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
@@ -10,17 +10,14 @@ import {
   spectrumDisplayConfigurationSchema,
   traceConfigurationSchema,
   waterfallConfigurationSchema,
-  type AnalyzerConfig,
   type FirmwareTraceId,
-  type GeneratorConfig,
   type MarkerId,
   type MarkerSearchAction,
   type MeasurementViewId,
   type SignalDetectionConfig,
+  type InstrumentSessionSnapshot,
   type Sweep,
   type TraceId,
-  type ZeroSpanConfig,
-  type ZeroSpanConfigPatch,
 } from '@tinysa/contracts';
 import {
   autoScaleSpectrum,
@@ -47,9 +44,7 @@ import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor, assertWork
 import { agentDetectionResults } from './agent-detection-results.js';
 import { DETECT_CONSENSUS_WINDOW_MS } from './classification-consensus.js';
 import type { ModulationClassification } from './embedding-classifier-runtime.js';
-import { stageDetectedPowerConfigurationPatch } from './instrument-configuration.js';
 import type { InstrumentScreenPoint } from './components/DeviceWorkspace.js';
-import { instrumentCandidateIsSimulated } from './controllers/connection.js';
 import { coherentSweepCount } from './controllers/acquisition.js';
 import {
   errorMessage,
@@ -62,99 +57,43 @@ import type { ContinuousAcquisitionMode } from './store.js';
 export class AgentExecutor {
   constructor(private readonly k: RendererKernel) {}
 
+  /**
+   * Approval follows the active driver's operation declaration.  Atom never
+   * guesses from an operation name, source type, or device family.
+   */
+  requiresActionApproval = (name: AgentToolName, args: unknown): boolean => {
+    if (name !== 'execute_canonical_operation'
+      || args === null
+      || typeof args !== 'object'
+      || typeof (args as { operationId?: unknown }).operationId !== 'string') {
+      return false;
+    }
+    const operationId = (args as { operationId: string }).operationId;
+    return this.k.state.canonicalSurface?.operations.some((operation) => (
+      operation.id === operationId && operation.confirmation === 'high-impact'
+    )) ?? false;
+  };
+
+  /**
+   * Atom is an application client of the same homogeneous interface as the
+   * visible UI. It receives driver-declared capabilities and canonical
+   * controls, never a device family, model-specific connection field, or
+   * private driver configuration.
+   */
+  instrumentInterfaceState() {
+    return genericInstrumentInterface(
+      this.k.state.instrument.session,
+      this.k.state.canonicalSurface,
+    );
+  }
+
   systemTopology() {
     const k = this.k;
-    const active = k.state.instrument.session;
     return {
       atomizer: { owner: 'atomizer', instrumentApiVersion: window.atomizerInstrument.version, role: 'instrument-host' },
-      instrument: active ? {
-        driverId: active.driverId,
-        sourceKind: active.provenance.sourceKind,
-        execution: active.provenance.execution,
-        transport: active.provenance.transport,
-        qualification: active.provenance.qualification,
-        usbIdentityVerified: active.provenance.sourceKind === 'serial-port' ? active.provenance.device.usbIdentityVerified : false,
-        sessionId: active.sessionId,
-      } : null,
-      firmwareTwin: { owner: 'tinysa-firmware', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'tinysa-firmware-twin'), connected: active?.provenance.sourceKind === 'tinysa-firmware-twin', integration: 'renode-monitor-v1', usbTransactionsModeled: false },
-      signalLab: { owner: 'tinysa-signal-lab', available: k.state.candidates.some((candidate) => candidate.sourceKind === 'signal-lab'), connected: active?.provenance.sourceKind === 'signal-lab', integration: 'measurement-bridge-v3-in-process', claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
+      instrument: this.instrumentInterfaceState(),
     } as const;
   }
-
-  agentStagedConfiguration(
-    stagedAnalyzer: AnalyzerConfig = this.k.state.analyzer,
-    stagedDetectedPower: ZeroSpanConfig = this.k.state.zeroConfig,
-  ) {
-    const acquisitions = this.k.state.instrument.session?.capabilities.acquisitions ?? [];
-    const spectrum = acquisitions.find((capability) => capability.kind === 'swept-spectrum');
-    const detectedPower = acquisitions.find((capability) => capability.kind === 'detected-power-timeseries');
-    const spectrumModel = spectrum?.kind === 'swept-spectrum' ? spectrum.controls.model : null;
-    const detectedPowerModel = detectedPower?.kind === 'detected-power-timeseries' ? detectedPower.controls.model : null;
-    return {
-      sweptSpectrum: {
-        kind: 'swept-spectrum',
-        applicability: spectrumModel === 'receiver'
-          ? 'staged-receiver-intent'
-          : spectrumModel === 'synthetic-scalar'
-            ? 'staged-synthetic-geometry'
-            : 'not-admitted-no-active-capability',
-        controlModel: spectrumModel,
-        startHz: stagedAnalyzer.startHz,
-        stopHz: stagedAnalyzer.stopHz,
-        points: stagedAnalyzer.points,
-        sweepTimeSeconds: stagedAnalyzer.sweepTimeSeconds,
-        ...(spectrumModel === 'receiver' ? {
-          receiverControls: {
-            applicability: 'staged-not-yet-admitted',
-            acquisitionFormat: stagedAnalyzer.acquisitionFormat,
-            resolutionBandwidthKhz: stagedAnalyzer.rbwKhz,
-            attenuationDb: stagedAnalyzer.attenuationDb,
-            detector: stagedAnalyzer.detector,
-            spurRejection: stagedAnalyzer.spurRejection,
-            lowNoiseAmplifier: stagedAnalyzer.lna,
-            avoidSpurs: stagedAnalyzer.avoidSpurs,
-            trigger: stagedAnalyzer.trigger,
-          },
-        } : { receiverControls: { applicability: 'not-applicable' } }),
-      },
-      detectedPower: {
-        kind: 'detected-power-timeseries',
-        applicability: detectedPowerModel === 'receiver'
-          ? 'staged-receiver-intent'
-          : detectedPowerModel === 'synthetic-scalar'
-            ? 'staged-synthetic-geometry'
-            : 'not-admitted-no-active-capability',
-        controlModel: detectedPowerModel,
-        centerHz: stagedDetectedPower.frequencyHz,
-        sampleCount: stagedDetectedPower.points,
-        sweepTimeSeconds: stagedDetectedPower.sweepTimeSeconds,
-        ...(detectedPowerModel === 'receiver' ? {
-          receiverControls: {
-            applicability: 'staged-not-yet-admitted',
-            resolutionBandwidthKhz: stagedDetectedPower.rbwKhz,
-            attenuationDb: stagedDetectedPower.attenuationDb,
-            trigger: stagedDetectedPower.trigger,
-          },
-        } : { receiverControls: { applicability: 'not-applicable' } }),
-      },
-    } as const;
-  }
-
-  agentConfigurationContext(
-    stagedAnalyzer: AnalyzerConfig = this.k.state.analyzer,
-    stagedDetectedPower: ZeroSpanConfig = this.k.state.zeroConfig,
-  ) {
-    const active = this.k.state.instrument.session?.configuration;
-    return {
-      admitted: active ? {
-        configurationRevision: active.configurationRevision,
-        configuredAt: active.configuredAt,
-        configuration: active.configuration,
-      } : null,
-      staged: this.agentStagedConfiguration(stagedAnalyzer, stagedDetectedPower),
-    } as const;
-  }
-
 
   agentLatestSweepSummary(
     currentSweep: Sweep,
@@ -192,20 +131,6 @@ export class AgentExecutor {
       }),
     };
   }
-
-  agentSignalLabCatalog = (): { selectedProfileId: string | null; profiles: readonly { profileId: string; family?: string; label: string }[] } | null => {
-    const capability = this.k.state.instrument.session?.capabilities.features
-      .find((feature) => feature.kind === 'signal-lab-profile-selection');
-    if (capability?.kind !== 'signal-lab-profile-selection') return null;
-    return {
-      selectedProfileId: capability.selectedProfileId,
-      profiles: capability.profiles.map((profile) => ({
-        profileId: profile.profileId,
-        family: profile.family,
-        label: profile.label,
-      })),
-    };
-  };
 
   /** Read the application-global classifier projection without creating work. */
   async classifyCurrentCapture() {
@@ -249,14 +174,15 @@ export class AgentExecutor {
       acquisition: state.acquisition,
       continuous: state.continuous,
       continuousMode: state.continuousMode,
-      simulated: currentInstrument.session !== undefined && currentInstrument.session.provenance.execution !== 'physical',
+      virtual: currentInstrument.session !== undefined && currentInstrument.session.provenance.execution !== 'physical',
       topology: this.systemTopology(),
       visibleError: state.error ?? null,
-      instrument: currentInstrument,
-      generatorOutput: k.currentGeneratorOutput(),
-      scalarConfiguration: this.agentConfigurationContext(),
+      instrument: this.instrumentInterfaceState(),
+      sourceOutput: k.currentGeneratorOutput(),
       iq: {
-        stagedConfiguration: state.iqConfiguration,
+        activeConfiguration: currentInstrument.session?.configuration?.configuration.kind === 'complex-iq'
+          ? currentInstrument.session.configuration.configuration
+          : null,
         latestCapture: currentIqCapture ? {
           id: currentIqCapture.measurementId,
           sequence: currentIqCapture.sequence,
@@ -276,29 +202,10 @@ export class AgentExecutor {
             configurationRevision: currentIqCapture.configurationRevision,
             producerConfigurationEpoch: currentIqCapture.producerConfigurationEpoch ?? null,
             qualification: currentIqCapture.qualification,
-            sourceKind: currentInstrument.session?.provenance.sourceKind ?? null,
             execution: currentInstrument.session?.provenance.execution ?? null,
-            signalLabIq: currentIqCapture.payloadKind === undefined ? null : {
-              profileReferenceCenterHz: currentIqCapture.profileReferenceCenterHz,
-              rfReferenceCenterHz: currentIqCapture.rfReferenceCenterHz,
-              nativeCarrierOffsetHz: currentIqCapture.nativeCarrierOffsetHz,
-              rfPlacement: currentIqCapture.rfPlacement,
-              outputCarrierOffsetHz: currentIqCapture.outputCarrierOffsetHz,
-              rfTuneCenterHz: currentIqCapture.rfTuneCenterHz,
-              signalBandwidthHz: currentIqCapture.signalBandwidthHz,
-              nativeSampleRateHz: currentIqCapture.nativeSampleRateHz,
-              payloadKind: currentIqCapture.payloadKind,
-              representation: currentIqCapture.representation,
-              normalization: currentIqCapture.normalization,
-              receiverImpairment: currentIqCapture.receiverImpairment,
-              channelApplication: currentIqCapture.channelApplication,
-              canonicalArtifactSha256: currentIqCapture.canonicalArtifactSha256,
-              transformReceipt: currentIqCapture.transformReceipt,
-            },
           },
         } : null,
       },
-      generator: state.generator,
       detectionConfig: state.detectionConfig,
       historyCount: currentHistory.length,
       latestSweep: currentSweep && currentMetrics
@@ -342,17 +249,17 @@ export class AgentExecutor {
       case 'get_application_state': {
         const context = JSON.parse(this.applicationContext()) as {
           workspace: WorkspaceId; measurementView: MeasurementViewId; acquisition: AcquisitionState;
-          continuous: boolean; continuousMode: ContinuousAcquisitionMode; simulated: boolean; visibleError: string | null; historyCount: number;
-          topology: unknown; scalarConfiguration: unknown; generator: GeneratorConfig;
+          continuous: boolean; continuousMode: ContinuousAcquisitionMode; virtual: boolean; visibleError: string | null; historyCount: number;
+          topology: unknown; sourceOutput: unknown;
           detectionConfig: SignalDetectionConfig; measurement: unknown; latestSweep: unknown; iq: unknown;
         };
         return {
           workspace: context.workspace, measurementView: context.measurementView,
-          acquisition: context.acquisition, continuous: context.continuous, continuousMode: context.continuousMode, simulated: context.simulated,
+          acquisition: context.acquisition, continuous: context.continuous, continuousMode: context.continuousMode, virtual: context.virtual,
           error: context.visibleError, historyCount: context.historyCount, topology: context.topology,
           connection: k.state.instrument.session ? 'connected' : 'disconnected',
-          signalLab: this.agentSignalLabCatalog(),
-          scalarConfiguration: context.scalarConfiguration, generator: context.generator,
+          instrument: this.instrumentInterfaceState(),
+          sourceOutput: context.sourceOutput,
           detection: context.detectionConfig, measurement: context.measurement, iq: context.iq,
           latestSweep: context.latestSweep, agentSurfaceVersion: ATOM_AGENT_VERSION,
         };
@@ -366,7 +273,10 @@ export class AgentExecutor {
         controlBindings: agentControlBindings.map((binding) => ({ pattern: binding.pattern.source, preferredTool: binding.preferredTool, risk: binding.risk, projection: binding.projection, guarantee: binding.guarantee })),
         apiCoverage: agentApiCoverage,
       };
-      case 'get_instrument_state': return { ...k.state.instrument, generatorOutput: k.currentGeneratorOutput(), scalarConfiguration: this.agentConfigurationContext() };
+      case 'get_instrument_state': return {
+        instrument: this.instrumentInterfaceState(),
+        sourceOutput: k.currentGeneratorOutput(),
+      };
       case 'get_latest_sweep_summary': return JSON.parse(this.applicationContext()).latestSweep;
       case 'get_detection_results': return {
         ...agentDetectionResults(k.state.detections),
@@ -377,7 +287,11 @@ export class AgentExecutor {
       case 'list_connection_candidates': {
         const discovery = await k.acquisition.runInstrumentTransaction('list-connection-candidates', () => window.atomizerInstrument.discover());
         k.connection.acceptDiscovery(discovery.candidates, discovery.failures);
-        const issued = discovery.candidates.map((candidate, index) => ({ candidateId: `candidate-${index + 1}`, driverId: candidate.driverId, displayName: candidate.displayName, sourceKind: candidate.sourceKind, simulated: instrumentCandidateIsSimulated(candidate), selected: instrumentCandidateUiKey(candidate) === k.state.selectedCandidateId }));
+        const issued = discovery.candidates.map((candidate, index) => ({
+          candidateId: `candidate-${index + 1}`,
+          displayName: candidate.displayName,
+          selected: instrumentCandidateUiKey(candidate) === k.state.selectedCandidateId,
+        }));
         k.agentConnectionCandidates.current = new Map(issued.map((candidate, index) => [candidate.candidateId, discovery.candidates[index]!]));
         return { candidates: issued, failures: discovery.failures };
       }
@@ -390,25 +304,20 @@ export class AgentExecutor {
         // while another session is active tears that session down first, and
         // connecting to the already-active source is an idempotent no-op.
         const activeSession = k.state.instrument.session;
-        if (activeSession
-          && activeSession.candidate.driverId === issued.driverId
-          && activeSession.candidate.sourceKind === issued.sourceKind
-          && activeSession.candidate.candidateId === issued.candidateId) {
-          return { connected: true, alreadyConnected: true, driverId: activeSession.driverId, sourceKind: activeSession.provenance.sourceKind, execution: activeSession.provenance.execution, qualification: activeSession.provenance.qualification, displayName: activeSession.candidate.displayName };
+        if (activeSession && sameInstrumentCandidateDescriptor(activeSession.candidate, issued)) {
+          return { connected: true, alreadyConnected: true, instrument: this.instrumentInterfaceState() };
         }
         if (activeSession) await k.connection.disconnectDevice();
-        const next = await k.acquisition.runInstrumentTransaction('connect-issued-instrument', async () => {
+        await k.acquisition.runInstrumentTransaction('connect-issued-instrument', async () => {
           const discovery = await window.atomizerInstrument.discover();
           k.connection.acceptDiscovery(discovery.candidates, discovery.failures);
-          const candidate = discovery.candidates.find((current) => current.driverId === issued.driverId
-            && current.sourceKind === issued.sourceKind
-            && current.candidateId === issued.candidateId);
+          const candidate = discovery.candidates.find((current) => sameInstrumentCandidateDescriptor(current, issued));
           if (!candidate) throw new Error(`Connection candidate ${candidateId} is no longer available; list candidates again`);
           if (!sameInstrumentCandidateDescriptor(candidate, issued)) throw new Error(`Connection candidate ${candidateId} changed after it was listed; list candidates again`);
           k.set({ selectedCandidateId: instrumentCandidateUiKey(candidate) });
           return k.connection.connectCandidateOwned(candidate);
         });
-        return { connected: true, driverId: next.driverId, sourceKind: next.provenance.sourceKind, execution: next.provenance.execution, qualification: next.provenance.qualification, displayName: next.candidate.displayName };
+        return { connected: true, instrument: this.instrumentInterfaceState() };
       }
       case 'disconnect_device': await k.connection.disconnectDevice(); return { disconnected: true, state: 'disconnected' };
       case 'inspect_interface': {
@@ -437,13 +346,6 @@ export class AgentExecutor {
       case 'computer_key': await k.renderCommit.await(); return requireComputerActionResult(await window.atomAgent.computerKey(args as { expectedTarget: string; key: string }));
       case 'computer_scroll': await k.renderCommit.await(); return requireComputerActionResult(await window.atomAgent.computerScroll(args as { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }));
       case 'navigate_workspace': k.applyWorkspace((args as { workspace: WorkspaceId }).workspace); return { workspace: k.state.workspace };
-      case 'configure_analyzer': {
-        assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
-        const patch = analyzerConfigPatchSchema.parse(args);
-        const next = await k.acquisition.updateAnalyzer(patch);
-        k.applyWorkspace('spectrum');
-        return { patch, scalarConfiguration: this.agentConfigurationContext(next), continuous: k.continuousRequested.current };
-      }
       case 'acquire_sweep': {
         assertWorkspaceTransition(k.state.workspace, 'spectrum', k.currentGeneratorOutput());
         const frame = await k.acquisition.acquireGlobalFrame();
@@ -601,22 +503,10 @@ export class AgentExecutor {
         k.applyWorkspace('classification');
         return { ...k.applyDetectionConfiguration(next), powerReference: k.state.sweep ? agentPowerReference(k.state.sweep) : null };
       }
-      case 'configure_zero_span': {
-        const capability = k.state.instrument.session?.capabilities.acquisitions.find((candidate) => candidate.kind === 'detected-power-timeseries');
-        const { patch, configuration: next } = stageDetectedPowerConfigurationPatch(
-          capability?.kind === 'detected-power-timeseries' ? capability : undefined,
-          k.state.zeroConfig,
-          args as ZeroSpanConfigPatch,
-        );
-        k.applyWorkspace('classification');
-        k.measurement.commitZeroSpanConfiguration(next);
-        k.clearZeroSpanCapture();
-        return { patch, scalarConfiguration: this.agentConfigurationContext(k.state.analyzer, next) };
-      }
       case 'acquire_zero_span': { assertWorkspaceTransition(k.state.workspace, 'classification', k.currentGeneratorOutput()); const result = await k.acquisition.acquireZeroSpan(); k.applyWorkspace('classification'); return { acquired: true, captureId: result.id, samples: result.powerDbm.length, envelope: classifyZeroSpanEnvelope(result), identity: result.identity }; }
       case 'acquire_complex_iq': {
-        // Source-agnostic across SignalLab and Neptune P210: acquireIq() rejects
-        // cleanly (no complex-iq capability, e.g. a scalar-only receiver) with a
+        // Source-agnostic: acquireIq() rejects cleanly (no complex-I/Q
+        // capability, e.g. a scalar-only receiver) with a
         // thrown Error rather than crashing or silently returning nothing.
         assertWorkspaceTransition(k.state.workspace, 'iq', k.currentGeneratorOutput());
         const measurement = await k.acquisition.acquireIq();
@@ -630,39 +520,26 @@ export class AgentExecutor {
           sampleRateHz: measurement.sampleRateHz,
           sampleFormat: measurement.sampleFormat,
           qualification: measurement.qualification,
-          // Undefined for every source but Neptune P210/twin today: this
-          // codebase has no calibrated-dBm complex-I/Q source, so absence here
-          // must never be read as an implicit calibrated-power claim.
+          // A missing power reference is never an implicit calibrated-power
+          // claim; the connected driver's completed measurement owns it.
           powerReference: measurement.powerReference ?? 'not-established',
           powerUnit: measurement.powerReference === 'uncalibrated-dbfs-relative' ? 'dBFS-relative' : 'not-established',
         };
       }
-      case 'configure_generator': { const next = generatorConfigSchema.parse(args); k.applyWorkspace('generator'); k.set({ generator: next }); return k.features.configureGeneratorWith(next); }
-      case 'set_rf_output': { const enabled = (args as { enabled: boolean }).enabled; k.applyWorkspace('generator'); await k.features.setOutput(enabled); return { enabled, sourceKind: k.state.instrument.session?.provenance.sourceKind ?? 'unknown', evidence: 'driver-commanded' }; }
-      case 'select_signal_lab_profile': {
-        const profileId = (args as { profileId: string }).profileId;
-        const capability = k.state.instrument.session?.capabilities.features
-          .find((feature) => feature.kind === 'signal-lab-profile-selection');
-        if (capability?.kind !== 'signal-lab-profile-selection') throw new Error('Connected driver exposes no SignalLab profile-selection capability');
-        const advertisedProfileIds = capability.profiles.map((profile) => profile.profileId);
-        if (!advertisedProfileIds.includes(profileId)) {
-          throw new Error(`SignalLab profile ${profileId} is not in the advertised catalog: ${advertisedProfileIds.join(', ')}`);
-        }
-        const previousProfileId = capability.selectedProfileId;
-        // Same continuous-paused executeInstrumentFeature transaction as the
-        // visual profile picker, including its profile-driven span restaging.
-        await k.features.selectSignalLabProfileCommanded(profileId);
-        const selected = k.state.instrument.session?.capabilities.features
-          .find((feature) => feature.kind === 'signal-lab-profile-selection');
-        if (selected?.kind !== 'signal-lab-profile-selection' || selected.selectedProfileId !== profileId) {
-          throw new Error(`SignalLab did not report profile ${profileId} as selected after the commanded selection`);
-        }
+      case 'execute_canonical_operation': {
+        const { operationId, parameters } = args as {
+          operationId: string;
+          parameters: readonly CanonicalOperationParameterIntent[];
+        };
+        const surface = k.state.canonicalSurface;
+        if (!surface) throw new Error('Connected instrument has not published a canonical operation surface');
+        const result = await k.events.executeCanonicalOperation(surface, operationId, parameters);
         return {
-          selected: true,
-          profileId,
-          previousProfileId,
+          applied: true,
+          operationId: result.operationId,
+          sessionId: result.sessionId,
+          surface: result.surface,
           evidence: 'driver-commanded',
-          scalarConfiguration: this.agentConfigurationContext(),
         };
       }
       case 'capture_device_screen': { const frame = await k.features.captureScreen(); return { captured: true, width: frame.width, height: frame.height, format: frame.pixelFormat, capturedAt: frame.capturedAt }; }
@@ -679,6 +556,28 @@ export class AgentExecutor {
     }
     const unreachable: never = name;
     return unreachable;
+  };
+}
+
+function genericInstrumentInterface(
+  session: InstrumentSessionSnapshot | undefined,
+  canonicalSurface: CanonicalInstrumentSurface | undefined,
+) {
+  return {
+    connection: session ? 'connected' as const : 'disconnected' as const,
+    ...(session === undefined ? {} : {
+      displayName: session.candidate.displayName,
+      execution: session.provenance.execution === 'physical' ? 'physical' as const : 'virtual' as const,
+      transport: session.provenance.transport,
+      qualification: session.provenance.qualification,
+      sessionId: session.sessionId,
+      rfOutput: session.rfOutput,
+      capabilities: {
+        acquisitions: session.capabilities.acquisitions.map((capability) => capability.kind),
+        features: session.capabilities.features.length === 0 ? [] : ['driver-feature'],
+      },
+    }),
+    canonicalSurface: canonicalSurface ?? null,
   };
 }
 
@@ -750,18 +649,13 @@ function agentPowerReference(sweep: Sweep): 'calibrated-dbm' | 'uncalibrated-dbf
   return sweep.powerReference ?? 'calibrated-dbm';
 }
 
-/** Agent reads are an external evidence boundary: a physical Neptune FFT is
- * not allowed to inherit the native-receiver dBm assertions merely because
- * its session execution is physical. */
+/** Agent reads are an external evidence boundary: a host-derived FFT never
+ * inherits native-receiver dBm assertions from the session that supplied IQ. */
 export function assertAgentSweepPowerEvidence(sweep: Sweep): void {
+  if (sweep.source === 'host-derived-from-complex-iq' && sweep.powerReference === undefined) {
+    throw new Error('Host-derived complex-I/Q spectrum omitted its explicit power reference');
+  }
   if (sweep.powerReference !== 'uncalibrated-dbfs-relative') {
-    if (sweep.source === 'host-derived-from-complex-iq'
-      && 'kind' in sweep.identity
-      && sweep.identity.kind === 'instrument-session'
-      && (sweep.identity.provenance.sourceKind === 'neptune-p210'
-        || sweep.identity.provenance.sourceKind === 'neptune-p210-twin')) {
-      throw new Error('Neptune host-derived spectrum omitted its uncalibrated dBFS-relative power reference');
-    }
     return;
   }
   if (sweep.source !== 'host-derived-from-complex-iq'

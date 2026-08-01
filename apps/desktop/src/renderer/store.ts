@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import {
   channelMeasurementConfigurationSchema,
-  analyzerConfigSchema,
-  complexIqConfigurationSchema,
   envelopeStftConfigurationSchema,
   firmwareTraceVisibilitySchema,
-  generatorConfigSchema,
   markerConfigurationSchema,
   markerSearchConfigurationSchema,
   measurementViewIdSchema,
@@ -14,14 +11,13 @@ import {
   traceBankConfigurationSchema,
   waterfallConfigurationSchema,
   zeroSpanConfigSchema,
-  type AnalyzerConfig,
   type AtomizerInstrumentState,
+  type CanonicalInstrumentSurface,
   type ChannelMeasurementConfiguration,
   type DetectedSignal,
   type EnvelopeStftConfiguration,
   type FirmwareTraceFrame,
   type FirmwareTraceVisibility,
-  type GeneratorConfig,
   type InstrumentCandidate,
   type InstrumentDiscoveryFailure,
   type InstrumentScreenFrame,
@@ -31,7 +27,6 @@ import {
   type MarkerSearchConfiguration,
   type MeasurementViewId,
   type SignalDetectionConfig,
-  type SignalLabChannelState,
   type SpectrumDisplayConfiguration,
   type Sweep,
   type TraceBankConfiguration,
@@ -43,14 +38,12 @@ import {
 } from '@tinysa/contracts';
 import { BAYESIAN_OBSERVABLE_ZERO_SPAN_GEOMETRY, type EnvelopeClassification } from '@tinysa/analysis';
 import {
-  DEFAULT_ANALYZER,
-  DEFAULT_GENERATOR,
   INITIAL_INSTRUMENT_STATE,
   type AcquisitionState,
   type GeneratorOutputState,
   type WorkspaceId,
 } from './ui-contracts.js';
-import { DEFAULT_COMPLEX_IQ_CONFIGURATION, type ComplexIqConfiguration, type ComplexIqMeasurement } from './complex-iq.js';
+import type { ComplexIqMeasurement } from './complex-iq.js';
 import type { ModulationClassification } from './embedding-classifier-runtime.js';
 
 export const DEFAULT_DETECTION: SignalDetectionConfig = {
@@ -138,14 +131,17 @@ export interface AtomizerRendererState {
   readonly measurementView: MeasurementViewId;
   readonly agentOpen: boolean;
   readonly instrument: AtomizerInstrumentState;
+  /**
+   * Driver-emitted interaction surface.  This deliberately sits alongside
+   * the transitional v1 session snapshot while drivers are migrated; renderer
+   * controls must use this shape rather than infer a device control model.
+   */
+  readonly canonicalSurface: CanonicalInstrumentSurface | undefined;
   readonly candidates: InstrumentCandidate[];
   readonly discoveryFailures: InstrumentDiscoveryFailure[];
   readonly selectedCandidateId: string | undefined;
   readonly connectionOpen: boolean;
   readonly connectionBusy: boolean;
-  readonly analyzer: AnalyzerConfig;
-  readonly generator: GeneratorConfig;
-  readonly iqConfiguration: ComplexIqConfiguration;
   readonly detectionConfig: SignalDetectionConfig;
   readonly zeroConfig: ZeroSpanConfig;
   readonly traceConfiguration: TraceBankConfiguration;
@@ -170,8 +166,6 @@ export interface AtomizerRendererState {
   readonly screenFrame: InstrumentScreenFrame | undefined;
   readonly iqCapture: ComplexIqMeasurement | undefined;
   readonly classification: GlobalClassificationState;
-  readonly selectedProfile: string | undefined;
-  readonly selectedSignalLabChannel: SignalLabChannelState | undefined;
   readonly acquisition: AcquisitionState;
   readonly continuous: boolean;
   readonly continuousMode: ContinuousAcquisitionMode;
@@ -183,12 +177,8 @@ export interface AtomizerRendererState {
 }
 
 /** localStorage-persisted keys (`atomizer:v2:<name>`), written through on change. */
-const COMPLEX_IQ_PREFERENCE_NAME = 'complex-iq-v2';
 const PERSISTED_KEYS = {
   measurementView: 'measurement-view',
-  analyzer: 'analyzer',
-  generator: 'generator',
-  iqConfiguration: COMPLEX_IQ_PREFERENCE_NAME,
   detectionConfig: 'detector',
   zeroConfig: 'zero-span',
   traceConfiguration: 'traces',
@@ -278,25 +268,12 @@ export function createInitialRendererState(options: {
     measurementView: loadStored('measurement-view', visibleMeasurementView, 'spectrum'),
     agentOpen: options.initialAgentOpen,
     instrument: INITIAL_INSTRUMENT_STATE,
+    canonicalSurface: undefined,
     candidates: [],
     discoveryFailures: [],
     selectedCandidateId: undefined,
     connectionOpen: false,
     connectionBusy: false,
-    analyzer: loadStored('analyzer', analyzerConfigSchema.parse, DEFAULT_ANALYZER),
-    generator: loadStored('generator', generatorConfigSchema.parse, DEFAULT_GENERATOR),
-    iqConfiguration: loadStored(
-      COMPLEX_IQ_PREFERENCE_NAME,
-      complexIqConfigurationSchema.parse,
-      DEFAULT_COMPLEX_IQ_CONFIGURATION,
-      {
-        legacyName: 'complex-iq',
-        migrate: (legacy) => ({
-          ...legacy,
-          sampleCount: Math.min(legacy.sampleCount, DEFAULT_COMPLEX_IQ_CONFIGURATION.sampleCount),
-        }),
-      },
-    ),
     detectionConfig: loadStored('detector', parseStoredDetection, DEFAULT_DETECTION),
     zeroConfig: loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN),
     traceConfiguration: loadStored('traces', traceBankConfigurationSchema.parse, DEFAULT_TRACES),
@@ -321,8 +298,6 @@ export function createInitialRendererState(options: {
     screenFrame: undefined,
     iqCapture: undefined,
     classification: { source: 'none', pending: false, sampleCount: 0, result: undefined, issue: undefined },
-    selectedProfile: undefined,
-    selectedSignalLabChannel: undefined,
     acquisition: 'idle',
     continuous: false,
     continuousMode: 'spectrum',
@@ -490,7 +465,7 @@ export function acquisitionModeForSession(iqAvailable: boolean): ContinuousAcqui
 }
 
 type InstrumentStateSlice = Pick<AtomizerRendererState, 'instrument'>;
-type IqAvailabilityStateSlice = InstrumentStateSlice & Pick<AtomizerRendererState, 'selectedProfile'>;
+type CanonicalSurfaceSlice = Pick<AtomizerRendererState, 'canonicalSurface'>;
 type BusyStateSlice = Pick<AtomizerRendererState,
   'connectionBusy' | 'continuous' | 'continuousMode' | 'acquisition' | 'instrumentTransactionActive'>;
 type TouchBusyStateSlice = Pick<AtomizerRendererState,
@@ -517,19 +492,11 @@ export function selectSpectrumCapabilityAvailable(state: InstrumentStateSlice): 
   if (state.instrument.session === undefined) return true;
   return selectSpectrumCapability(state) !== undefined || selectIqCapability(state) !== undefined;
 }
-export function selectGeneratorCapability(state: InstrumentStateSlice) {
-  return state.instrument.session?.capabilities.features.find((capability) => capability.kind === 'rf-generator');
-}
-export function selectSignalLabProfileCapability(state: InstrumentStateSlice) {
-  return state.instrument.session?.capabilities.features.find((capability) => capability.kind === 'signal-lab-profile-selection');
-}
-export function selectIqCaptureUnavailableReason(state: IqAvailabilityStateSlice): string | undefined {
-  const signalLabProfileCapability = selectSignalLabProfileCapability(state);
-  const admittedProfileIds = signalLabProfileCapability?.iqProfiles.map(({ profileId }) => profileId);
-  return admittedProfileIds !== undefined
-    && (state.selectedProfile === undefined || !admittedProfileIds.includes(state.selectedProfile))
-    ? 'The selected SignalLab profile is not present in the source\'s admitted I/Q registry.'
-    : undefined;
+export function selectGeneratorOperationAvailable(state: CanonicalSurfaceSlice): boolean {
+  return state.canonicalSurface?.operations.some(
+    (operation) => (operation.scope === 'source' || operation.scope === 'instrument')
+      && operation.availability !== 'unavailable',
+  ) ?? false;
 }
 
 /** Streaming is background collection, not a global UI lock; see App shell. */
@@ -553,22 +520,19 @@ export function selectTouchBusy(state: TouchBusyStateSlice): boolean {
 }
 
 export function selectAcquisitionDisabledReason(
-  state: IqAvailabilityStateSlice,
+  state: InstrumentStateSlice,
   busy: boolean,
 ): string | undefined {
   const connected = state.instrument.session !== undefined;
   const iqCapability = selectIqCapability(state);
   const contextualAcquisitionMode = acquisitionModeForSession(iqCapability !== undefined);
   const spectrumCapability = selectSpectrumCapability(state);
-  const iqCaptureUnavailableReason = selectIqCaptureUnavailableReason(state);
   const generatorOutput = generatorOutputState(state.instrument.session);
   return !connected
     ? `Connect an instrument source to acquire ${contextualAcquisitionMode === 'complex-iq' ? 'complex-I/Q' : 'spectrum'} data`
     : contextualAcquisitionMode === 'complex-iq' && iqCapability === undefined
       ? 'The connected instrument does not advertise complex-I/Q acquisition'
-      : contextualAcquisitionMode === 'complex-iq' && iqCaptureUnavailableReason
-        ? iqCaptureUnavailableReason
-        : contextualAcquisitionMode === 'spectrum' && spectrumCapability === undefined
+      : contextualAcquisitionMode === 'spectrum' && spectrumCapability === undefined
           ? 'The connected instrument does not advertise swept-spectrum acquisition'
       : generatorOutput !== 'off'
         ? generatorOutput === 'on'

@@ -60,20 +60,20 @@ export class ConnectionController {
   }
 
   /**
-   * One-time manual bootstrap for a Neptune P210 that is not reachable by
-   * network scan and has never been connected to before (see
-   * `NeptuneP210InstrumentDriver.addManualEndpoint()`'s doc comment). Probes
-   * the address live through the main process; on success the device is
-   * remembered from then on, so this never needs to be called again for the
-   * same device -- a normal discover() re-probe finds it automatically.
-   * Returns whether it succeeded; the failure message (if any) is surfaced
-   * through the same `error` state every other connection action uses.
+   * One-time manual network bootstrap. The main process owns the supported
+   * driver routing; the renderer only submits an address and refreshes the
+   * normal candidate list after a successful admission.
    */
-  async addNeptuneEndpoint(sourceKind: 'neptune-p210' | 'neptune-p210-twin', endpoint: string): Promise<boolean> {
+  async addManualEndpoint(endpoint: string): Promise<boolean> {
     const k = this.k;
     k.set({ error: undefined });
+    const addManualEndpoint = window.atomizerInstrument.addManualEndpoint;
+    if (!addManualEndpoint) {
+      k.set({ error: 'Manual network addresses are unavailable in this edition.' });
+      return false;
+    }
     try {
-      const result = await window.atomizerNeptune.addManualEndpoint(sourceKind, endpoint);
+      const result = await addManualEndpoint(endpoint);
       if (!result.ok) {
         k.set({ error: result.message });
         return false;
@@ -154,7 +154,6 @@ export class ConnectionController {
 
   async disconnectDevice(): Promise<void> {
     const k = this.k;
-    const sourceKind = k.state.instrument.session?.provenance.sourceKind;
     k.set({ connectionBusy: true, error: undefined });
     try {
       await window.atomizerInstrument.disconnect();
@@ -172,7 +171,7 @@ export class ConnectionController {
         acquisition: 'idle',
         diagnostics: [],
         screenFrame: undefined,
-        notice: sourceKind === 'serial-port' ? 'Physical instrument disconnected; RF state is no longer inferred' : sourceKind === 'tinysa-firmware-twin' ? 'Executable twin disconnected and its Renode process terminated' : 'Instrument source disconnected',
+        notice: 'Instrument disconnected',
       });
     } catch (value) {
       k.set({ error: errorMessage(value) });
@@ -195,15 +194,13 @@ export class ConnectionController {
 }
 
 // The connected candidate's UI key is derived from the live session, but its
-// discoveryRevision differs from the current candidate list, so match on the
-// stable identity triple instead of the full UI key.
+// discoveryRevision differs from the current candidate list. Match the
+// driver-owned stable descriptor instead of inspecting a candidate family or
+// treating the opaque revision as identity.
 export function connectedCandidateKey(state: { instrument: AtomizerInstrumentState; candidates: readonly InstrumentCandidate[] }): string | undefined {
   const session = state.instrument.session;
   if (!session) return undefined;
-  const match = state.candidates.find((candidate) =>
-    candidate.driverId === session.candidate.driverId
-    && candidate.sourceKind === session.candidate.sourceKind
-    && candidate.candidateId === session.candidate.candidateId);
+  const match = state.candidates.find((candidate) => sameInstrumentCandidateDescriptor(candidate, session.candidate));
   return match ? instrumentCandidateUiKey(match) : undefined;
 }
 
@@ -213,31 +210,28 @@ export function preferredCandidate(candidates: readonly InstrumentCandidate[], s
   return candidates.find((candidate) => instrumentCandidateMatchesPreference(candidate, state.preference));
 }
 
-export function instrumentCandidateIsSimulated(candidate: InstrumentCandidate): boolean {
-  switch (candidate.sourceKind) {
-    case 'serial-port':
-    case 'neptune-p210': return false;
-    case 'tinysa-firmware-twin':
-    case 'signal-lab':
-    case 'neptune-p210-twin': return true;
-    default: {
-      const unhandledCandidate: never = candidate;
-      throw new Error(`Instrument candidate simulation status is undefined for ${JSON.stringify(unhandledCandidate)}`);
-    }
-  }
+/**
+ * Execution truth belongs to an admitted session, not to a discovery
+ * candidate.  A candidate can therefore only be labeled virtual after it is
+ * matched to the driver-provided session descriptor; before admission the
+ * answer is deliberately unknown.
+ */
+export function candidateSessionIsVirtual(
+  candidate: InstrumentCandidate,
+  session: Pick<InstrumentSessionSnapshot, 'candidate' | 'provenance'> | undefined = undefined,
+): boolean | undefined {
+  if (!session || !sameInstrumentCandidateDescriptor(candidate, session.candidate)) return undefined;
+  return session.provenance.execution !== 'physical';
 }
+
+/** @deprecated Use `candidateSessionIsVirtual`; bare candidates have no execution evidence. */
+export const instrumentCandidateIsSimulated = candidateSessionIsVirtual;
 
 export function connectionNotice(session: InstrumentSessionSnapshot): string {
   const provenance = session.provenance;
-  if (provenance.sourceKind === 'signal-lab') return `${session.candidate.displayName} connected as a synthetic measurement source; USB, firmware execution, and RF emission are not claimed`;
-  if (provenance.sourceKind === 'tinysa-firmware-twin') return `${provenance.device.model} executable firmware twin connected through ${provenance.bridge}`;
-  if (provenance.sourceKind === 'neptune-p210') return `${session.candidate.displayName} connected over libiio at ${provenance.endpoint}; complex I/Q only, no RF output`;
-  if (provenance.sourceKind === 'neptune-p210-twin') return `${session.candidate.displayName} QEMU digital twin connected at ${provenance.endpoint}; physical RF is not modeled`;
-  if (provenance.device.firmwareQualification === 'custom-unqualified') {
-    return `${provenance.device.model} connected with custom, source-unqualified firmware`;
-  }
-  if (provenance.device.firmwareQualification === 'custom-source-qualified-receive-only') {
-    return `${provenance.device.model} connected with frozen-source-qualified custom receive-only firmware`;
-  }
-  return `${provenance.device.model} connected and identified`;
+  const execution = provenance.execution === 'physical' ? 'physical session' : 'virtual session';
+  const transport = typeof provenance.transport === 'string'
+    ? ` · ${provenance.transport.replaceAll('-', ' ')}`
+    : '';
+  return `${session.candidate.displayName} connected · ${execution}${transport}`;
 }

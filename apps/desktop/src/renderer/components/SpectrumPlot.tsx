@@ -33,7 +33,7 @@ export interface SpectrumPlotProps {
   /**
    * Whether the connected source can ever populate a sweep here -- natively
    * (swept-spectrum) or via a host-derived-from-complex-I/Q projection
-   * (Neptune P210 and any other complex-I/Q source) -- distinct from `sweep`
+   * (for any complex-I/Q source) -- distinct from `sweep`
    * being absent because nothing has been acquired *yet*. Only a source with
    * neither capability (e.g. detected-power-timeseries only) can never
    * produce one; telling that operator to "connect and acquire" would be

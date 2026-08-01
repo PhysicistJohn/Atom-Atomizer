@@ -10,7 +10,22 @@ const signalLabSession: InstrumentSessionSnapshot = {
   sessionId: 'session-signal-lab', driverId: 'signal-lab',
   candidate: { schemaVersion: 1, driverId: 'signal-lab', candidateId: 'signal-lab:local', displayName: 'SignalLab', sourceKind: 'signal-lab', signalLab: { sourceId: 'local' }, discoveryRevision: 'd1' },
   provenance: { sourceKind: 'signal-lab', sourceId: 'local', execution: 'signal-lab-simulation', transport: 'signal-lab-measurement-bridge', qualification: 'synthetic-visual-projection', verifiedAt: '2026-07-10T00:00:00.000Z', producerConfigurationEpoch: 'producer-epoch:1', contractId: 'tinysa-signal-lab-atomizer-measurement', contractVersion: 3, contractSha256: HASH, catalogSha256: HASH, generatorContractBindingSha256: HASH, claims: { usbEmulated: false, firmwareExecuted: false, rfEmitted: false } },
-  capabilities: { schemaVersion: 1, acquisitions: [{ kind: 'swept-spectrum', frequencyHz: { min: 0, max: 1_000 }, points: { min: 2, max: 100 }, sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } }, controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' }, powerUnit: 'dBm' }], features: [] },
+  capabilities: {
+    schemaVersion: 1,
+    acquisitions: [
+      {
+        kind: 'swept-spectrum', frequencyHz: { min: 0, max: 1_000 }, points: { min: 2, max: 100 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' }, powerUnit: 'dBm',
+      },
+      {
+        kind: 'detected-power-timeseries', centerFrequencyHz: { min: 0, max: 1_000 }, sampleCount: { min: 1, max: 100 },
+        sweepTimeSeconds: { automatic: false, manualSeconds: { min: 0.05, max: 0.05 } },
+        controls: { schemaVersion: 1, model: 'synthetic-scalar', timingQualification: 'simulation-exact' }, powerUnit: 'dBm', timing: 'uniform',
+      },
+    ],
+    features: [],
+  },
   rfOutput: 'not-supported',
   rfOutputQualification: 'not-applicable',
 };
@@ -43,7 +58,7 @@ describe('generic measurement projection', () => {
     expect(projected.targetDetectionId).toBe('detection-1');
   });
 
-  it('rejects a SignalLab measurement whose producer epoch differs from the authoritative session snapshot', () => {
+  it('rejects a measurement whose producer epoch differs from the authoritative session snapshot', () => {
     expect(() => projectSpectrumMeasurement(
       spectrum({ producerConfigurationEpoch: 'producer-epoch:stale' }),
       signalLabSession,
@@ -57,13 +72,68 @@ describe('generic measurement projection', () => {
       sessionId: 'twin-session', driverId: 'tinysa',
       candidate: { schemaVersion: 1, driverId: 'tinysa', candidateId: 'twin', displayName: 'Twin', sourceKind: 'tinysa-firmware-twin', firmwareTwin: { bridge: 'renode-monitor-v1', repositoryCommit: 'b'.repeat(40), firmwareBinarySha256: HASH, usbTransactionsModeled: false }, discoveryRevision: 'd2' },
       provenance: { sourceKind: 'tinysa-firmware-twin', execution: 'firmware-executed-twin', transport: 'renode-monitor-bridge', qualification: 'firmware-executed-twin', verifiedAt: '2026-07-10T00:00:00.000Z', bridge: 'renode-monitor-v1', repositoryCommit: 'b'.repeat(40), firmwareBinarySha256: HASH, usbTransactionsModeled: false, device: { model: 'tinySA', hardwareVersion: 'test', firmwareVersion: 'test' } },
+      capabilities: receiverScalarCapabilities(),
       rfOutput: 'off',
       rfOutputQualification: 'firmware-executed-twin',
     };
-    expect(() => projectSpectrumMeasurement(spectrum({ sessionId: twin.sessionId, producerConfigurationEpoch: undefined }), twin, analyzer)).toThrow(/omitted.*resolution bandwidth/i);
+    const twinMeasurement = {
+      sessionId: twin.sessionId,
+      producerConfigurationEpoch: undefined,
+      qualification: 'firmware-executed-twin' as const,
+    };
+    expect(() => projectSpectrumMeasurement(spectrum(twinMeasurement), twin, analyzer)).toThrow(/omitted.*resolution bandwidth/i);
+    expect(projectSpectrumMeasurement(spectrum({ ...twinMeasurement, resolutionBandwidthHz: 25, attenuationDb: 7 }), twin, analyzer))
+      .toMatchObject({
+        source: 'renode-executable-state',
+        actualRbwHz: 25,
+        actualAttenuationDb: 7,
+        resolutionBandwidthQualification: 'firmware-executed-twin',
+        attenuationQualification: 'firmware-executed-twin',
+      });
+    expect(() => projectSpectrumMeasurement(spectrum({
+      ...twinMeasurement,
+      producerConfigurationEpoch: 'unexpected-producer-epoch',
+      resolutionBandwidthHz: 25,
+      attenuationDb: 7,
+    }), twin, analyzer)).toThrow(/cannot claim a producer epoch/i);
     expect(() => projectSpectrumMeasurement(spectrum({ sessionId: 'other' }), signalLabSession, analyzer)).toThrow(/does not match active session/i);
   });
+
+  it('requires generic execution and advertised scalar controls to agree before projection', () => {
+    const inconsistentSession: InstrumentSessionSnapshot = {
+      ...signalLabSession,
+      capabilities: receiverScalarCapabilities(),
+    };
+    expect(() => projectSpectrumMeasurement(spectrum(), inconsistentSession, analyzer))
+      .toThrow(/controls model receiver does not match simulation scalar execution/i);
+  });
 });
+
+function receiverScalarCapabilities(): InstrumentSessionSnapshot['capabilities'] {
+  return {
+    schemaVersion: 1,
+    acquisitions: [{
+      kind: 'swept-spectrum',
+      frequencyHz: { min: 0, max: 1_000 },
+      points: { min: 2, max: 100 },
+      sweepTimeSeconds: { automatic: true, manualSeconds: { min: 0.05, max: 1 } },
+      controls: {
+        schemaVersion: 1,
+        model: 'receiver',
+        acquisitionFormats: ['text'],
+        resolutionBandwidthKhz: { automatic: true, manual: { min: 0.2, max: 850 } },
+        attenuationDb: { automatic: true, manual: { min: 0, max: 31 } },
+        detectors: ['sample'],
+        spurRejection: ['auto'],
+        lowNoiseAmplifier: ['off'],
+        avoidSpurs: ['auto'],
+        triggerModes: ['auto'],
+      },
+      powerUnit: 'dBm',
+    }],
+    features: [],
+  };
+}
 
 describe('projectDerivedSpectrumFromComplexIq', () => {
   const neptuneSession: InstrumentSessionSnapshot = {

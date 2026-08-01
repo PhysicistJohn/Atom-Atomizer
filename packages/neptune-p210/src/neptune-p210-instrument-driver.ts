@@ -46,6 +46,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   MAX_COMPLEX_IQ_SAMPLES_V1,
+  canonicalOperationParameterIntentsFor,
   complexIqPayloadByteLength,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
@@ -55,6 +56,7 @@ import {
   type InstrumentCandidate,
   type InstrumentCandidateDescriptor,
   type InstrumentCapabilities,
+  type InstrumentConfiguration,
   type InstrumentConfigurationCommand,
   type InstrumentDriverDiscoveryResult,
   type InstrumentFeatureCommand,
@@ -62,8 +64,16 @@ import {
   type InstrumentMeasurement,
   type InstrumentSessionEvent,
   type InstrumentSessionProvenance,
+  type CanonicalInstrumentSurface,
+  type CanonicalParameterIntent,
+  type CanonicalParameterVerification,
+  type CanonicalOperationRequest,
 } from '@tinysa/contracts';
-import type { InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
+import type {
+  CanonicalOperationResolution,
+  InstrumentDriver,
+  InstrumentSession,
+} from '@tinysa/instrument-runtime';
 import {
   MAX_CAPTURE_SAMPLE_COUNT,
   NEPTUNE_IIO_NAMES,
@@ -370,12 +380,22 @@ export class NeptuneP210InstrumentDriver implements InstrumentDriver {
    * than once per device. Never throws: failure is reported the same way a
    * discovery failure is, via the returned result shape.
    */
+  async addManualEndpoint(endpoint: string): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** @deprecated The source-specific overload is retained for direct driver clients during migration. */
   async addManualEndpoint(
     sourceKind: 'neptune-p210' | 'neptune-p210-twin',
     endpoint: string,
+  ): Promise<{ ok: true } | { ok: false; message: string }>;
+  async addManualEndpoint(
+    endpointOrSourceKind: string,
+    legacyEndpoint?: string,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const sourceKind = legacyEndpoint === undefined
+      ? 'neptune-p210'
+      : endpointOrSourceKind as 'neptune-p210' | 'neptune-p210-twin';
+    const endpoint = legacyEndpoint ?? endpointOrSourceKind;
     const trimmed = endpoint.trim();
-    if (!trimmed) return { ok: false, message: 'Enter a Neptune P210 address, e.g. ip:10.0.0.250' };
+    if (!trimmed) return { ok: false, message: 'Enter an instrument address, for example ip:10.0.0.250' };
     const outcome = await this.#discoverOne(sourceKind, trimmed);
     if (!outcome.descriptor) {
       return { ok: false, message: outcome.failure?.message ?? `${trimmed} did not respond` };
@@ -695,6 +715,115 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     this.#sleep = sleep;
   }
 
+  /**
+   * The P210 exposes one homogeneous capture operation.  Its native IIO
+   * attributes, CLI arguments, and AD9361 naming never leave this driver;
+   * Atomizer receives only a generic capture surface with resolved values.
+   */
+  get canonicalSurface(): CanonicalInstrumentSurface {
+    const capability = this.#complexIqCapability();
+    const current = this.#currentConfiguration();
+    const automatic = this.#automaticConfiguration(capability, current);
+    const effective = current ?? automatic;
+    const configured = current !== undefined;
+    const revision = this.#configuration?.command.configurationRevision ?? 'default';
+    return {
+      schemaVersion: 1,
+      revision: `surface:${this.sessionId}:${revision}`,
+      presentation: {
+        title: this.candidate.displayName,
+        subtitle: 'Connected capture interface',
+        qualification: this.provenance.qualification.replaceAll('-', ' ').toUpperCase(),
+        facts: [
+          { label: 'Connection', value: this.#endpoint },
+          { label: 'Sample format', value: capability.sampleFormat.toUpperCase() },
+          { label: 'Output', value: 'Receive-only complex samples' },
+        ],
+      },
+      parameters: [
+        canonicalIntegerParameter(
+          'capture.tune', 'Tune', 'Capture', 'Hz', capability.centerFrequencyHz,
+          current ? { mode: 'manual', value: current.centerHz } : { mode: 'auto' },
+          effective.centerHz,
+          configured ? 'device-readback' : 'driver-selected',
+          'Choose the admitted receive tune and verify it through the driver readback path.',
+        ),
+        canonicalIntegerParameter(
+          'capture.sample-rate', 'Sample rate', 'Capture', 'Hz', capability.sampleRateHz,
+          current ? { mode: 'manual', value: current.sampleRateHz } : { mode: 'auto' },
+          effective.sampleRateHz,
+          configured ? 'driver-commanded' : 'driver-selected',
+          'Choose an admitted capture rate for the current receive configuration.',
+        ),
+        canonicalIntegerParameter(
+          'capture.bandwidth', 'Bandwidth', 'Capture', 'Hz', capability.bandwidthHz,
+          current ? { mode: 'manual', value: current.bandwidthHz } : { mode: 'auto' },
+          effective.bandwidthHz,
+          configured ? 'driver-commanded' : 'driver-selected',
+          'Choose an admitted RF passband that fits the selected sample rate.',
+        ),
+        canonicalIntegerParameter(
+          'capture.samples', 'Samples', 'Capture', undefined, capability.sampleCount,
+          current ? { mode: 'manual', value: current.sampleCount } : { mode: 'auto' },
+          effective.sampleCount,
+          configured ? 'driver-commanded' : 'driver-selected',
+          'Choose an admitted bounded capture length.',
+        ),
+      ],
+      operations: [{
+        id: 'capture',
+        label: 'Capture',
+        description: 'Configure and prepare one bounded complex-sample capture.',
+        parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
+        outputs: ['Complex I/Q'],
+        availability: this.#closed ? 'unavailable' : 'available',
+        primary: true,
+        confirmation: 'none',
+      }],
+    };
+  }
+
+  async resolveCanonicalOperation(requestValue: CanonicalOperationRequest): Promise<CanonicalOperationResolution> {
+    this.#requireOpen();
+    const surface = this.canonicalSurface;
+    if (requestValue.sessionId !== this.sessionId) {
+      throw new Error('Canonical capture operation names a different session');
+    }
+    const intents = canonicalOperationParameterIntentsFor(surface, 'capture', requestValue);
+    const capability = this.#complexIqCapability();
+    const automatic = this.#automaticConfiguration(capability, this.#currentConfiguration());
+    const centerHz = resolveCanonicalInteger(
+      intents.get('capture.tune'), automatic.centerHz, capability.centerFrequencyHz, 'Capture tune',
+    );
+    const sampleRateHz = resolveCanonicalInteger(
+      intents.get('capture.sample-rate'), automatic.sampleRateHz, capability.sampleRateHz, 'Capture sample rate',
+    );
+    // An automatic passband is allowed to depend on the requested automatic
+    // or manual sample rate.  That policy belongs here, not in Atomizer.
+    const automaticBandwidthHz = canonicalRangeValue(
+      capability.bandwidthHz,
+      Math.min(automatic.bandwidthHz, sampleRateHz),
+    );
+    const bandwidthHz = resolveCanonicalInteger(
+      intents.get('capture.bandwidth'), automaticBandwidthHz, capability.bandwidthHz, 'Capture bandwidth',
+    );
+    if (bandwidthHz > sampleRateHz) {
+      throw new RangeError('Capture bandwidth cannot exceed its selected sample rate');
+    }
+    const sampleCount = resolveCanonicalInteger(
+      intents.get('capture.samples'), automatic.sampleCount, capability.sampleCount, 'Capture samples',
+    );
+    const configuration: InstrumentConfiguration = {
+      kind: 'complex-iq',
+      centerHz,
+      sampleRateHz,
+      bandwidthHz,
+      sampleCount,
+      sampleFormat: capability.sampleFormat,
+    };
+    return { configuration };
+  }
+
   async configure(commandValue: InstrumentConfigurationCommand): Promise<void> {
     this.#requireOpen();
     const command = instrumentConfigurationCommandSchema.parse(commandValue);
@@ -877,6 +1006,91 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
   #requireOpen(): void {
     if (this.#closed) throw new Error('Neptune P210 instrument session is closed');
   }
+
+  #complexIqCapability(): Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }> {
+    const capability = this.capabilities.acquisitions.find((entry) => entry.kind === 'complex-iq');
+    if (!capability || capability.kind !== 'complex-iq') {
+      throw new Error('Connected capture interface no longer advertises complex samples');
+    }
+    return capability;
+  }
+
+  #currentConfiguration(): Extract<InstrumentConfiguration, { kind: 'complex-iq' }> | undefined {
+    const configuration = this.#configuration?.command.configuration;
+    return configuration?.kind === 'complex-iq' ? configuration : undefined;
+  }
+
+  #automaticConfiguration(
+    capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }>,
+    current: Extract<InstrumentConfiguration, { kind: 'complex-iq' }> | undefined,
+  ): Extract<InstrumentConfiguration, { kind: 'complex-iq' }> {
+    if (current) return current;
+    const sampleRateHz = canonicalRangeValue(capability.sampleRateHz, 10_000_000);
+    const bandwidthHz = canonicalRangeValue(capability.bandwidthHz, Math.min(8_000_000, sampleRateHz));
+    if (bandwidthHz > sampleRateHz) {
+      throw new RangeError('Capture driver could not select an automatic bandwidth within its sample-rate limit');
+    }
+    return {
+      kind: 'complex-iq',
+      centerHz: canonicalRangeValue(capability.centerFrequencyHz, 99_000_000),
+      sampleRateHz,
+      bandwidthHz,
+      sampleCount: canonicalRangeValue(capability.sampleCount, 262_144),
+      sampleFormat: capability.sampleFormat,
+    };
+  }
+}
+
+function canonicalIntegerParameter(
+  id: string,
+  label: string,
+  group: string,
+  unit: string | undefined,
+  range: Readonly<{ min: number; max: number; step?: number }>,
+  requested: CanonicalParameterIntent,
+  effectiveValue: number,
+  verification: CanonicalParameterVerification,
+  autoDescription: string,
+): CanonicalInstrumentSurface['parameters'][number] {
+  return {
+    id,
+    label,
+    group,
+    ...(unit === undefined ? {} : { unit }),
+    manual: { kind: 'integer', range },
+    auto: { resolver: 'driver', description: autoDescription },
+    requested,
+    effectiveValue,
+    verification,
+  };
+}
+
+function canonicalRangeValue(
+  range: Readonly<{ min: number; max: number; step?: number }>,
+  preferred: number,
+): number {
+  const step = range.step ?? 1;
+  const maximumSteps = Math.floor((range.max - range.min) / step);
+  const maximum = range.min + maximumSteps * step;
+  const bounded = Math.min(maximum, Math.max(range.min, preferred));
+  const value = range.min + Math.round((bounded - range.min) / step) * step;
+  if (!Number.isSafeInteger(value)) throw new RangeError('Canonical capture selection is not a safe integer');
+  return value;
+}
+
+function resolveCanonicalInteger(
+  intent: CanonicalParameterIntent | undefined,
+  automaticValue: number,
+  range: Readonly<{ min: number; max: number; step?: number }>,
+  label: string,
+): number {
+  if (!intent) throw new RangeError(`${label} intent is missing`);
+  const value = intent.mode === 'auto' ? automaticValue : intent.value;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new RangeError(`${label} must be an integer`);
+  }
+  requireRange(value, range, label);
+  return value;
 }
 
 function sameDescriptor(candidate: InstrumentCandidate, descriptor: InstrumentCandidateDescriptor): boolean {

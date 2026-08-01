@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstrumentCandidate, InstrumentSessionSnapshot } from '@tinysa/contracts';
 import { createRendererRuntime } from '../AppShell.js';
+import { candidateSessionIsVirtual, connectedCandidateKey } from './connection.js';
+import { instrumentCandidateUiKey } from '../ui-contracts.js';
 
 afterEach(() => {
   localStorage.clear();
@@ -110,5 +112,67 @@ describe('ConnectionController stale-candidate recovery', () => {
 
     expect(connect).toHaveBeenCalledTimes(1);
     expect(discover).not.toHaveBeenCalled();
+  });
+});
+
+describe('ConnectionController generic candidate identity', () => {
+  it('matches the active session to a refreshed candidate through the driver-owned descriptor', () => {
+    const connected = neptuneCandidate('discovery:1');
+    const refreshed = neptuneCandidate('discovery:2');
+
+    expect(connectedCandidateKey({
+      instrument: {
+        schemaVersion: 1,
+        startup: { status: 'not-started' },
+        streaming: { status: 'stopped' },
+        connectionCleanup: { status: 'not-required' },
+        session: fakeSession(connected),
+      },
+      candidates: [refreshed],
+    })).toBe(instrumentCandidateUiKey(refreshed));
+  });
+
+  it('does not infer execution from a candidate family and reads it only from a matched session', () => {
+    const candidate = neptuneCandidate('discovery:1');
+    const physical = {
+      candidate,
+      provenance: { execution: 'physical' },
+    } as Pick<InstrumentSessionSnapshot, 'candidate' | 'provenance'>;
+    const virtual = {
+      candidate,
+      provenance: { execution: 'driver-virtual' },
+    } as unknown as Pick<InstrumentSessionSnapshot, 'candidate' | 'provenance'>;
+
+    expect(candidateSessionIsVirtual(candidate, undefined)).toBeUndefined();
+    expect(candidateSessionIsVirtual(candidate, physical)).toBe(false);
+    expect(candidateSessionIsVirtual(candidate, virtual)).toBe(true);
+  });
+});
+
+describe('ConnectionController manual network endpoint', () => {
+  it('uses the generic instrument boundary, then refreshes the regular candidate list after admission', async () => {
+    const candidate = neptuneCandidate('discovery:1');
+    const addManualEndpoint = vi.fn().mockResolvedValue({ ok: true });
+    const discover = vi.fn().mockResolvedValue({ candidates: [candidate], failures: [] });
+    vi.stubGlobal('atomizerInstrument', { addManualEndpoint, discover });
+
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    await expect(runtime.connection.addManualEndpoint(' ip:10.0.0.250 ')).resolves.toBe(true);
+
+    expect(addManualEndpoint).toHaveBeenCalledWith(' ip:10.0.0.250 ');
+    expect(discover).toHaveBeenCalledOnce();
+    expect(runtime.store.get().candidates).toEqual([candidate]);
+  });
+
+  it('surfaces an admission failure without refreshing candidates', async () => {
+    const addManualEndpoint = vi.fn().mockResolvedValue({ ok: false, message: 'Address did not respond' });
+    const discover = vi.fn();
+    vi.stubGlobal('atomizerInstrument', { addManualEndpoint, discover });
+
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    await expect(runtime.connection.addManualEndpoint('ip:10.0.0.251')).resolves.toBe(false);
+
+    expect(discover).not.toHaveBeenCalled();
+    expect(runtime.store.get().error).toBe('Address did not respond');
   });
 });

@@ -1,3 +1,4 @@
+import { dbmToMilliwatts } from '@atomos/dsp';
 import type {
   DetectedSignal,
   SignalDetectionConfig,
@@ -346,7 +347,6 @@ function clampFinite(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function dbmToMilliwatts(value: number): number { return 10 ** (value / 10); }
 function sum(values: readonly number[]): number { return values.reduce((total, value) => total + value, 0); }
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right);

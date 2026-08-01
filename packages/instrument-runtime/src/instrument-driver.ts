@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { structuralEqual } from './structural-equal.js';
 import {
   MAX_INSTRUMENT_SOURCE_KINDS_V1,
+  canonicalInstrumentSurfaceSchema,
   instrumentCandidateDescriptorSchema,
   instrumentCandidateSchema,
   instrumentCapabilitySourceBindingIssues,
@@ -21,10 +22,12 @@ import {
   type InstrumentCandidate,
   type InstrumentCandidateDescriptor,
   type InstrumentCapabilities,
+  type InstrumentConfiguration,
   type InstrumentConfigurationCommand,
   type InstrumentDriverId,
   type InstrumentDriverDiscoveryResult,
   type InstrumentFeatureCommand,
+  type InstrumentFeatureRequest,
   type InstrumentFeatureResult,
   type InstrumentMeasurement,
   type InstrumentRfOutputState,
@@ -32,7 +35,30 @@ import {
   type InstrumentSessionProvenance,
   type InstrumentSessionEvent,
   type InstrumentSourceKind,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationRequest,
 } from '@tinysa/contracts';
+
+/**
+ * Driver-owned translation of one canonical operation.  Acquisition operations
+ * resolve to the normal configuration lifecycle; state-changing source or
+ * instrument operations resolve to an existing feature lifecycle.  The
+ * renderer sees neither branch nor a native feature request: it receives the
+ * refreshed canonical surface after the manager has serialized and admitted
+ * the result.
+ */
+export type CanonicalOperationResolution =
+  | { readonly configuration: InstrumentConfiguration; readonly feature?: never }
+  | { readonly feature: InstrumentFeatureRequest; readonly configuration?: never };
+
+/**
+ * The one generic outcome for an operator-entered connection address.
+ * Drivers may use any native discovery/probe protocol internally, but the
+ * application only needs to know whether an address was admitted.
+ */
+export type InstrumentManualEndpointResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly message: string };
 
 export interface InstrumentSession {
   readonly sessionId: string;
@@ -41,10 +67,17 @@ export interface InstrumentSession {
   readonly provenance: InstrumentSessionProvenance;
   readonly capabilities: InstrumentCapabilities;
   readonly rfOutput: InstrumentRfOutputState;
+  /**
+   * Optional while legacy drivers are being migrated.  A driver which exposes
+   * this surface must also resolve it itself; the renderer never translates
+   * device controls or chooses an Auto fallback.
+   */
+  readonly canonicalSurface?: CanonicalInstrumentSurface;
   /** Dynamic command-acknowledged receive-only state; never an RF measurement. */
   readonly receiveOnlySafety?: InstrumentReceiveOnlySafetyState;
   /** Sends every complete admitted field or rejects it; drivers never normalize/drop fields, and report readback qualification separately. */
   configure(command: InstrumentConfigurationCommand): Promise<void>;
+  resolveCanonicalOperation?(request: CanonicalOperationRequest): Promise<CanonicalOperationResolution>;
   acquire(): Promise<InstrumentMeasurement>;
   executeFeature(command: InstrumentFeatureCommand): Promise<InstrumentFeatureResult>;
   disconnect(): Promise<void>;
@@ -55,6 +88,12 @@ export interface InstrumentDriver {
   readonly driverId: InstrumentDriverId;
   readonly sourceKinds: readonly InstrumentSourceKind[];
   discover(): Promise<InstrumentDriverDiscoveryResult>;
+  /**
+   * Optional standard bootstrap for a manually entered address.  The driver
+   * owns native address formats, discovery protocol, and remembered-device
+   * policy; callers never choose a source kind or driver implementation.
+   */
+  addManualEndpoint?(endpoint: string): Promise<InstrumentManualEndpointResult>;
   connect(candidate: InstrumentCandidate): Promise<InstrumentSession>;
   /**
    * Cleans a connection/process retained when connect() failed before it could
@@ -75,9 +114,18 @@ const driverSourceKindsSchema = z.array(instrumentSourceKindSchema)
     if (new Set(sourceKinds).size !== sourceKinds.length) context.addIssue({ code: 'custom', message: 'Driver source kinds must be unique' });
   });
 
+const instrumentManualEndpointResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }).strict(),
+  z.object({ ok: z.literal(false), message: z.string().trim().min(1).max(512) }).strict(),
+]);
+
 export function validateInstrumentDriver(driver: InstrumentDriver): InstrumentDriver {
   let driverId: InstrumentDriverId;
   let sourceKinds: readonly InstrumentSourceKind[];
+  // Drivers commonly implement this as a class method. Bind it once at the
+  // validation boundary so registry dispatch never loses the driver instance
+  // (and therefore never turns a valid address into a false negative).
+  const addManualEndpoint = driver.addManualEndpoint?.bind(driver);
   try {
     driverId = instrumentDriverIdSchema.parse(driver.driverId);
     sourceKinds = driverSourceKindsSchema.parse(driver.sourceKinds);
@@ -86,6 +134,9 @@ export function validateInstrumentDriver(driver: InstrumentDriver): InstrumentDr
       || typeof driver.cleanupPendingConnection !== 'function') {
       throw new TypeError('Driver must implement discover, connect, and pending-connection cleanup');
     }
+    if (addManualEndpoint !== undefined && typeof addManualEndpoint !== 'function') {
+      throw new TypeError('Driver manual endpoint bootstrap must be a function when provided');
+    }
   } catch (value) {
     throw new InstrumentDriverContractError(`Invalid instrument driver definition: ${message(value)}`, { cause: value });
   }
@@ -93,9 +144,23 @@ export function validateInstrumentDriver(driver: InstrumentDriver): InstrumentDr
     driverId,
     sourceKinds: Object.freeze([...sourceKinds]),
     discover: () => driver.discover(),
+    ...(addManualEndpoint === undefined ? {} : { addManualEndpoint: (endpoint: string) => addManualEndpoint(endpoint) }),
     connect: (candidate: InstrumentCandidate) => driver.connect(candidate),
     cleanupPendingConnection: () => driver.cleanupPendingConnection(),
   });
+}
+
+export function validateInstrumentManualEndpointResult(
+  driver: InstrumentDriver,
+  value: unknown,
+): InstrumentManualEndpointResult {
+  try { return instrumentManualEndpointResultSchema.parse(value); }
+  catch (error) {
+    throw new InstrumentDriverContractError(
+      `Driver ${driver.driverId} returned an invalid manual-endpoint result: ${message(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 export function validateDriverCandidate(
@@ -166,6 +231,12 @@ export function validateInstrumentSession(
     session.capabilities,
     'opened a session with invalid capabilities',
   );
+  const canonicalSurface = validateCanonicalSurface(driver, session.canonicalSurface);
+  if ((canonicalSurface === undefined) !== (session.resolveCanonicalOperation === undefined)) {
+    throw new InstrumentDriverContractError(
+      `Driver ${driver.driverId} must expose both canonicalSurface and resolveCanonicalOperation, or neither`,
+    );
+  }
   let provenance: InstrumentSessionProvenance;
   try { provenance = instrumentSessionProvenanceSchema.parse(session.provenance); }
   catch (error) { throw new InstrumentDriverContractError(`Driver ${driver.driverId} opened a session with invalid provenance`, { cause: error }); }
@@ -198,6 +269,9 @@ export function validateInstrumentSession(
         'exposed invalid dynamic capabilities',
       );
     },
+    get canonicalSurface(): CanonicalInstrumentSurface | undefined {
+      return validateCanonicalSurface(driver, session.canonicalSurface);
+    },
     rfOutput,
     get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
       return validateReceiveOnlySafetyState(
@@ -209,11 +283,28 @@ export function validateInstrumentSession(
       );
     },
     configure: (command: InstrumentConfigurationCommand) => session.configure(command),
+    resolveCanonicalOperation: session.resolveCanonicalOperation === undefined
+      ? undefined
+      : (request: CanonicalOperationRequest) => session.resolveCanonicalOperation!(request),
     acquire: () => session.acquire(),
     executeFeature: (command: InstrumentFeatureCommand) => session.executeFeature(command),
     disconnect: () => session.disconnect(),
     subscribe: (listener: (event: InstrumentSessionEvent) => void) => session.subscribe(listener),
   });
+}
+
+function validateCanonicalSurface(
+  driver: InstrumentDriver,
+  value: unknown,
+): CanonicalInstrumentSurface | undefined {
+  if (value === undefined) return undefined;
+  try { return canonicalInstrumentSurfaceSchema.parse(value); }
+  catch (error) {
+    throw new InstrumentDriverContractError(
+      `Driver ${driver.driverId} exposed an invalid canonical interaction surface: ${message(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 function validateSessionCapabilities(

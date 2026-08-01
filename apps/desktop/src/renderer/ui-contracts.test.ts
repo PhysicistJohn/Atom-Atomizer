@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertWorkspaceTransition, DEFAULT_ANALYZER, DEFAULT_GENERATOR, INITIAL_INSTRUMENT_STATE, instrumentCandidateUiKey, selectedCandidate, type DesktopUiState } from './ui-contracts.js';
+import { assertWorkspaceTransition, INITIAL_INSTRUMENT_STATE, instrumentCandidateUiKey, selectedCandidate, type DesktopUiState } from './ui-contracts.js';
 
 describe('UI safety and selection contracts', () => {
   it('blocks leaving Generator unless RF output is known off', () => {
@@ -13,7 +13,7 @@ describe('UI safety and selection contracts', () => {
       { schemaVersion: 1 as const, driverId: 'signal-lab', candidateId: 'one', displayName: 'SignalLab', sourceKind: 'signal-lab' as const, signalLab: { sourceId: 'one' }, discoveryRevision: 'r1' },
       { schemaVersion: 1 as const, driverId: 'signal-lab', candidateId: 'two', displayName: 'SignalLab two', sourceKind: 'signal-lab' as const, signalLab: { sourceId: 'two' }, discoveryRevision: 'r1' },
     ];
-    const state: DesktopUiState = { workspace: 'spectrum', connectionPanel: 'closed', acquisition: 'idle', instrument: INITIAL_INSTRUMENT_STATE, candidates, selectedCandidateId: instrumentCandidateUiKey(candidates[1]!), analyzer: DEFAULT_ANALYZER, generator: DEFAULT_GENERATOR };
+    const state: DesktopUiState = { workspace: 'spectrum', connectionPanel: 'closed', acquisition: 'idle', instrument: INITIAL_INSTRUMENT_STATE, candidates, selectedCandidateId: instrumentCandidateUiKey(candidates[1]!) };
     expect(selectedCandidate(state)?.candidateId).toBe('two');
     expect(selectedCandidate({ ...state, selectedCandidateId: 'missing' })).toBeUndefined();
 

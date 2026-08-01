@@ -1,120 +1,18 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   DetectedSignal,
-  GeneratorConfig,
-  InstrumentFeatureCapability,
   MarkerReading,
   Sweep,
   TraceFrame,
 } from '@tinysa/contracts';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
-import { GeneratorWorkspace } from './GeneratorWorkspace.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
-import { waveformDescriptor } from '../../../../../../Atom-SignalLab/src/waveforms.js';
 
 afterEach(cleanup);
 
-const generatorConfig: GeneratorConfig = {
-  frequencyHz: 100_000_000,
-  levelDbm: -40,
-  path: 'normal',
-  modulation: 'am',
-  modulationFrequencyHz: 1_000,
-  amDepthPercent: 50,
-  fmDeviationHz: 10_000,
-};
-
 describe('renderer component fault boundaries', () => {
-  it('keeps capability-drifted RF settings visible and recoverable while apply remains disabled', () => {
-    const capability = {
-      kind: 'rf-generator',
-      paths: [{ path: 'mixer', frequencyHz: { min: 1_000_000, max: 1_000_000_000 } }],
-      levelDbm: { min: -115, max: -18.5 },
-      modulation: { off: true },
-    } satisfies Extract<InstrumentFeatureCapability, { kind: 'rf-generator' }>;
-    const onChange = vi.fn();
-
-    render(<GeneratorWorkspace
-      config={generatorConfig}
-      capability={capability}
-      output="off"
-      busy={false}
-      onChange={onChange}
-      onApply={vi.fn()}
-      onOutput={vi.fn()}
-      onSignalLabProfile={vi.fn()}
-    />);
-
-    const path = screen.getByRole('combobox', { name: 'RF path' }) as HTMLSelectElement;
-    const modulation = screen.getByRole('combobox', { name: 'Modulation' }) as HTMLSelectElement;
-    expect(path.value).toBe('normal');
-    expect(path.getAttribute('aria-invalid')).toBe('true');
-    expect(modulation.value).toBe('am');
-    expect(modulation.getAttribute('aria-invalid')).toBe('true');
-    expect(screen.getByRole('button', { name: /Apply with output off/i }).hasAttribute('disabled')).toBe(true);
-
-    fireEvent.change(path, { target: { value: 'mixer' } });
-    expect(onChange).toHaveBeenCalledWith({ ...generatorConfig, path: 'mixer' });
-  });
-
-  it('keeps a stale SignalLab profile explicit and permits recovery to an advertised profile', () => {
-    const descriptor = waveformDescriptor('cw');
-    const capability = {
-      kind: 'signal-lab-profile-selection',
-      profiles: [{
-        profileId: descriptor.id,
-        label: descriptor.label,
-        family: descriptor.family,
-        model: descriptor.model,
-        qualification: descriptor.qualification,
-        centerFrequencyHz: descriptor.centerHz,
-        occupiedBandwidthHz: descriptor.occupiedBandwidthHz,
-        recommendedSpanHz: descriptor.recommendedSpanHz,
-        projection: descriptor.projection,
-        source: descriptor.source,
-        governance: descriptor.governance,
-        disclosure: descriptor.disclosure,
-        ...(descriptor.assetSha256 === undefined ? {} : { assetSha256: descriptor.assetSha256 }),
-      }],
-      selectedProfileId: 'cw',
-      channel: {
-        model: 'awgn', noiseFloorDbm: -108, seed: 1234, fadingRateHz: 2,
-        receiverImpairment: 'clean',
-      },
-      iqProfiles: [{
-        profileId: 'cw',
-        nativeSampleRateHz: null,
-        signalBandwidthHz: descriptor.occupiedBandwidthHz,
-        profileReferenceCenterHz: descriptor.centerHz,
-        nativeCarrierOffsetHz: 0,
-        nativeMinimumCaptureBandwidthHz: null,
-        replay: 'continuous',
-        derivedTransportSupported: false,
-      }],
-    } satisfies Extract<InstrumentFeatureCapability, { kind: 'signal-lab-profile-selection' }>;
-    const onProfile = vi.fn();
-    const view = render(<GeneratorWorkspace
-      config={generatorConfig}
-      signalLabProfiles={capability}
-      selectedSignalLabProfile="retired-profile"
-      output="off"
-      busy={false}
-      onChange={vi.fn()}
-      onApply={vi.fn()}
-      onOutput={vi.fn()}
-      onSignalLabProfile={onProfile}
-    />);
-
-    expect(view.getByRole('alert').textContent).toContain('retired-profile is not admitted; showing cw');
-    const profile = screen.getByRole('button', { name: /Continuous-wave analytic lab tone/i });
-    expect(profile.closest('[data-agent-exclusion="human-signal-profile-boundary"]')).toBeTruthy();
-    expect(view.container.querySelector('[data-agent-control]')).toBeNull();
-    fireEvent.click(profile);
-    expect(onProfile).toHaveBeenCalledWith('cw');
-  });
-
   it('bounds malformed channel configuration before array allocation or SVG projection', () => {
     const view = render(<ChannelAnalysisView
       sweep={makeSweep()}

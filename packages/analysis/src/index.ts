@@ -1,4 +1,4 @@
-import { decodeComplexSample, equivalentNoiseBandwidthBins, hannPeriodic, hannSymmetric, realFftMagnitudesUnscaled, welchPowerSpectrumPeriodicHann } from '@atomos/dsp';
+import { combineDbm, dbmToMilliwatts, decodeComplexSample, equivalentNoiseBandwidthBins, hannPeriodic, hannSymmetric, milliwattsToDbm, realFftMagnitudesUnscaled, welchPowerSpectrumPeriodicHann } from '@atomos/dsp';
 import type {
   AdjacentChannelMeasurement,
   AnalysisModeDefinition,
@@ -1229,15 +1229,13 @@ export function calculateSweepMetrics(sweep: Sweep): SweepMetrics {
   validateSweep(sweep);
   let peakIndex = 0;
   let minimumDbm = Number.POSITIVE_INFINITY;
-  let linearSumMilliwatts = 0;
   for (let index = 0; index < sweep.powerDbm.length; index++) {
     const value = sweep.powerDbm[index]!;
     if (value > sweep.powerDbm[peakIndex]!) peakIndex = index;
     minimumDbm = Math.min(minimumDbm, value);
-    linearSumMilliwatts += dbmToMilliwatts(value);
   }
-  const meanMilliwatts = linearSumMilliwatts / sweep.powerDbm.length;
-  const meanDbm = milliwattsToDbm(meanMilliwatts);
+  const summedPowerDbm = combineDbm(sweep.powerDbm);
+  const meanDbm = summedPowerDbm - 10 * Math.log10(sweep.powerDbm.length);
   return {
     peakDbm: sweep.powerDbm[peakIndex]!,
     peakHz: sweep.frequencyHz[peakIndex]!,
@@ -1245,7 +1243,7 @@ export function calculateSweepMetrics(sweep: Sweep): SweepMetrics {
     meanDbm,
     medianDbm: median(sweep.powerDbm),
     noiseFloorDbm: robustNoiseFloor(sweep.powerDbm),
-    summedPowerDbm: milliwattsToDbm(linearSumMilliwatts),
+    summedPowerDbm,
     occupiedBandwidth99Hz: legacyOccupiedBandwidth(sweep, 0.99),
     crestFactorDb: sweep.powerDbm[peakIndex]! - meanDbm,
   };
@@ -2318,10 +2316,9 @@ function averagePowerFrames(frames: readonly (readonly number[])[]): number[] {
   if (!frames.length) throw new Error('Trace averaging requires at least one frame');
   const points = frames[0]!.length;
   if (frames.some((frame) => frame.length !== points)) throw new Error('Trace averaging requires identical point counts');
-  return Array.from({ length: points }, (_, index) => {
-    const averageMilliwatts = frames.reduce((total, frame) => total + dbmToMilliwatts(frame[index]!), 0) / frames.length;
-    return milliwattsToDbm(averageMilliwatts);
-  });
+  const frameCountDb = 10 * Math.log10(frames.length);
+  return Array.from({ length: points }, (_, index) =>
+    combineDbm(frames.map((frame) => frame[index]!)) - frameCountDb);
 }
 
 function maximumIndex(values: readonly number[]): number {
@@ -2351,8 +2348,6 @@ function localPeakIndices(values: readonly number[], search: MarkerSearchConfigu
   return peaks;
 }
 
-function dbmToMilliwatts(value: number): number { return 10 ** (value / 10); }
-function milliwattsToDbm(value: number): number { return value > 0 ? 10 * Math.log10(value) : Number.NEGATIVE_INFINITY; }
 function clamp01(value: number): number { return Math.min(1, Math.max(0, value)); }
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right);

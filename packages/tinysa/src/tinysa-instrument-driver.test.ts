@@ -23,6 +23,7 @@ import {
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
+import { InstrumentDriverRegistry, InstrumentManager } from '@tinysa/instrument-runtime';
 import { TinySaZs407InstrumentDriver, type TinySaInstrumentDevicePort } from './tinysa-instrument-driver.js';
 import { admittedTinySaDetectedPowerConfiguration, admittedTinySaSpectrumConfiguration } from './scalar-configuration.js';
 import type { TransportDiscoveryResult } from './transport.js';
@@ -305,6 +306,224 @@ describe('TinySaZs407InstrumentDriver', () => {
     expect(detected).toMatchObject({ kind: 'detected-power-timeseries', centerHz: 98_000_000 });
     if (detected.kind !== 'detected-power-timeseries') throw new Error('Expected detected-power fixture');
     expect(detected.powerDbm).toHaveLength(20);
+  });
+
+  it('publishes one generic receiver-sweep operation and resolves every Auto intent inside the driver', async () => {
+    const device = new FakeTinySaDevice({ candidates: [physical], failures: [] });
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(device),
+    ]), {
+      now: () => new Date('2026-08-01T00:00:00.000Z'),
+      opaqueId: () => 'configuration:canonical-receiver-sweep',
+    });
+    await manager.connect((await manager.discover()).candidates[0]!);
+
+    const surface = manager.canonicalSurface();
+    expect(surface).toMatchObject({
+      presentation: {
+        title: physical.product,
+        subtitle: 'Connected instrument',
+        facts: expect.arrayContaining([
+          expect.objectContaining({
+            label: 'Driver advisory',
+            value: 'Compatibility notice',
+            detail: 'Custom firmware revision fffffff is admitted without source qualification.',
+          }),
+        ]),
+      },
+      operations: expect.arrayContaining([
+        expect.objectContaining({ id: 'receiver.sweep', label: 'Sweep', primary: true, scope: 'acquisition' }),
+        expect.objectContaining({ id: 'receiver.power', label: 'Observe power', scope: 'acquisition' }),
+        expect.objectContaining({ id: 'source.configure', label: 'Configure source', scope: 'source' }),
+        expect.objectContaining({ id: 'source.set-output', label: 'Set source output', scope: 'source', confirmation: 'high-impact' }),
+      ]),
+    });
+    const operation = surface?.operations.find((candidate) => candidate.id === 'receiver.sweep');
+    expect(operation).toBeDefined();
+    expect(surface?.parameters).toHaveLength(28);
+    expect(surface?.parameters.every((parameter) => parameter.auto.resolver === 'driver')).toBe(true);
+
+    const manualValues = new Map<string, number>([
+      ['receiver.sweep.start-hz', 80_000_000],
+      ['receiver.sweep.stop-hz', 100_000_000],
+    ]);
+    const result = await manager.executeCanonicalOperation({
+      sessionId: manager.snapshot()!.sessionId,
+      surfaceRevision: surface!.revision,
+      operationId: operation!.id,
+      parameters: operation!.parameterIds.map((parameterId) => {
+        const value = manualValues.get(parameterId);
+        return {
+          parameterId,
+          intent: value === undefined ? { mode: 'auto' as const } : { mode: 'manual' as const, value },
+        };
+      }),
+    });
+
+    expect(device.analyzer).toEqual({
+      startHz: 80_000_000,
+      stopHz: 100_000_000,
+      points: 20,
+      sweepTimeSeconds: 0.003,
+      acquisitionFormat: 'raw',
+      rbwKhz: 850,
+      attenuationDb: 0,
+      detector: 'sample',
+      spurRejection: 'auto',
+      lna: 'off',
+      avoidSpurs: 'auto',
+      trigger: { mode: 'auto' },
+    });
+    expect(result.surface.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'receiver.sweep.start-hz',
+        requested: { mode: 'manual', value: 80_000_000 },
+        effectiveValue: 80_000_000,
+        verification: 'driver-commanded',
+      }),
+      expect.objectContaining({
+        id: 'receiver.sweep.resolution-bandwidth-khz',
+        requested: { mode: 'auto' },
+        effectiveValue: 850,
+        verification: 'driver-commanded',
+      }),
+      expect.objectContaining({
+        id: 'receiver.sweep.trigger-level-dbm',
+        requested: { mode: 'auto' },
+        effectiveValue: -174,
+        verification: 'driver-selected',
+      }),
+    ]));
+    await manager.disconnect();
+  });
+
+  it('resolves source configuration and output through generic canonical operations', async () => {
+    const device = new FakeTinySaDevice({ candidates: [physical], failures: [] });
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(device),
+    ]), {
+      now: () => new Date('2026-08-01T00:00:00.000Z'),
+      opaqueId: () => 'configuration:canonical-source',
+    });
+    await manager.connect((await manager.discover()).candidates[0]!);
+    const sessionId = manager.snapshot()!.sessionId;
+    const surface = manager.canonicalSurface()!;
+    const configure = surface.operations.find((operation) => operation.id === 'source.configure')!;
+    const configured = await manager.executeCanonicalOperation({
+      sessionId,
+      surfaceRevision: surface.revision,
+      operationId: configure.id,
+      parameters: configure.parameterIds.map((parameterId) => ({
+        parameterId,
+        intent: {
+          mode: 'manual' as const,
+          value: ({
+            'source.frequency': 100_000_000,
+            'source.level': -40,
+            'source.path': 'normal',
+            'source.modulation': 'fm',
+            'source.modulation-rate': 1_000,
+            'source.am-depth': 50,
+            'source.fm-deviation': 25_000,
+          } as Record<string, number | string>)[parameterId]!,
+        },
+      })),
+    });
+    expect(device.generator).toEqual({
+      frequencyHz: 100_000_000,
+      levelDbm: -40,
+      path: 'normal',
+      modulation: 'fm',
+      modulationFrequencyHz: 1_000,
+      amDepthPercent: 50,
+      fmDeviationHz: 25_000,
+    });
+    expect(manager.snapshot()).toMatchObject({ rfOutput: 'off' });
+    expect(manager.snapshot()).not.toHaveProperty('configuration');
+    expect(configured.surface.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'source.frequency', requested: { mode: 'manual', value: 100_000_000 }, effectiveValue: 100_000_000, verification: 'driver-commanded' }),
+      expect.objectContaining({ id: 'source.modulation', requested: { mode: 'manual', value: 'fm' }, effectiveValue: 'fm', verification: 'driver-commanded' }),
+      expect.objectContaining({ id: 'source.output', requested: { mode: 'auto' }, effectiveValue: false }),
+    ]));
+
+    const output = configured.surface.operations.find((operation) => operation.id === 'source.set-output')!;
+    const enabled = await manager.executeCanonicalOperation({
+      sessionId,
+      surfaceRevision: configured.surface.revision,
+      operationId: output.id,
+      parameters: [{ parameterId: 'source.output', intent: { mode: 'manual', value: true } }],
+    });
+    expect(device.generatorOutput).toHaveBeenLastCalledWith(true);
+    expect(manager.snapshot()).toMatchObject({ rfOutput: 'on' });
+    expect(enabled.surface.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'source.output', requested: { mode: 'manual', value: true }, effectiveValue: true, verification: 'driver-commanded' }),
+    ]));
+
+    const disabled = await manager.executeCanonicalOperation({
+      sessionId,
+      surfaceRevision: enabled.surface.revision,
+      operationId: output.id,
+      parameters: [{ parameterId: 'source.output', intent: { mode: 'auto' } }],
+    });
+    expect(device.generatorOutput).toHaveBeenLastCalledWith(false);
+    expect(manager.snapshot()).toMatchObject({ rfOutput: 'off' });
+    expect(disabled.surface.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'source.output', requested: { mode: 'auto' }, effectiveValue: false }),
+    ]));
+    await manager.disconnect();
+  });
+
+  it('resolves bounded receiver power observation through the canonical surface', async () => {
+    const device = new FakeTinySaDevice({ candidates: [physical], failures: [] });
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([
+      new TinySaZs407InstrumentDriver(device),
+    ]), {
+      now: () => new Date('2026-08-01T00:00:00.000Z'),
+      opaqueId: () => 'configuration:canonical-power',
+    });
+    await manager.connect((await manager.discover()).candidates[0]!);
+    const sessionId = manager.snapshot()!.sessionId;
+    const surface = manager.canonicalSurface()!;
+    const operation = surface.operations.find((candidate) => candidate.id === 'receiver.power')!;
+    const result = await manager.executeCanonicalOperation({
+      sessionId,
+      surfaceRevision: surface.revision,
+      operationId: operation.id,
+      parameters: operation.parameterIds.map((parameterId) => ({
+        parameterId,
+        intent: parameterId === 'receiver.power.center-hz'
+          ? { mode: 'manual' as const, value: 98_000_000 }
+          : { mode: 'auto' as const },
+      })),
+    });
+    expect(device.zero).toEqual({
+      frequencyHz: 98_000_000,
+      points: 20,
+      rbwKhz: 850,
+      attenuationDb: 0,
+      sweepTimeSeconds: 0.003,
+      trigger: { mode: 'auto' },
+    });
+    expect(manager.snapshot()?.configuration?.configuration).toMatchObject({
+      kind: 'detected-power-timeseries',
+      centerHz: 98_000_000,
+      sampleCount: 20,
+    });
+    expect(result.surface.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'receiver.power.center-hz',
+        requested: { mode: 'manual', value: 98_000_000 },
+        effectiveValue: 98_000_000,
+        verification: 'driver-commanded',
+      }),
+      expect.objectContaining({
+        id: 'receiver.power.resolution-bandwidth-khz',
+        requested: { mode: 'auto' },
+        effectiveValue: 850,
+        verification: 'driver-commanded',
+      }),
+    ]));
+    await manager.disconnect();
   });
 
   it('projects custom-unqualified ZS407 normal-path receive tuning without generator, screen, or touch', async () => {

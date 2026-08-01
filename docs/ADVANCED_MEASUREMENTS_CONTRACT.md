@@ -110,13 +110,14 @@ an I/Q spectrogram.
 Adjacent and main windows may touch but may not overlap. Every configured window
 must lie inside the actual acquired span.
 
-When the staged analyzer span changes, the application first retains a channel
-definition whose complete main/adjacent extent still fits with margin. A stale
-out-of-span definition is recentered on the new analyzer span; if its extent is
-too large, main/adjacent bandwidth and spacing are deterministically bounded
-while preserving non-overlap and adjacent-channel count. This is staged UI
-geometry, not a substitute for evidence validation: the calculation still fails
-if any resulting window lies outside the actual returned sweep endpoints.
+When the current admitted swept-spectrum span changes, the application first
+retains a channel definition whose complete main/adjacent extent still fits with
+margin. An out-of-span definition is recentered on the new admitted span; if its
+extent is too large, main/adjacent bandwidth and spacing are deterministically
+bounded while preserving non-overlap and adjacent-channel count. This is host
+analysis geometry, not a substitute for evidence validation: the calculation
+still fails if any resulting window lies outside the actual returned sweep
+endpoints.
 
 Each trace point is treated as detected power through the measured RBW. The
 frequency cell for an interior bin is bounded by the midpoints to its neighbors;
@@ -217,7 +218,7 @@ Every view and calculation has a preferred typed hook:
 | `get_channel_measurement_results` | Return CHP/PSD/local 3 dB response status/ACP/OBW or fail |
 | `configure_envelope_stft` | Set the complete STFT definition |
 | `get_envelope_stft_results` | Return the latest envelope STFT or fail |
-| `acquire_envelope_stft` | Acquire staged zero-span evidence and analyze it |
+| `acquire_envelope_stft` | Acquire zero-span evidence against a compatible current driver-admitted configuration and analyze it |
 
 Semantic computer controls can select each view. Typed tools are preferred for
 state and calculations; screenshot/click operation remains available for visual
@@ -254,7 +255,7 @@ contracts.
 - `ADV-012`: every visible analysis view has a typed Atom selection/config/result path; non-rendered STFT tools remain explicit.
 - `ADV-013`: reference screenshots cover populated Spectrum, Waterfall, and Channel and prove the Time/STFT route is absent.
 - `ADV-014`: Detect uses a fixed-height pipeline/result/candidate composition plus one compact non-scrolling detected-power status strip; the strip has no waveform plot or receiver editor, the document never scrolls, and empty/result evidence remains visible with Atom open.
-- `ADV-015`: analyzer-span changes reconcile stale channel geometry before render while actual-endpoint validation remains fail-closed.
+- `ADV-015`: admitted swept-spectrum span changes reconcile stale channel geometry before render while actual-endpoint validation remains fail-closed.
 - `ADV-016`: narrow CW remains centered on its strongest sampled peak and any available response width is resolution-limited; bounded crossings are interpolated, while edge, truncated-window, and sparse-grid fixtures fail unavailable rather than substituting displayed-span OBW for 3 dB width.
 - `ADV-017`: marker-local N-dB-down results share the half-power estimator while retaining a separate trace-local component gate, resolution status, and fail-closed UI/Agent projection.
 - `ADV-018`: invalid evidence produces a visible/typed error and never a substituted result.

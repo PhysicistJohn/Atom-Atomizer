@@ -2,16 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { IqWorkspace, type IqCaptureMeta } from '../components/IqWorkspace.js';
 import { previewComplexIq } from '../complex-iq.js';
 import type { RecoveredConstellation } from '../embedding-classifier-runtime.js';
-import { selectBusy, selectIqCapability, selectIqCaptureUnavailableReason, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
+import { selectBusy, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 import { IqRecoveryController } from '../controllers/iq-recovery.js';
 
 const selectIqState = (state: AtomizerRendererState) => ({
   connected: state.instrument.session !== undefined,
-  capability: selectIqCapability(state),
-  captureUnavailableReason: selectIqCaptureUnavailableReason(state),
   iqCapture: state.iqCapture,
-  iqConfiguration: state.iqConfiguration,
+  canonicalSurface: state.canonicalSurface,
   classification: state.classification,
 });
 
@@ -35,18 +33,6 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
       sampleRateHz: capture.sampleRateHz,
       sampleFormat: capture.sampleFormat,
       qualification: capture.qualification,
-      profileReferenceCenterHz: capture.profileReferenceCenterHz,
-      rfReferenceCenterHz: capture.rfReferenceCenterHz,
-      nativeCarrierOffsetHz: capture.nativeCarrierOffsetHz,
-      rfPlacement: capture.rfPlacement,
-      outputCarrierOffsetHz: capture.outputCarrierOffsetHz,
-      rfTuneCenterHz: capture.rfTuneCenterHz,
-      signalBandwidthHz: capture.signalBandwidthHz,
-      nativeSampleRateHz: capture.nativeSampleRateHz,
-      payloadKind: capture.payloadKind,
-      adcSignificantBits: capture.adcSignificantBits,
-      adcFullScaleCode: capture.adcFullScaleCode,
-      powerReference: capture.powerReference,
     };
     try { return { preview: previewComplexIq(capture), previewError: undefined, captureMeta: meta }; }
     catch (error) {
@@ -80,8 +66,6 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     : undefined;
 
   return <IqWorkspace
-    configuration={s.iqConfiguration}
-    capability={s.capability}
     preview={preview}
     previewError={previewError}
     captureMeta={captureMeta}
@@ -90,8 +74,10 @@ export function IqContainer({ runtime }: { runtime: RendererRuntime }) {
     classificationIssue={iqClassification?.issue}
     recovered={recovered}
     busy={!s.connected || s.busy}
-    captureUnavailableReason={s.captureUnavailableReason}
-    onChange={(configuration) => runtime.acquisition.stageIqConfiguration(configuration)}
+    canonicalSurface={s.canonicalSurface}
+    onCanonicalOperation={s.canonicalSurface
+      ? (operationId, parameters) => runtime.events.executeCanonicalOperation(s.canonicalSurface!, operationId, parameters)
+      : undefined}
     onExport={() => void runtime.features.exportLatestIqFromUi()}
   />;
 }

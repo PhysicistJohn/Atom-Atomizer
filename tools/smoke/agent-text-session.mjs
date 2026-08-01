@@ -12,20 +12,21 @@
 //      page target answers on http://localhost:9222/json.
 //   2. OPENAI_KEY was present in the app's environment at launch — the Atom
 //      composer is disabled without it and this script fails with guidance.
-//   3. A SignalLab session is connected (the factory startup default
-//      auto-connects; the script waits up to 45s, then fails with guidance).
+//   3. A connected driver exposes a canonical operation surface with an
+//      available acquisition operation (the script waits up to 45s).
 //   4. Network access to the OpenAI Realtime API.
 //
-// Scenario: sends "Switch to the wifi profile and take one sweep." through the
-// real Atom composer, then asserts from the rendered transcript that
-//   - the select_signal_lab_profile tool executed ("… completed" chip),
+// Scenario: asks Atom to apply the driver-declared primary acquisition
+// operation with Auto for every parameter and take one measurement, then
+// asserts from the rendered transcript that
+//   - the execute_canonical_operation tool executed ("… completed" chip),
 //   - the acquire_sweep tool executed ("… completed" chip),
-//   - Atom's final reply mentions the wifi profile,
+//   - Atom produced a final reply,
 //   - no system-level operation failure was appended.
 // Exit 0 = every step passed.
 
 const CDP_JSON = 'http://localhost:9222/json';
-const PROMPT = 'Switch to the wifi profile and take one sweep.';
+const PROMPT = 'Read the active instrument state. Apply the driver-declared primary acquisition operation using Automatic for every parameter, then take one measurement.';
 const OPERATION_TIMEOUT_MS = 180_000;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -97,35 +98,17 @@ async function pollFor(step, expression, timeoutMs = 30_000, intervalMs = 750) {
 // --------------------------------------------------------------------------
 // Steps.
 // --------------------------------------------------------------------------
-async function ensureConnectedSession() {
+async function ensureCanonicalSession() {
   await pollFor('app-ready', `Boolean(document.querySelector('button[data-agent-control="connection.open"]'))`, 60_000);
   try {
-    await pollFor('signal-lab-session', `(() => {
+    await pollFor('canonical-session', `(() => {
       const pill = document.querySelector('button[data-agent-control="connection.open"]');
       return Boolean(pill && pill.classList.contains('is-ready'));
     })()`, 45_000);
   } catch {
-    throw new Error('no connected instrument session — connect SignalLab (Connection dialog) and re-run');
+    throw new Error('no connected canonical instrument session — connect an instrument and re-run');
   }
-  pass('signal-lab-session', 'connected session present');
-}
-
-async function resetProfileAwayFromWifi() {
-  // Idempotence: park the source on a 5G NR profile through the visual picker
-  // so "switch to the wifi profile" always demands a real commanded selection.
-  await evaluate(`document.querySelector('button[data-agent-control="workspace.generator"]')?.click(); 'ok'`);
-  await pollFor('generator-family-tabs', `Boolean([...document.querySelectorAll('button')]
-    .find((b) => (b.textContent ?? '').trim().startsWith('5G NR')))`, 15_000);
-  const clicked = await evaluate(`(() => {
-    const tab = [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim().startsWith('5G NR'));
-    if (!tab) return 'missing';
-    if (tab.disabled) return 'disabled';
-    tab.click();
-    return 'ok';
-  })()`);
-  if (clicked !== 'ok') throw new Error(`profile-reset: 5G NR tab was ${clicked}`);
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  pass('profile-reset', 'parked on 5G NR before prompting');
+  pass('canonical-session', 'connected session present');
 }
 
 async function ensureAtomComposer() {
@@ -188,9 +171,9 @@ async function awaitOperationOutcome(baselineCount) {
   else pass('operation-clean', 'no system-level operation failure appended');
 
   const toolChips = transcript.filter((message) => message.role === 'tool').map((message) => message.text);
-  const profileToolRan = toolChips.some((text) => /^select signal lab profile completed/.test(text));
-  if (profileToolRan) pass('select_signal_lab_profile-executed', 'completed chip present');
-  else fail('select_signal_lab_profile-executed', `tool chips: ${JSON.stringify(toolChips).slice(0, 400)}`);
+  const canonicalToolRan = toolChips.some((text) => /^execute canonical operation completed/.test(text));
+  if (canonicalToolRan) pass('execute_canonical_operation-executed', 'completed chip present');
+  else fail('execute_canonical_operation-executed', `tool chips: ${JSON.stringify(toolChips).slice(0, 400)}`);
 
   const sweepToolRan = toolChips.some((text) => /^acquire sweep completed/.test(text));
   if (sweepToolRan) pass('acquire_sweep-executed', 'completed chip present');
@@ -198,21 +181,20 @@ async function awaitOperationOutcome(baselineCount) {
 
   const assistantReplies = transcript.filter((message) => message.role === 'assistant').map((message) => message.text);
   const finalReply = assistantReplies.at(-1) ?? '';
-  if (/wi[^a-z0-9]?fi/i.test(assistantReplies.join(' '))) pass('reply-mentions-profile', finalReply.slice(0, 160));
-  else fail('reply-mentions-profile', `assistant replies: ${JSON.stringify(assistantReplies).slice(0, 400)}`);
+  if (finalReply.trim()) pass('final-reply', finalReply.slice(0, 160));
+  else fail('final-reply', `assistant replies: ${JSON.stringify(assistantReplies).slice(0, 400)}`);
 
-  const selectedProfile = await evaluate(`(() => {
+  const executedTools = await evaluate(`(() => {
     const chips = ${READ_TRANSCRIPT};
     return chips.filter((message) => message.role === 'tool').map((message) => message.text).join('\\n');
   })()`);
-  console.log(`INFO  transcript-tools —\n${selectedProfile.split('\n').map((line) => `        ${line}`).join('\n')}`);
+  console.log(`INFO  transcript-tools —\n${executedTools.split('\n').map((line) => `        ${line}`).join('\n')}`);
 }
 
 // --------------------------------------------------------------------------
 try {
   await connectCdp();
-  await ensureConnectedSession();
-  await resetProfileAwayFromWifi();
+  await ensureCanonicalSession();
   await ensureAtomComposer();
   const baseline = await sendPromptThroughComposer();
   await awaitOperationOutcome(baseline);

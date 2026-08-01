@@ -4,15 +4,27 @@ import {
   isSourceQualifiedZs407CustomReceiverFirmwareIdentity,
   isSupportedZs407FirmwareIdentity,
   isZs407FirmwareVersionRevisionPair,
+  canonicalInstrumentSurfaceSchema,
+  canonicalOperationParameterIntentsFor,
+  canonicalOperationRequestSchema,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
+  instrumentConfigurationCapabilityBindingIssues,
   instrumentConfigurationCommandSchema,
+  detectedPowerTimeseriesConfigurationSchema,
   instrumentFeatureCommandSchema,
   instrumentMeasurementSchema,
   instrumentReceiveOnlySafetyStateSchema,
   instrumentSessionEventSchema,
   portCandidateSchema,
+  sweptSpectrumConfigurationSchema,
   type AnalyzerConfig,
+  type CanonicalInstrumentSurface,
+  type CanonicalInstrumentPresentation,
+  type CanonicalOperationRequest,
+  type CanonicalParameter,
+  type CanonicalParameterIntent,
+  type CanonicalParameterVerification,
   type DeviceDiagnostics,
   type DeviceCapabilities,
   type DeviceEvent,
@@ -26,6 +38,7 @@ import {
   type InstrumentConfigurationCommand,
   type InstrumentDriverDiscoveryResult,
   type InstrumentFeatureCommand,
+  type InstrumentFeatureRequest,
   type InstrumentFeatureResult,
   type InstrumentMeasurement,
   type InstrumentReceiveOnlySafetyState,
@@ -40,7 +53,7 @@ import {
   type ZeroSpanCapture,
   type ZeroSpanConfig,
 } from '@tinysa/contracts';
-import type { InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
+import type { CanonicalOperationResolution, InstrumentDriver, InstrumentSession } from '@tinysa/instrument-runtime';
 import type { TransportDiscoveryResult } from './transport.js';
 import { tinySaAnalyzerConfiguration, tinySaDetectedPowerConfiguration } from './scalar-configuration.js';
 
@@ -131,6 +144,7 @@ export class TinySaZs407InstrumentDriver implements InstrumentDriver {
       capabilities,
       rfOutput,
       receiveOnlySafety !== undefined,
+      snapshot.generator?.commanded,
     );
   }
 }
@@ -141,6 +155,12 @@ class TinySaInstrumentSession implements InstrumentSession {
   readonly #listeners = new Set<(event: InstrumentSessionEvent) => void>();
   readonly #unsubscribe: () => void;
   #configuration: InstrumentConfigurationCommand | undefined;
+  #sourceConfiguration: GeneratorConfig | undefined;
+  #sourceConfigurationIntents = new Map<string, CanonicalParameterIntent>();
+  #sourceOutputIntent: CanonicalParameterIntent = { mode: 'auto' };
+  #sourceOutputEnabled = false;
+  #pendingCanonicalSourceOperation: PendingCanonicalSourceOperation | undefined;
+  #canonicalSurfaceEpoch = 0;
   #terminalEvent: InstrumentSessionEvent | undefined;
   #closed = false;
 
@@ -153,14 +173,119 @@ class TinySaInstrumentSession implements InstrumentSession {
     capabilities: InstrumentCapabilities,
     readonly rfOutput: 'off' | 'on' | 'unknown' | 'not-supported',
     private readonly receiveOnlySafetyEnabled: boolean,
+    initialSourceConfiguration?: GeneratorConfig,
   ) {
     this.capabilities = capabilities;
+    this.#sourceConfiguration = initialSourceConfiguration;
+    if (initialSourceConfiguration) this.#sourceConfigurationIntents = canonicalSourceConfigurationIntents(initialSourceConfiguration);
+    this.#sourceOutputEnabled = rfOutput === 'on';
     this.#unsubscribe = device.subscribe((event) => this.#forwardDeviceEvent(event));
   }
 
   get receiveOnlySafety(): InstrumentReceiveOnlySafetyState | undefined {
     if (!this.receiveOnlySafetyEnabled) return undefined;
     return requireReceiveOnlySafetyState(this.device.snapshot().receiveOnlySafety, this.sessionId);
+  }
+
+  /** Driver-declared acquisition and source controls, with every Auto policy resolved here. */
+  get canonicalSurface(): CanonicalInstrumentSurface | undefined {
+    const receiver = receiverSweepCapability(this.capabilities);
+    const power = receiverPowerCapability(this.capabilities);
+    const source = rfGeneratorCapability(this.capabilities);
+    if (!receiver && !power && !source) return undefined;
+    const revision = `canonical:instrument:${this.#canonicalSurfaceEpoch}`;
+    const presentation = canonicalReceiverSweepPresentation({
+      candidate: this.candidate,
+      provenance: this.provenance,
+      identity: this.admittedDeviceIdentity,
+      rfOutput: this.rfOutput,
+      receiveOnlySafetyEnabled: this.receiveOnlySafetyEnabled,
+    });
+    const receiverSurface = receiver
+      ? canonicalReceiverSweepControls({
+          capability: receiver,
+          configuration: this.#configuration,
+          unavailable: this.#closed,
+        })
+      : undefined;
+    const powerControls = power
+      ? canonicalReceiverPowerControls({
+          capability: power,
+          configuration: this.#configuration,
+          unavailable: this.#closed,
+        })
+      : undefined;
+    const sourceControls = source
+      ? canonicalSourceControls({
+          capability: source,
+          configuration: this.#sourceConfiguration,
+          configurationIntents: this.#sourceConfigurationIntents,
+          outputIntent: this.#sourceOutputIntent,
+          outputEnabled: this.#sourceOutputEnabled,
+          unavailable: this.#closed,
+        })
+      : undefined;
+    return canonicalInstrumentSurfaceSchema.parse({
+      schemaVersion: 1,
+      revision,
+      presentation,
+      parameters: [
+        ...(receiverSurface?.parameters ?? []),
+        ...(powerControls?.parameters ?? []),
+        ...(sourceControls?.parameters ?? []),
+      ],
+      operations: [
+        ...(receiverSurface?.operations ?? []),
+        ...(powerControls?.operations ?? []),
+        ...(sourceControls?.operations ?? []),
+      ],
+    });
+  }
+
+  async resolveCanonicalOperation(requestValue: CanonicalOperationRequest): Promise<CanonicalOperationResolution> {
+    this.#requireOpen();
+    const request = canonicalOperationRequestSchema.parse(requestValue);
+    this.#requireSession(request.sessionId);
+    const surface = this.canonicalSurface;
+    if (!surface) throw new Error('TinySA session does not advertise a canonical operation surface');
+    if (request.operationId === CANONICAL_RECEIVER_SWEEP_OPERATION_ID) {
+      const capability = receiverSweepCapability(this.capabilities);
+      if (!capability) throw new Error('TinySA session does not advertise a canonical receiver sweep operation');
+      const intents = canonicalOperationParameterIntentsFor(surface, CANONICAL_RECEIVER_SWEEP_OPERATION_ID, request);
+      return {
+        configuration: resolveCanonicalReceiverSweepConfiguration(
+          this.capabilities,
+          capability,
+          currentReceiverSweepConfiguration(this.#configuration),
+          intents,
+        ),
+      };
+    }
+    if (request.operationId === CANONICAL_RECEIVER_POWER_OPERATION_ID) {
+      const capability = receiverPowerCapability(this.capabilities);
+      if (!capability) throw new Error('TinySA session does not advertise a canonical power observation operation');
+      const intents = canonicalOperationParameterIntentsFor(surface, CANONICAL_RECEIVER_POWER_OPERATION_ID, request);
+      return {
+        configuration: resolveCanonicalReceiverPowerConfiguration(
+          this.capabilities,
+          capability,
+          currentReceiverPowerConfiguration(this.#configuration),
+          intents,
+        ),
+      };
+    }
+    const source = rfGeneratorCapability(this.capabilities);
+    if (!source) throw new Error(`TinySA session does not advertise canonical operation ${request.operationId}`);
+    const operationId = request.operationId;
+    if (operationId !== CANONICAL_SOURCE_CONFIGURATION_OPERATION_ID && operationId !== CANONICAL_SOURCE_OUTPUT_OPERATION_ID) {
+      throw new Error(`TinySA session does not advertise canonical operation ${operationId}`);
+    }
+    const intents = canonicalOperationParameterIntentsFor(surface, operationId, request);
+    const feature = operationId === CANONICAL_SOURCE_CONFIGURATION_OPERATION_ID
+      ? resolveCanonicalSourceConfiguration(source, this.#sourceConfiguration, intents)
+      : resolveCanonicalSourceOutput(intents);
+    this.#pendingCanonicalSourceOperation = { operationId, feature, intents: new Map(intents) };
+    return { feature };
   }
 
   subscribe(listener: (event: InstrumentSessionEvent) => void): () => void {
@@ -179,7 +304,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     // A multi-command device transition is not atomic at the shell. Revoke the
     // prior binding before dispatch so a partial failure can never be followed
     // by acquisition under the old generic configuration revision.
-    this.#configuration = undefined;
+    this.#clearConfiguration();
     if (command.configuration.kind === 'swept-spectrum') {
       await this.device.configureAnalyzer(tinySaAnalyzerConfiguration(command.configuration));
     } else if (command.configuration.kind === 'detected-power-timeseries') {
@@ -188,6 +313,7 @@ class TinySaInstrumentSession implements InstrumentSession {
       throw new Error('TinySA ZS407 does not support complex-I/Q acquisition');
     }
     this.#configuration = command;
+    this.#canonicalSurfaceEpoch++;
   }
 
   async acquire(): Promise<InstrumentMeasurement> {
@@ -277,11 +403,28 @@ class TinySaInstrumentSession implements InstrumentSession {
     if (command.kind === 'rf-generator') {
       this.#requireFeature('rf-generator');
       if (command.action === 'configure') {
-        this.#configuration = undefined;
-        await this.device.configureGenerator(defaultGeneratorConfiguration(command));
+        this.#clearConfiguration();
+        const configuration = defaultGeneratorConfiguration(command);
+        try {
+          await this.device.configureGenerator(configuration);
+        } catch (error) {
+          this.#discardPendingCanonicalSourceOperation(command);
+          throw error;
+        }
+        this.#sourceConfiguration = configuration;
+        this.#commitCanonicalSourceOperation(command);
+        this.#canonicalSurfaceEpoch++;
         return { ...command };
       }
-      await this.device.setGeneratorOutput(command.enabled);
+      try {
+        await this.device.setGeneratorOutput(command.enabled);
+      } catch (error) {
+        this.#discardPendingCanonicalSourceOperation(command);
+        throw error;
+      }
+      this.#sourceOutputEnabled = command.enabled;
+      this.#commitCanonicalSourceOperation(command);
+      this.#canonicalSurfaceEpoch++;
       return { ...command };
     }
     if (command.kind === 'screen') {
@@ -302,7 +445,7 @@ class TinySaInstrumentSession implements InstrumentSession {
     }
     if (command.kind === 'touch') {
       this.#requireFeature('touch');
-      this.#configuration = undefined;
+      this.#clearConfiguration();
       const point = { x: command.x, y: command.y };
       let touchFailure: unknown;
       try {
@@ -370,6 +513,31 @@ class TinySaInstrumentSession implements InstrumentSession {
   }
 
   #requireOpen(): void { if (this.#closed) throw new Error('TinySA instrument session is closed'); }
+  #clearConfiguration(): void {
+    this.#configuration = undefined;
+    this.#canonicalSurfaceEpoch++;
+  }
+  #commitCanonicalSourceOperation(command: InstrumentFeatureCommand): void {
+    const pending = this.#pendingCanonicalSourceOperation;
+    if (!pending || !sameFeatureRequest(pending.feature, command)) {
+      if (command.kind === 'rf-generator') {
+        if (command.action === 'configure') this.#sourceConfigurationIntents = canonicalSourceConfigurationIntents(defaultGeneratorConfiguration(command));
+        else this.#sourceOutputIntent = command.enabled ? { mode: 'manual', value: true } : { mode: 'auto' };
+      }
+      return;
+    }
+    this.#pendingCanonicalSourceOperation = undefined;
+    if (pending.operationId === CANONICAL_SOURCE_CONFIGURATION_OPERATION_ID) {
+      this.#sourceConfigurationIntents = new Map(pending.intents);
+    } else {
+      this.#sourceOutputIntent = pending.intents.get(CANONICAL_SOURCE_PARAMETER_IDS.output) ?? { mode: 'auto' };
+    }
+  }
+  #discardPendingCanonicalSourceOperation(command: InstrumentFeatureCommand): void {
+    if (this.#pendingCanonicalSourceOperation && sameFeatureRequest(this.#pendingCanonicalSourceOperation.feature, command)) {
+      this.#pendingCanonicalSourceOperation = undefined;
+    }
+  }
   #requireSession(sessionId: string): void {
     if (sessionId !== this.sessionId) throw new Error('TinySA command session ID does not match the active session');
   }
@@ -407,6 +575,948 @@ class TinySaInstrumentSession implements InstrumentSession {
       try { listener(structuredClone(event)); } catch { /* Consumer isolation. */ }
     }
   }
+}
+
+const CANONICAL_RECEIVER_SWEEP_OPERATION_ID = 'receiver.sweep';
+const CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS = {
+  startHz: 'receiver.sweep.start-hz',
+  stopHz: 'receiver.sweep.stop-hz',
+  points: 'receiver.sweep.points',
+  sweepTimeSeconds: 'receiver.sweep.time-seconds',
+  acquisitionFormat: 'receiver.sweep.data-format',
+  resolutionBandwidthKhz: 'receiver.sweep.resolution-bandwidth-khz',
+  attenuationDb: 'receiver.sweep.attenuation-db',
+  detector: 'receiver.sweep.detector',
+  spurRejection: 'receiver.sweep.spur-rejection',
+  lowNoiseAmplifier: 'receiver.sweep.low-noise-amplifier',
+  avoidSpurs: 'receiver.sweep.avoid-spurs',
+  triggerMode: 'receiver.sweep.trigger-mode',
+  triggerLevelDbm: 'receiver.sweep.trigger-level-dbm',
+} as const;
+const CANONICAL_RECEIVER_POWER_OPERATION_ID = 'receiver.power';
+const CANONICAL_RECEIVER_POWER_PARAMETER_IDS = {
+  centerHz: 'receiver.power.center-hz',
+  sampleCount: 'receiver.power.samples',
+  sweepTimeSeconds: 'receiver.power.time-seconds',
+  resolutionBandwidthKhz: 'receiver.power.resolution-bandwidth-khz',
+  attenuationDb: 'receiver.power.attenuation-db',
+  triggerMode: 'receiver.power.trigger-mode',
+  triggerLevelDbm: 'receiver.power.trigger-level-dbm',
+} as const;
+const CANONICAL_SOURCE_CONFIGURATION_OPERATION_ID = 'source.configure';
+const CANONICAL_SOURCE_OUTPUT_OPERATION_ID = 'source.set-output';
+const CANONICAL_SOURCE_PARAMETER_IDS = {
+  frequencyHz: 'source.frequency',
+  levelDbm: 'source.level',
+  path: 'source.path',
+  modulation: 'source.modulation',
+  modulationFrequencyHz: 'source.modulation-rate',
+  amDepthPercent: 'source.am-depth',
+  fmDeviationHz: 'source.fm-deviation',
+  output: 'source.output',
+} as const;
+const CANONICAL_AUTO_DESCRIPTION = 'The connected driver selects a valid setting when Auto is requested.';
+
+type SweptSpectrumCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'swept-spectrum' }>;
+type ReceiverSweepCapability = SweptSpectrumCapability & {
+  readonly controls: Extract<SweptSpectrumCapability['controls'], { model: 'receiver' }>;
+};
+type DetectedPowerCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'detected-power-timeseries' }>;
+type ReceiverPowerCapability = DetectedPowerCapability & {
+  readonly controls: Extract<DetectedPowerCapability['controls'], { model: 'receiver' }>;
+};
+type RfGeneratorCapability = Extract<InstrumentCapabilities['features'][number], { kind: 'rf-generator' }>;
+type NumericRange = Readonly<{ min: number; max: number; step?: number }>;
+interface CanonicalEffective<Value extends number | string | boolean> {
+  readonly value: Value;
+  readonly verification: CanonicalParameterVerification;
+}
+interface PendingCanonicalSourceOperation {
+  readonly operationId: string;
+  readonly feature: InstrumentFeatureRequest;
+  readonly intents: ReadonlyMap<string, CanonicalParameterIntent>;
+}
+interface CanonicalSourceControls {
+  readonly parameters: readonly CanonicalParameter[];
+  readonly operations: CanonicalInstrumentSurface['operations'];
+}
+type CanonicalReceiverTriggerEffectiveValues = Readonly<{
+  triggerMode: CanonicalEffective<'auto' | 'normal' | 'single'>;
+  triggerLevelDbm?: CanonicalEffective<number>;
+}>;
+type CanonicalReceiverParameterIds = Readonly<{
+  resolutionBandwidthKhz: string;
+  attenuationDb: string;
+  triggerMode: string;
+  triggerLevelDbm: string;
+}>;
+type CanonicalReceiverControls = ReceiverSweepCapability['controls'] | ReceiverPowerCapability['controls'];
+type CanonicalReceiverCurrentControls = Extract<
+  SweptSpectrumConfiguration['controls'] | DetectedPowerTimeseriesConfiguration['controls'],
+  { model: 'receiver' }
+>;
+
+function receiverSweepCapability(capabilities: InstrumentCapabilities): ReceiverSweepCapability | undefined {
+  const sweep = capabilities.acquisitions.find(
+    (candidate): candidate is SweptSpectrumCapability => candidate.kind === 'swept-spectrum',
+  );
+  if (!sweep || sweep.controls.model !== 'receiver') return undefined;
+  return sweep as ReceiverSweepCapability;
+}
+
+function currentReceiverSweepConfiguration(
+  command: InstrumentConfigurationCommand | undefined,
+): SweptSpectrumConfiguration | undefined {
+  if (command?.configuration.kind !== 'swept-spectrum' || command.configuration.controls.model !== 'receiver') {
+    return undefined;
+  }
+  return command.configuration;
+}
+
+function receiverPowerCapability(capabilities: InstrumentCapabilities): ReceiverPowerCapability | undefined {
+  const power = capabilities.acquisitions.find(
+    (candidate): candidate is DetectedPowerCapability => candidate.kind === 'detected-power-timeseries',
+  );
+  if (!power || power.controls.model !== 'receiver') return undefined;
+  return power as ReceiverPowerCapability;
+}
+
+function currentReceiverPowerConfiguration(
+  command: InstrumentConfigurationCommand | undefined,
+): DetectedPowerTimeseriesConfiguration | undefined {
+  if (command?.configuration.kind !== 'detected-power-timeseries' || command.configuration.controls.model !== 'receiver') {
+    return undefined;
+  }
+  return command.configuration;
+}
+
+function canonicalReceiverPowerControls(input: Readonly<{
+  capability: ReceiverPowerCapability;
+  configuration: InstrumentConfigurationCommand | undefined;
+  unavailable: boolean;
+}>): CanonicalSourceControls {
+  const { capability } = input;
+  const controls = capability.controls;
+  const effective = canonicalReceiverPowerEffectiveValues(
+    capability,
+    currentReceiverPowerConfiguration(input.configuration),
+  );
+  const parameters: CanonicalParameter[] = [
+    canonicalNumericParameter('integer', CANONICAL_RECEIVER_POWER_PARAMETER_IDS.centerHz, 'Center frequency', 'Power observation', 'Hz', capability.centerFrequencyHz, effective.centerHz),
+    canonicalNumericParameter('integer', CANONICAL_RECEIVER_POWER_PARAMETER_IDS.sampleCount, 'Samples', 'Power observation', 'samples', capability.sampleCount, effective.sampleCount),
+    canonicalNumericParameter('number', CANONICAL_RECEIVER_POWER_PARAMETER_IDS.sweepTimeSeconds, 'Duration', 'Power observation', 'seconds', capability.sweepTimeSeconds.manualSeconds, effective.sweepTimeSeconds),
+  ];
+  appendCanonicalReceiverControlParameters(parameters, CANONICAL_RECEIVER_POWER_PARAMETER_IDS, controls, effective);
+  return {
+    parameters,
+    operations: [canonicalOperationDefinition({
+      id: CANONICAL_RECEIVER_POWER_OPERATION_ID,
+      label: 'Observe power',
+      description: 'Configure one bounded receiver power time series.',
+      scope: 'acquisition',
+      parameters,
+      outputs: ['Power time series'],
+      unavailable: input.unavailable,
+    })],
+  };
+}
+
+function canonicalReceiverPowerEffectiveValues(
+  capability: ReceiverPowerCapability,
+  current: DetectedPowerTimeseriesConfiguration | undefined,
+) {
+  const controls = capability.controls;
+  const currentControls = current?.controls.model === 'receiver' ? current.controls : undefined;
+  return {
+    centerHz: effectiveNumber(current?.centerHz, capability.centerFrequencyHz, capability.centerFrequencyHz.min),
+    sampleCount: effectiveNumber(current?.sampleCount, capability.sampleCount, capability.sampleCount.min),
+    sweepTimeSeconds: effectiveNumber(
+      typeof current?.sweepTimeSeconds === 'number' ? current.sweepTimeSeconds : undefined,
+      capability.sweepTimeSeconds.manualSeconds,
+      capability.sweepTimeSeconds.manualSeconds.min,
+    ),
+    ...canonicalReceiverCommonEffectiveValues(controls, currentControls),
+  };
+}
+
+function resolveCanonicalReceiverPowerConfiguration(
+  capabilities: InstrumentCapabilities,
+  capability: ReceiverPowerCapability,
+  current: DetectedPowerTimeseriesConfiguration | undefined,
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+): DetectedPowerTimeseriesConfiguration {
+  const effective = canonicalReceiverPowerEffectiveValues(capability, current);
+  const controls = capability.controls;
+  const centerHz = resolveCanonicalNumberIntent(intents, CANONICAL_RECEIVER_POWER_PARAMETER_IDS.centerHz, effective.centerHz.value, true);
+  const sampleCount = resolveCanonicalNumberIntent(intents, CANONICAL_RECEIVER_POWER_PARAMETER_IDS.sampleCount, effective.sampleCount.value, true);
+  const sweepTimeSeconds = resolveCanonicalNumberIntent(
+    intents,
+    CANONICAL_RECEIVER_POWER_PARAMETER_IDS.sweepTimeSeconds,
+    effective.sweepTimeSeconds.value,
+  );
+  const receiverControls = resolveCanonicalReceiverControls(
+    intents, CANONICAL_RECEIVER_POWER_PARAMETER_IDS, controls, effective,
+  );
+  const configuration = detectedPowerTimeseriesConfigurationSchema.parse({
+    kind: 'detected-power-timeseries',
+    centerHz,
+    sampleCount,
+    sweepTimeSeconds,
+    controls: {
+      schemaVersion: 1,
+      model: 'receiver',
+      ...receiverControls,
+    },
+  });
+  assertCanonicalConfigurationWithinCapability(configuration, capabilities, 'receiver power observation');
+  return configuration;
+}
+
+function rfGeneratorCapability(capabilities: InstrumentCapabilities): RfGeneratorCapability | undefined {
+  return capabilities.features.find(
+    (candidate): candidate is RfGeneratorCapability => candidate.kind === 'rf-generator',
+  );
+}
+
+/**
+ * Generic source contribution. The native feature protocol remains private to
+ * this driver; Atomizer receives only source controls and Auto/manual intents.
+ */
+function canonicalSourceControls(input: Readonly<{
+  capability: RfGeneratorCapability;
+  configuration: GeneratorConfig | undefined;
+  configurationIntents: ReadonlyMap<string, CanonicalParameterIntent>;
+  outputIntent: CanonicalParameterIntent;
+  outputEnabled: boolean;
+  unavailable: boolean;
+}>): CanonicalSourceControls {
+  const { capability, configuration, configurationIntents } = input;
+  const automatic = automaticSourceConfiguration(capability);
+  const effective = configuration ?? automatic;
+  const verification: CanonicalParameterVerification = configuration ? 'driver-commanded' : 'driver-selected';
+  const frequencyRange = sourceFrequencyRange(capability);
+  const modulationOptions = sourceModulationOptions(capability);
+  const parameters: CanonicalParameter[] = [
+    canonicalNumericParameter('integer',
+      CANONICAL_SOURCE_PARAMETER_IDS.frequencyHz, 'Frequency', 'Source', 'Hz', frequencyRange,
+      { value: effective.frequencyHz, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.frequencyHz),
+    ),
+    canonicalNumericParameter('number',
+      CANONICAL_SOURCE_PARAMETER_IDS.levelDbm, 'Level', 'Source', 'dBm', capability.levelDbm,
+      { value: effective.levelDbm, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.levelDbm),
+    ),
+    canonicalEnumParameter(
+      CANONICAL_SOURCE_PARAMETER_IDS.path, 'Frequency range', 'Source', capability.paths.map((path) => path.path),
+      { value: effective.path, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.path),
+    ),
+    canonicalEnumParameter(
+      CANONICAL_SOURCE_PARAMETER_IDS.modulation, 'Modulation', 'Source', modulationOptions,
+      { value: effective.modulation, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.modulation),
+    ),
+  ];
+  const modulationRate = sourceModulationRateRange(capability);
+  if (modulationRate) {
+    parameters.push(canonicalNumericParameter('integer',
+      CANONICAL_SOURCE_PARAMETER_IDS.modulationFrequencyHz, 'Modulation rate', 'Source', 'Hz', modulationRate,
+      { value: effective.modulationFrequencyHz, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.modulationFrequencyHz),
+    ));
+  }
+  if (capability.modulation.am) {
+    parameters.push(canonicalNumericParameter('integer',
+      CANONICAL_SOURCE_PARAMETER_IDS.amDepthPercent, 'AM depth', 'Source', '%', capability.modulation.am.depthPercent,
+      { value: effective.amDepthPercent, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.amDepthPercent),
+    ));
+  }
+  if (capability.modulation.fm) {
+    parameters.push(canonicalNumericParameter('integer',
+      CANONICAL_SOURCE_PARAMETER_IDS.fmDeviationHz, 'FM deviation', 'Source', 'Hz', capability.modulation.fm.deviationHz,
+      { value: effective.fmDeviationHz, verification }, sourceIntent(configurationIntents, CANONICAL_SOURCE_PARAMETER_IDS.fmDeviationHz),
+    ));
+  }
+  const output = canonicalBooleanParameter(
+    CANONICAL_SOURCE_PARAMETER_IDS.output, 'Output', 'Source',
+    {
+      value: input.outputEnabled,
+      verification: input.outputIntent.mode === 'manual' ? 'driver-commanded' : 'driver-selected',
+    },
+    input.outputIntent,
+  );
+  return {
+    parameters: [...parameters, output],
+    operations: [
+      canonicalOperationDefinition({
+        id: CANONICAL_SOURCE_CONFIGURATION_OPERATION_ID,
+        label: 'Configure source',
+        description: 'Set the driver-declared signal definition. Output remains off after configuration.',
+        scope: 'source',
+        parameters,
+        outputs: ['Configured source'],
+        unavailable: input.unavailable,
+      }),
+      canonicalOperationDefinition({
+        id: CANONICAL_SOURCE_OUTPUT_OPERATION_ID,
+        label: 'Set source output',
+        description: 'Set the connected source output state using the driver-declared safety path.',
+        scope: 'source',
+        parameters: [output],
+        outputs: ['Source output state'],
+        unavailable: input.unavailable,
+        confirmation: 'high-impact',
+      }),
+    ],
+  };
+}
+
+function automaticSourceConfiguration(capability: RfGeneratorCapability): GeneratorConfig {
+  const path = preferredCanonicalOption(capability.paths.map((candidate) => candidate.path), 'normal', 'mixer');
+  const frequencyHz = sourceFrequencyRangeForPath(capability, path).min;
+  const modulationFrequencyHz = sourceModulationRateRange(capability)?.min ?? 1_000;
+  return {
+    frequencyHz,
+    levelDbm: capability.levelDbm.min,
+    path,
+    modulation: 'off',
+    modulationFrequencyHz,
+    amDepthPercent: capability.modulation.am?.depthPercent.min ?? 0,
+    fmDeviationHz: capability.modulation.fm?.deviationHz.min ?? 1_000,
+  };
+}
+
+function sourceFrequencyRange(capability: RfGeneratorCapability): NumericRange {
+  return {
+    min: Math.min(...capability.paths.map((path) => path.frequencyHz.min)),
+    max: Math.max(...capability.paths.map((path) => path.frequencyHz.max)),
+    step: 1,
+  };
+}
+
+function sourceFrequencyRangeForPath(
+  capability: RfGeneratorCapability,
+  path: GeneratorConfig['path'],
+): NumericRange {
+  const value = capability.paths.find((candidate) => candidate.path === path)?.frequencyHz;
+  if (!value) throw new RangeError(`Source frequency range ${path} is not advertised`);
+  return value;
+}
+
+function sourceModulationOptions(capability: RfGeneratorCapability): readonly GeneratorConfig['modulation'][] {
+  return [
+    'off',
+    ...(capability.modulation.am ? ['am' as const] : []),
+    ...(capability.modulation.fm ? ['fm' as const] : []),
+  ];
+}
+
+function sourceModulationRateRange(capability: RfGeneratorCapability): NumericRange | undefined {
+  const ranges = [capability.modulation.am?.modulationFrequencyHz, capability.modulation.fm?.modulationFrequencyHz]
+    .filter((range): range is NumericRange => range !== undefined);
+  if (ranges.length === 0) return undefined;
+  return {
+    min: Math.min(...ranges.map((range) => range.min)),
+    max: Math.max(...ranges.map((range) => range.max)),
+    step: 1,
+  };
+}
+
+function sourceModulationRateRangeForMode(
+  capability: RfGeneratorCapability,
+  modulation: GeneratorConfig['modulation'],
+): NumericRange | undefined {
+  return modulation === 'am'
+    ? capability.modulation.am?.modulationFrequencyHz
+    : modulation === 'fm'
+      ? capability.modulation.fm?.modulationFrequencyHz
+      : sourceModulationRateRange(capability);
+}
+
+function sourceIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterId: string,
+): CanonicalParameterIntent {
+  return intents.get(parameterId) ?? { mode: 'auto' };
+}
+
+function resolveCanonicalSourceConfiguration(
+  capability: RfGeneratorCapability,
+  current: GeneratorConfig | undefined,
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+): Extract<InstrumentFeatureRequest, { kind: 'rf-generator'; action: 'configure' }> {
+  const automatic = automaticSourceConfiguration(capability);
+  const path = resolveCanonicalEnumIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.path, capability.paths.map((candidate) => candidate.path), current?.path ?? automatic.path);
+  const frequencyRange = sourceFrequencyRangeForPath(capability, path);
+  const frequencyHz = resolveCanonicalRangedNumberIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.frequencyHz, current?.frequencyHz ?? frequencyRange.min, frequencyRange, `Source frequency is outside the selected ${path} range`, true);
+  const levelDbm = resolveCanonicalRangedNumberIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.levelDbm, current?.levelDbm ?? automatic.levelDbm, capability.levelDbm, 'Source level is outside the advertised range');
+  const modulation = resolveCanonicalEnumIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.modulation, sourceModulationOptions(capability), current?.modulation ?? automatic.modulation);
+  const modulationRateRange = sourceModulationRateRangeForMode(capability, modulation);
+  const modulationFrequencyHz = modulationRateRange
+    ? resolveCanonicalRangedNumberIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.modulationFrequencyHz, current?.modulationFrequencyHz ?? modulationRateRange.min, modulationRateRange, `Source modulation rate is outside the selected ${modulation} range`, true)
+    : automatic.modulationFrequencyHz;
+  const amDepthPercent = capability.modulation.am
+    ? resolveCanonicalRangedNumberIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.amDepthPercent, current?.amDepthPercent ?? automatic.amDepthPercent, capability.modulation.am.depthPercent, 'Source AM depth is outside the advertised range', true)
+    : automatic.amDepthPercent;
+  const fmDeviationHz = capability.modulation.fm
+    ? resolveCanonicalRangedNumberIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.fmDeviationHz, current?.fmDeviationHz ?? automatic.fmDeviationHz, capability.modulation.fm.deviationHz, 'Source FM deviation is outside the advertised range', true)
+    : automatic.fmDeviationHz;
+  return {
+    kind: 'rf-generator',
+    action: 'configure',
+    frequencyHz,
+    levelDbm,
+    path,
+    modulation: modulation === 'off'
+      ? { mode: 'off' }
+      : modulation === 'am'
+        ? { mode: 'am', modulationFrequencyHz, depthPercent: amDepthPercent }
+        : { mode: 'fm', modulationFrequencyHz, deviationHz: fmDeviationHz },
+  };
+}
+
+function resolveCanonicalSourceOutput(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+): Extract<InstrumentFeatureRequest, { kind: 'rf-generator'; action: 'set-output' }> {
+  const intent = requiredCanonicalIntent(intents, CANONICAL_SOURCE_PARAMETER_IDS.output);
+  if (intent.mode === 'auto') return { kind: 'rf-generator', action: 'set-output', enabled: false };
+  if (typeof intent.value !== 'boolean') throw new TypeError('Canonical source output requires a boolean manual value');
+  return { kind: 'rf-generator', action: 'set-output', enabled: intent.value };
+}
+
+function canonicalSourceConfigurationIntents(
+  configuration: GeneratorConfig,
+): Map<string, CanonicalParameterIntent> {
+  return new Map([
+    [CANONICAL_SOURCE_PARAMETER_IDS.frequencyHz, { mode: 'manual', value: configuration.frequencyHz }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.levelDbm, { mode: 'manual', value: configuration.levelDbm }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.path, { mode: 'manual', value: configuration.path }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.modulation, { mode: 'manual', value: configuration.modulation }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.modulationFrequencyHz, { mode: 'manual', value: configuration.modulationFrequencyHz }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.amDepthPercent, { mode: 'manual', value: configuration.amDepthPercent }],
+    [CANONICAL_SOURCE_PARAMETER_IDS.fmDeviationHz, { mode: 'manual', value: configuration.fmDeviationHz }],
+  ]);
+}
+
+function sameFeatureRequest(feature: InstrumentFeatureRequest, command: InstrumentFeatureCommand): boolean {
+  const { sessionId: _sessionId, ...request } = command;
+  return isDeepStrictEqual(feature, request);
+}
+
+function canonicalReceiverSweepControls(input: Readonly<{
+  capability: ReceiverSweepCapability;
+  configuration: InstrumentConfigurationCommand | undefined;
+  unavailable: boolean;
+}>): CanonicalSourceControls {
+  const { capability, configuration } = input;
+  const controls = capability.controls;
+  const effective = canonicalReceiverSweepEffectiveValues(
+    capability,
+    currentReceiverSweepConfiguration(configuration),
+  );
+  const parameters: CanonicalParameter[] = [
+    canonicalNumericParameter('integer', CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.startHz, 'Start frequency', 'Sweep', 'Hz', capability.frequencyHz, effective.startHz),
+    canonicalNumericParameter('integer', CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.stopHz, 'Stop frequency', 'Sweep', 'Hz', capability.frequencyHz, effective.stopHz),
+    canonicalNumericParameter('integer', CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.points, 'Points', 'Sweep', 'points', capability.points, effective.points),
+    canonicalNumericParameter('number', CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.sweepTimeSeconds, 'Sweep time', 'Sweep', 'seconds', capability.sweepTimeSeconds.manualSeconds, effective.sweepTimeSeconds),
+    canonicalEnumParameter(CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.acquisitionFormat, 'Data format', 'Sweep', controls.acquisitionFormats, effective.acquisitionFormat),
+    canonicalEnumParameter(CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.detector, 'Detector', 'Receiver', controls.detectors, effective.detector),
+    canonicalEnumParameter(CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.spurRejection, 'Spur rejection', 'Receiver', controls.spurRejection, effective.spurRejection),
+    canonicalEnumParameter(CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.lowNoiseAmplifier, 'Low-noise amplifier', 'Receiver', controls.lowNoiseAmplifier, effective.lowNoiseAmplifier),
+    canonicalEnumParameter(CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.avoidSpurs, 'Avoid spurs', 'Receiver', controls.avoidSpurs, effective.avoidSpurs),
+  ];
+  appendCanonicalReceiverControlParameters(parameters, CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS, controls, effective);
+  return {
+    parameters,
+    operations: [canonicalOperationDefinition({
+      id: CANONICAL_RECEIVER_SWEEP_OPERATION_ID,
+      label: 'Sweep',
+      description: 'Configure the receiver and acquire one scalar spectrum.',
+      scope: 'acquisition',
+      parameters,
+      outputs: ['Spectrum'],
+      unavailable: input.unavailable,
+      primary: true,
+    })],
+  };
+}
+
+/**
+ * Driver-owned, schema-standard presentation facts.  The renderer receives
+ * only the generic fact records; firmware and transport details never become
+ * Atomizer branches or controls.
+ */
+function canonicalReceiverSweepPresentation(input: Readonly<{
+  candidate: InstrumentCandidate;
+  provenance: InstrumentSessionProvenance;
+  identity: DeviceIdentity;
+  rfOutput: 'off' | 'on' | 'unknown' | 'not-supported';
+  receiveOnlySafetyEnabled: boolean;
+}>): CanonicalInstrumentPresentation {
+  const facts = [
+    {
+      label: 'Execution',
+      value: input.provenance.execution === 'physical' ? 'Physical instrument' : 'Virtual instrument',
+    },
+    {
+      label: 'Transport',
+      value: humanizeCanonicalOption(input.provenance.transport),
+    },
+    {
+      label: 'Output control',
+      value: input.rfOutput === 'not-supported' ? 'Unavailable' : 'Available',
+    },
+    ...(input.receiveOnlySafetyEnabled ? [{
+      label: 'Safety state',
+      value: 'Receive-only',
+      detail: 'The driver verified an output-off acknowledgement; this is not an independent RF power measurement.',
+    }] : []),
+    ...(input.identity.firmwareWarning ? [{
+      label: 'Driver advisory',
+      value: 'Compatibility notice',
+      detail: input.identity.firmwareWarning,
+    }] : []),
+  ];
+  return {
+    title: input.candidate.displayName,
+    subtitle: 'Connected instrument',
+    qualification: humanizeCanonicalOption(input.provenance.qualification),
+    facts,
+  };
+}
+
+function canonicalReceiverSweepEffectiveValues(
+  capability: ReceiverSweepCapability,
+  current: SweptSpectrumConfiguration | undefined,
+) {
+  const controls = capability.controls;
+  const currentControls = current?.controls.model === 'receiver' ? current.controls : undefined;
+  return {
+    startHz: effectiveNumber(current?.startHz, capability.frequencyHz, capability.frequencyHz.min),
+    stopHz: effectiveNumber(current?.stopHz, capability.frequencyHz, maximumReachableRangeValue(capability.frequencyHz)),
+    points: effectiveNumber(current?.points, capability.points, capability.points.min),
+    sweepTimeSeconds: effectiveNumber(
+      typeof current?.sweepTimeSeconds === 'number' ? current.sweepTimeSeconds : undefined,
+      capability.sweepTimeSeconds.manualSeconds,
+      capability.sweepTimeSeconds.manualSeconds.min,
+    ),
+    acquisitionFormat: effectiveEnum(
+      currentControls?.acquisitionFormat,
+      controls.acquisitionFormats,
+      preferredCanonicalOption(controls.acquisitionFormats, 'raw', 'text'),
+    ),
+    detector: effectiveEnum(
+      currentControls?.detector,
+      controls.detectors,
+      preferredCanonicalOption(controls.detectors, 'sample'),
+    ),
+    spurRejection: effectiveEnum(
+      currentControls?.spurRejection,
+      controls.spurRejection,
+      preferredCanonicalOption(controls.spurRejection, 'auto', 'off', 'on'),
+    ),
+    lowNoiseAmplifier: effectiveEnum(
+      currentControls?.lowNoiseAmplifier,
+      controls.lowNoiseAmplifier,
+      preferredCanonicalOption(controls.lowNoiseAmplifier, 'off', 'on'),
+    ),
+    avoidSpurs: effectiveEnum(
+      currentControls?.avoidSpurs,
+      controls.avoidSpurs,
+      preferredCanonicalOption(controls.avoidSpurs, 'auto', 'off', 'on'),
+    ),
+    ...canonicalReceiverCommonEffectiveValues(controls, currentControls),
+  };
+}
+
+function resolveCanonicalReceiverSweepConfiguration(
+  capabilities: InstrumentCapabilities,
+  capability: ReceiverSweepCapability,
+  current: SweptSpectrumConfiguration | undefined,
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+): SweptSpectrumConfiguration {
+  const effective = canonicalReceiverSweepEffectiveValues(capability, current);
+  const controls = capability.controls;
+  const startHz = resolveCanonicalNumberIntent(intents, CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.startHz, effective.startHz.value, true);
+  const stopHz = resolveCanonicalNumberIntent(intents, CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.stopHz, effective.stopHz.value, true);
+  const points = resolveCanonicalNumberIntent(intents, CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.points, effective.points.value, true);
+  const sweepTimeSeconds = resolveCanonicalNumberIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.sweepTimeSeconds,
+    effective.sweepTimeSeconds.value,
+  );
+  const acquisitionFormat = resolveCanonicalEnumIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.acquisitionFormat,
+    controls.acquisitionFormats,
+    effective.acquisitionFormat.value,
+  );
+  const receiverControls = resolveCanonicalReceiverControls(
+    intents, CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS, controls, effective,
+  );
+  const detector = resolveCanonicalEnumIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.detector,
+    controls.detectors,
+    effective.detector.value,
+  );
+  const spurRejection = resolveCanonicalEnumIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.spurRejection,
+    controls.spurRejection,
+    effective.spurRejection.value,
+  );
+  const lowNoiseAmplifier = resolveCanonicalEnumIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.lowNoiseAmplifier,
+    controls.lowNoiseAmplifier,
+    effective.lowNoiseAmplifier.value,
+  );
+  const avoidSpurs = resolveCanonicalEnumIntent(
+    intents,
+    CANONICAL_RECEIVER_SWEEP_PARAMETER_IDS.avoidSpurs,
+    controls.avoidSpurs,
+    effective.avoidSpurs.value,
+  );
+  const configuration = sweptSpectrumConfigurationSchema.parse({
+    kind: 'swept-spectrum',
+    startHz,
+    stopHz,
+    points,
+    sweepTimeSeconds,
+    controls: {
+      schemaVersion: 1,
+      model: 'receiver',
+      acquisitionFormat,
+      detector,
+      spurRejection,
+      lowNoiseAmplifier,
+      avoidSpurs,
+      ...receiverControls,
+    },
+  });
+  assertCanonicalConfigurationWithinCapability(configuration, capabilities, 'receiver sweep');
+  return configuration;
+}
+
+function canonicalNumericParameter(
+  kind: 'integer' | 'number',
+  id: string,
+  label: string,
+  group: string,
+  unit: string,
+  range: NumericRange,
+  effective: CanonicalEffective<number>,
+  requested: CanonicalParameterIntent = { mode: 'auto' },
+): CanonicalParameter {
+  return canonicalParameter(
+    id,
+    label,
+    group,
+    { kind, range: canonicalRange(range) },
+    effective,
+    requested,
+    unit,
+  );
+}
+
+function canonicalEnumParameter<Value extends string>(
+  id: string,
+  label: string,
+  group: string,
+  options: readonly Value[],
+  effective: CanonicalEffective<Value>,
+  requested: CanonicalParameterIntent = { mode: 'auto' },
+): CanonicalParameter {
+  return canonicalParameter(
+    id,
+    label,
+    group,
+    {
+      kind: 'enum',
+      options: options.map((value) => ({ value, label: humanizeCanonicalOption(value) })),
+    },
+    effective,
+    requested,
+  );
+}
+
+function canonicalBooleanParameter(
+  id: string,
+  label: string,
+  group: string,
+  effective: CanonicalEffective<boolean>,
+  requested: CanonicalParameterIntent = { mode: 'auto' },
+): CanonicalParameter {
+  return canonicalParameter(id, label, group, { kind: 'boolean' }, effective, requested);
+}
+
+function canonicalParameter(
+  id: string,
+  label: string,
+  group: string,
+  manual: CanonicalParameter['manual'],
+  effective: CanonicalEffective<number | string | boolean>,
+  requested: CanonicalParameterIntent = { mode: 'auto' },
+  unit?: string,
+): CanonicalParameter {
+  return {
+    id,
+    label,
+    group,
+    ...(unit === undefined ? {} : { unit }),
+    manual,
+    auto: { resolver: 'driver', description: CANONICAL_AUTO_DESCRIPTION },
+    requested,
+    effectiveValue: effective.value,
+    verification: effective.verification,
+  };
+}
+
+function appendCanonicalReceiverControlParameters(
+  parameters: CanonicalParameter[],
+  parameterIds: CanonicalReceiverParameterIds,
+  controls: CanonicalReceiverControls,
+  effective: CanonicalReceiverTriggerEffectiveValues & Readonly<{
+    resolutionBandwidthKhz: CanonicalEffective<number>;
+    attenuationDb: CanonicalEffective<number>;
+  }>,
+): void {
+  parameters.push(
+    canonicalNumericParameter('number', parameterIds.resolutionBandwidthKhz, 'Resolution bandwidth', 'Receiver', 'kHz', controls.resolutionBandwidthKhz.manual, effective.resolutionBandwidthKhz),
+    canonicalNumericParameter('number', parameterIds.attenuationDb, 'Attenuation', 'Receiver', 'dB', controls.attenuationDb.manual, effective.attenuationDb),
+    canonicalEnumParameter(parameterIds.triggerMode, 'Trigger mode', 'Trigger', controls.triggerModes, effective.triggerMode),
+  );
+  if (controls.triggerLevelDbm && effective.triggerLevelDbm) {
+    parameters.push(canonicalNumericParameter('number', parameterIds.triggerLevelDbm, 'Trigger level', 'Trigger', 'dBm', controls.triggerLevelDbm, effective.triggerLevelDbm));
+  }
+}
+
+function canonicalReceiverCommonEffectiveValues(
+  controls: CanonicalReceiverControls,
+  current: CanonicalReceiverCurrentControls | undefined,
+) {
+  const triggerLevelDbm = controls.triggerLevelDbm
+    ? effectiveNumber(
+      current?.trigger.mode === 'normal' || current?.trigger.mode === 'single'
+        ? current.trigger.levelDbm
+        : undefined,
+      controls.triggerLevelDbm,
+      controls.triggerLevelDbm.min,
+    )
+    : undefined;
+  return {
+    resolutionBandwidthKhz: effectiveNumber(
+      typeof current?.resolutionBandwidthKhz === 'number' ? current.resolutionBandwidthKhz : undefined,
+      controls.resolutionBandwidthKhz.manual,
+      maximumReachableRangeValue(controls.resolutionBandwidthKhz.manual),
+    ),
+    attenuationDb: effectiveNumber(
+      typeof current?.attenuationDb === 'number' ? current.attenuationDb : undefined,
+      controls.attenuationDb.manual,
+      controls.attenuationDb.manual.min,
+    ),
+    triggerMode: effectiveEnum(
+      current?.trigger.mode,
+      controls.triggerModes,
+      preferredCanonicalOption(controls.triggerModes, 'auto', 'normal', 'single'),
+    ),
+    ...(triggerLevelDbm ? { triggerLevelDbm } : {}),
+  };
+}
+
+function resolveCanonicalReceiverTrigger(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterIds: CanonicalReceiverParameterIds,
+  controls: CanonicalReceiverControls,
+  effective: CanonicalReceiverTriggerEffectiveValues,
+): { mode: 'auto' } | { mode: 'normal' | 'single'; levelDbm: number } {
+  const triggerMode = resolveCanonicalEnumIntent(
+    intents,
+    parameterIds.triggerMode,
+    controls.triggerModes,
+    effective.triggerMode.value,
+  );
+  if (triggerMode === 'auto') {
+    if (controls.triggerLevelDbm) {
+      const triggerLevelIntent = requiredCanonicalIntent(intents, parameterIds.triggerLevelDbm);
+      if (triggerLevelIntent.mode === 'manual') {
+        throw new RangeError('A manual trigger level requires normal or single trigger mode');
+      }
+    }
+    return { mode: 'auto' };
+  }
+  if (!controls.triggerLevelDbm || !effective.triggerLevelDbm) {
+    throw new Error(`TinySA ${triggerMode} trigger capability omitted its required trigger-level range`);
+  }
+  return {
+    mode: triggerMode,
+    levelDbm: resolveCanonicalNumberIntent(intents, parameterIds.triggerLevelDbm, effective.triggerLevelDbm.value),
+  };
+}
+
+function resolveCanonicalReceiverControls(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterIds: CanonicalReceiverParameterIds,
+  controls: CanonicalReceiverControls,
+  effective: CanonicalReceiverTriggerEffectiveValues & Readonly<{
+    resolutionBandwidthKhz: CanonicalEffective<number>;
+    attenuationDb: CanonicalEffective<number>;
+  }>,
+): Readonly<{
+  resolutionBandwidthKhz: number;
+  attenuationDb: number;
+  trigger: { mode: 'auto' } | { mode: 'normal' | 'single'; levelDbm: number };
+}> {
+  return {
+    resolutionBandwidthKhz: resolveCanonicalNumberIntent(
+      intents, parameterIds.resolutionBandwidthKhz, effective.resolutionBandwidthKhz.value,
+    ),
+    attenuationDb: resolveCanonicalNumberIntent(
+      intents, parameterIds.attenuationDb, effective.attenuationDb.value,
+    ),
+    trigger: resolveCanonicalReceiverTrigger(intents, parameterIds, controls, effective),
+  };
+}
+
+function canonicalOperationDefinition(input: Readonly<{
+  id: string;
+  label: string;
+  description: string;
+  scope: 'acquisition' | 'source';
+  parameters: readonly CanonicalParameter[];
+  outputs: readonly string[];
+  unavailable: boolean;
+  primary?: boolean;
+  confirmation?: 'none' | 'high-impact';
+}>): CanonicalInstrumentSurface['operations'][number] {
+  return {
+    id: input.id,
+    label: input.label,
+    description: input.description,
+    scope: input.scope,
+    parameterIds: input.parameters.map((parameter) => parameter.id),
+    outputs: [...input.outputs],
+    availability: input.unavailable ? 'unavailable' : 'available',
+    primary: input.primary ?? false,
+    confirmation: input.confirmation ?? 'none',
+  };
+}
+
+function assertCanonicalConfigurationWithinCapability(
+  configuration: Parameters<typeof instrumentConfigurationCapabilityBindingIssues>[0],
+  capabilities: InstrumentCapabilities,
+  operation: string,
+): void {
+  const bindingIssues = instrumentConfigurationCapabilityBindingIssues(configuration, capabilities);
+  if (bindingIssues.length === 0) return;
+  throw new RangeError(`Canonical ${operation} is outside the admitted capability: ${bindingIssues.map(
+    (issue) => `${issue.path.join('.')}: ${issue.message}`,
+  ).join('; ')}`);
+}
+
+function effectiveNumber(value: unknown, range: NumericRange, fallback: number): CanonicalEffective<number> {
+  if (typeof value === 'number' && rangeAdmits(value, range)) {
+    return { value, verification: 'driver-commanded' };
+  }
+  return { value: fallback, verification: 'driver-selected' };
+}
+
+function effectiveEnum<Value extends string>(
+  value: unknown,
+  options: readonly Value[],
+  fallback: Value,
+): CanonicalEffective<Value> {
+  if (typeof value === 'string' && options.includes(value as Value)) {
+    return { value: value as Value, verification: 'driver-commanded' };
+  }
+  return { value: fallback, verification: 'driver-selected' };
+}
+
+function preferredCanonicalOption<Value extends string>(
+  options: readonly Value[],
+  ...preferred: readonly Value[]
+): Value {
+  for (const value of preferred) {
+    if (options.includes(value)) return value;
+  }
+  const fallback = options[0];
+  if (fallback === undefined) throw new Error('Canonical receiver sweep encountered an empty enum capability');
+  return fallback;
+}
+
+function requiredCanonicalIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterId: string,
+): CanonicalParameterIntent {
+  const intent = intents.get(parameterId);
+  if (!intent) throw new RangeError(`Canonical receiver sweep is missing ${parameterId}`);
+  return intent;
+}
+
+function resolveCanonicalNumberIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterId: string,
+  automaticValue: number,
+  integer = false,
+): number {
+  const intent = requiredCanonicalIntent(intents, parameterId);
+  if (intent.mode === 'auto') return automaticValue;
+  if (typeof intent.value !== 'number' || !Number.isFinite(intent.value)) {
+    throw new TypeError(`Canonical receiver sweep parameter ${parameterId} requires a numeric manual value`);
+  }
+  if (integer && !Number.isInteger(intent.value)) {
+    throw new TypeError(`Canonical receiver sweep parameter ${parameterId} requires an integer manual value`);
+  }
+  return intent.value;
+}
+
+function resolveCanonicalRangedNumberIntent(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterId: string,
+  automaticValue: number,
+  range: NumericRange,
+  outOfRangeMessage: string,
+  integer = false,
+): number {
+  const value = resolveCanonicalNumberIntent(intents, parameterId, automaticValue, integer);
+  if (!rangeAdmits(value, range)) throw new RangeError(outOfRangeMessage);
+  return value;
+}
+
+function resolveCanonicalEnumIntent<Value extends string>(
+  intents: ReadonlyMap<string, CanonicalParameterIntent>,
+  parameterId: string,
+  options: readonly Value[],
+  automaticValue: Value,
+): Value {
+  const intent = requiredCanonicalIntent(intents, parameterId);
+  if (intent.mode === 'auto') return automaticValue;
+  if (typeof intent.value !== 'string' || !options.includes(intent.value as Value)) {
+    throw new RangeError(`Canonical receiver sweep parameter ${parameterId} is not an advertised option`);
+  }
+  return intent.value as Value;
+}
+
+function canonicalRange(range: NumericRange): { min: number; max: number; step?: number } {
+  return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
+}
+
+function maximumReachableRangeValue(range: NumericRange): number {
+  if (range.step === undefined) return range.max;
+  const stepOffset = (range.max - range.min) / range.step;
+  const nearest = Math.round(stepOffset);
+  const steps = Math.abs(stepOffset - nearest) <= Number.EPSILON * Math.max(8, Math.abs(stepOffset) * 8)
+    ? nearest
+    : Math.floor(stepOffset);
+  return Math.min(range.max, range.min + steps * range.step);
+}
+
+function rangeAdmits(value: number, range: NumericRange): boolean {
+  if (!Number.isFinite(value) || value < range.min || value > range.max) return false;
+  if (range.step === undefined) return true;
+  const stepOffset = (value - range.min) / range.step;
+  return Math.abs(stepOffset - Math.round(stepOffset)) <= Number.EPSILON * Math.max(8, Math.abs(stepOffset) * 8);
+}
+
+function humanizeCanonicalOption(value: string): string {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function requireReceiveOnlySafetyState(

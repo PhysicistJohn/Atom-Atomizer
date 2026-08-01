@@ -21,7 +21,7 @@ const sweep = {
 } satisfies Sweep;
 
 describe('Agent uncalibrated sweep evidence', () => {
-  it('does not apply native physical-receiver dBm assertions to a Neptune host FFT', () => {
+  it('does not apply native physical-receiver dBm assertions to a host-derived FFT', () => {
     const executor = new AgentExecutor({} as never);
     const summary = executor.agentLatestSweepSummary(sweep, {
       peakDbm: -40, peakHz: 50, minimumDbm: -100, meanDbm: -46.9, medianDbm: -90,
@@ -36,9 +36,9 @@ describe('Agent uncalibrated sweep evidence', () => {
     });
   });
 
-  it('fails closed for missing or contradictory Neptune power evidence', () => {
+  it('fails closed for missing or contradictory host-derived power evidence', () => {
     expect(() => assertAgentSweepPowerEvidence({ ...sweep, powerReference: undefined }))
-      .toThrow(/omitted.*dBFS-relative power reference/i);
+      .toThrow(/host-derived complex-i\/q spectrum omitted its explicit power reference/i);
     expect(() => assertAgentSweepPowerEvidence({ ...sweep, resolutionBandwidthQualification: 'device-observed' }))
       .toThrow(/contradictory host-derived FFT provenance/i);
     expect(() => assertAgentSweepPowerEvidence({ ...sweep, attenuationQualification: 'device-observed' }))

@@ -2,7 +2,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InstrumentAcquisitionCapability, InstrumentSessionSnapshot, Sweep } from '@tinysa/contracts';
 import { createRendererRuntime } from '../AppShell.js';
-import { sweptSpectrumConfigurationFor } from '../instrument-configuration.js';
 
 afterEach(() => {
   localStorage.clear();
@@ -35,13 +34,38 @@ describe('sweep evidence publication', () => {
       },
       powerUnit: 'dBm',
     };
+    const requested = {
+      kind: 'swept-spectrum' as const,
+      startHz: 88_000_000,
+      stopHz: 108_000_000,
+      points: 450,
+      sweepTimeSeconds: 0.05,
+      controls: {
+        schemaVersion: 1 as const,
+        model: 'receiver' as const,
+        acquisitionFormat: 'text' as const,
+        resolutionBandwidthKhz: 30,
+        attenuationDb: 0,
+        detector: 'sample' as const,
+        spurRejection: 'off' as const,
+        lowNoiseAmplifier: 'off' as const,
+        avoidSpurs: 'off' as const,
+        trigger: { mode: 'auto' as const },
+      },
+    };
     const session = {
+      sessionId: 'publication-session',
       capabilities: { acquisitions: [capability], features: [] },
+      configuration: {
+        sessionId: 'publication-session',
+        configurationRevision: 'configuration-test',
+        configuration: requested,
+        configuredAt: '2026-08-01T00:00:00.000Z',
+      },
     } as unknown as InstrumentSessionSnapshot;
     runtime.store.set({
       instrument: { ...runtime.store.get().instrument, session },
     });
-    vi.spyOn(runtime.kernel.traceAccumulator.current, 'update').mockReturnValue([]);
     vi.spyOn(runtime.kernel.detector.current, 'analyze').mockReturnValue([]);
     vi.spyOn(runtime.kernel.tracker.current, 'update').mockReturnValue([]);
 
@@ -54,7 +78,7 @@ describe('sweep evidence publication', () => {
       elapsedMilliseconds: 20,
       frequencyHz,
       powerDbm: frequencyHz.map((_, index) => index === 225 ? -50 : -100),
-      requested: sweptSpectrumConfigurationFor(capability, runtime.store.get().analyzer),
+      requested,
       actualStartHz: frequencyHz[0]!,
       actualStopHz: frequencyHz.at(-1)!,
       actualRbwHz: 10_000,
@@ -88,7 +112,14 @@ describe('sweep evidence publication', () => {
     expect(runtime.store.get()).toMatchObject({
       sweep,
       history: [sweep],
-      traceFrames: [],
+      traceFrames: [{
+        traceId: 1,
+        mode: 'clear-write',
+        powerDbm: sweep.powerDbm,
+        sourceSweepId: sweep.id,
+        sweepCount: 1,
+        evidence: 'host-derived',
+      }],
       detections: [],
     });
 
@@ -111,7 +142,14 @@ describe('sweep evidence publication', () => {
     expect(runtime.store.get()).toMatchObject({
       sweep: failedSweep,
       history: [failedSweep, sweep],
-      traceFrames: [],
+      traceFrames: [{
+        traceId: 1,
+        mode: 'clear-write',
+        powerDbm: failedSweep.powerDbm,
+        sourceSweepId: failedSweep.id,
+        sweepCount: 1,
+        evidence: 'host-derived',
+      }],
       detections: [],
     });
   });

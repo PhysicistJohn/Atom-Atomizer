@@ -114,7 +114,6 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
   font: 8px var(--mono);
   letter-spacing: .11em;
 }
-.environment-badge.custom-firmware { border-color: rgba(255,214,10,.34); color: #ffe46a; background: rgba(255,214,10,.075); }
 .connection-pill {
   width: 242px;
   min-height: 43px;
@@ -225,7 +224,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .ai-open .workspace-shell { padding-right: 438px; }
 .measurement-actions { display: flex; gap: 9px; }
 .workspace-command-row { height: 38px; flex: 0 0 auto; display: flex; justify-content: flex-end; margin-bottom: 14px; }
-.primary, .secondary, .danger-outline, .text-button, .output-control { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 10px; }
+.primary, .secondary, .danger-outline, .text-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 10px; }
 .primary { min-height: 39px; padding: 0 16px; border: 1px solid var(--energy); color: #fff; background: var(--energy); font-size: 10px; font-weight: 680; }
 .primary:hover:not(:disabled) { background: #168cff; box-shadow: 0 10px 28px rgba(10,132,255,.2); transform: translateY(-1px); }
 .secondary { min-height: 39px; padding: 0 15px; border: 1px solid var(--line-strong); color: var(--ink-soft); background: rgba(255,255,255,.025); font-size: 10px; }
@@ -466,7 +465,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 /* Shared analysis surfaces. */
 .analysis-layout { height: calc(100% - 52px); min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 14px; align-items: stretch; }
 .analysis-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
-.analysis-main .plot-panel, .event-panel, .analysis-inspector, .pipeline-panel, .classification-result, .candidate-panel, .classification-capture-strip, .generator-controls, .rf-stage, .safety-panel, .device-overview, .remote-screen-panel, .capability-ledger {
+.analysis-main .plot-panel, .event-panel, .analysis-inspector, .pipeline-panel, .classification-result, .candidate-panel, .classification-capture-strip, .generator-controls, .device-overview, .remote-screen-panel, .capability-ledger {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -498,7 +497,7 @@ html[data-platform="darwin"] .topbar { padding-left: 92px; }
 .detector-visual strong { font: 10px var(--mono); }
 .control-section { margin: 0; padding: 17px 15px; border: 0; border-bottom: 1px solid var(--line); }
 .control-section label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 11px 0; color: var(--muted); font-size: 9px; }
-.control-section input:not([type=range]), .control-section select, .generator-form input, .generator-form select { width: 132px; height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: rgba(5,9,9,.46); font: 9px var(--mono); }
+.control-section input:not([type=range]), .control-section select { width: 132px; height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: rgba(5,9,9,.46); font: 9px var(--mono); }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .segmented button { width: 100%; }
 .range-with-value { width: 135px; display: flex; align-items: center; gap: 7px; }
@@ -555,40 +554,8 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .detection-settings-panel .floor-line { height: 19px; }
 .detection-settings-panel .control-section { min-height: 0; display: grid; grid-template-columns: 1fr; gap: 0; overflow-y: auto; padding-block: 8px; scrollbar-width: thin; }
 
-.generator-layout { height: 100%; min-height: 0; display: grid; grid-template: minmax(0,1fr) 60px / minmax(360px,1.25fr) minmax(380px,.75fr); gap: 14px; }
-.rf-stage { min-height: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; position: relative; text-align: center; background: radial-gradient(circle, rgba(10,132,255,.045), transparent 50%), var(--panel); }
-.rf-stage.is-on { border-color: rgba(255,126,114,.32); background: radial-gradient(circle, rgba(255,126,114,.105), transparent 52%), var(--panel); }
-.rf-stage h2 { margin: 10px 0 5px; font: 520 36px var(--mono); letter-spacing: .08em; }
-.rf-stage p { max-width: 345px; margin: 0 0 23px; color: var(--muted); font-size: 9px; }
-.rf-state-label { color: var(--energy); font: 9px var(--mono); letter-spacing: .1em; }
-.rf-halo { width: 132px; height: 132px; display: grid; place-items: center; position: relative; margin-bottom: 28px; border: 1px solid rgba(10,132,255,.25); border-radius: 50%; color: var(--energy); }
-.rf-halo span { position: absolute; inset: 19px; border: 1px solid rgba(10,132,255,.13); border-radius: 50%; }
-.rf-halo span:nth-child(2) { inset: 37px; }
-.rf-halo span:nth-child(3) { inset: 56px; }
-.is-on .rf-halo { border-color: rgba(255,126,114,.38); color: var(--red); }
-.output-control { min-width: 198px; height: 41px; border: 1px solid rgba(10,132,255,.34); color: var(--energy); background: rgba(10,132,255,.06); font-size: 10px; font-weight: 700; }
-.output-control.stop { border-color: rgba(255,126,114,.5); color: #fff; background: rgba(170,62,53,.72); }
+.generator-layout { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr); }
 .generator-controls { min-height: 0; }
-.generator-form { padding: 18px; }
-.generator-form label { display: block; margin-bottom: 18px; color: var(--muted); font-size: 9px; }
-.large-input { display: flex; margin-top: 8px; }
-.large-input input { width: 100%; height: 40px; border-radius: 9px 0 0 9px; font-size: 12px; }
-.large-input em { min-width: 54px; display: grid; place-items: center; border: 1px solid var(--line); border-left: 0; border-radius: 0 9px 9px 0; color: var(--quiet); background: var(--panel-soft); font: 8px var(--mono); font-style: normal; }
-.generator-form label > small { display: block; margin-top: 6px; color: var(--quiet); font: 8px var(--mono); }
-.generator-form > label > select { width: 100%; margin-top: 8px; }
-.safety-panel { grid-column: 1 / 3; display: grid; grid-template-columns: 180px 1fr; align-items: center; padding: 15px 18px; }
-.safety-panel > div { display: flex; align-items: center; gap: 10px; }
-.safety-panel > div > svg { color: var(--energy); }
-.safety-panel strong { font-size: 10px; }
-.safety-panel ul { display: flex; justify-content: flex-end; gap: 18px; margin: 0; padding: 0; list-style: none; }
-.safety-panel li { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 8px; }
-.safety-panel li svg { color: var(--amber); }
-.signal-lab-stage h2 { max-width: min(90%, 620px); font-size: clamp(22px, 2.5vw, 34px); overflow-wrap: anywhere; }
-.synthetic-source-state { padding: 8px 11px; border: 1px solid rgba(48,209,88,.2); border-radius: 9px; color: var(--green); background: rgba(48,209,88,.055); font: 8px var(--mono); letter-spacing: .08em; }
-.signal-lab-profile-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 7px 0 18px; }
-.signal-lab-profile-facts > span { min-width: 0; display: flex; flex-direction: column; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.13); }
-.signal-lab-profile-facts small { color: var(--quiet); font: 7px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-.signal-lab-profile-facts strong { margin-top: 6px; color: var(--ink-soft); font: 10px var(--mono); font-weight: 520; }
 
 /* Bounded, driver-neutral complex-sample inspection. */
 .iq-workspace { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(300px,360px); gap: 14px; }
@@ -697,6 +664,36 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .iq-driver-facts > span { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(0,0,0,.13); }
 .iq-control-panel .channel-contract-note { margin: 2px 12px 10px; }
 .iq-capture-action { margin-top: auto; padding: 0 12px 12px; }
+
+/* Driver-emitted operation surface.  This intentionally shares the familiar
+ * parameter-row grammar without assuming a source family, protocol, or
+ * native setting name. */
+.canonical-operation-panel { min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(150deg, rgba(28,28,30,.88), rgba(16,16,19,.82)); }
+.canonical-operation-empty { padding: 18px; color: var(--quiet); font-size: 9px; text-align: center; }
+.canonical-operation-picker { padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+.canonical-operation-picker .parameter-row { min-height: 38px; border-color: rgba(255,255,255,.08); }
+.canonical-operation-description { margin: 0; padding: 11px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 8px; line-height: 1.55; }
+.canonical-parameter-stack { padding: 0; }
+.canonical-parameter { border-bottom: 1px solid var(--line); }
+.canonical-parameter:last-child { border-bottom: 0; }
+.canonical-parameter-evidence { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .85fr); gap: 7px; padding: 8px 14px 10px; background: rgba(255,255,255,.012); }
+.canonical-parameter-evidence > span { min-width: 0; }
+.canonical-parameter-evidence small { display: block; overflow: hidden; color: var(--quiet); font: 7px var(--mono); letter-spacing: .04em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.canonical-parameter-evidence strong { display: block; overflow: hidden; margin-top: 3px; color: var(--ink-soft); font: 9px var(--mono); font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
+.canonical-parameter-evidence p { grid-column: 1 / -1; margin: 1px 0 0; color: var(--quiet); font-size: 7px; line-height: 1.45; }
+.canonical-parameter-error { display: block; padding: 0 14px 9px; color: #ffaaa3; font-size: 8px; }
+.canonical-text-parameter { min-height: 52px; display: grid; grid-template-columns: minmax(104px, .8fr) minmax(0, 1.2fr); align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.canonical-text-parameter > span { font-size: 10px; }
+.canonical-text-parameter input { width: 100%; min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; outline: 0; color: var(--ink); background: rgba(0,0,0,.22); font: 9px var(--mono); }
+.canonical-text-parameter input:focus { border-color: rgba(10,132,255,.55); box-shadow: 0 0 0 3px rgba(10,132,255,.06); }
+.canonical-text-parameter.disabled { opacity: .42; }
+.canonical-operation-note { display: flex; gap: 9px; margin: 10px 12px; padding: 10px; border: 1px solid rgba(100,210,255,.09); border-radius: 10px; color: #74818f; background: rgba(100,210,255,.025); }
+.canonical-operation-note svg { flex: 0 0 auto; margin-top: 1px; }
+.canonical-operation-note p { margin: 0; font-size: 7px; line-height: 1.55; }
+.canonical-operation-confirmation { margin: 0 12px 10px; padding: 10px; border: 1px solid rgba(255,159,10,.28); border-radius: 10px; color: #f6c56d; background: rgba(255,159,10,.08); }
+.canonical-operation-confirmation p { margin: 0; font-size: 8px; line-height: 1.5; }
+.canonical-operation-confirmation > div { display: flex; gap: 7px; justify-content: flex-end; margin-top: 9px; }
+.canonical-operation-confirmation button { min-height: 26px; padding: 0 9px; font-size: 8px; }
 
 /* Atom is a detached intelligence layer, not a third dashboard column. */
 .atom-panel {
@@ -890,15 +887,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .capture-strip-icon { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 9px; color: var(--cyan); background: rgba(10,132,255,.08); }
 .classification-capture-strip .capture-strip-action { align-items: center; padding-inline: 12px; }
 .capture-strip-action button { min-width: 132px; min-height: 34px; padding-inline: 12px; font-size: 8px; white-space: nowrap; }
-.large-input.small { margin: 0; }
-.large-input.small input { min-width: 0; height: 32px; font-size: 9px; }
-
-.rf-stage.is-unknown { border-color: rgba(244,198,107,.32); background: radial-gradient(circle, rgba(244,198,107,.08), transparent 52%), var(--panel); }
-.rf-stage.is-unknown .rf-halo { border-color: rgba(244,198,107,.35); color: var(--amber); }
-.generator-form { max-height: 560px; overflow-y: auto; scrollbar-width: thin; }
-.generator-form .inline-error { margin: -5px 0 14px; }
-.generator-form .large-input.small { margin-top: 8px; }
-
 .device-layout { display: grid; grid-template-columns: minmax(420px,.9fr) minmax(520px,1.1fr); gap: 14px; align-items: start; }
 .device-overview, .remote-screen-panel, .capability-ledger { overflow: hidden; }
 .identity-hero { display: flex; align-items: center; gap: 22px; padding: 25px; border-bottom: 1px solid var(--line); }
@@ -908,11 +896,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .identity-chip span:nth-child(3) { transform: rotate(120deg); }
 .identity-hero h2 { margin: 7px 0 6px; font-size: 23px; font-weight: 570; letter-spacing: -.035em; }
 .identity-hero p { margin: 0; color: var(--muted); font: 8px/1.55 var(--mono); }
-.custom-firmware-warning { display: flex; align-items: flex-start; gap: 10px; padding: 11px 16px; border-bottom: 1px solid rgba(255,214,10,.18); color: var(--amber); background: rgba(255,214,10,.045); }
-.custom-firmware-warning > svg { flex: 0 0 auto; margin-top: 1px; }
-.custom-firmware-warning > span { min-width: 0; display: flex; flex-direction: column; }
-.custom-firmware-warning strong { color: #fff0a6; font-size: 9px; font-weight: 620; }
-.custom-firmware-warning small { margin-top: 4px; color: var(--muted); font: 7px/1.5 var(--mono); }
 .device-facts { display: grid; grid-template-columns: 1fr 1fr; }
 .device-fact { min-width: 0; display: flex; align-items: center; gap: 11px; padding: 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .device-fact:nth-child(even) { border-right: 0; }
@@ -979,8 +962,8 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 .measurement-drawer-header > span { min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--energy); }
 .measurement-drawer-header strong { overflow: hidden; color: var(--ink); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .measurement-drawer-body { min-width: 0; min-height: 0; overflow: hidden; }
-.measurement-overlay .inspector, .measurement-overlay .measurement-dock, .measurement-overlay .iq-control-panel { height: 100%; overflow: auto; border: 0; border-radius: 0; background: rgba(27,27,30,.74); box-shadow: none; }
-.measurement-overlay > .measurement-drawer-body > .iq-control-panel > .panel-header { display: none; }
+.measurement-overlay .inspector, .measurement-overlay .measurement-dock, .measurement-overlay .iq-control-panel, .measurement-overlay .canonical-operation-panel { height: 100%; overflow: auto; border: 0; border-radius: 0; background: rgba(27,27,30,.74); box-shadow: none; }
+.measurement-overlay > .measurement-drawer-body > .iq-control-panel > .panel-header, .measurement-overlay > .measurement-drawer-body > .canonical-operation-panel > .panel-header { display: none; }
 .measurement-overlay-scrim { display: none; }
 .measurement-overlay-close { width: 30px; height: 30px; display: flex; flex: 0 0 auto; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: rgba(22,22,26,.92); cursor: pointer; }
 .firmware-trace-bank { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
@@ -1099,7 +1082,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
 
 /* Parameter rows own layout inside every instrument console. */
 .control-section.parameter-stack,
-.generator-form.parameter-stack,
 .channel-form.parameter-stack {
   display: flex;
   flex-direction: column;
@@ -1107,15 +1089,12 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   padding: 0;
 }
 .control-section.parameter-stack .parameter-row,
-.generator-form.parameter-stack .parameter-row,
 .channel-form.parameter-stack .parameter-row {
   display: block;
   margin: 0;
 }
 .control-section.parameter-stack .select-parameter,
 .control-section.parameter-stack .toggle-parameter,
-.generator-form.parameter-stack .select-parameter,
-.generator-form.parameter-stack .toggle-parameter,
 .channel-form.parameter-stack .select-parameter,
 .channel-form.parameter-stack .toggle-parameter {
   display: grid;
@@ -1125,7 +1104,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   padding: 0 14px;
 }
 .control-section.parameter-stack .parameter-entry input,
-.generator-form.parameter-stack .parameter-entry input,
 .channel-form.parameter-stack .parameter-entry input {
   width: 100%;
   height: 42px;
@@ -1136,9 +1114,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   background: #0b0b0e;
   font: 13px var(--mono);
 }
-.generator-form.parameter-stack { max-height: none; overflow: visible; }
-.generator-form.parameter-stack .inline-error { margin: 0; padding: 10px 14px; border-bottom: 1px solid rgba(255,69,58,.18); }
-
 @keyframes stage-overlay-enter { from { opacity: 0; transform: translateY(-6px) scale(.992); } to { opacity: 1; transform: none; } }
 
 .spin { animation: spin .8s linear infinite; }
@@ -1165,11 +1140,8 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .metric-strip { grid-template-columns: repeat(5,1fr); }
   .analysis-layout { grid-template-columns: 1fr; }
   .classification-grid { grid-template-columns: minmax(0, 1fr) minmax(260px, .72fr); }
-  .generator-layout { grid-template-columns: 1fr; }
   .iq-workspace { grid-template-columns: minmax(0,1fr) 310px; }
   .iq-plot-grid { grid-template-columns: minmax(0,1fr) minmax(180px,.42fr); }
-  .safety-panel { grid-column: auto; grid-template-columns: 1fr; }
-  .safety-panel ul { display: grid; justify-content: start; margin-top: 12px; }
   .device-layout { grid-template-columns: 1fr; }
   .capability-ledger { grid-column: auto; }
 }
@@ -1283,7 +1255,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .device-layout,
   .channel-analysis-view { grid-template-columns: minmax(0, 1fr); }
   .channel-visual { border-right: 0; border-bottom: 1px solid var(--line); }
-  .generator-layout { height: auto; grid-template: none / minmax(0, 1fr); }
   .classification-grid {
     flex: none;
     grid-template: none / minmax(0, 1fr);
@@ -1300,9 +1271,8 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   .detect-stage, .detect-config { overflow: visible; }
   .detection-result-list { grid-template-columns: minmax(0, 1fr); }
   .detection-result-list article { grid-template-columns: minmax(0, 1fr) minmax(104px, .8fr); }
-  .pipeline-panel, .safety-panel, .capability-ledger, .classification-capture-strip { grid-column: auto; }
+  .pipeline-panel, .capability-ledger, .classification-capture-strip { grid-column: auto; }
   .classification-capture-strip { grid-template-columns: minmax(0, 1fr); }
-  .safety-panel { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
 
   /* Plots keep a readable height inside the scroll column. */
   .spectrum-workspace .analysis-layout { min-height: 62dvh; }
@@ -1321,7 +1291,7 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   /* Dense strips wrap to two columns instead of overflowing. */
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .iq-metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .device-facts, .channel-results, .signal-lab-profile-facts, .iq-driver-facts { grid-template-columns: minmax(0, 1fr); }
+  .device-facts, .channel-results, .iq-driver-facts { grid-template-columns: minmax(0, 1fr); }
   .marker-selector { grid-template-columns: repeat(4, 1fr); row-gap: 6px; }
 
   /* Atom docks as a collapsible bottom sheet: expanded to work with it, or
@@ -1423,25 +1393,6 @@ button.candidate-evidence-row.agile-summary.selected { background: rgba(10,132,2
   }
   .channel-results > div:last-child { border-bottom: 0; }
 
-  /* (The SignalLab channel-model config stacks itself on narrow screens via its
-     own module @media rule -- see SignalLabStudio.module.css. No override here.) */
-
-  /* The embedded SignalLab studio (CSS-module) fills a fixed desktop cell:
-     height:100%, four fixed grid rows (tabs / catalog / channel / footer), and
-     overflow:hidden with the catalog scrolling internally. In the mobile scroll
-     column that model clips — the profile cards reflow taller than their row
-     and the catalog overlaps the channel config. Same fix as every other panel:
-     flow to content height, each section sized to its own content, and let the
-     shell scroll. Scoping the studio root under .workspace-shell out-specifies
-     the module's own .root rule, so this wins on the cascade without !important. */
-  .workspace-shell [class*="_root"] {
-    height: auto;
-    min-height: 0;
-    grid-template-rows: none;
-    grid-auto-rows: min-content;
-    overflow: visible;
-  }
-  .workspace-shell [class*="catalogSection"] { overflow: visible; }
 
   /* Dialogs fit the screen. */
   .connection-dialog { width: min(94vw, 520px); }

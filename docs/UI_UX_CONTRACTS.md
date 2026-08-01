@@ -66,12 +66,12 @@ speaking, and error states; a redundant microphone connection button is absent.
 
 | Route | ID | Primary outcome | v1 status |
 |---|---|---|---|
-| Spectrum | WS-SPC | Configure and acquire a trace | Core |
+| Spectrum | WS-SPC | Apply a driver-declared operation, then acquire a trace from its admitted configuration | Core |
 | Waterfall | WS-WTR | Inspect coherent sweep history on one exact frequency grid | Core |
 | Channel | WS-CHN | Measure channel power/PSD, local 3 dB response width, ACP/ACLR, and OBW | Core |
 | Detect | WS-DET-CLS | View global live detections and the I/Q-preferred open-set modulation consensus | Detection and worker-classification core; physical calibration and protocol identity gated |
-| I/Q | WS-IQ | Configure and inspect the latest globally acquired capability-declared complex-sample buffer | Backpressured complete-buffer Run/Single core; chunked transport streaming not implemented |
-| Generate | WS-GEN | Operate the embedded SignalLab Studio for a SignalLab source, or configure and deliberately enable RF output for a generator-capable source | Studio core; physical-generator qualification pending |
+| I/Q | WS-IQ | Apply a driver-declared capture operation and inspect the latest globally acquired capability-declared complex-sample buffer | Backpressured complete-buffer Run/Single core; chunked transport streaming not implemented |
+| Generate | WS-GEN | Execute the active driver's declared source or instrument operations through one canonical surface | Canonical-operation core; RF-output qualification pending |
 | Device | WS-DEV | Inspect identity/telemetry and operate screen capture/touch | Core; physical diagnostics/capture accepted, touch qualification pending |
 
 Spectrum, Waterfall, Channel, Detect, I/Q, Generate, and Device are projections of one running application, not data-producing tabs. Run/Single/Stop are not owned by any route: their persistent sidebar rail owns the source-capability-driven global pipeline and remains visible while any workspace is inspected. On a dual-capability source the global scheduler obtains bounded complex-I/Q buffers at complete-buffer cadence and scalar spectra at admitted sweep cadence, with both capped at display rate and serialized through one instrument transaction. Every complete classifiable capture is immediately offered to a dedicated worker; every successful instantaneous result becomes one trend sample. The worker continuously evaluates with one in-flight job and one replaceable newest pending capture. The displayed trend integrates successful posteriors whose classifications completed within the trailing 500 ms and never sets acquisition cadence. A source without I/Q uses its scalar spectrum for both detection and fallback classification. Navigation, whether human or Atom-driven, never starts, stops, resets, or retargets that pipeline. Durable saved sessions, comparison, settings, and support-bundle workflows remain contracted work, but are omitted from navigation until functional. The measurement controller retains 50-sweep history and native CSV/JSON export; export controls remain contextual to that measurement rather than joining the acquisition rail.
@@ -90,9 +90,9 @@ independent source-capability boundaries.
 
 Atomizer discovers each statically registered driver independently and retains driver-scoped failures. Main loads an owner-only version-1 preference; every new write persists `{driverId,candidateKind,candidateId}`. When no preference file exists, the exact `signal-lab:default` candidate is the explicit factory default. Legacy v1 broad records remain readable but fail on ambiguity, while a stale exact candidate ID fails closed. The connection surface identifies every candidate by driver, source kind, display name, and truthful capability summary. It connects exactly one preferred match. A corrupt preference, no match, ambiguity, discovery/identity/bridge/evidence failure, or connection failure is actionable and never falls through to a different driver, source kind, or candidate. Changing the default is an explicit operator action after safe disconnection.
 
-SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-3 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. Selecting Generate mounts the shared controlled SignalLab Studio with `LAB`, `GSM`, `LTE`, `5G NR`, `WI-FI`, and `BLUETOOTH` tabs, complete admitted descriptor/governance/source disclosures, AWGN/Rayleigh scalar replay controls, and the closed receiver-I/Q impairment selector. The Atomizer driver remains the state owner; the shared component has no independent transport or preload access. Studio source-truth controls are human-only and do not silently extend Atom's tool authority.
+SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-3 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. The driver, not the desktop, owns source-specific profile, channel, replay, and impairment details. Atomizer renders only the same driver-declared canonical operation surface it uses for every connected device: every declared parameter always has an explicit Auto or Manual intent, Auto is resolved by the connected driver, and the rendered effective value includes its verification basis. The desktop does not embed a source-specific control surface or expose an independent transport, preload, or source-of-truth path. Canonical controls do not silently extend Atom's authority.
 
-SignalLab's selected profile is visible source status, not classifier truth: it never appears in a scalar measurement, detector input, classifier input, result rationale, or exported observation provenance. Profile or channel changes invalidate the admitted acquisition configuration before the next acquisition. Service or contract failure is visible and cannot activate hardware or the twin. SignalLab advertises I/Q for all 44 closed profiles. Laboratory/reference captures retain `analytic-complex-baseband`; custom builders and the two unbounded Bluetooth long-dwell compositions retain `standards-derived-complex-baseband`; exact clean fixed-profile native bytes retain `independently-verified-digital-baseband`; clean transport transforms retain `derived-from-independently-verified-digital-baseband`; and any non-clean receiver preset is `receiver-impaired-complex-baseband`. The UI presents these as digital bytes and lineage, never as RF emission, antenna qualification, packet identity, regulatory approval, or product certification.
+Driver-reported SignalLab configuration metadata is provenance, not classifier truth: it never appears in a scalar measurement, detector input, classifier input, result rationale, or exported observation provenance. A driver-side configuration change invalidates the admitted acquisition configuration before the next acquisition. Service or contract failure is visible and cannot activate hardware or the twin. SignalLab advertises I/Q for all 44 closed profiles. Laboratory/reference captures retain `analytic-complex-baseband`; custom builders and the two unbounded Bluetooth long-dwell compositions retain `standards-derived-complex-baseband`; exact clean fixed-profile native bytes retain `independently-verified-digital-baseband`; clean transport transforms retain `derived-from-independently-verified-digital-baseband`; and any non-clean receiver preset is `receiver-impaired-complex-baseband`. The UI presents these as digital bytes and lineage, never as RF emission, antenna qualification, packet identity, regulatory approval, or product certification.
 
 The `tinysa-zs407` driver exposes physical ZS407 and executable-twin candidates as separate source kinds. Neither suppresses nor substitutes for the other. A physical candidate must pass exact USB, cross-response ZS407, parseable firmware version/revision, and command-catalog admission. Only an exact registered OEM version/revision/full-source-commit mapping receives supported-OEM provenance; a syntactically valid unknown revision is shown persistently as `CUSTOM FW · UNQUALIFIED`, with no invented source commit or qualification. The separate exact frozen custom receiver record is shown as `CUSTOM FW · RECEIVE ONLY`, displays its full-source mapping and persistent unattested-binary/non-OEM warning, and exposes no RF-output status or Generator authority. The twin boots the sibling Firmware repository's pinned Renode image. The UI must say `DIGITAL TWIN`, show boot/identity progress, preserve `transport=renode-monitor-bridge`, and state that USB transactions are not modeled. The initial physical receive-only evidence remains characterization, not RF calibration or general hardware qualification.
 
@@ -100,7 +100,7 @@ The renderer displays only main-owned RF session state. Physical `on`/`off` is l
 
 SignalLab's immutable canonical scalar corpus remains a pinned build-time source for the generated Bayesian observable model, separate from live source status. The active `SignalLab -> Atomizer` measurement edge does not activate the future `SignalLabStimulusIntent -> Firmware stimulus sink` edge. That edge remains `reserved-not-connected`; activating it requires a coordinated trio contract. The UI and Atom must present these edges separately and never imply a live generator-to-classifier side channel.
 
-NeptuneSDR P210 is a current receive-only `neptune-p210` candidate/driver with one bounded `ci16le` complex-I/Q capability, exact byte geometry, explicit 12-bit/full-scale-2,048 evidence, and `uncalibrated-dbfs-relative` power reference. A routed endpoint can be entered and verified once in the source dialog, then rediscovered from the driver-owned recent-device store without a shell environment. The I/Q route exposes driver-neutral tuning/rate/bandwidth/count controls and byte-exact SigMF export. Each accepted buffer also produces one instantaneous relative spectrum, so Spectrum, Waterfall, Channel, Detect, traces, and markers remain useful without pretending the source supplied native scalar sweeps or calibrated dBm. Run is a one-at-a-time backpressured sequence of complete bounded buffers; no chunk/overrun streaming contract is implied. RF generation, screen/touch/diagnostics, calibrated power, and MIMO controls remain absent because the driver advertises none of them. The physical `ip:10.0.0.250` receive path has passed live product-layer acceptance; QEMU-twin and RF/metrology qualification remain open.
+NeptuneSDR P210 is a current receive-only `neptune-p210` candidate/driver with one bounded `ci16le` complex-I/Q capability, exact byte geometry, explicit converter evidence, and `uncalibrated-dbfs-relative` power reference. A routed endpoint can be entered and verified once in the source dialog, then rediscovered from the driver-owned recent-device store without a shell environment. The I/Q route exposes only the driver-declared canonical capture operation, including Auto/Manual intents and verified effective values, plus byte-exact SigMF export. Each accepted buffer also produces one instantaneous relative spectrum, so Spectrum, Waterfall, Channel, Detect, traces, and markers remain useful without pretending the source supplied native scalar sweeps or calibrated dBm. Run is a one-at-a-time backpressured sequence of complete bounded buffers; no chunk/overrun streaming contract is implied. RF generation, screen/touch/diagnostics, calibrated power, and MIMO controls remain absent because the driver advertises none of them. The physical `ip:10.0.0.250` receive path has passed live product-layer acceptance; QEMU-twin and RF/metrology qualification remain open.
 
 ### 2.3.1 Firmware installation ownership
 
@@ -119,9 +119,11 @@ not a visible Atomizer control, artifact attestation, or runtime coupling.
 
 ### 2.4 Active-function control surface
 
-Instrument settings use one shared `ParameterRow` contract across analyzer,
-marker, trace, display, detector, classifier, generator, waterfall, and channel
-surfaces:
+Host measurement settings use one shared `ParameterRow` contract across marker,
+trace, display, detector, classifier, waterfall, and channel surfaces.
+Instrument settings use that row only when a driver declares them through a
+canonical operation; the renderer does not own an analyzer, generator, or I/Q
+configuration surface:
 
 1. A closed row exposes one label and one complete effective value at a minimum
    44 px target height; main-app rows use 52 px.
@@ -236,9 +238,9 @@ Actual output is represented by `off | on | unknown`; `unknown` is not styled as
 | Leave Generator while on | Block navigation and require disable |
 | Clean application quit | Best-effort off; log result |
 
-SignalLab Studio is not part of this RF-output state machine. Switching a
-SignalLab profile or replay channel cannot enable RF output and never creates an
-`on` or `unknown` generator state.
+A driver that does not declare an RF-output operation cannot enter this
+state machine. Applying another canonical operation cannot enable RF output;
+only an admitted high-impact output operation may transition it.
 
 ### 3.4 Complex-I/Q capture state
 
@@ -250,8 +252,10 @@ idle -> configuring -> acquiring -> complete
 ```
 
 - The route exists only while the active session advertises `complex-iq`.
-- Configuration is reconciled to the driver's center, rate, bandwidth, count,
-  format, and optional bandwidth-coupling constraints before admission.
+- The driver declares the capture operation, its Auto/Manual parameter intents,
+  center, rate, bandwidth, count, format, and optional coupling constraints.
+  A successful operation admits the effective configuration and its
+  verification evidence; the renderer never reconstructs it from local staging.
 - One driver operation returns one complete buffer. The application runs those
   operations one at a time in its global backpressured scheduler, paced by the
   admitted buffer duration and a 60 Hz display ceiling. Each complete buffer is
@@ -259,11 +263,6 @@ idle -> configuring -> acquiring -> complete
   becomes one trend sample, while worker backpressure retains only the newest
   waiting buffer. Partial buffers, overlapping requests, and a hardware-streaming
   claim remain forbidden in v1.
-- The factory I/Q configuration requests 16,384 samples: the largest prefix
-  consumed by constellation recovery and four times the trained classifier and
-  plotted-preview budgets.
-  Larger capability-admitted buffers remain an explicit operator choice rather
-  than paying producer cost for samples every built-in consumer discards.
 - The renderer validates the measurement session/revision, format-dependent
   byte geometry, and finite preview samples before replacing the last capture.
 - The evidence footer preserves the measurement's exact qualification:
@@ -315,22 +314,27 @@ Rules:
 
 ## 5. Spectrum workspace contract
 
-### UX-SPC-01 — Configure range
+### UX-SPC-01 — Render declared instrument operations
 
-Inputs are start/stop or center/span in integer Hz and capability limits. Stop must exceed start. Editing one representation updates the other only after a valid commit. Invalid text remains editable with an inline message and never reaches IPC. Quick ranges are named presets with inspectable values.
+Spectrum owns no renderer-staged analyzer configuration. It renders only the
+active driver's declared acquisition operations and their parameter domains.
+Each declared parameter has an explicit `Automatic` or `Manual` intent;
+Automatic is resolved by the driver and Manual is validated against its declared
+domain. Unsupported operations are absent with an inspectable driver reason.
 
-### UX-SPC-02 — Configure sweep
+### UX-SPC-02 — Admit an effective configuration
 
-Inputs include points, resolution bandwidth, attenuation, detector, trigger mode/level, spur handling, harmonic avoidance, and LNA state. “Automatic” is a typed value, not `0` or an empty string. Unsupported options are absent with an inspectable reason, not merely disabled without explanation. Simultaneous traces and markers are host measurement controls, visibly separated from firmware-verified analyzer settings.
+Applying an operation is serialized with acquisition. The driver returns the
+effective configuration and its verification basis, which becomes the current
+session configuration only after admission. Host traces, markers, and display
+controls remain host measurement controls and never synthesize a device setting.
 
 ### UX-SPC-03 — Acquire once
 
-1. Validate locally.
-2. Send typed analyzer configuration.
-3. Show `configuring`.
-4. On success, request one sweep and show `acquiring`.
-5. Atomically replace the trace when arrays and provenance validate.
-6. Update peak, noise floor, detections, range, age and verification state together.
+1. Require a compatible current driver-admitted configuration.
+2. Request one sweep and show `acquiring`.
+3. Atomically replace the trace when arrays and provenance validate.
+4. Update peak, noise floor, detections, range, age, and verification state together.
 
 An incomplete or mismatched sweep never partially paints.
 
@@ -342,7 +346,7 @@ An incomplete or mismatched sweep never partially paints.
   it is not a static image, exported plot, or substitute measurement store.
 - X axis is actual frequency; Y axis is power in the selected unit.
 - Axis endpoints and units are always visible.
-- Zoom/pan never changes device configuration until an explicit “acquire this range” action.
+- Zoom/pan never changes the current driver-admitted configuration.
 - Markers are keyboard reachable and expose frequency/power text.
 - A stale trace remains visible with a stale badge.
 - Simulated data carries a persistent environment badge and export provenance.
@@ -385,20 +389,19 @@ crossings, while a bounded broad component retains its centroid when disjoint
 half-power islands make 3 dB width nonmonotone. Missing/truncated crossings do
 not manufacture a centroid for an unbounded response.
 
-Analyzer rows emit atomic patches that merge against the latest staged state,
-never a sidebar-render snapshot. Run applies that exact staged revision. While
-Run is active, a committed change stops after the in-flight sweep, shows
-`RETUNING`, applies and verifies the newest merged revision, then restarts
-continuous acquisition. Any in-flight sweep carrying a superseded requested
-configuration is quarantined and cannot repaint the new span. Failure leaves
-the new staged value visible, stops the run when it was already stopped, and
-reports the exact cause; it never leaves the old device setting silently active.
+Executing a declared operation is serialized with acquisition. Continuous
+acquisition may pause for it and resumes only from the exact configuration that
+remains admitted after driver verification; the renderer never rebuilds a device
+command from a local cache. Evidence whose session, revision, kind, or geometry
+does not match the current admitted configuration is quarantined and cannot
+repaint the view. A failed operation preserves the last admitted configuration
+and reports the driver cause.
 
 Run, Single, and Stop occupy one persistent sidebar acquisition rail rather than
-a Spectrum header or route-local command row. The rail preserves the exact
-swept-spectrum transaction and retune semantics above, exposes its state on
-every workspace, remains keyboard-operable with native buttons, and disables a
-new acquisition when the active source cannot truthfully or safely admit it.
+a Spectrum header or route-local command row. The rail uses only the current
+driver-admitted configuration, exposes its state on every workspace, remains
+keyboard-operable with native buttons, and disables a new acquisition when the
+active source cannot truthfully or safely admit it.
 CSV/JSON export remains a contextual latest-sweep utility and is never mixed
 into the global acquisition rail.
 
@@ -410,24 +413,27 @@ they cannot produce marker state, invalid SVG geometry, or a renderer crash.
 
 Spectrum, Waterfall, and Channel are first-class sidebar destinations that select
 one view inside a fixed-height measurement stage. There is no second internal
-view-tab bar. Sweep setup and trace/marker/display controls remain overlays; they
-never create document scroll or permanently reduce the active canvas. Waterfall
+view-tab bar. Driver-declared instrument controls and host trace/marker/display
+controls remain overlays; they never create document scroll or permanently reduce
+the active canvas. Waterfall
 uses only identical sweep grids. Channel Power, PSD, ACP/ACLR, and OBW are
 RBW-normalized host estimates from complete scalar sweeps. Detected-envelope
 STFT remains a typed analysis/Agent capability but has no first-class renderer
 surface. Exact math, failure behavior, Atom hooks, and acceptance are governed
 by `ADVANCED_MEASUREMENTS_CONTRACT.md`.
 
-When the analyzer span changes, an already valid channel definition is retained.
-An out-of-span definition is recentered, and only if necessary proportionally
-bounded to keep main/adjacent integration windows inside the new span.
+When the current admitted swept-spectrum span changes, an already valid channel
+definition is retained. An out-of-span definition is recentered, and only if
+necessary proportionally bounded to keep main/adjacent integration windows
+inside the new span.
 
 ## 6. Detect workspace — signal-detection contract
 
 Detect is a fixed-height composition (pipeline, spectrum/detection overlay,
 result/current evidence, detector controls, and a compact detected-power status
 strip). The status strip never scrolls and contains no waveform plot or receiver
-editor; target tuning and Bayesian capture geometry are staged automatically.
+editor; target tuning and Bayesian capture geometry are selected by the
+controller, not a route-local device-control surface.
 Only bounded evidence/control regions may scroll, never the document, and the
 empty/result state remains visible with Atom open.
 
@@ -662,7 +668,7 @@ evidence and never permits a stronger label.
 
 ### UX-CLS-02 — Candidate selection
 
-Each candidate shows its source detection, frequency, bandwidth, power, time window and capture sufficiency. Selecting a candidate never mutates analyzer or generator state.
+Each candidate shows its source detection, frequency, bandwidth, power, time window and capture sufficiency. Selecting a candidate never executes a device operation or changes output state.
 
 The detector freezes the classification region and records its originating
 sweep ID at first admission. Classification does not recenter that region as a
@@ -886,32 +892,46 @@ built-in observable model is governed separately by
   morphology/envelope results remain visibly experimental and use relative
   scores.
 
-## 8. Generate workspace contract
+## 8. Canonical operation workspace contract
 
-### UX-GEN-00 — Select the source-specific surface
+### UX-GEN-00 — Render only declared canonical operations
 
-A SignalLab profile-selection capability replaces the physical RF-generator
-surface with the embedded SignalLab Studio. The Studio renders all six family
-tabs from the complete admitted catalog and sends profile/channel intent through
-the driver. It shows descriptor qualification, standards sources, and scope
-limitations without changing those claims. It contains no enable-output action.
-A source with only `rf-generator` capability receives the physical generator
-surface below; the two surfaces are never blended.
+Generate is a placement for the active driver's declared source and instrument
+operations, not a source-family-specific UI. The driver supplies the operation
+label, availability, confirmation level, parameter domains, Auto policy,
+effective values, and verification evidence. Atomizer may choose placement and
+generic layout only; it never derives native setting names, profile catalogs,
+or a device-family branch. Unsupported operations are absent with an
+inspectable driver reason.
 
-### UX-GEN-01 — Configure output
+Every rendered parameter always exposes both `Automatic` and `Manual` intent.
+Automatic requests driver resolution; Manual exposes exactly one validated
+canonical value editor. The UI reports the resulting effective value and its
+verification basis before the next operation is run. An operation request is
+complete only when it carries one intent for every declared parameter.
 
-Frequency, level, modulation and high-frequency mode are capability-driven. Values are validated by renderer schema and device service safety profile. Applying configuration first commands output off and cannot imply enable.
+### UX-GEN-01 — Apply a declared operation
 
-### UX-GEN-02 — Enable output
+The ready session, driver-declared availability, and parameter validation gate
+execution. Applying one operation is serialized with acquisition and cannot
+imply another operation. The apply copy uses the driver's operation label;
+duplicate/racing requests collapse to one transaction.
 
-- Requires ready connection, generator mode, valid known capability profile and explicit action.
-- Copy states “Enable RF output”; a play icon alone is insufficient.
-- Duplicate/racing enable requests collapse to one operation.
-- Success produces a persistent global RF-on indication.
+### UX-GEN-02 — High-impact operation
 
-### UX-GEN-03 — Unknown state
+- Requires ready connection, an available driver-declared high-impact operation,
+  and explicit confirmation.
+- Copy identifies the driver's operation label and declared safety impact; an
+  icon alone is insufficient.
+- A successful operation produces the persistent global RF-on indication only
+  when the driver reports that output state.
 
-Cable loss, transition timeout or unverified reconnect results in `unknown`. The UI explains that the instrument may still emit and offers reconnection/physical verification guidance. Unknown never decays to off due to elapsed time.
+### UX-GEN-03 — Unknown output state
+
+Cable loss, transition timeout, or unverified reconnect after an output
+operation results in `unknown`. The UI explains that the connected instrument
+may still emit and offers reconnection/physical verification guidance. Unknown
+never decays to off due to elapsed time.
 
 ## 9. Component contracts
 
@@ -925,11 +945,11 @@ Cable loss, transition timeout or unverified reconnect results in `unknown`. The
 | `WaterfallView` | coherent sweep history, color/depth config | validated config intent | empty, populated, grid exclusions | bounded memory, canvas fidelity, scale labels |
 | `ChannelAnalysisView` | sweep, channel definition, display scale | validated definition intent | empty, result, out-of-span/error | integration windows, dBm/dBc, OBW evidence |
 | `MeasurementDock` | trace/marker/display configurations and readings | configure/search/reset/auto-scale intents | compact, marker, trace, display | calculations, overflow, persistence, keyboard |
-| `AnalyzerInspector` | config, capabilities, busy | validated config change | auto/manual, invalid, unsupported | units, ordered range, operation lock |
+| `CanonicalOperationPanel` | driver-declared operation surface | verified Auto/Manual operation request | available, busy, unavailable | operation selection, intent completeness, verification evidence |
 | `MetricStrip` | sweep, events, operation | none | empty/current/stale | atomic update, units |
 | `ClassificationWorkspace` | sweep, detector config/evidence, candidates, pipeline/model/result, compact capture status | config/auto-target/select/capture/classify | not analyzed, zero, qualifying, tracking, no capture, no model, running, unknown, result, failure | synchronized localization/provenance, non-scrolling status strip, and no invented certainty |
-| `IqWorkspace` | admitted I/Q capability, configuration, complete capture | configure, capture | unavailable, empty, configuring, acquiring, complete, invalid/failure | capability reconciliation, byte geometry, bounded plotting, no symbol claim |
-| `GeneratorWorkspace` | generator config or SignalLab catalog/channel capability | apply/enable/disable or profile/channel intent | physical generator states or embedded Studio states | exclusive source-specific surfaces, safety transitions, human-only Studio controls |
+| `IqWorkspace` | driver-declared canonical surface, complete capture | canonical operation request, export | driver-required, empty, acquiring, complete, invalid/failure | Auto/Manual admission, bounded plotting, no symbol claim |
+| `GeneratorWorkspace` | driver-declared source/instrument operation surface | complete Auto/Manual canonical operation request | driver-required, available, busy, unavailable, high-impact confirmation | generic operation placement, intent completeness, verification evidence, output safety transitions |
 | `DeviceWorkspace` | snapshot, diagnostics, screen frame | refresh/capture/touch/release | disconnected, ready, frame empty/current, failure | pixel framing, coordinates, high-impact guard |
 | `StatusBar` | connection, trace, verification, API | diagnostics intent | all global states | always visible and textual |
 
@@ -968,7 +988,7 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 ### 11.1 Spatial rules
 
 1. At the 1920 × 1100 reference viewport, Spectrum has exactly one dominant measurement plane and no workspace scroll. Its rendered area exceeds any control surface.
-2. Analyzer settings form one horizontal overlay. They do not become a competing inspector column or change stage height at the reference viewport.
+2. Driver-declared instrument controls form one horizontal overlay. They do not become a competing inspector column or change stage height at the reference viewport.
 3. Navigation is an instrument rail no wider than 104 CSS px. Core destinations remain labeled; icon-only navigation is forbidden.
 4. Atom is visually detached with a bounded 404 CSS px width. At widths at or above 1430 px the workspace reserves 438 px while Atom is open.
 5. Metrics are integrated with the measurement plane and update atomically with the trace.
@@ -984,7 +1004,7 @@ The visual system is **atomic precision**: warm carbon surfaces, mineral-white t
 - Every visible button performs its labeled action. Placeholder controls are omitted instead of simulated.
 - The plot marker binds to an actual sweep bin and exposes its exact power/frequency as text.
 
-Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1920 × 1100 CSS px; the measured no-scroll content minimum is 1532 × 821 where the display work area permits it. That floor admits the two-column Device view with Atom reserved and all 44 embedded SignalLab profiles with channel and receiver-I/Q controls. Below 880 CSS px, the workspace shell is the single vertical scroll owner: every route becomes content-sized, desktop fixed rows are replaced by explicit plot heights plus auto-sized result/control regions, and no result card may overlap a following panel. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
+Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference window is 1920 × 1100 CSS px; the measured no-scroll content minimum is 1532 × 821 where the display work area permits it. That floor admits the two-column Device view with Atom reserved and a complete generic canonical-operation stack. Below 880 CSS px, the workspace shell is the single vertical scroll owner: every route becomes content-sized, desktop fixed rows are replaced by explicit plot heights plus auto-sized result/control regions, and no result card may overlap a following panel. Scaling is tested at 100%, 150% and 200%. Controls acknowledge activation within 100 ms; operation labels update within 150 ms.
 
 ## 12. Accessibility contract
 
@@ -1019,7 +1039,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **SPC-01:** Engineering-unit parsing resolves to exact integer Hz.
 - **SPC-02:** Invalid/reversed range causes no IPC request.
 - **SPC-03:** Capabilities govern ranges.
-- **SPC-04:** Configure precedes acquire.
+- **SPC-04:** A compatible driver-admitted configuration precedes acquisition.
 - **SPC-05:** Sweep arrays are equal length and finite.
 - **SPC-06:** Actual bins drive x-axis.
 - **SPC-07:** Metrics update atomically with trace.
@@ -1127,7 +1147,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 ### Generator
 
 - **GEN-01:** Start/connect/reconnect/import/preset never enable output.
-- **GEN-02:** Configure commands off before mode/frequency/level.
+- **GEN-02:** A driver-controlled output operation establishes a safe-off state before it can enable output.
 - **GEN-03:** Enable requires known capabilities/valid values.
 - **GEN-04:** RF on stays globally visible.
 - **GEN-05:** Navigation away while on is blocked.
@@ -1136,13 +1156,13 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 - **GEN-08:** Duplicate enable produces one operation.
 - **GEN-09:** Clean disconnect/quit attempts off and records outcome.
 - **GEN-10:** Hardware qualification checks representative output.
-- **GEN-11:** SignalLab selection renders the shared six-family Studio and no RF-output control.
-- **GEN-12:** Studio profile/channel intent crosses the admitted driver boundary and never becomes classifier evidence.
+- **GEN-11:** A driver without an RF-output operation renders only its generic canonical operations and cannot produce an RF-output control.
+- **GEN-12:** Driver-reported configuration metadata crosses the admitted driver boundary and never becomes classifier evidence.
 
 ### Complex I/Q
 
 - **IQ-01:** I/Q is absent unless the active session advertises `complex-iq`.
-- **IQ-02:** Configuration respects every advertised lattice and bandwidth-coupling rule.
+- **IQ-02:** The canonical capture operation respects every advertised lattice and bandwidth-coupling rule before its effective configuration is admitted.
 - **IQ-03:** Mismatched session/revision, kind, format, count, or byte geometry is rejected without replacing the last valid capture.
 - **IQ-04:** Preview work is bounded and rejects non-finite sampled components.
 - **IQ-05:** Time and constellation plots make no decoding, EVM, protocol, calibration, or compliance claim.
@@ -1172,7 +1192,7 @@ Color is redundant with text/icon/shape. Contrast targets WCAG 2.2 AA. Reference
 |---|---|---|---|
 | UX-00 | Tokens, primitives, frame, accessibility harness | contracts | XP rules; scale review |
 | UX-01 | Connection/global state | driver registry and `AtomizerInstrumentApiV1` | CON-01..12 |
-| UX-02 | Spectrum configuration/acquisition | analyzer service | SPC-01..10 |
+| UX-02 | Driver-declared spectrum operations and acquisition | instrument runtime | SPC-01..10 |
 | UX-03 | Live Spectrum renderer, four traces, eight markers, Waterfall, Channel, and non-rendered envelope-STFT engine | measured throughput | SPC-11..20; MEAS-001..29; ADV-001..18; performance/a11y |
 | UX-04 | Merged Detect localization, configuration, sweep segmentation, and Auto targeting | sweeps | DET-01..07,09,11..13 |
 | UX-05 | Cross-sweep tracker and alerts | bounded stream | DET-08,10 |
@@ -1197,12 +1217,12 @@ UX-00/01/02/03/04/05/06/07/08 and the export portion of UX-09 have an implemente
 | Exact unit parsing | `apps/desktop/src/renderer/format.ts` |
 | Connection | `components/TopBar.tsx`, `components/ConnectionDialog.tsx` |
 | Navigation/global RF | `components/Sidebar.tsx` |
-| Spectrum measurements | `components/MeasurementWorkspace.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `AnalyzerInspector.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
+| Spectrum measurements | `components/MeasurementWorkspace.tsx`, `CanonicalOperationPanel.tsx`, `SpectrumPlot.tsx`, `WaterfallView.tsx`, `ChannelAnalysisView.tsx`, `MeasurementDock.tsx`, `packages/analysis` |
 | Execution admission | `packages/instrument-runtime/src/instrument-driver-registry.ts`, `packages/instrument-runtime/src/instrument-manager.ts`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa/src/tinysa-instrument-driver.ts`, `apps/desktop/src/main/atomizer-instrument-host.ts` |
-| Trio/driver/SignalLab topology | `contracts/trio-composition-v7.json`, `packages/contracts/src/instrument.ts`, `packages/agent/src/index.ts` |
+| Trio/driver/SignalLab topology | `contracts/trio-composition-v7.json`, `packages/contracts/src/canonical-instrument.ts`, `packages/agent/src/index.ts` |
 | Detection and classification | `components/ClassificationWorkspace.tsx`, `packages/analysis` |
-| Complex I/Q | `components/IqWorkspace.tsx`, `apps/desktop/src/renderer/complex-iq.ts`, `packages/contracts/src/instrument.ts` |
-| Generator / embedded SignalLab Studio | `components/GeneratorWorkspace.tsx`, `apps/desktop/src/renderer/signal-lab-studio.ts`, `../Atom-SignalLab/src/SignalLabStudio.tsx`, `apps/desktop/src/shared/in-process-signal-lab-driver.ts`, `packages/tinysa` |
+| Complex I/Q | `components/IqWorkspace.tsx`, `apps/desktop/src/renderer/complex-iq.ts`, `packages/contracts/src/canonical-instrument.ts` |
+| Source/instrument canonical operations | `components/GeneratorWorkspace.tsx`, `CanonicalOperationPanel.tsx`, `packages/contracts/src/canonical-instrument.ts`, `packages/instrument-runtime/src/instrument-manager.ts` |
 | Device diagnostics/screen/touch | `components/DeviceWorkspace.tsx`, `packages/tinysa` |
 | CSV/JSON export | `apps/desktop/src/main/sweep-export.ts`, `main.ts` |
 | Visual tokens/layout | `apps/desktop/src/renderer/styles.css` |

@@ -34,6 +34,7 @@ import {
 } from './firmware-provenance.js';
 
 export * from './instrument.js';
+export * from './canonical-instrument.js';
 export * from './firmware-provenance.js';
 export * from './atomizer-instrument-api.js';
 

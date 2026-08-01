@@ -40,6 +40,8 @@ export function registerAtomizerInstrumentIpc<Event>(
     [channels.connect, oneArgument('connect', atomizerInstrumentIpcRequestSchemas.connect.parse, (value) => host.connect(value), assertTrusted, admission)],
     [channels.disconnect, noArguments('disconnect', () => host.disconnect(), assertTrusted, admission, 'teardown')],
     [channels.configure, oneArgument('configure', atomizerInstrumentIpcRequestSchemas.configure.parse, (value) => host.configure(value), assertTrusted, admission)],
+    [channels.canonicalSurface, noArguments('canonicalSurface', () => host.canonicalSurface(), assertTrusted, admission)],
+    [channels.executeCanonicalOperation, oneArgument('executeCanonicalOperation', atomizerInstrumentIpcRequestSchemas.executeCanonicalOperation.parse, (value) => host.executeCanonicalOperation(value), assertTrusted, admission)],
     [channels.acquire, noArguments('acquire', () => host.acquire(), assertTrusted, admission)],
     [channels.startStreaming, noArguments('startStreaming', () => host.startStreaming(), assertTrusted, admission)],
     [channels.stopStreaming, noArguments('stopStreaming', () => host.stopStreaming(), assertTrusted, admission)],

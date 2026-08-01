@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { InstrumentAcquisitionCapability, MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
-import { DEFAULT_COMPLEX_IQ_CONFIGURATION } from '../complex-iq.js';
-import { DEFAULT_ANALYZER } from '../ui-contracts.js';
+import type { MarkerConfiguration, MarkerReading, TraceBankConfiguration } from '@tinysa/contracts';
 import { MeasurementWorkspace } from './MeasurementWorkspace.js';
 import { MeasurementDock } from './MeasurementDock.js';
 import { Sidebar } from './Sidebar.js';
@@ -23,15 +21,6 @@ const markers = Array.from({ length: 8 }, (_, index) => ({
   frequencyHz: 98_000_000,
   tracking: 'fixed',
 })) as MarkerConfiguration[];
-
-const iqCapability = {
-  kind: 'complex-iq',
-  centerFrequencyHz: { min: 70_000_000, max: 6_000_000_000, step: 1 },
-  sampleRateHz: { min: 1_000_000, max: 56_000_000, step: 1 },
-  bandwidthHz: { min: 200_000, max: 56_000_000, step: 1 },
-  sampleCount: { min: 1_024, max: 1_048_576, step: 1_024 },
-  sampleFormat: 'ci16le',
-} satisfies Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }>;
 
 const markerReading = {
   markerId: 1,
@@ -154,11 +143,9 @@ describe('desktop navigation and compact measurement layout', () => {
     const view = render(<MeasurementWorkspace
       measurementActions={<button type="button">Export CSV</button>}
       view="envelope-stft"
-      analyzer={DEFAULT_ANALYZER}
       spectrumCapabilityAvailable
       busy={false}
       streaming={false}
-      onAnalyzer={vi.fn()}
       history={[]}
       detections={[]}
       acquisition="idle"
@@ -194,7 +181,7 @@ describe('desktop navigation and compact measurement layout', () => {
     for (const removedTopTab of ['Spectrum', 'Waterfall', 'Channel', 'Time / STFT']) {
       expect(topBar.queryByRole('button', { name: removedTopTab })).toBeNull();
     }
-    expect(topBar.getByRole('button', { name: 'Sweep setup' })).toBeTruthy();
+    expect(topBar.getByRole('button', { name: 'Instrument setup' })).toBeTruthy();
     expect(topBar.getByRole('button', { name: 'Traces' })).toBeTruthy();
     expect(topBar.getByRole('button', { name: 'Markers' })).toBeTruthy();
     expect(topBar.getByRole('button', { name: 'Display' })).toBeTruthy();
@@ -205,18 +192,12 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(within(view.container).getByLabelText('Spectrum plot')).toBeTruthy();
   });
 
-  it('offers direct, dismissible capture and trace drawers for an I/Q-only source', async () => {
-    const onIqConfiguration = vi.fn();
+  it('offers a generic driver-required setup and dismissible trace drawers when no canonical surface exists', async () => {
     const view = render(<MeasurementWorkspace
       view="spectrum"
-      analyzer={DEFAULT_ANALYZER}
-      iqCapability={iqCapability}
-      iqConfiguration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleFormat: 'ci16le' }}
       spectrumCapabilityAvailable
       busy={false}
       streaming={false}
-      onAnalyzer={vi.fn()}
-      onIqConfiguration={onIqConfiguration}
       history={[]}
       detections={[]}
       acquisition="idle"
@@ -247,17 +228,15 @@ describe('desktop navigation and compact measurement layout', () => {
       onChannel={vi.fn()}
     />);
 
-    const setup = within(view.container).getByRole('button', { name: 'Capture setup' });
-    expect(within(view.container).queryByRole('button', { name: 'Sweep setup' })).toBeNull();
+    const setup = within(view.container).getByRole('button', { name: 'Instrument setup' });
     expect(setup.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(setup);
-    const overlay = within(view.container).getByRole('region', { name: 'Capture setup panel' });
+    const overlay = within(view.container).getByRole('region', { name: 'Instrument setup panel' });
     expect(setup.getAttribute('aria-expanded')).toBe('true');
-    expect(within(overlay).getByText('DRIVER ADVERTISED')).toBeTruthy();
-    expect(within(overlay).getByLabelText('Edit Receiver tune').getAttribute('aria-disabled')).toBe('false');
-    expect(within(overlay).getByText('ci16le')).toBeTruthy();
-    fireEvent.click(within(overlay).getByRole('button', { name: 'Close Capture setup' }));
-    expect(within(view.container).queryByRole('region', { name: 'Capture setup panel' })).toBeNull();
+    expect(within(overlay).getByRole('status', { name: 'Instrument controls unavailable' })).toBeTruthy();
+    expect(within(overlay).queryByLabelText('Edit Receiver tune')).toBeNull();
+    fireEvent.click(within(overlay).getByRole('button', { name: 'Close Instrument setup' }));
+    expect(within(view.container).queryByRole('region', { name: 'Instrument setup panel' })).toBeNull();
     expect(setup.getAttribute('aria-expanded')).toBe('false');
     await waitFor(() => expect(document.activeElement).toBe(setup));
 

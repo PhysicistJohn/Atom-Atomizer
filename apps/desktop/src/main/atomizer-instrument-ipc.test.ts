@@ -162,6 +162,8 @@ function fakeHost() {
     connect,
     disconnect: vi.fn(async () => undefined),
     configure: vi.fn(async () => undefined),
+    canonicalSurface: vi.fn(() => undefined),
+    executeCanonicalOperation: vi.fn(async () => undefined),
     acquire: vi.fn(async () => undefined),
     startStreaming: vi.fn(async () => undefined),
     stopStreaming: vi.fn(async () => undefined),

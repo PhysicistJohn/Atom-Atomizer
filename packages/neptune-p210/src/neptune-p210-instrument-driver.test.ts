@@ -401,7 +401,7 @@ describe('NeptuneP210InstrumentDriver addManualEndpoint()', () => {
       env: {},
       recentDevicesStore: store,
     });
-    const outcome = await driver.addManualEndpoint('neptune-p210', ` ${PHYSICAL_ENDPOINT} `);
+    const outcome = await driver.addManualEndpoint(` ${PHYSICAL_ENDPOINT} `);
     expect(outcome).toEqual({ ok: true });
     expect(store.recorded).toEqual([{ sourceKind: 'neptune-p210', endpoint: PHYSICAL_ENDPOINT }]);
   });
@@ -951,6 +951,48 @@ describe('NeptuneP210InstrumentDriver full-stack InstrumentManager integration',
       opaqueId: (scope) => `${scope}:${++counters[scope]}`,
     };
   }
+
+  it('publishes a generic capture surface whose Auto policy is resolved inside the driver and retains RX-LO readback evidence', async () => {
+    const transport = new FakeTransport();
+    const driver = deterministicDriver(transport, { [NEPTUNE_P210_ENDPOINT_ENV_VAR]: PHYSICAL_ENDPOINT });
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+    const surface = manager.canonicalSurface();
+    if (!surface) throw new Error('Expected canonical capture surface');
+    expect(surface.operations).toMatchObject([{
+      id: 'capture', primary: true,
+      parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
+    }]);
+    expect(surface.parameters.every((parameter) => parameter.auto.resolver === 'driver')).toBe(true);
+    expect(surface.parameters.every((parameter) => parameter.requested.mode === 'auto')).toBe(true);
+
+    const result = await manager.executeCanonicalOperation({
+      sessionId: manager.snapshot()!.sessionId,
+      surfaceRevision: surface.revision,
+      operationId: 'capture',
+      parameters: [
+        { parameterId: 'capture.tune', intent: { mode: 'manual', value: 100_000_000 } },
+        { parameterId: 'capture.sample-rate', intent: { mode: 'auto' } },
+        { parameterId: 'capture.bandwidth', intent: { mode: 'auto' } },
+        { parameterId: 'capture.samples', intent: { mode: 'auto' } },
+      ],
+    });
+
+    expect(transport.setCenterFrequencyHzCalls).toEqual([100_000_000]);
+    expect(transport.getCenterFrequencyHzCalls).toEqual([PHYSICAL_ENDPOINT]);
+    expect(manager.snapshot()?.configuration?.configuration).toMatchObject({
+      kind: 'complex-iq', centerHz: 100_000_000, sampleRateHz: 10_000_000, bandwidthHz: 8_000_000,
+    });
+    expect(result.surface.parameters.find((parameter) => parameter.id === 'capture.tune')).toMatchObject({
+      requested: { mode: 'manual', value: 100_000_000 },
+      effectiveValue: 100_000_000,
+      verification: 'device-readback',
+    });
+    expect(result.surface.parameters.filter((parameter) => parameter.id !== 'capture.tune')
+      .every((parameter) => parameter.requested.mode === 'auto')).toBe(true);
+    await manager.disconnect();
+  });
 
   it('discovers, connects, configures, acquires, and disconnects through the real InstrumentManager', async () => {
     const transport = new FakeTransport();

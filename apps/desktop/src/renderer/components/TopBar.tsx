@@ -1,4 +1,4 @@
-import { Cable, ChevronDown, FlaskConical, LoaderCircle } from 'lucide-react';
+import { Cable, ChevronDown, LoaderCircle } from 'lucide-react';
 import type { AtomizerInstrumentState, InstrumentSessionSnapshot } from '@tinysa/contracts';
 import { AtomicMark } from './AtomicMark.js';
 
@@ -11,27 +11,19 @@ export function TopBar({ instrument, agentOpen, agentConfigured, onConnection, o
 }) {
   const session = instrument.session;
   const connecting = !session && instrument.startup.status === 'not-started';
-  const customFirmwareQualification = session?.provenance.sourceKind === 'serial-port'
-    ? session.provenance.device.firmwareQualification
-    : undefined;
-  const customFirmware = customFirmwareQualification === 'custom-unqualified'
-    || customFirmwareQualification === 'custom-source-qualified-receive-only';
-  const sourceQualifiedReceiveOnly = customFirmwareQualification === 'custom-source-qualified-receive-only';
-  const synthetic = session?.provenance.sourceKind === 'signal-lab';
-  const twin = session?.provenance.sourceKind === 'tinysa-firmware-twin';
+  const virtualSession = session?.provenance.execution !== undefined
+    && session.provenance.execution !== 'physical';
   const labels = sessionLabels(session);
   const rfStatus = rfStatusLabel(session);
   return <header className="topbar">
     <div className="brand-lockup"><div className="brand-symbol"><AtomicMark size={27}/></div><div><small>AtomOS</small><strong>Atomizer</strong></div></div>
     <div className="topbar-actions">
-      {synthetic && <span className="environment-badge">SIGNALLAB SIMULATION</span>}
-      {twin && <span className="environment-badge">FIRMWARE TWIN</span>}
-      {customFirmware && <span className="environment-badge custom-firmware" title={session?.provenance.sourceKind === 'serial-port' ? session.provenance.device.firmwareWarning : undefined}>{sourceQualifiedReceiveOnly ? 'CUSTOM FW · RECEIVE ONLY' : 'CUSTOM FW · UNQUALIFIED'}</span>}
+      {virtualSession && <span className="environment-badge" title="This session is not attached to a physical instrument">VIRTUAL INSTRUMENT</span>}
       {rfStatus && <span className={`top-rf-state ${rfStatus.state}`} title={rfStatus.title} aria-label={rfStatus.ariaLabel}>
         <span>RF {rfStatus.state.toUpperCase()}</span><small>{rfStatus.qualification}</small>
       </span>}
       <button data-agent-control="connection.open" className={`connection-pill ${session ? 'is-ready' : ''}`} onClick={onConnection} aria-haspopup="dialog">
-        <span className="status-dot"/>{connecting ? <LoaderCircle className="spin" size={15}/> : synthetic ? <FlaskConical size={15}/> : <Cable size={15}/>}<span><b>{labels.title}</b><small>{labels.detail}</small></span><ChevronDown size={14}/>
+        <span className="status-dot"/>{connecting ? <LoaderCircle className="spin" size={15}/> : <Cable size={15}/>}<span><b>{labels.title}</b><small>{labels.detail}</small></span><ChevronDown size={14}/>
       </button>
       <button data-agent-control="atom.toggle" className={`atom-launch ${agentOpen ? 'active' : ''}`} onClick={onAgent} aria-label="Toggle Atom AI copilot"><span className="atom-launch-orb"><AtomicMark size={23} active={agentOpen}/></span><span><b>Atom</b><small>{agentConfigured ? 'Ready' : 'Needs key'}</small></span></button>
     </div>
@@ -71,25 +63,24 @@ function rfStatusLabel(session: InstrumentSessionSnapshot | undefined): {
   }
   return {
     state: session.rfOutput,
-    qualification: 'FIRMWARE-EXECUTED TWIN',
-    ariaLabel: `RF output ${session.rfOutput}, firmware-executed twin state`,
-    title: `RF output-${session.rfOutput} is executable firmware-twin state and does not claim physical RF emission`,
+    qualification: 'VIRTUAL CONTROL',
+    ariaLabel: `RF output ${session.rfOutput}, virtual control state`,
+    title: `RF output-${session.rfOutput} is virtual instrument state and does not claim physical RF emission`,
   };
 }
 
 function sessionLabels(session: InstrumentSessionSnapshot | undefined): { title: string; detail: string } {
   if (!session) return { title: 'No instrument', detail: 'Choose an instrument source' };
-  if (session.provenance.sourceKind === 'signal-lab') {
-    return { title: session.candidate.displayName, detail: 'Synthetic measurement bridge · no USB or firmware identity' };
-  }
-  if (session.provenance.sourceKind === 'tinysa-firmware-twin') {
-    return { title: session.provenance.device.model, detail: `${session.provenance.device.firmwareVersion} · executable firmware twin` };
-  }
-  if (session.provenance.sourceKind === 'neptune-p210') {
-    return { title: session.candidate.displayName, detail: `${session.provenance.endpoint} · libiio network` };
-  }
-  if (session.provenance.sourceKind === 'neptune-p210-twin') {
-    return { title: session.candidate.displayName, detail: `${session.provenance.endpoint} · QEMU digital twin` };
-  }
-  return { title: session.provenance.device.model, detail: session.provenance.device.firmwareVersion };
+  return {
+    title: session.candidate.displayName,
+    detail: `${executionLabel(session.provenance.execution)} · ${formatProvenanceLabel(session.provenance.transport)}`,
+  };
+}
+
+function executionLabel(execution: InstrumentSessionSnapshot['provenance']['execution']): string {
+  return execution === 'physical' ? 'Physical session' : 'Virtual session';
+}
+
+function formatProvenanceLabel(value: string): string {
+  return value.replaceAll('-', ' ').replace(/\b\w/g, (character) => character.toUpperCase());
 }

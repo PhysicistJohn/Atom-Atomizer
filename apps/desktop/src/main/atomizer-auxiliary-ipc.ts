@@ -3,8 +3,8 @@ import { sweepExportRequestSchema, type SweepExportRequest } from '@tinysa/contr
 import {
   ATOMIZER_AI_IPC_CHANNELS,
   ATOMIZER_AUXILIARY_IPC_CHANNELS,
+  ATOMIZER_CONNECTION_IPC_CHANNELS,
   ATOMIZER_FILES_IPC_CHANNELS,
-  ATOMIZER_NEPTUNE_IPC_CHANNELS,
 } from './atomizer-ipc-channels.js';
 import { complexIqExportCaptureSchema, type ComplexIqExportCapture } from './complex-iq-export.js';
 import type { PrivilegedIpcAdmission } from './privileged-ipc-admission.js';
@@ -18,10 +18,10 @@ export interface ComputerClickInput { screenshotId: string; x: number; y: number
 export interface ComputerTypeInput { expectedTarget: string; text: string }
 export interface ComputerKeyInput { expectedTarget: string; key: string }
 export interface ComputerScrollInput { screenshotId: string; x: number; y: number; deltaX: number; deltaY: number }
-export interface AddNeptuneManualEndpointInput { sourceKind: 'neptune-p210' | 'neptune-p210-twin'; endpoint: string }
-export type AddNeptuneManualEndpointResult = { ok: true } | { ok: false; message: string };
+export interface AddManualEndpointInput { endpoint: string }
+export type AddManualEndpointResult = { ok: true } | { ok: false; message: string };
 
-const MAX_NEPTUNE_ENDPOINT_CHARACTERS_V1 = 256;
+const MAX_MANUAL_ENDPOINT_CHARACTERS_V1 = 256;
 
 export const MAX_REALTIME_SDP_BYTES_V1 = 256_000;
 export const MAX_COMPUTER_TARGET_CHARACTERS_V1 = 128;
@@ -54,7 +54,7 @@ export interface AtomizerAuxiliaryIpcOperations {
   computerType(input: ComputerTypeInput): unknown;
   computerKey(input: ComputerKeyInput): unknown;
   computerScroll(input: ComputerScrollInput): unknown;
-  addNeptuneManualEndpoint(input: AddNeptuneManualEndpointInput): Promise<AddNeptuneManualEndpointResult>;
+  addManualEndpoint(input: AddManualEndpointInput): Promise<AddManualEndpointResult>;
 }
 
 /** Registers every file, AI, and computer-control operation behind one mandatory trust assertion. */
@@ -66,7 +66,7 @@ export function registerAtomizerAuxiliaryIpc<Event>(
 ): () => void {
   const files = ATOMIZER_FILES_IPC_CHANNELS;
   const ai = ATOMIZER_AI_IPC_CHANNELS;
-  const neptune = ATOMIZER_NEPTUNE_IPC_CHANNELS;
+  const connection = ATOMIZER_CONNECTION_IPC_CHANNELS;
   const registrations = [
     [files.exportSweep, oneArgument('exportSweep', sweepExportRequestSchema.parse, operations.exportSweep)],
     [files.exportComplexIq, oneArgument('exportComplexIq', complexIqExportCaptureSchema.parse, operations.exportComplexIq)],
@@ -78,7 +78,7 @@ export function registerAtomizerAuxiliaryIpc<Event>(
     [ai.computerType, oneArgument('computerType', parseComputerType, operations.computerType)],
     [ai.computerKey, oneArgument('computerKey', parseComputerKey, operations.computerKey)],
     [ai.computerScroll, oneArgument('computerScroll', parseComputerScroll, operations.computerScroll)],
-    [neptune.addManualEndpoint, oneArgument('addNeptuneManualEndpoint', parseNeptuneManualEndpoint, operations.addNeptuneManualEndpoint)],
+    [connection.addManualEndpoint, oneArgument('addManualEndpoint', parseManualEndpoint, operations.addManualEndpoint)],
   ] as const;
 
   const registered: string[] = [];
@@ -124,12 +124,9 @@ function requireArgumentCount(operation: string, values: readonly unknown[], exp
   }
 }
 
-function parseNeptuneManualEndpoint(value: unknown): AddNeptuneManualEndpointInput {
-  const input = validateComputerInput(value, ['sourceKind', 'endpoint']);
-  if (input.sourceKind !== 'neptune-p210' && input.sourceKind !== 'neptune-p210-twin') {
-    throw new TypeError('sourceKind must be neptune-p210 or neptune-p210-twin');
-  }
-  return { sourceKind: input.sourceKind, endpoint: parseBoundedString(input.endpoint, 'endpoint', MAX_NEPTUNE_ENDPOINT_CHARACTERS_V1) };
+function parseManualEndpoint(value: unknown): AddManualEndpointInput {
+  const input = validateComputerInput(value, ['endpoint']);
+  return { endpoint: parseBoundedString(input.endpoint, 'endpoint', MAX_MANUAL_ENDPOINT_CHARACTERS_V1) };
 }
 
 function parseSdp(value: unknown): string {

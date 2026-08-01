@@ -20,20 +20,13 @@
 //       template literals (e.g. SpectrumPlot.tsx `onMarkerPlace ? 'spectrum.marker-place' : undefined`,
 //       Sidebar.tsx `workspace.${item.id}`).
 //   R2  controlId="literal" / controlId={`template`} props: ParameterRow.tsx
-//       renders its controlId prop as data-agent-control (lines 117, 137, 238,
-//       254, 268), so every controlId fed to the ParameterRow family is a
-//       rendered agent control (AnalyzerInspector.tsx, MeasurementDock.tsx,
-//       WaterfallView.tsx, ChannelAnalysisView.tsx, ClassificationWorkspace.tsx,
-//       GeneratorWorkspace.tsx).
+//       renders its controlId prop as data-agent-control, so every controlId
+//       fed to that family is a rendered agent control.
 //   R3  ${controlPrefix} interpolations are substituted with every literal
-//       controlPrefix="..." value found in renderer source: ReceiverControlRows.tsx
-//       derives `${controlPrefix}.trigger`, `.trigger-level`, `.rbw`,
-//       `.attenuation`, and AnalyzerInspector.tsx:52 instantiates
-//       controlPrefix="analyzer".
+//       controlPrefix="..." value found in renderer source.
 //   R4  every controlId resolved at an <AutomaticNumericParameter .../> call
-//       site additionally renders `${controlId}-mode`
-//       (ReceiverControlRows.tsx:45). The internal `${controlId}-mode`
-//       template itself is skipped as an unresolvable prop variable.
+//       site additionally renders `${controlId}-mode`; the internal template
+//       itself is skipped as an unresolvable prop variable.
 //   R5  any other interpolation becomes the wildcard [A-Za-z0-9-]+ (rendered
 //       ID segments never contain dots).
 //
@@ -135,8 +128,8 @@ function expandTemplate(
     segments.push({ kind: 'expression', value: template.slice(start + 2, end).trim() });
     cursor = end + 1;
   }
-  // R4: `${controlId}-mode` inside ReceiverControlRows.tsx is resolved at
-  // AutomaticNumericParameter call sites instead of here.
+  // R4: `${controlId}-mode` is resolved at AutomaticNumericParameter call
+  // sites instead of here.
   if (segments.some((segment) => segment.kind === 'expression' && segment.value === 'controlId')) return;
 
   // Each segment contributes one or more options; options are either concrete
@@ -319,13 +312,13 @@ const EXPECTED_TOOL_NAMES = [
   'list_connection_candidates', 'connect_device', 'disconnect_device',
   'inspect_interface', 'computer_action',
   'computer_screenshot', 'computer_click', 'computer_type', 'computer_key', 'computer_scroll',
-  'navigate_workspace', 'configure_analyzer', 'acquire_sweep',
+  'navigate_workspace', 'acquire_sweep',
   'start_continuous_sweeps', 'stop_continuous_sweeps',
   'get_measurement_state', 'select_marker', 'configure_marker', 'configure_marker_search', 'search_marker', 'select_trace', 'configure_trace', 'configure_firmware_trace_visibility', 'reset_trace', 'configure_spectrum_display', 'auto_scale_spectrum_display',
   'set_measurement_view', 'configure_waterfall', 'configure_channel_measurement', 'get_channel_measurement_results',
   'configure_envelope_stft', 'get_envelope_stft_results', 'acquire_envelope_stft',
-  'configure_signal_detector', 'configure_zero_span', 'acquire_zero_span', 'acquire_complex_iq',
-  'configure_generator', 'set_rf_output', 'select_signal_lab_profile',
+  'configure_signal_detector', 'acquire_zero_span', 'acquire_complex_iq',
+  'execute_canonical_operation',
   'capture_device_screen', 'remote_device_touch', 'export_latest_sweep', 'export_latest_iq',
 ] as const;
 
@@ -336,10 +329,9 @@ const EXPECTED_SEMANTIC_CONTROL_IDS = [
   'spectrum.marker-place',
   'acquisition.single', 'acquisition.continuous.start', 'acquisition.continuous.stop',
   'marker.search.peak', 'marker.search.minimum', 'marker.search.left', 'marker.search.right',
-  'display.auto-scale', 'classification.capture-envelope', 'generator.apply',
-  'analyzer.preset.fm', 'analyzer.preset.2g4', 'analyzer.preset.5g', 'analyzer.advanced',
+  'display.auto-scale', 'classification.capture-envelope',
   'connection.open', 'connection.close', 'connection.refresh', 'connection.disconnect', 'connection.retry-cleanup',
-  'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'generator.rf-output', 'atom.toggle', 'atom.approve-high-impact',
+  'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch', 'atom.toggle', 'atom.approve-high-impact',
   'export.csv', 'export.json', 'export.sigmf', 'error.dismiss', 'notice.dismiss', 'atom.close',
   'atom.microphone-mute', 'atom.speaker-mute',
 ] as const;
@@ -352,9 +344,6 @@ const EXPECTED_BINDING_PATTERNS = [
   '^acquisition\\.single$',
   '^acquisition\\.continuous\\.start$',
   '^acquisition\\.continuous\\.stop$',
-  '^analyzer\\.(start|stop|center|span|points|rbw(-mode)?|transfer|attenuation(-mode)?|sweep-time(-mode)?|detector|spur-rejection|avoid-spurs|lna|trigger|trigger-level)$',
-  '^analyzer\\.preset\\.(fm|2g4|5g)$',
-  '^analyzer\\.advanced$',
   '^detection\\.(threshold-mode|margin|absolute-level|prominence|minimum-bandwidth|promote|release)$',
   '^classification\\.capture-envelope$',
   '^waterfall\\.(floor|ceiling|depth)$',
@@ -369,8 +358,6 @@ const EXPECTED_BINDING_PATTERNS = [
   '^trace\\.[1-4]\\.reset$',
   '^display\\.(reference-level|scale)$',
   '^display\\.auto-scale$',
-  '^generator\\.(frequency|level|path|modulation|modulation-rate|am-depth|fm-deviation|apply)$',
-  '^generator\\.rf-output$',
   '^device\\.capture-screen$',
   '^device\\.refresh-diagnostics$',
   '^device\\.remote-touch$',
@@ -391,11 +378,6 @@ const EXPECTED_BINDING_PATTERNS = [
 
 const EXPECTED_CONCRETE_CONTROL_IDS = [
   'acquisition.continuous.start', 'acquisition.continuous.stop', 'acquisition.single',
-  'analyzer.advanced', 'analyzer.attenuation', 'analyzer.attenuation-mode', 'analyzer.avoid-spurs',
-  'analyzer.center', 'analyzer.detector', 'analyzer.lna', 'analyzer.points', 'analyzer.preset.2g4', 'analyzer.preset.5g',
-  'analyzer.preset.fm', 'analyzer.rbw', 'analyzer.rbw-mode', 'analyzer.span', 'analyzer.spur-rejection', 'analyzer.start',
-  'analyzer.stop', 'analyzer.sweep-time', 'analyzer.sweep-time-mode', 'analyzer.transfer',
-  'analyzer.trigger', 'analyzer.trigger-level',
   'atom.approve-high-impact', 'atom.close', 'atom.microphone-mute', 'atom.speaker-mute', 'atom.toggle',
   'channel.adjacent-bandwidth', 'channel.adjacent-count', 'channel.center', 'channel.main-bandwidth',
   'channel.obw-noise', 'channel.occupied-power', 'channel.spacing',
@@ -407,8 +389,6 @@ const EXPECTED_CONCRETE_CONTROL_IDS = [
   'device.capture-screen', 'device.refresh-diagnostics', 'device.remote-touch',
   'display.auto-scale', 'display.reference-level', 'display.scale',
   'error.dismiss', 'export.csv', 'export.json', 'export.sigmf',
-  'generator.am-depth', 'generator.apply', 'generator.fm-deviation', 'generator.frequency',
-  'generator.level', 'generator.modulation', 'generator.modulation-rate', 'generator.path', 'generator.rf-output',
   'marker.search.excursion', 'marker.search.left', 'marker.search.minimum', 'marker.search.peak',
   'marker.search.right', 'marker.search.threshold', 'measurement.controls', 'measurement.display', 'measurement.markers',
   'measurement.setup', 'measurement.traces', 'notice.dismiss', 'spectrum.marker-place',
@@ -452,15 +432,6 @@ describe('Atom agent surface completeness (A20)', () => {
     expect(Object.keys(agentToolPolicies).sort()).toEqual([...agentToolNames].sort());
   });
 
-  // KNOWN GAP (Neptune agent-surface stage): this check is expected to fail
-  // until apps/desktop/src/renderer/agent-executor.ts gains an
-  // `acquire_complex_iq` switch case. That file is a renderer file and is
-  // explicitly out of scope for the agent-package stage that added the tool
-  // (packages/agent/src/index.ts), matching the same contracts/driver-stage
-  // boundary already documented for the other Neptune P210 renderer gaps
-  // (ConnectionDialog.tsx, DeviceWorkspace.tsx, TopBar.tsx,
-  // controllers/connection.ts, sweep-export.ts). Reserved for the
-  // Composition/Docs/UI stage.
   it('gives every tool name exactly one executor case and every case a tool name', () => {
     const executorSource = readFileSync(executorPath, 'utf8');
     expect(executorSource, `${executorPath} must keep its compile-time exhaustiveness marker`)

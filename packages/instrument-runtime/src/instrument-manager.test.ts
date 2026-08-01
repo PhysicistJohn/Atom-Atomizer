@@ -24,7 +24,7 @@ import {
 } from '@tinysa/contracts';
 import type { InstrumentDriver, InstrumentSession } from './instrument-driver.js';
 import { InstrumentDriverRegistry } from './instrument-driver-registry.js';
-import { InstrumentManager, type InstrumentManagerRuntime } from './instrument-manager.js';
+import { InstrumentManager, InstrumentManagerError, type InstrumentManagerRuntime } from './instrument-manager.js';
 
 describe('InstrumentManager discovery and selection', () => {
   it('discovers every registered driver independently and preserves per-driver failures', async () => {
@@ -741,7 +741,7 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
     await manager.disconnect();
   });
 
-  it('rejects unsupported configurations and measurements with false lifecycle bindings', async () => {
+  it('rejects unsupported configurations and measurements with forged lifecycle bindings', async () => {
     const measurements: InstrumentMeasurement[] = [];
     let session: StubSession;
     const driver = new StubDriver(
@@ -758,17 +758,24 @@ describe('InstrumentManager lifecycle and measurement admission', () => {
 
     await expect(manager.configure({ ...sweepConfiguration(), stopHz: 2_000_000 })).rejects.toMatchObject({ code: 'unsupported-capability' });
     expect(session!.configureCalls).toHaveLength(0);
-    const configuration = await manager.configure(sweepConfiguration());
+    await manager.configure(sweepConfiguration());
     measurements.push(sweptMeasurement(session!, 'configuration:forged', 1));
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
     await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
-    await manager.disconnect();
-    await manager.connect(candidate);
-    const admitted = await manager.configure(sweepConfiguration());
-    measurements.push(sweptMeasurement(session!, admitted.configurationRevision, 1));
-    await expect(manager.acquire()).resolves.toMatchObject({ sequence: 1 });
-    measurements.push(sweptMeasurement(session!, admitted.configurationRevision, 1));
-    await expect(manager.acquire()).rejects.toMatchObject({ code: 'driver-contract' });
+  });
+
+  it('throws driver-contract and terminal-faults when a session returns the same sequence twice', async () => {
+    await expectTerminalSequenceViolation({
+      sequences: [7, 7],
+      expectedMessage: 'Measurement sequence 7 was returned more than once',
+    });
+  });
+
+  it('throws driver-contract and terminal-faults when a session returns an unseen regressing sequence', async () => {
+    await expectTerminalSequenceViolation({
+      sequences: [5, 2],
+      expectedMessage: 'Measurement sequence 2 is not newer than 5',
+    });
   });
 
   it('publishes and binds fresh receive-only safety state across configuration and acquisition', async () => {
@@ -1884,7 +1891,7 @@ describe('InstrumentManager feature boundary', () => {
     expect(manager.snapshot()).toMatchObject({ rfOutput: 'off', rfOutputQualification: 'command-acknowledged' });
   });
 
-  it('selects only an advertised profile on a SignalLab candidate', async () => {
+  it('selects only an advertised profile and invalidates its prior acquisition binding exactly', async () => {
     let session: StubSession;
     const features: SignalLabFeatureInput[] = [
       {
@@ -1906,11 +1913,21 @@ describe('InstrumentManager feature boundary', () => {
     manager.subscribe((event) => events.push(event));
     await manager.connect((await manager.discover()).candidates[0]!);
     await manager.configure(syntheticSweepConfiguration());
+    await expect(manager.acquire()).resolves.toMatchObject({
+      sequence: 1,
+      producerConfigurationEpoch: 'producer-epoch:1',
+    });
     events.length = 0;
 
-    await expect(manager.executeFeature({
+    const result = await manager.executeFeature({
       kind: 'signal-lab-profile-selection', action: 'select-profile', profileId: 'fm',
-    })).resolves.toMatchObject({ profileId: 'fm' });
+    });
+    expect(result).toMatchObject({
+      kind: 'signal-lab-profile-selection',
+      action: 'select-profile',
+      profileId: 'fm',
+      producerConfigurationEpoch: 'producer-epoch:2',
+    });
     expect(session!.featureCalls[0]).toMatchObject({ sessionId: session!.sessionId, profileId: 'fm' });
     expect(manager.snapshot()?.configuration).toBeUndefined();
     expect(manager.snapshot()?.provenance).toMatchObject({ producerConfigurationEpoch: 'producer-epoch:2' });
@@ -1920,9 +1937,28 @@ describe('InstrumentManager feature boundary', () => {
     }));
     expect(events.map((event) => event.type)).toEqual(['feature-result', 'configuration-invalidated']);
     const invalidation = events[1];
-    expect(invalidation?.type === 'configuration-invalidated' ? invalidation.session.capabilities.features : [])
+    expect(invalidation).toMatchObject({
+      type: 'configuration-invalidated',
+      reason: 'source-profile-changed',
+      sessionId: session!.sessionId,
+    });
+    if (invalidation?.type !== 'configuration-invalidated') throw new Error('expected configuration invalidation');
+    expect(invalidation.session.configuration).toBeUndefined();
+    expect(invalidation.session.capabilities.features)
       .toContainEqual(expect.objectContaining({ kind: 'signal-lab-profile-selection', selectedProfileId: 'fm' }));
-    await expect(manager.acquire()).rejects.toMatchObject({ code: 'not-configured' });
+    await expect(manager.acquire()).rejects.toMatchObject({
+      code: 'not-configured',
+      message: 'Instrument session has no admitted configuration revision',
+    });
+    const reconfigured = await manager.configure(syntheticSweepConfiguration());
+    session!.onAcquire = async () => ({
+      ...sweptMeasurement(session!, reconfigured.configurationRevision, 2),
+      producerConfigurationEpoch: 'producer-epoch:2',
+    });
+    await expect(manager.acquire()).resolves.toMatchObject({
+      configurationRevision: reconfigured.configurationRevision,
+      producerConfigurationEpoch: 'producer-epoch:2',
+    });
     await expect(manager.configure({
       ...syntheticDetectedPowerConfiguration(100_000_000, 20),
     })).resolves.toMatchObject({ configuration: { centerHz: 100_000_000 } });
@@ -3243,6 +3279,51 @@ function sweptMeasurement(session: StubSession, configurationRevision: string, s
     frequencyHz: [100, 200, 300],
     powerDbm: [-90, -80, -95],
   };
+}
+
+async function expectTerminalSequenceViolation({
+  sequences,
+  expectedMessage,
+}: {
+  readonly sequences: readonly [number, number];
+  readonly expectedMessage: string;
+}): Promise<void> {
+  let session: StubSession;
+  const driver = new StubDriver(
+    'signal-lab', ['signal-lab'], async () => [signalLabDescriptor()],
+    async (candidate) => (session = new StubSession(candidate, signalLabCapabilities([]))),
+  );
+  const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+  const events: InstrumentManagerEvent[] = [];
+  manager.subscribe((event) => events.push(event));
+  await manager.connect((await manager.discover()).candidates[0]!);
+  const configuration = await manager.configure(syntheticSweepConfiguration());
+  const queuedSequences = [...sequences];
+  session!.onAcquire = async () => {
+    const sequence = queuedSequences.shift();
+    if (sequence === undefined) throw new Error('test sequence queue exhausted');
+    return sweptMeasurement(session!, configuration.configurationRevision, sequence);
+  };
+
+  const first = await manager.acquire();
+  expect(first.sequence).toBe(sequences[0]);
+
+  const error = await manager.acquire().then(
+    () => { throw new Error('acquire resolved for a non-monotonic measurement sequence'); },
+    (value: unknown) => value,
+  );
+  expect(error).toBeInstanceOf(InstrumentManagerError);
+  expect((error as InstrumentManagerError).code).toBe('driver-contract');
+  expect((error as InstrumentManagerError).message).toBe(expectedMessage);
+  expect(events.filter((event) => event.type === 'measurement')).toHaveLength(1);
+  expect(manager.snapshot()?.fault).toMatchObject({ code: 'driver-contract', recoverable: false });
+
+  const faulted = await manager.acquire().then(
+    () => { throw new Error('acquire resolved on a faulted session'); },
+    (value: unknown) => value,
+  );
+  expect(faulted).toBeInstanceOf(InstrumentManagerError);
+  expect((faulted as InstrumentManagerError).message).toMatch(/faulted and must be disconnected/);
 }
 
 function detectedMeasurement(

@@ -1,6 +1,9 @@
 import { structuralEqual } from './structural-equal.js';
 import {
   SIGNAL_LAB_MEASUREMENT_BRIDGE_CONTRACT_VERSION,
+  canonicalInstrumentSurfaceSchema,
+  canonicalOperationRequestSchema,
+  canonicalOperationResultSchema,
   instrumentCandidateSchema,
   instrumentCapabilitiesSchema,
   instrumentConfigurationCommandSchema,
@@ -34,6 +37,10 @@ import {
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
   type SignalLabWaveformDescriptor,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationParameterIntent,
+  type CanonicalOperationRequest,
+  type CanonicalOperationResult,
 } from '@tinysa/contracts';
 import {
   InstrumentDriverContractError,
@@ -79,6 +86,7 @@ interface ActiveSession {
   capabilities: InstrumentCapabilities;
   unsubscribe: () => void;
   configuration?: InstrumentConfigurationState;
+  canonicalParameterIntents?: ReadonlyMap<string, CanonicalOperationParameterIntent['intent']>;
   producerConfigurationEpoch?: string;
   rfOutput: InstrumentRfOutputState;
   rfOutputQualification: InstrumentRfOutputQualification;
@@ -160,12 +168,35 @@ export class InstrumentManager {
     return this.#serialize(() => this.#discover());
   }
 
+  /**
+   * Generic one-time network bootstrap. The manager serializes it with
+   * discovery so a driver cannot replace its candidate evidence midway
+   * through a discovery pass.
+   */
+  addManualEndpoint(endpoint: string) {
+    return this.#serialize(() => this.registry.addManualEndpoint(endpoint));
+  }
+
   connect(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot> {
     return this.#serializeSessionOperation(() => this.#connect(candidate));
   }
 
   configure(configuration: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
     return this.#serializeSessionOperation(() => this.#configure(configuration));
+  }
+
+  /** Returns the active driver's homogeneous, renderer-safe operation surface. */
+  canonicalSurface(): CanonicalInstrumentSurface | undefined {
+    return this.#active ? this.#canonicalSurface(this.#active) : undefined;
+  }
+
+  /**
+   * Resolves Auto inside the active driver, then uses the normal manager-owned
+   * configuration sequence to keep safety, admission, and measurement state
+   * exactly the same as any other operation.
+   */
+  executeCanonicalOperation(request: CanonicalOperationRequest): Promise<CanonicalOperationResult> {
+    return this.#serializeSessionOperation(() => this.#executeCanonicalOperation(request));
   }
 
   acquire(): Promise<InstrumentMeasurement> {
@@ -471,7 +502,10 @@ export class InstrumentManager {
     if (failures.length > 1) throw new AggregateError(failures, 'Rejected session cleanup encountered multiple failures');
   }
 
-  async #configure(configurationValue: InstrumentConfiguration): Promise<InstrumentConfigurationState> {
+  async #configure(
+    configurationValue: InstrumentConfiguration,
+    canonicalParameterIntents?: ReadonlyMap<string, CanonicalOperationParameterIntent['intent']>,
+  ): Promise<InstrumentConfigurationState> {
     const active = this.#requireOperationalActive();
     const admissionFaultRevision = active.faultRevision;
     const configuration = instrumentConfigurationSchema.parse(configurationValue);
@@ -531,12 +565,76 @@ export class InstrumentManager {
     requireCapability(active, admittedCommand.configuration);
     const state = deepFreeze(instrumentConfigurationStateSchema.parse({ ...admittedCommand, configuredAt: this.#timestamp() }));
     active.configuration = state;
+    active.canonicalParameterIntents = canonicalParameterIntents === undefined
+      ? undefined
+      : new Map(canonicalParameterIntents);
     this.#resetMeasurementState(active);
     this.#emit({ type: 'configured', configuration: state });
     if (changesRfMode) {
       this.#emit({ type: 'session-state', reason: 'rf-output-changed', session: this.#snapshot(active) });
     }
     return state;
+  }
+
+  async #executeCanonicalOperation(requestValue: CanonicalOperationRequest): Promise<CanonicalOperationResult> {
+    const active = this.#requireOperationalActive();
+    const request = canonicalOperationRequestSchema.parse(requestValue);
+    if (request.sessionId !== active.session.sessionId) {
+      throw new InstrumentManagerError('driver-contract', 'Canonical operation names a different session');
+    }
+    const surface = this.#canonicalSurface(active);
+    if (!surface || !active.session.resolveCanonicalOperation) {
+      throw new InstrumentManagerError('unsupported-capability', 'The connected driver has not published a canonical operation surface');
+    }
+    if (request.surfaceRevision !== surface.revision) {
+      throw new InstrumentManagerError('stale-candidate', 'Canonical operation surface is stale; refresh the connected instrument state and try again');
+    }
+    const operation = surface.operations.find((candidate) => candidate.id === request.operationId);
+    if (!operation || operation.availability !== 'available') {
+      throw new InstrumentManagerError('unsupported-capability', `Canonical operation ${request.operationId} is not currently available`);
+    }
+    const expectedParameterIds = new Set(operation.parameterIds);
+    if (request.parameters.length !== expectedParameterIds.size
+      || request.parameters.some((parameter) => !expectedParameterIds.has(parameter.parameterId))) {
+      throw new InstrumentManagerError('driver-contract', `Canonical operation ${request.operationId} must include exactly its advertised parameters`);
+    }
+    const faultRevision = active.faultRevision;
+    let resolution: Awaited<ReturnType<NonNullable<InstrumentSession['resolveCanonicalOperation']>>>;
+    try {
+      resolution = await active.session.resolveCanonicalOperation(request);
+      this.#assertPostAwaitState(active, faultRevision);
+    } catch (error) {
+      throw asManagerError(error, 'driver-failure', `Driver ${active.driver.driverId} could not resolve canonical operation ${request.operationId}`);
+    }
+    const hasConfiguration = 'configuration' in resolution;
+    const hasFeature = 'feature' in resolution;
+    if (hasConfiguration === hasFeature) {
+      throw new InstrumentManagerError(
+        'driver-contract',
+        `Driver ${active.driver.driverId} returned a canonical operation resolution without exactly one outcome`,
+      );
+    }
+    if (hasConfiguration) {
+      const configuration = instrumentConfigurationSchema.parse(resolution.configuration);
+      const intents = new Map(request.parameters.map((parameter) => [parameter.parameterId, parameter.intent] as const));
+      await this.#configure(configuration, intents);
+    } else if (hasFeature) {
+      // Parse the driver boundary before dispatching it.  This intentionally
+      // reuses the established feature lifecycle (including source-state
+      // invalidation, capability refresh, RF safety, and event ordering), but
+      // the generic renderer is never handed the native feature vocabulary.
+      const feature = instrumentFeatureRequestSchema.parse(resolution.feature);
+      await this.#executeFeature(feature);
+    }
+    const refreshed = this.#canonicalSurface(active);
+    if (!refreshed) {
+      throw new InstrumentManagerError('driver-contract', `Driver ${active.driver.driverId} withdrew its canonical operation surface`);
+    }
+    return canonicalOperationResultSchema.parse({
+      sessionId: active.session.sessionId,
+      operationId: request.operationId,
+      surface: refreshed,
+    });
   }
 
   async #acquire(): Promise<InstrumentMeasurement> {
@@ -833,6 +931,20 @@ export class InstrumentManager {
     });
   }
 
+  #canonicalSurface(active: ActiveSession): CanonicalInstrumentSurface | undefined {
+    const raw = active.session.canonicalSurface;
+    if (!raw) return undefined;
+    const surface = canonicalInstrumentSurfaceSchema.parse(raw);
+    if (!active.canonicalParameterIntents?.size) return surface;
+    return canonicalInstrumentSurfaceSchema.parse({
+      ...surface,
+      parameters: surface.parameters.map((parameter) => {
+        const requested = active.canonicalParameterIntents?.get(parameter.id);
+        return requested ? { ...parameter, requested } : parameter;
+      }),
+    });
+  }
+
   #forward(active: ActiveSession, value: InstrumentSessionEvent, publish = true): InstrumentSessionEvent | undefined {
     if (this.#active !== active) return;
     try {
@@ -890,6 +1002,7 @@ export class InstrumentManager {
 
   #invalidateConfiguration(active: ActiveSession): void {
     active.configuration = undefined;
+    active.canonicalParameterIntents = undefined;
     this.#resetMeasurementState(active);
   }
 

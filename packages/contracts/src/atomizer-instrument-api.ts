@@ -22,6 +22,12 @@ import {
   type InstrumentMeasurement,
   type InstrumentSessionSnapshot,
 } from './instrument.js';
+import {
+  canonicalOperationRequestSchema,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationRequest,
+  type CanonicalOperationResult,
+} from './canonical-instrument.js';
 
 export const ATOMIZER_INSTRUMENT_API_VERSION = 1 as const;
 
@@ -156,6 +162,9 @@ export interface AtomizerInstrumentApiV1 {
   connect(candidate: InstrumentCandidate): Promise<InstrumentSessionSnapshot>;
   disconnect(): Promise<void>;
   configure(configuration: InstrumentConfiguration): Promise<InstrumentConfigurationState>;
+  /** Optional during v1-driver migration; canonical drivers publish this surface. */
+  canonicalSurface?(): Promise<CanonicalInstrumentSurface | undefined>;
+  executeCanonicalOperation?(request: CanonicalOperationRequest): Promise<CanonicalOperationResult>;
   acquire(): Promise<InstrumentMeasurement>;
   startStreaming(): Promise<AtomizerInstrumentStreamingState>;
   stopStreaming(): Promise<AtomizerInstrumentStreamingState>;
@@ -169,6 +178,7 @@ export interface AtomizerInstrumentApiV1 {
 export const atomizerInstrumentIpcRequestSchemas = Object.freeze({
   connect: instrumentCandidateSchema,
   configure: instrumentConfigurationSchema,
+  executeCanonicalOperation: canonicalOperationRequestSchema,
   executeFeature: instrumentFeatureRequestSchema,
   writePreference: atomizerInstrumentPreferenceSelectionSchema,
 });

@@ -12,8 +12,8 @@ import {
 import {
   ATOMIZER_AI_IPC_CHANNELS,
   ATOMIZER_AUXILIARY_IPC_CHANNELS,
+  ATOMIZER_CONNECTION_IPC_CHANNELS,
   ATOMIZER_FILES_IPC_CHANNELS,
-  ATOMIZER_NEPTUNE_IPC_CHANNELS,
 } from './atomizer-ipc-channels.js';
 import { BoundedPrivilegedIpcAdmission } from './privileged-ipc-admission.js';
 
@@ -68,11 +68,12 @@ describe('Atomizer auxiliary privileged IPC', () => {
     expect(operations.exportSweep).not.toHaveBeenCalled();
     expect(() => ipc.invoke(ATOMIZER_FILES_IPC_CHANNELS.exportComplexIq, { measurement: { forged: true }, identity: {} })).toThrow();
     expect(operations.exportComplexIq).not.toHaveBeenCalled();
-    expect(await ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'neptune-p210', endpoint: 'ip:10.0.0.250' }))
+    expect(await ipc.invoke(ATOMIZER_CONNECTION_IPC_CHANNELS.addManualEndpoint, { endpoint: 'ip:10.0.0.250' }))
       .toEqual({ ok: true });
-    expect(() => ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'not-a-real-kind', endpoint: 'ip:10.0.0.250' }))
-      .toThrow(/sourceKind must be/);
-    expect(() => ipc.invoke(ATOMIZER_NEPTUNE_IPC_CHANNELS.addManualEndpoint, { sourceKind: 'neptune-p210', endpoint: '' }))
+    expect(operations.addManualEndpoint).toHaveBeenCalledWith({ endpoint: 'ip:10.0.0.250' });
+    expect(() => ipc.invoke(ATOMIZER_CONNECTION_IPC_CHANNELS.addManualEndpoint, { endpoint: 'ip:10.0.0.250', sourceKind: 'forged' }))
+      .toThrow(/exactly endpoint/);
+    expect(() => ipc.invoke(ATOMIZER_CONNECTION_IPC_CHANNELS.addManualEndpoint, { endpoint: '' }))
       .toThrow(/endpoint must be/);
   });
 
@@ -223,6 +224,6 @@ function fakeOperations() {
     computerType: vi.fn(() => 'type'),
     computerKey: vi.fn(() => 'key'),
     computerScroll: vi.fn(() => 'scroll'),
-    addNeptuneManualEndpoint: vi.fn(async () => ({ ok: true }) as const),
+    addManualEndpoint: vi.fn(async () => ({ ok: true }) as const),
   } satisfies AtomizerAuxiliaryIpcOperations;
 }

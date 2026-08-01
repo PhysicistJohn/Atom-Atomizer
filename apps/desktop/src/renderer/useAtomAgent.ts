@@ -26,6 +26,8 @@ interface ActiveVoiceLease {
 export interface AtomAgentHost {
   applicationContext(): string;
   execute(name: AgentToolName, args: unknown): Promise<unknown>;
+  /** Driver-declared, operation-specific approval; never a device-name rule. */
+  requiresActionApproval?(name: AgentToolName, args: unknown): boolean;
 }
 
 type AgentOperationOwner =
@@ -51,8 +53,6 @@ interface PreflightedToolCall {
 
 interface ActiveBackendIdentity {
   readonly sessionId: string;
-  readonly driverId: string;
-  readonly sourceKind: string;
   readonly execution: string;
 }
 
@@ -106,9 +106,8 @@ export function useAtomAgent(host: AtomAgentHost) {
 
   async function executePreflightedCall(entry:PreflightedToolCall,owner:AgentOperationOwner):Promise<ToolCallExecution|undefined>{
     const {call,validated}=entry;if(!validated||!operationIsActive(owner))return undefined;
-    const needsApproval=validated.policy.approval==='at-action'&&(
-      validated.name!=='set_rf_output'||(validated.args as {enabled:boolean}).enabled
-    );
+    const needsApproval=validated.policy.approval==='at-action'
+      ||hostRef.current.requiresActionApproval?.(validated.name,validated.args)===true;
     if(needsApproval){
       let approvedIdentity:ActiveBackendIdentity;
       try{approvedIdentity=requireActiveBackendIdentity(hostRef.current.applicationContext());}
@@ -390,8 +389,7 @@ function isScreenshot(value:unknown):value is {kind:'atomizer-screenshot';screen
 function isSafetyCleanup(entry:PreflightedToolCall):boolean{
   const validated=entry.validated;if(!validated)return false;
   return validated.name==='stop_continuous_sweeps'
-    ||validated.name==='disconnect_device'
-    ||(validated.name==='set_rf_output'&&!(validated.args as {enabled:boolean}).enabled);
+    ||validated.name==='disconnect_device';
 }
 function requireActiveBackendIdentity(context:string):ActiveBackendIdentity{
   let value:unknown;try{value=JSON.parse(context);}catch(error){throw new Error(`Atom application context is malformed: ${error instanceof Error?error.message:String(error)}`);}
@@ -400,12 +398,12 @@ function requireActiveBackendIdentity(context:string):ActiveBackendIdentity{
     :undefined;
   if(!instrument||typeof instrument!=='object'||Array.isArray(instrument))throw new Error('No complete active execution backend identity is available for high-impact action');
   const candidate=instrument as Partial<ActiveBackendIdentity>;
-  for(const key of ['sessionId','driverId','sourceKind','execution'] as const){
+  for(const key of ['sessionId','execution'] as const){
     if(typeof candidate[key]!=='string'||!candidate[key]!.trim())throw new Error('No complete active execution backend identity is available for high-impact action');
   }
-  return {sessionId:candidate.sessionId!,driverId:candidate.driverId!,sourceKind:candidate.sourceKind!,execution:candidate.execution!};
+  return {sessionId:candidate.sessionId!,execution:candidate.execution!};
 }
-function sameBackendIdentity(left:ActiveBackendIdentity,right:ActiveBackendIdentity):boolean{return left.sessionId===right.sessionId&&left.driverId===right.driverId&&left.sourceKind===right.sourceKind&&left.execution===right.execution;}
+function sameBackendIdentity(left:ActiveBackendIdentity,right:ActiveBackendIdentity):boolean{return left.sessionId===right.sessionId&&left.execution===right.execution;}
 
 function emitRealtimeSessionCheck(eventType:string,verification:AtomRealtimeSessionVerification,phase:'initial'|'enforced'):void{
   const outcome=verification.ok?'VERIFIED':phase==='initial'?'DIFFERS — ENFORCING WITH session.update':'MISMATCH';

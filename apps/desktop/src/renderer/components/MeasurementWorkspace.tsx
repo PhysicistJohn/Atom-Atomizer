@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Clock3, Crosshair, Gauge, RadioTower, Repeat2, SlidersHorizontal, Square, X, Zap } from 'lucide-react';
 import type {
-  AnalyzerConfig,
-  AnalyzerConfigPatch,
+  CanonicalInstrumentSurface,
+  CanonicalOperationParameterIntent,
   ChannelMeasurementConfiguration,
   DetectedSignal,
   FirmwareTraceFrame,
@@ -15,7 +15,6 @@ import type {
   MarkerSearchAction,
   MarkerSearchConfiguration,
   MeasurementViewId,
-  InstrumentAcquisitionCapability,
   SpectrumDisplayConfiguration,
   Sweep,
   TraceBankConfiguration,
@@ -26,11 +25,10 @@ import type {
 } from '@tinysa/contracts';
 import { calculateSweepMetrics } from '@tinysa/analysis';
 import type { AcquisitionState } from '../ui-contracts.js';
-import type { ComplexIqCapability, ComplexIqConfiguration } from '../complex-iq.js';
 import { formatFrequency, formatPowerLevel } from '../format.js';
-import { AnalyzerInspector } from './AnalyzerInspector.js';
+import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
-import { IqCaptureSetup } from './IqWorkspace.js';
+import { CanonicalOperationRequired } from './IqWorkspace.js';
 import { MeasurementDock, type MeasurementDockPanel } from './MeasurementDock.js';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
@@ -40,18 +38,15 @@ type Drawer = 'setup' | MeasurementDockPanel;
 export interface MeasurementWorkspaceProps {
   measurementActions?: ReactNode;
   view: MeasurementViewId;
-  analyzer: AnalyzerConfig;
-  spectrumCapability?: Extract<InstrumentAcquisitionCapability, { kind: 'swept-spectrum' }>;
-  iqConfiguration?: ComplexIqConfiguration;
-  iqCapability?: ComplexIqCapability;
+  /** The sole driver-owned, device-neutral mutable-control surface. */
+  canonicalSurface?: CanonicalInstrumentSurface;
+  onCanonicalOperation?(operationId: string, parameters: readonly CanonicalOperationParameterIntent[]): void | Promise<unknown>;
   /** Whether Spectrum/Waterfall/Channel can ever populate for this session:
    * natively (spectrumCapability) or via a host-derived-from-complex-I/Q
    * projection. See SpectrumPlotProps.spectrumCapabilityAvailable's doc comment. */
   spectrumCapabilityAvailable: boolean;
   busy: boolean;
   streaming: boolean;
-  onAnalyzer(patch: AnalyzerConfigPatch): void;
-  onIqConfiguration?(configuration: ComplexIqConfiguration): void;
   sweep?: Sweep;
   history: readonly Sweep[];
   detections: readonly DetectedSignal[];
@@ -92,11 +87,11 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
   const activeDetections = props.detections.filter((item) =>
     typeof item === 'object' && item !== null && item.state === 'active');
   const view = props.view === 'envelope-stft' ? 'spectrum' : props.view;
-  const hasIqCaptureSetup = props.spectrumCapability === undefined
-    && props.iqCapability !== undefined
-    && props.iqConfiguration !== undefined
-    && props.onIqConfiguration !== undefined;
-  const setupLabel = hasIqCaptureSetup ? 'Capture setup' : 'Sweep setup';
+  const hasCanonicalOperation = props.canonicalSurface !== undefined && props.onCanonicalOperation !== undefined;
+  const acquisitionOperationIds = props.canonicalSurface?.operations
+    .filter((operation) => operation.scope !== 'source')
+    .map((operation) => operation.id);
+  const setupLabel = 'Instrument setup';
   const traceToolsAvailable = view === 'spectrum';
   const closeDrawer = (restoreFocus = true) => {
     const focusTarget = returnFocusRef.current;
@@ -162,9 +157,9 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
       {drawer && <div id="measurement-control-drawer" ref={drawerRef} tabIndex={-1} className={`measurement-overlay ${drawer === 'setup' ? 'setup' : 'controls'}`} role="region" aria-label={`${drawerTitle} panel`}>
         <header className="measurement-drawer-header"><span>{drawer === 'setup' ? <SlidersHorizontal size={15}/> : drawer === 'markers' ? <Crosshair size={15}/> : drawer === 'display' ? <Gauge size={15}/> : <BarChart3 size={15}/>}<strong>{drawerTitle}</strong></span><button type="button" className="measurement-overlay-close" aria-label={`Close ${drawerTitle}`} data-agent-exclusion="human-overlay-dismiss" onClick={() => closeDrawer()}><X size={16}/></button></header>
         <div className="measurement-drawer-body">{drawer === 'setup'
-          ? hasIqCaptureSetup
-            ? <IqCaptureSetup configuration={props.iqConfiguration!} capability={props.iqCapability} busy={props.busy && !props.streaming} onChange={props.onIqConfiguration!}/>
-            : <AnalyzerInspector config={props.analyzer} capability={props.spectrumCapability} disabled={props.busy && !props.streaming} onChange={props.onAnalyzer}/>
+          ? hasCanonicalOperation
+            ? <CanonicalOperationPanel surface={props.canonicalSurface!} operationIds={acquisitionOperationIds} busy={props.busy && !props.streaming} onExecute={props.onCanonicalOperation!}/>
+            : <CanonicalOperationRequired title="Instrument controls"/>
           : <MeasurementDock panel={drawer} showTabs={false} traces={props.traces} frames={props.frames} firmwareFrames={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} onFirmwareTraceVisibility={props.onFirmwareTraceVisibility} activeTraceId={props.activeTraceId} onActiveTrace={props.onActiveTrace} markers={props.markers} readings={props.readings} activeMarkerId={props.activeMarkerId} search={props.markerSearch} display={props.display} onTrace={props.onTrace} onTraceReset={props.onTraceReset} onMarker={props.onMarker} onActiveMarker={props.onActiveMarker} onSearch={props.onSearch} onSearchConfiguration={props.onSearchConfiguration} onDisplay={props.onDisplay} onAutoScale={props.onAutoScale}/>
         }</div>
       </div>}

@@ -1,6 +1,5 @@
 import {
   signalDetectionConfigSchema,
-  type AnalyzerConfig,
   type AtomizerInstrumentEvent,
   type AtomizerInstrumentFeatureExecution,
   type DetectedPowerCaptureReceipt,
@@ -22,7 +21,6 @@ import {
   HISTORY_LIMIT,
   type AtomizerRendererState,
   type AtomizerStore,
-  type ContinuousAcquisitionMode,
 } from '../store.js';
 import type { InstrumentEventsController } from './instrument-events.js';
 import type { ConnectionController } from './connection.js';
@@ -37,7 +35,6 @@ import type { ClassificationController } from './classification.js';
 export const CONFIGURATION_REVISION_LIMIT = HISTORY_LIMIT + 32;
 export const INVALIDATING_FEATURE_RECEIPT_TIMEOUT_MILLISECONDS = 2_000;
 export const CONTINUOUS_IQ_TRANSACTION = 'continuous-complex-iq-buffer';
-export const CONTINUOUS_GLOBAL_SPECTRUM_TRANSACTION = 'continuous-global-spectrum-look';
 
 export type RendererConfigurationRevision =
   | { readonly kind: 'swept-spectrum'; readonly admitted: SweptSpectrumConfiguration }
@@ -53,8 +50,6 @@ export interface ContinuousStreamOwnership {
 export interface ContinuousIqConfigurationOwnership {
   readonly generation: number;
   readonly sessionId: string;
-  readonly stagedRevision: number;
-  readonly configuration: ComplexIqConfiguration;
   readonly configured: InstrumentConfigurationState;
 }
 
@@ -75,10 +70,7 @@ export interface OperatorContinuousStopRequest {
   readonly reject: (reason: unknown) => void;
 }
 
-export type InvalidatingFeatureRequest =
-  | Extract<InstrumentFeatureRequest, { kind: 'signal-lab-profile-selection' }>
-  | Extract<InstrumentFeatureRequest, { kind: 'touch' }>
-  | Extract<InstrumentFeatureRequest, { kind: 'rf-generator'; action: 'configure' }>;
+export type InvalidatingFeatureRequest = Extract<InstrumentFeatureRequest, { kind: 'touch' }>;
 export type FeatureResultEvent = Extract<AtomizerInstrumentEvent, { type: 'feature-result' }>;
 export type ConfigurationInvalidatedEvent = Extract<AtomizerInstrumentEvent, { type: 'configuration-invalidated' }>;
 
@@ -121,7 +113,6 @@ export class RendererKernel {
   readonly tracker: Ref<SignalTracker>;
   readonly traceAccumulator: Ref<TraceAccumulator>;
   readonly zeroCaptureReceiptRef = ref<DetectedPowerCaptureReceipt | undefined>(undefined);
-  readonly analyzerRevision = ref(0);
   readonly agentConnectionCandidates = ref(new Map<string, InstrumentCandidate>());
   readonly configurationRevisions = ref(new RevisionGuard<RendererConfigurationRevision>(CONFIGURATION_REVISION_LIMIT));
   readonly continuousRequested = ref(false);
@@ -134,14 +125,12 @@ export class RendererKernel {
   readonly continuousIqResumeWaiters = ref(new Set<() => void>());
   readonly continuousIqCadenceWake = ref<(() => void) | undefined>(undefined);
   readonly continuousIqConfigurationOwnership = ref<ContinuousIqConfigurationOwnership | undefined>(undefined);
-  readonly iqConfigurationRevision = ref(0);
   readonly pendingInvalidatingFeatureReceipt = ref<InvalidatingFeatureReceipt | undefined>(undefined);
   readonly continuousMeasurementStopRequest = ref<ContinuousMeasurementStopRequest | undefined>(undefined);
   readonly continuousMeasurementStopTask = ref<Promise<void> | undefined>(undefined);
   readonly failedContinuousMeasurementStopGeneration = ref<number | undefined>(undefined);
   readonly operatorContinuousStopRequest = ref<OperatorContinuousStopRequest | undefined>(undefined);
   readonly operatorContinuousStopTask = ref<Promise<void> | undefined>(undefined);
-  readonly analyzerRetuneTask = ref<Promise<void> | undefined>(undefined);
   readonly instrumentTransactionOwner = ref<string | undefined>(undefined);
   readonly remoteGestureTask = ref<Promise<void> | undefined>(undefined);
   readonly analysisSequence = ref(0);
@@ -272,39 +261,17 @@ function canonicalStructuredValue(value: unknown): unknown {
   return value;
 }
 
-export function sameAnalyzerConfiguration(left: AnalyzerConfig, right: AnalyzerConfig): boolean {
-  return left.startHz === right.startHz
-    && left.stopHz === right.stopHz
-    && left.points === right.points
-    && left.acquisitionFormat === right.acquisitionFormat
-    && left.rbwKhz === right.rbwKhz
-    && left.attenuationDb === right.attenuationDb
-    && left.sweepTimeSeconds === right.sweepTimeSeconds
-    && left.detector === right.detector
-    && left.spurRejection === right.spurRejection
-    && left.lna === right.lna
-    && left.avoidSpurs === right.avoidSpurs
-    && left.trigger.mode === right.trigger.mode
-    && (left.trigger.mode === 'auto' || (right.trigger.mode !== 'auto' && left.trigger.levelDbm === right.trigger.levelDbm));
-}
-
 export function invalidatingFeatureReason(
   request: InstrumentFeatureRequest,
 ): ConfigurationInvalidatedEvent['reason'] | undefined {
-  if (request.kind === 'signal-lab-profile-selection') {
-    return request.action === 'select-profile' ? 'source-profile-changed' : 'source-channel-changed';
-  }
-  if (request.kind === 'touch'
-    || (request.kind === 'rf-generator' && request.action === 'configure')) {
+  if (request.kind === 'touch') {
     return 'instrument-mode-changed';
   }
   return undefined;
 }
 
 export function isInvalidatingFeatureRequest(request: InstrumentFeatureRequest): request is InvalidatingFeatureRequest {
-  return request.kind === 'signal-lab-profile-selection'
-    || request.kind === 'touch'
-    || (request.kind === 'rf-generator' && request.action === 'configure');
+  return request.kind === 'touch';
 }
 
 export function featureResultAcknowledgesRequest(

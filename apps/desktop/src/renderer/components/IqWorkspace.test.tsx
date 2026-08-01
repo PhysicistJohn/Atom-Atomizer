@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { InstrumentAcquisitionCapability, InstrumentMeasurement } from '@tinysa/contracts';
+import type { CanonicalInstrumentSurface, InstrumentMeasurement } from '@tinysa/contracts';
 import {
-  DEFAULT_COMPLEX_IQ_CONFIGURATION,
   previewComplexIq,
   type ComplexIqPreview,
 } from '../complex-iq.js';
@@ -13,14 +12,35 @@ import {
 } from './canvas-test-recorder.js';
 import { IqWorkspace, type IqCaptureMeta } from './IqWorkspace.js';
 
-const capability: Extract<InstrumentAcquisitionCapability, { kind: 'complex-iq' }> = {
-  kind: 'complex-iq',
-  centerFrequencyHz: { min: 1_000_000, max: 6_000_000_000, step: 1 },
-  sampleRateHz: { min: 100_000, max: 20_000_000, step: 1 },
-  bandwidthHz: { min: 10_000, max: 20_000_000, step: 1 },
-  sampleCount: { min: 2, max: 1_048_576, step: 1 },
-  sampleFormat: 'cf32le',
-};
+const canonicalCaptureSurface = {
+  schemaVersion: 1,
+  revision: 'iq-canonical-surface-1',
+  presentation: {
+    title: 'Connected instrument',
+    qualification: 'DRIVER DECLARED',
+    facts: [],
+  },
+  parameters: [{
+    id: 'capture.tune',
+    label: 'Receiver center',
+    group: 'Capture',
+    unit: 'Hz',
+    manual: { kind: 'integer', range: { min: 1_000_000, max: 6_000_000_000, step: 1 } },
+    auto: { resolver: 'driver', description: 'Chooses the active receive target.' },
+    requested: { mode: 'auto' },
+    effectiveValue: 100_000_000,
+    verification: 'device-readback',
+  }],
+  operations: [{
+    id: 'capture',
+    label: 'Capture',
+    parameterIds: ['capture.tune'],
+    outputs: ['Complex samples'],
+    availability: 'available',
+    primary: true,
+    confirmation: 'none',
+  }],
+} satisfies CanonicalInstrumentSurface;
 
 function capture(): Extract<InstrumentMeasurement, { kind: 'complex-iq' }> {
   const samples = new Uint8Array(16);
@@ -75,24 +95,39 @@ afterEach(() => {
 });
 
 describe('complex I/Q workspace', () => {
-  it('discloses an exact non-round GHz center to both the operator and accessibility tree', () => {
+  it('renders and executes only the driver-declared canonical capture operation', () => {
+    const onCanonicalOperation = vi.fn();
     render(<IqWorkspace
-      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, centerHz: 3_500_010_000 }}
-      capability={capability}
       busy={false}
-      onChange={vi.fn()}
+      canonicalSurface={canonicalCaptureSurface}
+      onCanonicalOperation={onCanonicalOperation}
     />);
 
-    expect(screen.getByLabelText('Edit Receiver tune').textContent).toContain('3.50001 GHz');
+    const mode = screen.getByRole('combobox', { name: 'Receiver center mode' });
+    expect(within(mode).getByRole('option', { name: 'Automatic' })).toBeTruthy();
+    expect(within(mode).getByRole('option', { name: 'Manual' })).toBeTruthy();
+    expect(screen.getByText('Device readback')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply Capture' }));
+    expect(onCanonicalOperation).toHaveBeenCalledWith('capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
   });
 
-  it('renders bounded time/constellation previews and delegates acquisition to the sidebar', () => {
+  it('fails closed to a generic driver-required state instead of rendering legacy mutable setup', () => {
+    render(<IqWorkspace busy={false}/>);
+
+    expect(screen.getByRole('status', { name: 'I/Q capture controls unavailable' })).toBeTruthy();
+    expect(screen.getByText('DRIVER REQUIRED')).toBeTruthy();
+    expect(screen.queryByLabelText('Edit Receiver tune')).toBeNull();
+    expect(screen.queryByLabelText('Edit Sample rate')).toBeNull();
+    expect(screen.queryByLabelText('Edit Capture bandwidth')).toBeNull();
+    expect(screen.queryByLabelText('Edit Complex samples')).toBeNull();
+  });
+
+  it('renders bounded time/constellation previews and delegates acquisition to the canonical surface', () => {
     const view = render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       {...captureProps()}
       busy={false}
-      onChange={vi.fn()}
     />);
 
     expect(screen.getByLabelText(/I and Q sample amplitude/i)).toBeTruthy();
@@ -101,7 +136,6 @@ describe('complex I/Q workspace', () => {
     expect(screen.getByText(/analytic complex baseband/i)).toBeTruthy();
     expect(screen.getAllByText('0.00 dBFS')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
-    expect(screen.getByText(/Receiver tune applies on the next sidebar Single or Run/i)).toBeTruthy();
     const workspace = screen.getByRole('region', { name: 'Complex I/Q workspace' });
     expect(workspace.getAttribute('aria-description'))
       .toBe('captureId=iq-capture-1; sequence=1; centerHz=100000000');
@@ -112,20 +146,14 @@ describe('complex I/Q workspace', () => {
   it('offers byte-exact SigMF export only after a capture exists', () => {
     const onExport = vi.fn();
     const view = render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       busy={false}
-      onChange={vi.fn()}
       onExport={onExport}
     />);
     expect((screen.getByRole('button', { name: 'Export SigMF' }) as HTMLButtonElement).disabled).toBe(true);
 
     view.rerender(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       {...captureProps()}
       busy={false}
-      onChange={vi.fn()}
       onExport={onExport}
     />);
     const exportButton = screen.getByRole('button', { name: 'Export SigMF' }) as HTMLButtonElement;
@@ -134,142 +162,32 @@ describe('complex I/Q workspace', () => {
     expect(onExport).toHaveBeenCalledOnce();
   });
 
-  it('identifies only while classification is pending and explains an unavailable short capture', () => {
+  it('identifies only while classification is pending and explains a short capture result', () => {
     const props = captureProps();
     const view = render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       {...props}
       classificationPending
       busy={false}
-      onChange={vi.fn()}
     />);
     expect(screen.getByText('Identifying…')).toBeTruthy();
 
     view.rerender(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       {...props}
       classificationPending={false}
       classificationIssue={{
         kind: 'unavailable',
-        message: 'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.',
+        message: 'Modulation classification requires at least 4,096 complex samples. Acquire a longer capture.',
       }}
       busy={false}
-      onChange={vi.fn()}
     />);
     expect(screen.queryByText('Identifying…')).toBeNull();
-    expect(screen.getByText(/at least 4,096 complex samples.*Increase Complex samples/i)).toBeTruthy();
-  });
-
-  it('offers an explicit analysis-capable sample count without rewriting a deliberate short capture', () => {
-    const onChange = vi.fn();
-    render(<IqWorkspace
-      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleCount: 2_048 }}
-      capability={capability}
-      busy={false}
-      onChange={onChange}
-    />);
-
-    expect(screen.getByText(/Modulation detection needs at least 4,096 complex samples/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Use 4,096 samples' }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sampleCount: 4_096 }));
-  });
-
-  it('explains when a narrow physical passband cannot fill the plotted sample-rate span', () => {
-    render(<IqWorkspace
-      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, sampleRateHz: 50_000_000, bandwidthHz: 200_000 }}
-      capability={{ ...capability, bandwidthMode: 'independent', sampleRateHz: { min: 100_000, max: 56_000_000, step: 1 } }}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-
-    expect(screen.getByText(/Capture bandwidth is .* while the plotted span follows the .* sample rate/i)).toBeTruthy();
-    expect(screen.getByText(/Only the center passband is physically admitted.*FM broadcast/i)).toBeTruthy();
-  });
-
-  it('displays output placement separately from canonical profile lineage', () => {
-    const props = captureProps();
-    render(<IqWorkspace
-      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, centerHz: 3_450_000_000 }}
-      capability={capability}
-      preview={props.preview}
-      captureMeta={{
-        ...props.captureMeta,
-        centerHz: 3_450_000_000,
-        profileReferenceCenterHz: 3_500_010_000,
-        rfReferenceCenterHz: 3_500_010_000,
-        nativeCarrierOffsetHz: 0,
-        rfPlacement: 'operator-translated',
-        outputCarrierOffsetHz: 0,
-        rfTuneCenterHz: 3_450_000_000,
-        signalBandwidthHz: 100_000_000,
-        nativeSampleRateHz: 122_880_000,
-        payloadKind: 'derived-hardware-ready',
-        qualification: 'derived-from-independently-verified-digital-baseband',
-      }}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-    expect(screen.getByText('derived hardware ready')).toBeTruthy();
-    expect(screen.getByText(/3\.50001 GHz · operator translated/i)).toBeTruthy();
-    expect(screen.getByText('Profile signal center')).toBeTruthy();
-    expect(screen.getByText('Native RF reference')).toBeTruthy();
-    expect(screen.getByText('Output RF tune center')).toBeTruthy();
-  });
-
-  it('surfaces Neptune P210 AD9361 ADC evidence and its dBFS-not-dBm power reference', () => {
-    const props = captureProps();
-    render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
-      preview={props.preview}
-      captureMeta={{
-        ...props.captureMeta,
-        qualification: 'device-observed',
-        adcSignificantBits: 12,
-        adcFullScaleCode: 2048,
-        powerReference: 'uncalibrated-dbfs-relative',
-      }}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-    expect(screen.getByText('AD9361 ADC evidence')).toBeTruthy();
-    expect(screen.getByText(/12-bit · full scale 2048 · uncalibrated dbfs relative/i)).toBeTruthy();
-  });
-
-  it('distinguishes a staged receiver tune from the latest captured tune', () => {
-    const props = captureProps();
-    render(<IqWorkspace
-      configuration={{ ...DEFAULT_COMPLEX_IQ_CONFIGURATION, centerHz: 101_000_000 }}
-      capability={capability}
-      {...props}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-
-    expect(screen.getByText('Captured tune')).toBeTruthy();
-    expect(screen.getByText(/Receiver tune is staged at 101 MHz/i).textContent).toMatch(/latest capture is still 100 MHz.*Single or Run/i);
-  });
-
-  it('omits Neptune ADC evidence for captures that never carried it (SignalLab, TinySA)', () => {
-    render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
-      {...captureProps()}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-    expect(screen.queryByText('AD9361 ADC evidence')).toBeNull();
+    expect(screen.getByText(/at least 4,096 complex samples.*Acquire a longer capture/i)).toBeTruthy();
   });
 
   it('fits both plots by default and provides bounded keyboard-accessible zoom and reset controls', () => {
     const view = render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
       {...captureProps()}
       busy={false}
-      onChange={vi.fn()}
     />);
     // Plots render onto retained canvases (no per-buffer SVG DOM); jsdom has
     // no 2d context, so the zoom contract is asserted through its controls.
@@ -290,41 +208,15 @@ describe('complex I/Q workspace', () => {
     expect(zoomIn.hasAttribute('disabled')).toBe(true);
   });
 
-  it('fails closed when the active driver advertises no I/Q acquisition', () => {
-    render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      busy={false}
-      onChange={vi.fn()}
-    />);
-    expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Zoom I/Q plots in' }).hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('UNAVAILABLE')).toBeTruthy();
-  });
-
-  it('explains and disables a profile-specific I/Q admission failure', () => {
-    render(<IqWorkspace
-      configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-      capability={capability}
-      busy={false}
-      captureUnavailableReason="No truthful I/Q generator is admitted for this standards profile."
-      onChange={vi.fn()}
-    />);
-    expect(screen.getByText(/No truthful I\/Q generator/i)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Capture I\/Q/i })).toBeNull();
-  });
-
   it('sustains bounded 4,096-point live updates without replacing canvases or growing the DOM', () => {
     vi.stubGlobal('requestAnimationFrame', undefined);
     const recorder = installRecordingCanvas();
     try {
       const initial = stressPreview(0);
       const view = render(<IqWorkspace
-        configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-        capability={capability}
         preview={initial}
         captureMeta={stressCaptureMeta(0)}
         busy={false}
-        onChange={vi.fn()}
       />);
       const originalCanvases = [
         ...view.container.querySelectorAll('canvas.iq-canvas'),
@@ -336,12 +228,9 @@ describe('complex I/Q workspace', () => {
           recorder.contextFor(canvas as HTMLCanvasElement)?.reset();
         }
         view.rerender(<IqWorkspace
-          configuration={DEFAULT_COMPLEX_IQ_CONFIGURATION}
-          capability={capability}
           preview={stressPreview(phase)}
           captureMeta={stressCaptureMeta(phase)}
           busy={false}
-          onChange={vi.fn()}
         />);
         const canvases = [...view.container.querySelectorAll('canvas.iq-canvas')];
         expect(canvases).toEqual(originalCanvases);
@@ -384,7 +273,7 @@ function stressCaptureMeta(phase: number): IqCaptureMeta {
     centerHz: 100_000_000,
     sampleCount: 1_048_576,
     sampleRateHz: 56_000_000,
-    sampleFormat: 'cf32le',
+    sampleFormat: 'ci16le',
     qualification: 'analytic-complex-baseband',
   };
 }

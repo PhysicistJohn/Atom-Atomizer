@@ -39,7 +39,7 @@ if (trioContract.contractVersion !== 7
 const DEFAULT_ENDPOINT = 'ip:10.0.0.250';
 const CAPTURE_CONFIGURATION = Object.freeze({
   kind: 'complex-iq',
-  centerHz: 99_000_000,
+  centerHz: 80_000_000,
   sampleRateHz: 10_000_000,
   bandwidthHz: 8_000_000,
   sampleCount: 4_096,
@@ -49,6 +49,13 @@ const RETUNE_CONFIGURATION = Object.freeze({
   ...CAPTURE_CONFIGURATION,
   centerHz: 100_000_000,
 });
+const CANONICAL_CAPTURE_OPERATION_ID = 'capture';
+const CANONICAL_CAPTURE_PARAMETERS = Object.freeze([
+  ['capture.tune', 'centerHz'],
+  ['capture.sample-rate', 'sampleRateHz'],
+  ['capture.bandwidth', 'bandwidthHz'],
+  ['capture.samples', 'sampleCount'],
+]);
 const STAGE_TIMEOUT_MS = Object.freeze({
   manualEndpoint: 15_000,
   discovery: 20_000,
@@ -57,11 +64,12 @@ const STAGE_TIMEOUT_MS = Object.freeze({
   acquire: 15_000,
   deriveSpectrum: 10_000,
   acquireSecond: 15_000,
-  deriveSecondSpectrum: 10_000,
   configureRetune: 25_000,
   readbackRxLo: 10_000,
   acquireRetune: 15_000,
   deriveRetuneSpectrum: 10_000,
+  acquireRetuneConfirmation: 15_000,
+  deriveRetuneConfirmationSpectrum: 10_000,
   disconnect: 15_000,
 });
 
@@ -146,7 +154,7 @@ try {
     timings,
     'manualEndpoint',
     STAGE_TIMEOUT_MS.manualEndpoint,
-    () => driver.addManualEndpoint('neptune-p210', endpoint),
+    () => manager.addManualEndpoint(endpoint),
   );
   if (!manualEndpoint.ok) throw new Error(`Manual endpoint admission failed: ${manualEndpoint.message}`);
 
@@ -205,16 +213,17 @@ try {
     timings,
     'configure',
     STAGE_TIMEOUT_MS.configure,
-    () => manager.configure(CAPTURE_CONFIGURATION),
+    () => configureCanonicalCapture(manager, session.sessionId, CAPTURE_CONFIGURATION),
   );
-  requireConfigurationMatch(admittedConfiguration.configuration, CAPTURE_CONFIGURATION, 'manager-admitted configuration');
+  requireConfigurationMatch(admittedConfiguration.configuration.configuration, CAPTURE_CONFIGURATION, 'manager-admitted configuration');
   const configuredSnapshot = manager.snapshot();
   if (!configuredSnapshot?.configuration) throw new Error('Manager snapshot omitted the admitted configuration');
   requireConfigurationMatch(configuredSnapshot.configuration.configuration, CAPTURE_CONFIGURATION, 'session configuration snapshot');
   report.configurationEvidence = {
-    revision: admittedConfiguration.configurationRevision,
-    configuredAt: admittedConfiguration.configuredAt,
-    admitted: admittedConfiguration.configuration,
+    canonicalOperation: summarizeCanonicalCaptureOperation(admittedConfiguration.operation),
+    revision: admittedConfiguration.configuration.configurationRevision,
+    configuredAt: admittedConfiguration.configuration.configuredAt,
+    admitted: admittedConfiguration.configuration.configuration,
     snapshot: configuredSnapshot.configuration.configuration,
   };
 
@@ -303,19 +312,9 @@ try {
     powerReference: measurement.powerReference,
   };
 
-  const detectionConfig = {
-    threshold: { strategy: 'noise-relative', marginDb: 10 },
-    minimumBandwidthHz: 0,
-    minimumProminenceDb: 6,
-    minimumConsecutiveSweeps: 2,
-    releaseAfterMissedSweeps: 2,
-  };
-  const detector = new SignalDetector(detectionConfig);
-  const tracker = new SignalTracker(detectionConfig);
-  const firstSweep = projectHostSweep(measurement, spectrum, session);
-  const firstCandidates = detector.analyze(firstSweep);
-  const firstTracks = tracker.update(firstSweep, firstCandidates);
-
+  // Take a second 80 MHz capture so the later retune must advance past a
+  // genuinely fresh pre-retune acquisition.  Do not require a broadcast
+  // candidate here: 80 MHz is deliberately outside the expected FM region.
   const secondMeasurement = await timed(
     timings,
     'acquireSecond',
@@ -323,87 +322,11 @@ try {
     () => manager.acquire(),
   );
   requireComplexCaptureGeometry(secondMeasurement, CAPTURE_CONFIGURATION);
-  const secondSpectrum = await timed(
-    timings,
-    'deriveSecondSpectrum',
-    STAGE_TIMEOUT_MS.deriveSecondSpectrum,
-    () => Promise.resolve(deriveSpectrumFromComplexIq({
-      samples: secondMeasurement.samples,
-      sampleCount: secondMeasurement.sampleCount,
-      sampleFormat: secondMeasurement.sampleFormat,
-      centerHz: secondMeasurement.centerHz,
-      sampleRateHz: secondMeasurement.sampleRateHz,
-      adcFullScaleCode: secondMeasurement.adcFullScaleCode,
-    })),
-  );
-  const secondSweep = projectHostSweep(secondMeasurement, secondSpectrum, session);
-  const secondCandidates = detector.analyze(secondSweep);
-  const secondTracks = tracker.update(secondSweep, secondCandidates);
-  if (firstCandidates.length === 0) {
-    throw new Error('First physical Neptune spectrum produced no prominence-qualified detector candidates');
-  }
-  if (!secondTracks.some((track) => track.state === 'active' && track.missedSweeps === 0)) {
-    throw new Error('Second physical Neptune spectrum did not promote any current detector track to active');
-  }
-  report.signalDetection = {
-    evidence: '@tinysa/analysis SignalDetector + SignalTracker',
-    persistenceGateSweeps: detectionConfig.minimumConsecutiveSweeps,
-    firstLook: summarizeDetectionLook(firstCandidates, firstTracks),
-    secondLook: summarizeDetectionLook(secondCandidates, secondTracks),
-  };
-
-  const channelSeed = {
-    centerHz: CAPTURE_CONFIGURATION.centerHz,
-    mainBandwidthHz: 200_000,
-    adjacentBandwidthHz: 200_000,
-    channelSpacingHz: 200_000,
-    adjacentChannelCount: 2,
-    occupiedPowerPercent: 99,
-    obwNoiseCorrection: 'robust-floor',
-  };
-  const channelFit = fitChannelConfigurationToSweep(secondSweep, channelSeed);
-  if (channelFit.status !== 'fitted') {
-    throw new Error(`Physical Neptune spectrum could not fit a channel response: ${channelFit.reason}: ${channelFit.message}`);
-  }
-  const channelConfiguration = channelFit.configuration;
-  const channelMeasurement = measureChannel(secondSweep, channelConfiguration);
-  if (!Number.isFinite(channelMeasurement.carrier.powerDbm)) {
-    throw new Error('Physical Neptune channel measurement did not produce finite carrier power');
-  }
-  if (channelMeasurement.threeDecibelBandwidth.status !== 'unavailable'
-    && (!Number.isFinite(channelMeasurement.threeDecibelBandwidth.bandwidthHz)
-      || channelMeasurement.threeDecibelBandwidth.bandwidthHz <= 0)) {
-    throw new Error('Physical Neptune channel measurement produced invalid available 3 dB bandwidth evidence');
-  }
-  if (!Number.isFinite(channelMeasurement.occupiedBandwidth.bandwidthHz)
-    || channelMeasurement.occupiedBandwidth.bandwidthHz <= 0
-    || !Number.isFinite(channelMeasurement.occupiedBandwidth.occupiedPowerDbm)) {
-    throw new Error('Physical Neptune channel measurement did not produce finite positive occupied-bandwidth evidence');
-  }
-  if (channelMeasurement.adjacent.length === 0
-    || channelMeasurement.adjacent.some((entry) => !Number.isFinite(entry.relativeToCarrierDbc))) {
-    throw new Error('Physical Neptune channel measurement did not produce finite adjacent-channel comparisons');
-  }
-  report.channelAnalysis = {
-    evidence: '@tinysa/analysis fitChannelConfigurationToSweep + measureChannel',
-    fit: channelFit,
-    configuration: channelConfiguration,
-    carrierRelativePowerDbfs: channelMeasurement.carrier.powerDbm,
-    threeDecibelBandwidth: channelMeasurement.threeDecibelBandwidth,
-    displayedSpanOccupiedBandwidth: channelMeasurement.occupiedBandwidth,
-    adjacentComparisons: channelMeasurement.adjacent.map((entry) => ({
-      side: entry.side,
-      order: entry.order,
-      relativeToCarrierDbc: entry.relativeToCarrierDbc,
-    })),
-  };
-
-  // Preserve the existing 99 MHz detector/channel proof above, then prove a
-  // distinct manager reconfiguration really reaches the physical RX LO and
+  // Prove a distinct manager reconfiguration reaches the physical RX LO and
   // yields a separately-derived I/Q spectrum at 100 MHz.
   const rxLoBeforeRetuneHz = await timed(
     timings,
-    'readback99MHzBeforeRetune',
+    'readback80MHzBeforeRetune',
     STAGE_TIMEOUT_MS.readbackRxLo,
     () => readRxLo(directReadbackTransport, endpoint),
   );
@@ -413,9 +336,9 @@ try {
     timings,
     'configureRetune',
     STAGE_TIMEOUT_MS.configureRetune,
-    () => manager.configure(RETUNE_CONFIGURATION),
+    () => configureCanonicalCapture(manager, session.sessionId, RETUNE_CONFIGURATION),
   );
-  requireConfigurationMatch(admittedRetune.configuration, RETUNE_CONFIGURATION, 'manager-admitted 100 MHz configuration');
+  requireConfigurationMatch(admittedRetune.configuration.configuration, RETUNE_CONFIGURATION, 'manager-admitted 100 MHz configuration');
   const retunedSnapshot = manager.snapshot();
   if (!retunedSnapshot?.configuration) throw new Error('Manager snapshot omitted the admitted 100 MHz configuration');
   requireConfigurationMatch(retunedSnapshot.configuration.configuration, RETUNE_CONFIGURATION, '100 MHz session configuration snapshot');
@@ -438,13 +361,13 @@ try {
   if (retunedMeasurement.sessionId !== session.sessionId) {
     throw new Error(`100 MHz measurement session ${retunedMeasurement.sessionId} does not match active session ${session.sessionId}`);
   }
-  if (retunedMeasurement.configurationRevision !== admittedRetune.configurationRevision) {
+  if (retunedMeasurement.configurationRevision !== admittedRetune.configuration.configurationRevision) {
     throw new Error(
-      `100 MHz measurement configuration revision ${retunedMeasurement.configurationRevision} does not match admitted ${admittedRetune.configurationRevision}`,
+      `100 MHz measurement configuration revision ${retunedMeasurement.configurationRevision} does not match admitted ${admittedRetune.configuration.configurationRevision}`,
     );
   }
   if (retunedMeasurement.sequence <= secondMeasurement.sequence) {
-    throw new Error(`100 MHz measurement sequence ${retunedMeasurement.sequence} did not advance after 99 MHz sequence ${secondMeasurement.sequence}`);
+    throw new Error(`100 MHz measurement sequence ${retunedMeasurement.sequence} did not advance after 80 MHz sequence ${secondMeasurement.sequence}`);
   }
 
   const rxLoAfterRetuneCaptureHz = await timed(
@@ -455,7 +378,7 @@ try {
   );
   requireRxLoReadback(rxLoAfterRetuneCaptureHz.numeric, RETUNE_CONFIGURATION.centerHz, 'direct RX LO after 100 MHz capture');
   if (rxLoBeforeRetuneHz.numeric === rxLoAfterRetuneCaptureHz.numeric) {
-    throw new Error(`Direct RX LO did not change across the requested 99 MHz -> 100 MHz retune (${rxLoAfterRetuneCaptureHz.numeric} Hz)`);
+    throw new Error(`Direct RX LO did not change across the requested 80 MHz -> 100 MHz retune (${rxLoAfterRetuneCaptureHz.numeric} Hz)`);
   }
 
   const retunedSpectrum = await timed(
@@ -471,6 +394,120 @@ try {
       adcFullScaleCode: retunedMeasurement.adcFullScaleCode,
     })),
   );
+
+  // 100 MHz sits in the requested broadcast-FM region.  Take two independent
+  // post-retune captures there so detection and channel analysis establish
+  // actual on-air content instead of treating the 80 MHz transition band as a
+  // failed broadcast scan.
+  const detectionConfig = {
+    threshold: { strategy: 'noise-relative', marginDb: 10 },
+    minimumBandwidthHz: 0,
+    minimumProminenceDb: 6,
+    minimumConsecutiveSweeps: 2,
+    releaseAfterMissedSweeps: 2,
+  };
+  const detector = new SignalDetector(detectionConfig);
+  const tracker = new SignalTracker(detectionConfig);
+  const firstRetunedSweep = projectHostSweep(retunedMeasurement, retunedSpectrum, session);
+  const firstRetunedCandidates = detector.analyze(firstRetunedSweep);
+  const firstRetunedTracks = tracker.update(firstRetunedSweep, firstRetunedCandidates);
+  const retunedConfirmationMeasurement = await timed(
+    timings,
+    'acquireRetuneConfirmation',
+    STAGE_TIMEOUT_MS.acquireRetuneConfirmation,
+    () => manager.acquire(),
+  );
+  requireComplexCaptureGeometry(retunedConfirmationMeasurement, RETUNE_CONFIGURATION);
+  if (retunedConfirmationMeasurement.sessionId !== session.sessionId) {
+    throw new Error(`100 MHz confirmation measurement session ${retunedConfirmationMeasurement.sessionId} does not match active session ${session.sessionId}`);
+  }
+  if (retunedConfirmationMeasurement.configurationRevision !== admittedRetune.configuration.configurationRevision) {
+    throw new Error(
+      `100 MHz confirmation configuration revision ${retunedConfirmationMeasurement.configurationRevision} does not match admitted ${admittedRetune.configuration.configurationRevision}`,
+    );
+  }
+  if (retunedConfirmationMeasurement.sequence <= retunedMeasurement.sequence) {
+    throw new Error(`100 MHz confirmation sequence ${retunedConfirmationMeasurement.sequence} did not advance after retuned sequence ${retunedMeasurement.sequence}`);
+  }
+  const retunedConfirmationSpectrum = await timed(
+    timings,
+    'deriveRetuneConfirmationSpectrum',
+    STAGE_TIMEOUT_MS.deriveRetuneConfirmationSpectrum,
+    () => Promise.resolve(deriveSpectrumFromComplexIq({
+      samples: retunedConfirmationMeasurement.samples,
+      sampleCount: retunedConfirmationMeasurement.sampleCount,
+      sampleFormat: retunedConfirmationMeasurement.sampleFormat,
+      centerHz: retunedConfirmationMeasurement.centerHz,
+      sampleRateHz: retunedConfirmationMeasurement.sampleRateHz,
+      adcFullScaleCode: retunedConfirmationMeasurement.adcFullScaleCode,
+    })),
+  );
+  const secondRetunedSweep = projectHostSweep(
+    retunedConfirmationMeasurement,
+    retunedConfirmationSpectrum,
+    session,
+  );
+  const secondRetunedCandidates = detector.analyze(secondRetunedSweep);
+  const secondRetunedTracks = tracker.update(secondRetunedSweep, secondRetunedCandidates);
+  if (firstRetunedCandidates.length === 0) {
+    throw new Error('First physical 100 MHz Neptune spectrum produced no prominence-qualified detector candidates');
+  }
+  if (!secondRetunedTracks.some((track) => track.state === 'active' && track.missedSweeps === 0)) {
+    throw new Error('Second physical 100 MHz Neptune spectrum did not promote any current detector track to active');
+  }
+  report.signalDetection = {
+    evidence: '@tinysa/analysis SignalDetector + SignalTracker at 100 MHz',
+    persistenceGateSweeps: detectionConfig.minimumConsecutiveSweeps,
+    firstLook: summarizeDetectionLook(firstRetunedCandidates, firstRetunedTracks),
+    secondLook: summarizeDetectionLook(secondRetunedCandidates, secondRetunedTracks),
+  };
+
+  const channelSeed = {
+    centerHz: RETUNE_CONFIGURATION.centerHz,
+    mainBandwidthHz: 200_000,
+    adjacentBandwidthHz: 200_000,
+    channelSpacingHz: 200_000,
+    adjacentChannelCount: 2,
+    occupiedPowerPercent: 99,
+    obwNoiseCorrection: 'robust-floor',
+  };
+  const channelFit = fitChannelConfigurationToSweep(secondRetunedSweep, channelSeed);
+  if (channelFit.status !== 'fitted') {
+    throw new Error(`Physical 100 MHz Neptune spectrum could not fit a channel response: ${channelFit.reason}: ${channelFit.message}`);
+  }
+  const channelConfiguration = channelFit.configuration;
+  const channelMeasurement = measureChannel(secondRetunedSweep, channelConfiguration);
+  if (!Number.isFinite(channelMeasurement.carrier.powerDbm)) {
+    throw new Error('Physical 100 MHz Neptune channel measurement did not produce finite carrier power');
+  }
+  if (channelMeasurement.threeDecibelBandwidth.status !== 'unavailable'
+    && (!Number.isFinite(channelMeasurement.threeDecibelBandwidth.bandwidthHz)
+      || channelMeasurement.threeDecibelBandwidth.bandwidthHz <= 0)) {
+    throw new Error('Physical 100 MHz Neptune channel measurement produced invalid available 3 dB bandwidth evidence');
+  }
+  if (!Number.isFinite(channelMeasurement.occupiedBandwidth.bandwidthHz)
+    || channelMeasurement.occupiedBandwidth.bandwidthHz <= 0
+    || !Number.isFinite(channelMeasurement.occupiedBandwidth.occupiedPowerDbm)) {
+    throw new Error('Physical 100 MHz Neptune channel measurement did not produce finite positive occupied-bandwidth evidence');
+  }
+  if (channelMeasurement.adjacent.length === 0
+    || channelMeasurement.adjacent.some((entry) => !Number.isFinite(entry.relativeToCarrierDbc))) {
+    throw new Error('Physical 100 MHz Neptune channel measurement did not produce finite adjacent-channel comparisons');
+  }
+  report.channelAnalysis = {
+    evidence: '@tinysa/analysis fitChannelConfigurationToSweep + measureChannel at 100 MHz',
+    fit: channelFit,
+    configuration: channelConfiguration,
+    carrierRelativePowerDbfs: channelMeasurement.carrier.powerDbm,
+    threeDecibelBandwidth: channelMeasurement.threeDecibelBandwidth,
+    displayedSpanOccupiedBandwidth: channelMeasurement.occupiedBandwidth,
+    adjacentComparisons: channelMeasurement.adjacent.map((entry) => ({
+      side: entry.side,
+      order: entry.order,
+      relativeToCarrierDbc: entry.relativeToCarrierDbc,
+    })),
+  };
+
   const initialIqSha256 = sha256Hex(measurement.samples);
   const retunedIqSha256 = sha256Hex(retunedMeasurement.samples);
   const initialSpectrumPowerSha256 = spectrumPowerSha256(spectrum);
@@ -480,9 +517,10 @@ try {
   const exactCaptureIdentity = rawIqIdentical && spectrumPowerIdentical;
   report.retune100MHz = {
     configurationEvidence: {
-      revision: admittedRetune.configurationRevision,
-      configuredAt: admittedRetune.configuredAt,
-      admitted: admittedRetune.configuration,
+      canonicalOperation: summarizeCanonicalCaptureOperation(admittedRetune.operation),
+      revision: admittedRetune.configuration.configurationRevision,
+      configuredAt: admittedRetune.configuration.configuredAt,
+      admitted: admittedRetune.configuration.configuration,
       snapshot: retunedSnapshot.configuration.configuration,
     },
     directRxLoReadback: {
@@ -517,7 +555,7 @@ try {
   // digest by itself as RF-content proof.
   if (exactCaptureIdentity) {
     throw new Error(
-      '99 MHz and 100 MHz captures have identical raw-I/Q and spectrum-power SHA-256 digests despite verified RX LO readback change',
+      '80 MHz and 100 MHz captures have identical raw-I/Q and spectrum-power SHA-256 digests despite verified RX LO readback change',
     );
   }
 
@@ -587,6 +625,76 @@ function requireConfigurationMatch(actual, expected, label) {
       throw new Error(`${label} changed ${key}: expected ${JSON.stringify(expected[key])}, received ${JSON.stringify(actual[key])}`);
     }
   }
+}
+
+/**
+ * Configure a bounded I/Q capture through the renderer-safe operation
+ * contract. The smoke deliberately submits every value as Manual so it
+ * cannot accidentally turn a harmless 4,096-sample validation capture into
+ * a driver-selected long capture. Auto policy is exercised in unit tests;
+ * this live path verifies generic-operation dispatch, driver admission, and
+ * physical acquisition together.
+ */
+async function configureCanonicalCapture(manager, sessionId, configuration) {
+  const surface = manager.canonicalSurface();
+  if (!surface) throw new Error('Connected Neptune session did not publish a canonical operation surface');
+  const operation = surface.operations.find((candidate) => candidate.id === CANONICAL_CAPTURE_OPERATION_ID);
+  if (!operation || operation.availability !== 'available') {
+    throw new Error('Connected Neptune session did not publish an available canonical capture operation');
+  }
+  if (operation.parameterIds.length !== CANONICAL_CAPTURE_PARAMETERS.length
+    || operation.parameterIds.some((parameterId) => !CANONICAL_CAPTURE_PARAMETERS.some(([id]) => id === parameterId))) {
+    throw new Error(`Canonical capture operation parameter shape changed: ${JSON.stringify(operation.parameterIds)}`);
+  }
+  const parameterValues = new Map(CANONICAL_CAPTURE_PARAMETERS.map(([parameterId, configurationKey]) => [
+    parameterId,
+    configuration[configurationKey],
+  ]));
+  const result = await manager.executeCanonicalOperation({
+    sessionId,
+    surfaceRevision: surface.revision,
+    operationId: operation.id,
+    parameters: operation.parameterIds.map((parameterId) => ({
+      parameterId,
+      intent: { mode: 'manual', value: parameterValues.get(parameterId) },
+    })),
+  });
+  requireCanonicalCaptureOperation(result, sessionId, configuration);
+  const snapshot = manager.snapshot();
+  if (!snapshot?.configuration) throw new Error('Canonical capture operation did not admit a manager configuration');
+  return { operation: result, configuration: snapshot.configuration };
+}
+
+function requireCanonicalCaptureOperation(result, sessionId, configuration) {
+  if (result.sessionId !== sessionId || result.operationId !== CANONICAL_CAPTURE_OPERATION_ID) {
+    throw new Error('Canonical capture result does not identify the active session and capture operation');
+  }
+  for (const [parameterId, configurationKey] of CANONICAL_CAPTURE_PARAMETERS) {
+    const parameter = result.surface.parameters.find((candidate) => candidate.id === parameterId);
+    const expected = configuration[configurationKey];
+    if (!parameter
+      || parameter.requested.mode !== 'manual'
+      || parameter.requested.value !== expected
+      || parameter.effectiveValue !== expected) {
+      throw new Error(`Canonical capture result did not retain manual ${parameterId}=${expected}`);
+    }
+  }
+}
+
+function summarizeCanonicalCaptureOperation(result) {
+  return {
+    operationId: result.operationId,
+    surfaceRevision: result.surface.revision,
+    parameters: CANONICAL_CAPTURE_PARAMETERS.map(([parameterId]) => {
+      const parameter = result.surface.parameters.find((candidate) => candidate.id === parameterId);
+      return {
+        parameterId,
+        requested: parameter?.requested,
+        effectiveValue: parameter?.effectiveValue,
+        verification: parameter?.verification,
+      };
+    }),
+  };
 }
 
 function requireComplexCaptureGeometry(measurement, expected) {

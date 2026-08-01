@@ -8,7 +8,7 @@ const validToolArguments = {
   list_connection_candidates: {}, connect_device: { candidateId: 'candidate-1' }, disconnect_device: {},
   inspect_interface: {}, computer_action: { controlId: 'measurement.setup', action: 'activate' }, computer_screenshot: {}, computer_click: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20 },
   computer_type: { expectedTarget: 'analyzer.start', text: '98000000' }, computer_key: { expectedTarget: 'analyzer.start', key: 'ENTER' }, computer_scroll: { screenshotId: '123e4567-e89b-42d3-a456-426614174000', x: 10, y: 20, deltaX: 0, deltaY: 120 },
-  navigate_workspace: { workspace: 'spectrum' }, configure_analyzer: { startHz: 93_000_000, stopHz: 95_000_000, acquisitionFormat: 'raw', rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, detector: 'average-4', spurRejection: 'auto', lna: 'off', avoidSpurs: 'on', trigger: { mode: 'normal', levelDbm: -70 } }, acquire_sweep: {},
+  navigate_workspace: { workspace: 'spectrum' }, acquire_sweep: {},
   start_continuous_sweeps: {}, stop_continuous_sweeps: {}, get_measurement_state: {}, select_marker: { markerId: 1 },
   configure_marker: { id: 1, enabled: true, traceId: 1, mode: 'normal', frequencyHz: 94_000_000, tracking: 'fixed' },
   configure_marker_search: { minimumLevelDbm: -95, minimumExcursionDb: 8 }, search_marker: { markerId: 1, action: 'peak' },
@@ -19,9 +19,8 @@ const validToolArguments = {
   get_channel_measurement_results: {}, configure_envelope_stft: { windowSize: 64, hopSize: 16, window: 'hann', removeDc: true, dynamicRangeDb: 80 },
   get_envelope_stft_results: {}, acquire_envelope_stft: {},
   configure_signal_detector: { threshold: { strategy: 'noise-relative', marginDb: 10 }, minimumBandwidthHz: 0, minimumProminenceDb: 6, minimumConsecutiveSweeps: 2, releaseAfterMissedSweeps: 2 },
-  configure_zero_span: { frequencyHz: 94_000_000, points: 290, rbwKhz: 30, attenuationDb: 10, sweepTimeSeconds: 0.1, trigger: { mode: 'single', levelDbm: -65 } },
-  acquire_zero_span: {}, acquire_complex_iq: {}, configure_generator: { frequencyHz: 100_000_000, levelDbm: -40, path: 'normal', modulation: 'off', modulationFrequencyHz: 1_000, amDepthPercent: 50, fmDeviationHz: 25_000 },
-  set_rf_output: { enabled: false }, select_signal_lab_profile: { profileId: 'wifi-ofdm-20m' }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' }, export_latest_iq: {},
+  acquire_zero_span: {}, acquire_complex_iq: {},
+  execute_canonical_operation: { operationId: 'source.configure', parameters: [{ parameterId: 'source.frequency', intent: { mode: 'manual', value: 100_000_000 } }] }, capture_device_screen: {}, remote_device_touch: { x: 120, y: 80, gesture: 'tap' }, export_latest_sweep: { format: 'csv' }, export_latest_iq: {},
 } as const satisfies Readonly<Record<AgentToolName, unknown>>;
 
 describe('Atom agent contracts',()=>{
@@ -59,7 +58,7 @@ describe('Atom agent contracts',()=>{
     expect(agentToolInputSchemas.navigate_workspace.safeParse({workspace:'iq'}).success).toBe(true);
   });
   it('gives every tool one closed concrete object input schema',()=>{
-    expect(agentToolDefinitions).toHaveLength(52);
+    expect(agentToolDefinitions).toHaveLength(48);
     for(const tool of agentToolDefinitions){
       expect(tool.name).toMatch(/^[a-z0-9_]{1,64}$/);
       expect(tool.description.length).toBeGreaterThan(24);
@@ -71,7 +70,7 @@ describe('Atom agent contracts',()=>{
       assertClosedDescribedObjects(tool.name,tool.parameters);
     }
   });
-  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all 50 tools',()=>{
+  it('accepts one canonical call and rejects undeclared fields through both advertised and runtime schemas for all tools',()=>{
     expect(Object.keys(validToolArguments).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     expect(Object.keys(agentToolInputSchemas).sort()).toEqual(agentToolDefinitions.map(tool=>tool.name).sort());
     for(const tool of agentToolDefinitions){
@@ -83,37 +82,25 @@ describe('Atom agent contracts',()=>{
       expect(agentToolInputSchemas[tool.name].safeParse(undeclared).success,`${tool.name} runtime closure`).toBe(false);
       expect(advertised.safeParse(undeclared).success,`${tool.name} advertised closure`).toBe(false);
     }
-    const analyzer=agentToolDefinitions.find(tool=>tool.name==='configure_analyzer')!;
-    expect(analyzer.parameters.minProperties).toBe(1);
-    expect(agentToolInputSchemas.configure_analyzer.safeParse({}).success).toBe(false);
-    const detectedPower=agentToolDefinitions.find(tool=>tool.name==='configure_zero_span')!;
-    expect(detectedPower.parameters.minProperties).toBe(1);
-    expect(agentToolInputSchemas.configure_zero_span.safeParse({}).success).toBe(false);
   });
   it('locks Atom prompt behavior for just-in-time tools, patches, provenance, and concise speech',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('startup surface contains only load_atom_tools');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Do not reflexively read topology or all application state');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('configure_analyzer is a non-empty staged patch');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Instrument and source configuration uses execute_canonical_operation only');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('preload both acquire_sweep and search_marker');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Preloading does not authorize or execute an acquisition');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Search the marker\'s assigned current complete host trace directly when it has data');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('emit acquisition before search');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('not a guessed or partial configure_marker replacement');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic sources carry only their declared exact timing and never receive invented RF controls');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('SignalLab is the factory startup default');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('synthetic scalar, detected-power, and complex-I/Q measurements');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('select_signal_lab_profile commands the connected SignalLab source');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never inferred knowledge of SignalLab selected state');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-unqualified');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('custom-source-qualified-receive-only means an exact embedded version maps to one frozen audited source commit');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('runtime serial identity does not attest the documented binary SHA-256');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('grants no generator, screen, touch, marker, Ultra-band, or RF-output authority');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('rfOutput=not-supported, never offer, configure, enable, or disable public RF output');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never derive them from staged or requested controls');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Physical receiver values must be device-observed');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('one complete declared operation with Auto or manual intent');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('execute_canonical_operation applies one exact operation');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Never infer native commands, settings, or source-specific identifiers');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('If the session omits RF-output authority');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('latestSweep RBW and attenuation values come only from the completed sweep');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Host-derived spectra retain their explicit powerReference');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('do not establish protocol, emitter, operator, or service identity');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('rolling activity association conditional on admitted local looks');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never one physical emission, emitter identity, or protocol identity');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Frequency-agile activity is a rolling association conditional on admitted local looks');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('never one physical emission, emitter identity, protocol identity, or source-state proof');
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('Every word must earn its place');
   });
   it('describes detection results as separated local evidence and non-identity activity associations',()=>{
@@ -122,13 +109,13 @@ describe('Atom agent contracts',()=>{
     expect(description).toContain('2.4 GHz frequency-agile activity');
     expect(description).toContain('neither physical emissions nor common-process, simultaneity, emitter, or protocol identity');
   });
-  it('documents exact qualified latest-sweep receiver readbacks without identity claims',()=>{
+  it('documents qualified latest-sweep readbacks without identity claims',()=>{
     for(const name of ['get_application_state','get_latest_sweep_summary'] as const){
       const description=agentToolDefinitions.find(tool=>tool.name===name)?.description??'';
-      expect(description).toContain('optional exact');
-      expect(description).toContain('paired with their qualifications');
-      expect(description).toContain('only as device-observed');
-      expect(description).toContain('do not establish protocol, emitter, operator, or service identity');
+      expect(description).toContain('readback');
+      expect(description).toMatch(/qualif(?:ied|ications)/);
+      expect(description).toMatch(/(?:none establishes|never establish)/);
+      expect(description).toMatch(/(?:none establishes|never establish) protocol, emitter, operator, or service identity/);
     }
   });
   it('advertises the exact visual-state recapture required by every coordinate action',()=>{
@@ -149,16 +136,16 @@ describe('Atom agent contracts',()=>{
     // the native byte-exact SigMF control/tool binding. The startup surface
     // still carries only the loader definition.
     expect(JSON.stringify(createAtomRealtimeVoiceSessionConfig()).length).toBeLessThan(13_800);
-    const loaded=createAtomRealtimeResponseTools(['get_application_state','configure_analyzer']);
-    expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','configure_analyzer']);
-    expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='configure_analyzer'));
-    const response=createAtomRealtimeToolResponseConfig('audio',['configure_analyzer']);
-    expect(response.tools.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'configure_analyzer']);
+    const loaded=createAtomRealtimeResponseTools(['get_application_state','execute_canonical_operation']);
+    expect(loaded.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'get_application_state','execute_canonical_operation']);
+    expect(loaded[2]).toBe(agentToolDefinitions.find(tool=>tool.name==='execute_canonical_operation'));
+    const response=createAtomRealtimeToolResponseConfig('audio',['execute_canonical_operation']);
+    expect(response.tools.map(tool=>tool.name)).toEqual([ATOM_TOOL_LOADER_NAME,'execute_canonical_operation']);
     expect(response).not.toHaveProperty('max_output_tokens');
     expect(response).not.toHaveProperty('truncation');
   });
   it('validates the closed response-scoped loader contract',()=>{
-    expect(validateAtomToolLoadCall({callId:'load-1',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["get_application_state","configure_analyzer"]}'})).toEqual(['get_application_state','configure_analyzer']);
+    expect(validateAtomToolLoadCall({callId:'load-1',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["get_application_state","execute_canonical_operation"]}'})).toEqual(['get_application_state','execute_canonical_operation']);
     expect(()=>validateAtomToolLoadCall({callId:'load-2',name:ATOM_TOOL_LOADER_NAME,arguments:'{"toolNames":["get_application_state","get_application_state"]}'})).toThrow(/unique/i);
     const tooMany=agentToolDefinitions.slice(0,ATOM_MAX_LOADED_TOOLS+1).map(tool=>tool.name);
     expect(()=>validateAtomToolLoadCall({callId:'load-3',name:ATOM_TOOL_LOADER_NAME,arguments:JSON.stringify({toolNames:tooMany})})).toThrow();
@@ -185,7 +172,7 @@ describe('Atom agent contracts',()=>{
     }
     expect(agentControlBinding('workspace.iq').preferredTool).toBe('navigate_workspace');
     expect(agentControlBinding('connection.retry-cleanup').preferredTool).toBe('disconnect_device');
-    expect(agentControlBinding('analyzer.rbw-mode').preferredTool).toBe('configure_analyzer');
+    expect(agentControlBinding('measurement.setup').preferredTool).toBe('computer_action');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
     // Retired never-rendered hooks stay retired: no binding may quietly readopt them.
@@ -200,7 +187,7 @@ describe('Atom agent contracts',()=>{
     expect(ATOM_AGENT_INSTRUCTIONS).toContain('latest capture provenance');
   });
   it('has an evidence and failure disposition for every generic instrument and file API method',()=>{
-    expect(Object.keys(agentApiCoverage)).toEqual(['getState','discover','connect','disconnect','configure','acquire','startStreaming','stopStreaming','executeFeature','readPreference','writePreference','subscribe','exportSweep','exportComplexIq']);
+    expect(Object.keys(agentApiCoverage)).toEqual(['getState','discover','connect','disconnect','configure','canonicalSurface','executeCanonicalOperation','acquire','startStreaming','stopStreaming','executeFeature','readPreference','writePreference','subscribe','exportSweep','exportComplexIq']);
     const tools=new Set(agentToolDefinitions.map(tool=>tool.name));
     for(const coverage of Object.values(agentApiCoverage)){
       if(coverage.projection!=='human-safety-boundary')expect(coverage.tools.length).toBeGreaterThan(0);
@@ -211,29 +198,24 @@ describe('Atom agent contracts',()=>{
   });
   it('rejects unknown tools and malformed arguments',()=>{
     expect(()=>validateAgentToolCall({callId:'1',name:'raw_serial',arguments:'{}'})).toThrow(/Unknown/);
-    expect(()=>validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{"startHz":2,"stopHz":1,"points":450,"rbwKhz":null,"attenuationDb":"auto"}'})).toThrow();
+    expect(()=>validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{}'})).toThrow(/Unknown/);
   });
-  it('accepts complete receiver-control patches and rejects empty or invalid patches',()=>{
-    expect(validateAgentToolCall({callId:'1',name:'configure_analyzer',arguments:'{"startHz":93000000,"stopHz":95000000}'}).args).toEqual({startHz:93000000,stopHz:95000000});
-    expect(validateAgentToolCall({callId:'2',name:'configure_analyzer',arguments:'{"points":225}'}).args).toEqual({points:225});
-    expect(()=>validateAgentToolCall({callId:'3',name:'configure_analyzer',arguments:'{}'})).toThrow(/at least one/i);
-    expect(validateAgentToolCall({callId:'4',name:'configure_analyzer',arguments:'{"lna":"on","detector":"average-16","trigger":{"mode":"normal","levelDbm":-72}}'}).args).toEqual({lna:'on',detector:'average-16',trigger:{mode:'normal',levelDbm:-72}});
-    expect(()=>validateAgentToolCall({callId:'5',name:'configure_analyzer',arguments:'{"startHz":2,"stopHz":1}'})).toThrow(/stopHz/i);
-    expect(validateAgentToolCall({callId:'6',name:'configure_zero_span',arguments:'{"frequencyHz":100000000}'}).args).toEqual({frequencyHz:100000000});
-    expect(validateAgentToolCall({callId:'7',name:'configure_zero_span',arguments:'{"rbwKhz":100,"attenuationDb":"auto","trigger":{"mode":"single","levelDbm":-80}}'}).args).toEqual({rbwKhz:100,attenuationDb:'auto',trigger:{mode:'single',levelDbm:-80}});
-    expect(()=>validateAgentToolCall({callId:'8',name:'configure_zero_span',arguments:'{"trigger":{"mode":"auto","levelDbm":-80}}'})).toThrow();
-    expect(()=>validateAgentToolCall({callId:'9',name:'remote_device_touch',arguments:'{"x":1,"y":2,"gesture":"press"}'})).toThrow();
+  it('accepts complete canonical intents and rejects malformed local actions',()=>{
+    expect(validateAgentToolCall({callId:'1',name:'execute_canonical_operation',arguments:'{"operationId":"receiver.sweep","parameters":[{"parameterId":"receiver.sweep.start-hz","intent":{"mode":"manual","value":93000000}}]}'}).args).toMatchObject({operationId:'receiver.sweep'});
+    expect(()=>validateAgentToolCall({callId:'2',name:'execute_canonical_operation',arguments:'{"operationId":"receiver.sweep","parameters":[{"parameterId":"receiver.sweep.start-hz","intent":{"mode":"manual"}}]}'})).toThrow();
+    expect(()=>validateAgentToolCall({callId:'3',name:'remote_device_touch',arguments:'{"x":1,"y":2,"gesture":"press"}'})).toThrow();
   });
-  it('marks RF output as high impact',()=>expect(validateAgentToolCall({callId:'1',name:'set_rf_output',arguments:'{"enabled":true}'}).policy.approval).toBe('at-action'));
-  it('commands SignalLab profile selection as an approval-free operate tool with a bounded opaque ID',()=>{
-    const validated=validateAgentToolCall({callId:'1',name:'select_signal_lab_profile',arguments:'{"profileId":"wifi-ofdm-20m"}'});
+  it('commands driver-declared canonical operations as an approval-free operate tool',()=>{
+    const argumentsJson='{"operationId":"source.select-profile","parameters":[{"parameterId":"source.profile","intent":{"mode":"auto"}}]}';
+    const validated=validateAgentToolCall({callId:'1',name:'execute_canonical_operation',arguments:argumentsJson});
     expect(validated.policy.risk).toBe('operate');
     expect(validated.policy.approval).toBe('never');
-    expect(()=>validateAgentToolCall({callId:'2',name:'select_signal_lab_profile',arguments:'{"profileId":""}'})).toThrow();
-    expect(()=>validateAgentToolCall({callId:'3',name:'select_signal_lab_profile',arguments:'{}'})).toThrow();
-    const description=agentToolDefinitions.find(tool=>tool.name==='select_signal_lab_profile')?.description??'';
-    expect(description).toContain('declared signal-lab-profile-selection catalog');
-    expect(description).toContain('never classifier evidence');
+    expect(validated.args).toEqual({operationId:'source.select-profile',parameters:[{parameterId:'source.profile',intent:{mode:'auto'}}]});
+    expect(()=>validateAgentToolCall({callId:'2',name:'execute_canonical_operation',arguments:'{"operationId":"","parameters":[]}'})).toThrow();
+    expect(()=>validateAgentToolCall({callId:'3',name:'execute_canonical_operation',arguments:'{"operationId":"source.select-profile","parameters":[{"parameterId":"source.profile","intent":{"mode":"manual"}}]}'})).toThrow();
+    const description=agentToolDefinitions.find(tool=>tool.name==='execute_canonical_operation')?.description??'';
+    expect(description).toContain('connected driver’s current canonical surface');
+    expect(description).toContain('updated effective surface');
   });
   it('requires an opaque candidate ID for device connection',()=>{
     expect(validateAgentToolCall({callId:'1',name:'connect_device',arguments:'{"candidateId":"candidate-1"}'}).policy.risk).toBe('operate');
@@ -266,21 +248,20 @@ describe('Atom agent contracts',()=>{
     expect(agentToolInputSchemas.acquire_complex_iq.safeParse({sampleRateHz:1}).success).toBe(false);
     expect(()=>validateAgentToolCall({callId:'2',name:'acquire_complex_iq',arguments:'{"centerHz":100000000}'})).toThrow();
     const description=agentToolDefinitions.find(tool=>tool.name==='acquire_complex_iq')?.description??'';
-    expect(description).toContain('already-admitted complex-I/Q configuration');
-    expect(description).toContain('SignalLab and Neptune P210');
-    expect(description).toContain('rejected with a clear not-applicable result rather than a crash or silent no-op');
-    expect(description).toContain('calibrated dBm or uncalibrated dBFS-relative');
+    expect(description).toContain('session’s admitted configuration');
+    expect(description).toContain('driver-declared complex-iq capability');
+    expect(description).toContain('otherwise it fails as not applicable');
+    expect(description).toContain('calibrated dBm only when declared, otherwise uncalibrated dBFS-relative');
     expect(agentApiCoverage.acquire.tools).toContain('acquire_complex_iq');
   });
   it('reports honest calibrated-vs-uncalibrated power evidence from session status',()=>{
     const description=agentToolDefinitions.find(tool=>tool.name==='get_instrument_state')?.description??'';
-    expect(description).toContain('calibrated (dBm, a physical receiver) or explicitly uncalibrated (dBFS-relative, e.g. Neptune complex-I/Q)');
-    expect(description).toContain('never imply calibrated hardware power for uncalibrated evidence');
+    expect(description).toContain('power-reference qualification');
+    expect(description).toContain('Report calibrated dBm only when the driver declares it');
   });
   it('locks Atom prompt guidance for the source-agnostic complex-I/Q capture tool and power-evidence honesty',()=>{
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('acquire_complex_iq is the direct, source-agnostic tool');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('a connected Neptune P210/twin');
-    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Neptune and any other uncalibrated source report dBFS-relative power');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('acquire_complex_iq captures that admitted configuration');
+    expect(ATOM_AGENT_INSTRUCTIONS).toContain('Use its declared powerReference exactly');
   });
 });
 

@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createAtomRealtimeVoiceSessionConfig } from '@tinysa/agent';
+import { createAtomRealtimeVoiceSessionConfig, type AgentToolName } from '@tinysa/agent';
 import {
   ATOM_REALTIME_CALL_ARGUMENT_CHARACTER_LIMIT,
   ATOM_REALTIME_TOOL_CALL_LIMIT,
@@ -12,8 +12,25 @@ import {
 import { ATOM_REALTIME_STARTUP_TIMEOUT_MILLISECONDS, useAtomAgent } from './useAtomAgent.js';
 
 const originalMediaDevicesDescriptor = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
-const BACKEND_A = { sessionId: 'session:a', driverId: 'tinysa-zs407', sourceKind: 'serial-port', execution: 'physical' } as const;
-const BACKEND_B = { sessionId: 'session:b', driverId: 'signal-lab', sourceKind: 'signal-lab', execution: 'signal-lab-simulation' } as const;
+const BACKEND_A = { sessionId: 'session:a', execution: 'physical' } as const;
+const BACKEND_B = { sessionId: 'session:b', execution: 'virtual' } as const;
+const CANONICAL_CONFIGURATION_OPERATION_ID = 'receiver.configure';
+const DRIVER_HIGH_IMPACT_OPERATION_ID = 'driver.high-impact-operation';
+
+function canonicalOperationArguments(operationId = CANONICAL_CONFIGURATION_OPERATION_ID): string {
+  return JSON.stringify({ operationId, parameters: [] });
+}
+
+function canonicalOperationCall(callId: string, operationId = CANONICAL_CONFIGURATION_OPERATION_ID): TestToolCall {
+  return namedCall(callId, 'execute_canonical_operation', canonicalOperationArguments(operationId));
+}
+
+function driverDeclaredApproval(name: AgentToolName, args: unknown): boolean {
+  return name === 'execute_canonical_operation'
+    && args !== null
+    && typeof args === 'object'
+    && (args as { operationId?: unknown }).operationId === DRIVER_HIGH_IMPACT_OPERATION_ID;
+}
 
 afterEach(() => {
   cleanup();
@@ -171,13 +188,13 @@ describe('useAtomAgent long-session retention', () => {
 });
 
 describe('useAtomAgent text tool-batch failure barrier', () => {
-  it('stops after a configure failure and returns one failed-prior result for every remaining call', async () => {
+  it('stops after a canonical operation failure and returns one failed-prior result for every remaining call', async () => {
     const calls = [
-      namedCall('configure-failed', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('configure-failed'),
       namedCall('acquire-skipped', 'acquire_sweep'),
       namedCall('summary-skipped', 'get_latest_sweep_summary'),
     ];
-    installTextBatch(['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
+    installTextBatch(['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
     const execute = vi.fn().mockRejectedValueOnce(new Error('configuration transport failed'));
     const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
@@ -185,7 +202,7 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     await act(async () => { await result.current.sendText('Configure, acquire, then summarize.'); });
 
     expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledWith('configure_analyzer', { startHz: 1_000_000 });
+    expect(execute).toHaveBeenCalledWith('execute_canonical_operation', { operationId: CANONICAL_CONFIGURATION_OPERATION_ID, parameters: [] });
     const outputs = textBatchOutputs(calls);
     expect(outputs).toHaveLength(calls.length);
     expect(outputs.map(({ callId }) => callId)).toEqual(calls.map(({ callId }) => callId));
@@ -197,13 +214,13 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     expect(result.current.messages.filter((message) => message.role === 'tool' && message.text.includes('skipped'))).toHaveLength(2);
   });
 
-  it('preserves a successful configure before an acquire failure, then skips dependent reads', async () => {
+  it('preserves a successful canonical operation before an acquire failure, then skips dependent reads', async () => {
     const calls = [
-      namedCall('configure-ok', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('configure-ok'),
       namedCall('acquire-failed', 'acquire_sweep'),
       namedCall('summary-skipped', 'get_latest_sweep_summary'),
     ];
-    installTextBatch(['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
+    installTextBatch(['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
     const execute = vi.fn()
       .mockResolvedValueOnce({ stagedRevision: 4 })
       .mockRejectedValueOnce(new Error('fresh sweep failed'));
@@ -212,7 +229,7 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
 
     await act(async () => { await result.current.sendText('Acquire fresh evidence.'); });
 
-    expect(execute.mock.calls.map(([name]) => name)).toEqual(['configure_analyzer', 'acquire_sweep']);
+    expect(execute.mock.calls.map(([name]) => name)).toEqual(['execute_canonical_operation', 'acquire_sweep']);
     const outputs = textBatchOutputs(calls);
     expect(outputs).toHaveLength(calls.length);
     expect(outputs[0]?.result).toEqual({ ok: true, output: { stagedRevision: 4 } });
@@ -220,20 +237,20 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     expect(outputs[2]?.result).toEqual(failedPrior('acquire-failed'));
   });
 
-  it('treats approval denial as failure and skips every later call without host effects', async () => {
+  it('treats a driver-declared high-impact denial as failure and skips every later call without host effects', async () => {
     const calls = [
-      namedCall('rf-denied', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('high-impact-denied', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('state-skipped', 'get_instrument_state'),
     ];
-    installTextBatch(['set_rf_output', 'get_instrument_state'], calls);
+    installTextBatch(['execute_canonical_operation', 'get_instrument_state'], calls);
     const execute = vi.fn();
     const context = backendContext(BACKEND_A);
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
 
     let operation!: Promise<void>;
-    act(() => { operation = result.current.sendText('Enable output, then read state.'); });
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('rf-denied'));
+    act(() => { operation = result.current.sendText('Run the declared hardware operation, then read state.'); });
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('high-impact-denied'));
     act(() => result.current.resolveApproval(false));
     await act(async () => { await operation; });
 
@@ -241,40 +258,8 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     const outputs = textBatchOutputs(calls);
     expect(outputs).toHaveLength(calls.length);
     expect(outputs[0]?.result).toEqual({ ok: false, error: 'User denied the high-impact action' });
-    expect(outputs[1]?.result).toEqual(failedPrior('rf-denied'));
+    expect(outputs[1]?.result).toEqual(failedPrior('high-impact-denied'));
     expect(result.current.messages.some((message) => message.role === 'tool' && message.text.includes('denied'))).toBe(true);
-  });
-
-  it('executes RF-off cleanup after an approved enable succeeds and a later call fails', async () => {
-    const calls = [
-      namedCall('rf-enable-ok', 'set_rf_output', '{"enabled":true}'),
-      namedCall('acquire-after-enable-failed', 'acquire_sweep'),
-      namedCall('rf-off-after-failure', 'set_rf_output', '{"enabled":false}'),
-    ];
-    installTextBatch(['set_rf_output', 'acquire_sweep'], calls);
-    const execute = vi.fn().mockImplementation(async (name:string,args:unknown) => {
-      if(name==='acquire_sweep')throw new Error('acquisition failed after RF enable');
-      return { name, args };
-    });
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(BACKEND_A), execute }));
-    await waitFor(() => expect(result.current.state).toBe('unconfigured'));
-
-    let operation!: Promise<void>;
-    act(() => { operation = result.current.sendText('Enable, acquire, and always turn RF off.'); });
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('rf-enable-ok'));
-    act(() => result.current.resolveApproval(true));
-    await act(async () => { await operation; });
-
-    expect(execute.mock.calls).toEqual([
-      ['set_rf_output', { enabled: true }],
-      ['acquire_sweep', {}],
-      ['set_rf_output', { enabled: false }],
-    ]);
-    expect(textBatchOutputs(calls).map(({ result: output }) => output)).toEqual([
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: true } } },
-      { ok: false, error: 'acquisition failed after RF enable' },
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: false } } },
-    ]);
   });
 
   it('executes stop cleanup after streaming starts and a later call fails', async () => {
@@ -301,44 +286,44 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     ]);
   });
 
-  it('allows connect to establish the backend identity required by a later approved high-impact call', async () => {
+  it('allows connect to establish the backend identity required by a later driver-declared high-impact call', async () => {
     const calls = [
       namedCall('connect-ok', 'connect_device', '{"candidateId":"candidate-1"}'),
-      namedCall('rf-enable-after-connect', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('high-impact-after-connect', DRIVER_HIGH_IMPACT_OPERATION_ID),
     ];
-    installTextBatch(['connect_device', 'set_rf_output'], calls);
+    installTextBatch(['connect_device', 'execute_canonical_operation'], calls);
     let context = backendContext();
     const execute = vi.fn().mockImplementation(async (name:string,args:unknown) => {
       if(name==='connect_device')context=backendContext(BACKEND_A);
       return { name, args };
     });
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
 
     let operation!: Promise<void>;
-    act(() => { operation = result.current.sendText('Connect, then enable RF.'); });
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('rf-enable-after-connect'));
+    act(() => { operation = result.current.sendText('Connect, then run the declared hardware operation.'); });
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('high-impact-after-connect'));
     act(() => result.current.resolveApproval(true));
     await act(async () => { await operation; });
 
     expect(execute.mock.calls).toEqual([
       ['connect_device', { candidateId: 'candidate-1' }],
-      ['set_rf_output', { enabled: true }],
+      ['execute_canonical_operation', { operationId: DRIVER_HIGH_IMPACT_OPERATION_ID, parameters: [] }],
     ]);
     expect(textBatchOutputs(calls).map(({ result: output }) => output)).toEqual([
       { ok: true, output: { name: 'connect_device', args: { candidateId: 'candidate-1' } } },
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: true } } },
+      { ok: true, output: { name: 'execute_canonical_operation', args: { operationId: DRIVER_HIGH_IMPACT_OPERATION_ID, parameters: [] } } },
     ]);
   });
 
   it('rejects a high-impact call before approval when no complete backend identity exists', async () => {
-    const calls = [namedCall('rf-enable-no-backend', 'set_rf_output', '{"enabled":true}')];
-    installTextBatch(['set_rf_output'], calls);
+    const calls = [canonicalOperationCall('high-impact-no-backend', DRIVER_HIGH_IMPACT_OPERATION_ID)];
+    installTextBatch(['execute_canonical_operation'], calls);
     const execute = vi.fn();
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(), execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(), execute, requiresActionApproval: driverDeclaredApproval }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
 
-    await act(async () => { await result.current.sendText('Enable RF without an active backend.'); });
+    await act(async () => { await result.current.sendText('Run a declared operation without an active backend.'); });
 
     expect(execute).not.toHaveBeenCalled();
     expect(result.current.approval).toBeUndefined();
@@ -349,18 +334,18 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
 
   it('rejects an approved high-impact call when the complete backend identity changes during approval', async () => {
     const calls = [
-      namedCall('rf-enable-identity-change', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('high-impact-identity-change', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('state-after-change-skipped', 'get_instrument_state'),
     ];
-    installTextBatch(['set_rf_output', 'get_instrument_state'], calls);
+    installTextBatch(['execute_canonical_operation', 'get_instrument_state'], calls);
     let context = backendContext(BACKEND_A);
     const execute = vi.fn();
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
 
     let operation!: Promise<void>;
-    act(() => { operation = result.current.sendText('Enable RF on this backend.'); });
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('rf-enable-identity-change'));
+    act(() => { operation = result.current.sendText('Run the declared operation on this backend.'); });
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('high-impact-identity-change'));
     context=backendContext(BACKEND_B);
     act(() => result.current.resolveApproval(true));
     await act(async () => { await operation; });
@@ -368,7 +353,7 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(textBatchOutputs(calls).map(({ result: output }) => output)).toEqual([
       { ok: false, error: 'Active execution backend changed while high-impact approval was pending' },
-      failedPrior('rf-enable-identity-change'),
+      failedPrior('high-impact-identity-change'),
     ]);
   });
 
@@ -417,47 +402,44 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
   it('preflights an invalid mixed batch atomically and returns one result per call with zero host effects', async () => {
     const calls = [
       namedCall('state-valid', 'get_application_state'),
-      namedCall('configure-invalid', 'configure_analyzer'),
-      namedCall('rf-enable-suppressed', 'set_rf_output', '{"enabled":true}'),
+      namedCall('canonical-invalid', 'execute_canonical_operation'),
+      canonicalOperationCall('high-impact-suppressed', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('acquire-valid', 'acquire_sweep'),
-      namedCall('rf-off-cleanup', 'set_rf_output', '{"enabled":false}'),
       namedCall('stop-cleanup', 'stop_continuous_sweeps'),
       namedCall('disconnect-cleanup', 'disconnect_device'),
     ];
-    installTextBatch(['get_application_state', 'configure_analyzer', 'set_rf_output', 'acquire_sweep', 'stop_continuous_sweeps', 'disconnect_device'], calls);
+    installTextBatch(['get_application_state', 'execute_canonical_operation', 'acquire_sweep', 'stop_continuous_sweeps', 'disconnect_device'], calls);
     const execute = vi.fn().mockImplementation(async (name:string) => ({ cleanup: name }));
     const context = backendContext(BACKEND_A);
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     await waitFor(() => expect(result.current.state).toBe('unconfigured'));
 
     await act(async () => { await result.current.sendText('Run an invalid mixed batch.'); });
 
     expect(execute.mock.calls).toEqual([
-      ['set_rf_output', { enabled: false }],
       ['stop_continuous_sweeps', {}],
       ['disconnect_device', {}],
     ]);
     const outputs = textBatchOutputs(calls);
     expect(outputs).toHaveLength(calls.length);
     expect(outputs.map(({ callId }) => callId)).toEqual(calls.map(({ callId }) => callId));
-    expect(outputs[0]?.result).toEqual(preflightSkipped('configure-invalid'));
+    expect(outputs[0]?.result).toEqual(preflightSkipped('canonical-invalid'));
     expect(outputs[1]?.result).toMatchObject({ ok: false, recoverable: true });
     expect(outputs[1]?.result).not.toHaveProperty('skipped');
-    expect(outputs[2]?.result).toEqual(preflightSkipped('configure-invalid'));
-    expect(outputs[3]?.result).toEqual(preflightSkipped('configure-invalid'));
-    expect(outputs[4]?.result).toEqual({ ok: true, output: { cleanup: 'set_rf_output' } });
-    expect(outputs[5]?.result).toEqual({ ok: true, output: { cleanup: 'stop_continuous_sweeps' } });
-    expect(outputs[6]?.result).toEqual({ ok: true, output: { cleanup: 'disconnect_device' } });
+    expect(outputs[2]?.result).toEqual(preflightSkipped('canonical-invalid'));
+    expect(outputs[3]?.result).toEqual(preflightSkipped('canonical-invalid'));
+    expect(outputs[4]?.result).toEqual({ ok: true, output: { cleanup: 'stop_continuous_sweeps' } });
+    expect(outputs[5]?.result).toEqual({ ok: true, output: { cleanup: 'disconnect_device' } });
     expect(result.current.approval).toBeUndefined();
   });
 
-  it('preserves call and result order through a successful mixed chain', async () => {
+  it('preserves call and result order through a successful canonical mixed chain', async () => {
     const calls = [
-      namedCall('configure-ok', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('configure-ok'),
       namedCall('acquire-ok', 'acquire_sweep'),
       namedCall('summary-ok', 'get_latest_sweep_summary'),
     ];
-    installTextBatch(['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
+    installTextBatch(['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary'], calls);
     const execute = vi.fn()
       .mockResolvedValueOnce({ stagedRevision: 9 })
       .mockResolvedValueOnce({ sequence: 10 })
@@ -467,7 +449,7 @@ describe('useAtomAgent text tool-batch failure barrier', () => {
 
     await act(async () => { await result.current.sendText('Run a successful chain.'); });
 
-    expect(execute.mock.calls.map(([name]) => name)).toEqual(['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary']);
+    expect(execute.mock.calls.map(([name]) => name)).toEqual(['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary']);
     const outputs = textBatchOutputs(calls);
     expect(outputs).toHaveLength(calls.length);
     expect(outputs.map(({ callId }) => callId)).toEqual(calls.map(({ callId }) => callId));
@@ -622,11 +604,11 @@ describe('useAtomAgent voice-session ownership', () => {
   it('cancels a pending voice approval on stop without executing or leaking it into a restart', async () => {
     const execute = vi.fn();
     const context = backendContext(BACKEND_A);
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     const first = await activeVoiceChannel();
-    await loadVoiceTools(first, 'approval-loader', ['set_rf_output']);
+    await loadVoiceTools(first, 'approval-loader', ['execute_canonical_operation']);
     emitVoice(first, responseCreated('approval-response'));
-    emitVoice(first, responseDone('approval-response', [{ callId: 'approval-call', name: 'set_rf_output', arguments: '{"enabled":true}' }]));
+    emitVoice(first, responseDone('approval-response', [canonicalOperationCall('approval-call', DRIVER_HIGH_IMPACT_OPERATION_ID)]));
     await waitFor(() => expect(result.current.approval?.call.callId).toBe('approval-call'));
 
     act(() => result.current.stopVoice());
@@ -668,16 +650,16 @@ describe('useAtomAgent voice-session ownership', () => {
 describe('useAtomAgent voice tool-batch failure barrier', () => {
   beforeEach(() => installVoiceFakes());
 
-  it('stops after a configure failure and delivers one failed-prior result for every remaining call', async () => {
+  it('stops after a canonical operation failure and delivers one failed-prior result for every remaining call', async () => {
     const calls = [
-      namedCall('voice-configure-failed', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('voice-configure-failed'),
       namedCall('voice-acquire-skipped', 'acquire_sweep'),
       namedCall('voice-summary-skipped', 'get_latest_sweep_summary'),
     ];
     const execute = vi.fn().mockRejectedValueOnce(new Error('voice configuration failed'));
     const { result } = renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-configure-loader', ['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary']);
+    await loadVoiceTools(channel, 'voice-configure-loader', ['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary']);
     const offset = emitVoiceToolBatch(channel, 'voice-configure-response', calls);
 
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
@@ -693,9 +675,9 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
     expect(result.current.messages.filter((message) => message.role === 'tool' && message.text.includes('skipped'))).toHaveLength(2);
   });
 
-  it('preserves a successful configure before an acquire failure and skips the dependent read', async () => {
+  it('preserves a successful canonical operation before an acquire failure and skips the dependent read', async () => {
     const calls = [
-      namedCall('voice-configure-ok', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('voice-configure-ok'),
       namedCall('voice-acquire-failed', 'acquire_sweep'),
       namedCall('voice-summary-skipped', 'get_latest_sweep_summary'),
     ];
@@ -704,12 +686,12 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
       .mockRejectedValueOnce(new Error('voice acquisition failed'));
     renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-acquire-loader', ['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary']);
+    await loadVoiceTools(channel, 'voice-acquire-loader', ['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary']);
     const offset = emitVoiceToolBatch(channel, 'voice-acquire-response', calls);
 
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
 
-    expect(execute.mock.calls.map(([name]) => name)).toEqual(['configure_analyzer', 'acquire_sweep']);
+    expect(execute.mock.calls.map(([name]) => name)).toEqual(['execute_canonical_operation', 'acquire_sweep']);
     expect(voiceBatchOutputs(channel, offset).map(({ result: output }) => output)).toEqual([
       { ok: true, output: { stagedRevision: 2 } },
       { ok: false, error: 'voice acquisition failed' },
@@ -717,18 +699,18 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
     ]);
   });
 
-  it('treats voice approval denial as failure and skips every later call', async () => {
+  it('treats voice driver-declared approval denial as failure and skips every later call', async () => {
     const calls = [
-      namedCall('voice-rf-denied', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('voice-high-impact-denied', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('voice-state-skipped', 'get_instrument_state'),
     ];
     const execute = vi.fn();
     const context = backendContext(BACKEND_A);
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-approval-loader', ['set_rf_output', 'get_instrument_state']);
+    await loadVoiceTools(channel, 'voice-approval-loader', ['execute_canonical_operation', 'get_instrument_state']);
     const offset = emitVoiceToolBatch(channel, 'voice-approval-response', calls);
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-rf-denied'));
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-high-impact-denied'));
 
     act(() => result.current.resolveApproval(false));
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
@@ -736,38 +718,7 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(voiceBatchOutputs(channel, offset).map(({ result: output }) => output)).toEqual([
       { ok: false, error: 'User denied the high-impact action' },
-      failedPrior('voice-rf-denied'),
-    ]);
-  });
-
-  it('executes voice RF-off cleanup after an approved enable succeeds and a later call fails', async () => {
-    const calls = [
-      namedCall('voice-rf-enable-ok', 'set_rf_output', '{"enabled":true}'),
-      namedCall('voice-acquire-after-enable-failed', 'acquire_sweep'),
-      namedCall('voice-rf-off-after-failure', 'set_rf_output', '{"enabled":false}'),
-    ];
-    const execute = vi.fn().mockImplementation(async (name:string,args:unknown) => {
-      if(name==='acquire_sweep')throw new Error('voice acquisition failed after RF enable');
-      return { name, args };
-    });
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(BACKEND_A), execute }));
-    const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-rf-cleanup-loader', ['set_rf_output', 'acquire_sweep']);
-    const offset = emitVoiceToolBatch(channel, 'voice-rf-cleanup-response', calls);
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-rf-enable-ok'));
-
-    act(() => result.current.resolveApproval(true));
-    await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
-
-    expect(execute.mock.calls).toEqual([
-      ['set_rf_output', { enabled: true }],
-      ['acquire_sweep', {}],
-      ['set_rf_output', { enabled: false }],
-    ]);
-    expect(voiceBatchOutputs(channel, offset).map(({ result: output }) => output)).toEqual([
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: true } } },
-      { ok: false, error: 'voice acquisition failed after RF enable' },
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: false } } },
+      failedPrior('voice-high-impact-denied'),
     ]);
   });
 
@@ -796,41 +747,41 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
     ]);
   });
 
-  it('allows voice connect to establish the identity required by a later approved high-impact call', async () => {
+  it('allows voice connect to establish the identity required by a later driver-declared high-impact call', async () => {
     const calls = [
       namedCall('voice-connect-ok', 'connect_device', '{"candidateId":"candidate-1"}'),
-      namedCall('voice-rf-enable-after-connect', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('voice-high-impact-after-connect', DRIVER_HIGH_IMPACT_OPERATION_ID),
     ];
     let context = backendContext();
     const execute = vi.fn().mockImplementation(async (name:string,args:unknown) => {
       if(name==='connect_device')context=backendContext(BACKEND_A);
       return { name, args };
     });
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-connect-enable-loader', ['connect_device', 'set_rf_output']);
+    await loadVoiceTools(channel, 'voice-connect-enable-loader', ['connect_device', 'execute_canonical_operation']);
     const offset = emitVoiceToolBatch(channel, 'voice-connect-enable-response', calls);
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-rf-enable-after-connect'));
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-high-impact-after-connect'));
 
     act(() => result.current.resolveApproval(true));
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
 
     expect(execute.mock.calls).toEqual([
       ['connect_device', { candidateId: 'candidate-1' }],
-      ['set_rf_output', { enabled: true }],
+      ['execute_canonical_operation', { operationId: DRIVER_HIGH_IMPACT_OPERATION_ID, parameters: [] }],
     ]);
     expect(voiceBatchOutputs(channel, offset).map(({ result: output }) => output)).toEqual([
       { ok: true, output: { name: 'connect_device', args: { candidateId: 'candidate-1' } } },
-      { ok: true, output: { name: 'set_rf_output', args: { enabled: true } } },
+      { ok: true, output: { name: 'execute_canonical_operation', args: { operationId: DRIVER_HIGH_IMPACT_OPERATION_ID, parameters: [] } } },
     ]);
   });
 
   it('rejects a voice high-impact call before approval when no complete backend identity exists', async () => {
-    const calls = [namedCall('voice-rf-enable-no-backend', 'set_rf_output', '{"enabled":true}')];
+    const calls = [canonicalOperationCall('voice-high-impact-no-backend', DRIVER_HIGH_IMPACT_OPERATION_ID)];
     const execute = vi.fn();
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(), execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => backendContext(), execute, requiresActionApproval: driverDeclaredApproval }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-no-backend-loader', ['set_rf_output']);
+    await loadVoiceTools(channel, 'voice-no-backend-loader', ['execute_canonical_operation']);
     const offset = emitVoiceToolBatch(channel, 'voice-no-backend-response', calls);
 
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
@@ -844,16 +795,16 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
 
   it('rejects a voice high-impact call when the complete backend identity changes during approval', async () => {
     const calls = [
-      namedCall('voice-rf-enable-identity-change', 'set_rf_output', '{"enabled":true}'),
+      canonicalOperationCall('voice-high-impact-identity-change', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('voice-state-after-change-skipped', 'get_instrument_state'),
     ];
     let context = backendContext(BACKEND_A);
     const execute = vi.fn();
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-identity-change-loader', ['set_rf_output', 'get_instrument_state']);
+    await loadVoiceTools(channel, 'voice-identity-change-loader', ['execute_canonical_operation', 'get_instrument_state']);
     const offset = emitVoiceToolBatch(channel, 'voice-identity-change-response', calls);
-    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-rf-enable-identity-change'));
+    await waitFor(() => expect(result.current.approval?.call.callId).toBe('voice-high-impact-identity-change'));
 
     context=backendContext(BACKEND_B);
     act(() => result.current.resolveApproval(true));
@@ -862,7 +813,7 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(voiceBatchOutputs(channel, offset).map(({ result: output }) => output)).toEqual([
       { ok: false, error: 'Active execution backend changed while high-impact approval was pending' },
-      failedPrior('voice-rf-enable-identity-change'),
+      failedPrior('voice-high-impact-identity-change'),
     ]);
   });
 
@@ -891,43 +842,40 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
   it('preflights an invalid mixed voice batch atomically with exact result cardinality and zero host effects', async () => {
     const calls = [
       namedCall('voice-state-valid', 'get_application_state'),
-      namedCall('voice-configure-invalid', 'configure_analyzer'),
-      namedCall('voice-rf-enable-suppressed', 'set_rf_output', '{"enabled":true}'),
+      namedCall('voice-canonical-invalid', 'execute_canonical_operation'),
+      canonicalOperationCall('voice-high-impact-suppressed', DRIVER_HIGH_IMPACT_OPERATION_ID),
       namedCall('voice-acquire-valid', 'acquire_sweep'),
-      namedCall('voice-rf-off-cleanup', 'set_rf_output', '{"enabled":false}'),
       namedCall('voice-stop-cleanup', 'stop_continuous_sweeps'),
       namedCall('voice-disconnect-cleanup', 'disconnect_device'),
     ];
     const execute = vi.fn().mockImplementation(async (name:string) => ({ cleanup: name }));
     const context = backendContext(BACKEND_A);
-    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute }));
+    const { result } = renderHook(() => useAtomAgent({ applicationContext: () => context, execute, requiresActionApproval: driverDeclaredApproval }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-preflight-loader', ['get_application_state', 'configure_analyzer', 'set_rf_output', 'acquire_sweep', 'stop_continuous_sweeps', 'disconnect_device']);
+    await loadVoiceTools(channel, 'voice-preflight-loader', ['get_application_state', 'execute_canonical_operation', 'acquire_sweep', 'stop_continuous_sweeps', 'disconnect_device']);
     const offset = emitVoiceToolBatch(channel, 'voice-preflight-response', calls);
 
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
 
     expect(execute.mock.calls).toEqual([
-      ['set_rf_output', { enabled: false }],
       ['stop_continuous_sweeps', {}],
       ['disconnect_device', {}],
     ]);
     const outputs = voiceBatchOutputs(channel, offset);
     expect(outputs.map(({ callId }) => callId)).toEqual(calls.map(({ callId }) => callId));
-    expect(outputs[0]?.result).toEqual(preflightSkipped('voice-configure-invalid'));
+    expect(outputs[0]?.result).toEqual(preflightSkipped('voice-canonical-invalid'));
     expect(outputs[1]?.result).toMatchObject({ ok: false, recoverable: true });
     expect(outputs[1]?.result).not.toHaveProperty('skipped');
-    expect(outputs[2]?.result).toEqual(preflightSkipped('voice-configure-invalid'));
-    expect(outputs[3]?.result).toEqual(preflightSkipped('voice-configure-invalid'));
-    expect(outputs[4]?.result).toEqual({ ok: true, output: { cleanup: 'set_rf_output' } });
-    expect(outputs[5]?.result).toEqual({ ok: true, output: { cleanup: 'stop_continuous_sweeps' } });
-    expect(outputs[6]?.result).toEqual({ ok: true, output: { cleanup: 'disconnect_device' } });
+    expect(outputs[2]?.result).toEqual(preflightSkipped('voice-canonical-invalid'));
+    expect(outputs[3]?.result).toEqual(preflightSkipped('voice-canonical-invalid'));
+    expect(outputs[4]?.result).toEqual({ ok: true, output: { cleanup: 'stop_continuous_sweeps' } });
+    expect(outputs[5]?.result).toEqual({ ok: true, output: { cleanup: 'disconnect_device' } });
     expect(result.current.approval).toBeUndefined();
   });
 
-  it('preserves call and result order through a successful mixed voice chain', async () => {
+  it('preserves call and result order through a successful canonical mixed voice chain', async () => {
     const calls = [
-      namedCall('voice-configure-ok', 'configure_analyzer', '{"startHz":1000000}'),
+      canonicalOperationCall('voice-configure-ok'),
       namedCall('voice-acquire-ok', 'acquire_sweep'),
       namedCall('voice-summary-ok', 'get_latest_sweep_summary'),
     ];
@@ -937,12 +885,12 @@ describe('useAtomAgent voice tool-batch failure barrier', () => {
       .mockResolvedValueOnce({ peakHz: 1_250_000 });
     renderHook(() => useAtomAgent({ applicationContext: () => '{}', execute }));
     const channel = await activeVoiceChannel();
-    await loadVoiceTools(channel, 'voice-success-loader', ['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary']);
+    await loadVoiceTools(channel, 'voice-success-loader', ['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary']);
     const offset = emitVoiceToolBatch(channel, 'voice-success-response', calls);
 
     await waitFor(() => expect(voiceBatchOutputs(channel, offset)).toHaveLength(calls.length));
 
-    expect(execute.mock.calls.map(([name]) => name)).toEqual(['configure_analyzer', 'acquire_sweep', 'get_latest_sweep_summary']);
+    expect(execute.mock.calls.map(([name]) => name)).toEqual(['execute_canonical_operation', 'acquire_sweep', 'get_latest_sweep_summary']);
     const outputs = voiceBatchOutputs(channel, offset);
     expect(outputs.map(({ callId }) => callId)).toEqual(calls.map(({ callId }) => callId));
     expect(outputs.map(({ result: output }) => output)).toEqual([
@@ -986,7 +934,7 @@ function applicationCall(callId: string, argumentsValue = '{}') {
 
 interface TestToolCall { readonly callId: string; readonly name: string; readonly arguments: string }
 interface ParsedToolOutput { readonly callId: string; readonly result: Record<string, unknown> }
-interface TestBackendIdentity { readonly sessionId: string; readonly driverId: string; readonly sourceKind: string; readonly execution: string }
+interface TestBackendIdentity { readonly sessionId: string; readonly execution: string }
 
 function namedCall(callId: string, name: string, argumentsValue = '{}'): TestToolCall {
   return { callId, name, arguments: argumentsValue };

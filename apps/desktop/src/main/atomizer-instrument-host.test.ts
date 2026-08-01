@@ -763,6 +763,12 @@ class FakeManager {
     return state;
   }
 
+  canonicalSurface() { return undefined; }
+
+  async executeCanonicalOperation(): Promise<never> {
+    throw new Error('Canonical surface is not present in this legacy fixture');
+  }
+
   async acquire(): Promise<InstrumentMeasurement> {
     this.operationOrder.push('acquire');
     this.acquireCalls++;

@@ -1,9 +1,6 @@
 import {
-  generatorConfigSchema,
-  type GeneratorConfig,
   type InstrumentScreenFrame,
   type InstrumentSessionSnapshot,
-  type SignalLabChannelState,
 } from '@tinysa/contracts';
 import { assertWorkspaceTransition } from '../ui-contracts.js';
 import type { InstrumentScreenPoint } from '../components/DeviceWorkspace.js';
@@ -12,118 +9,6 @@ import { errorMessage, type RendererKernel } from './kernel.js';
 
 export class FeaturesController {
   constructor(private readonly k: RendererKernel) {}
-
-  /** Throwing profile-selection transaction shared by the UI and Atom paths.
-   * Both run the same continuous-paused executeInstrumentFeature lifecycle, so
-   * the profile-driven span restaging is identical for either caller. */
-  selectSignalLabProfileCommanded(profileId: string) {
-    const k = this.k;
-    return k.acquisition.runInstrumentTransaction('select-signal-lab-profile', () => k.acquisition.runWithContinuousPaused(
-      'SignalLab profile selection',
-      () => k.events.executeInstrumentFeature({ kind: 'signal-lab-profile-selection', action: 'select-profile', profileId }),
-    ));
-  }
-
-  async selectSignalLabProfile(profileId: string): Promise<void> {
-    const k = this.k;
-    try {
-      await this.selectSignalLabProfileCommanded(profileId);
-      k.set({ notice: `SignalLab profile selected: ${profileId}` });
-    } catch (value) { k.set({ error: `SignalLab profile selection failed: ${errorMessage(value)}` }); }
-  }
-
-  async configureSignalLabChannel(channel: SignalLabChannelState): Promise<void> {
-    const k = this.k;
-    try {
-      await k.acquisition.runInstrumentTransaction('configure-signal-lab-channel', () => k.acquisition.runWithContinuousPaused(
-        'SignalLab channel configuration',
-        () => k.events.executeInstrumentFeature({
-          kind: 'signal-lab-profile-selection',
-          action: 'configure-channel',
-          channel,
-        }),
-      ));
-      k.set({ notice: `SignalLab channel configured: ${channel.model.toUpperCase()}` });
-    } catch (value) { k.set({ error: `SignalLab channel configuration failed: ${errorMessage(value)}` }); }
-  }
-
-  async configureSignalLabCustomWaveform(standard: 'lte' | 'nr' | 'wifi', selections: Readonly<Record<string, string>>): Promise<void> {
-    const k = this.k;
-    try {
-      await k.acquisition.runInstrumentTransaction('configure-signal-lab-custom-waveform', () => k.acquisition.runWithContinuousPaused(
-        'SignalLab custom waveform configuration',
-        () => k.events.executeInstrumentFeature({
-          kind: 'signal-lab-profile-selection',
-          action: 'configure-custom-waveform',
-          standard,
-          selections,
-        }),
-      ));
-      k.set({ notice: `Custom ${standard.toUpperCase()} waveform configured` });
-    } catch (value) { k.set({ error: `Custom waveform configuration failed: ${errorMessage(value)}` }); }
-  }
-
-  configureGeneratorWith(config: GeneratorConfig) {
-    return this.k.acquisition.runInstrumentTransaction('configure-rf-generator', () => this.k.acquisition.runWithContinuousPaused(
-      'generator configuration',
-      () => this.configureGeneratorOwned(config),
-    ));
-  }
-
-  async configureGeneratorOwned(config: GeneratorConfig) {
-    const k = this.k;
-    k.requireConnected();
-    const validated = generatorConfigSchema.parse(config);
-    k.set({ error: undefined, acquisition: 'configuring' });
-    try {
-      const next = await k.events.executeInstrumentFeature({
-        kind: 'rf-generator',
-        action: 'configure',
-        frequencyHz: validated.frequencyHz,
-        levelDbm: validated.levelDbm,
-        path: validated.path,
-        modulation: validated.modulation === 'off'
-          ? { mode: 'off' }
-          : validated.modulation === 'am'
-            ? { mode: 'am', modulationFrequencyHz: validated.modulationFrequencyHz, depthPercent: validated.amDepthPercent }
-            : { mode: 'fm', modulationFrequencyHz: validated.modulationFrequencyHz, deviationHz: validated.fmDeviationHz },
-      });
-      k.events.acceptFeatureResult(next);
-      k.set({ acquisition: 'complete' });
-      return next;
-    } catch (value) {
-      k.set({ acquisition: 'failed', error: errorMessage(value) });
-      throw value;
-    }
-  }
-
-  async configureGeneratorFromUi(): Promise<void> { try { await this.configureGeneratorWith(this.k.state.generator); } catch { /* Visible in the workspace alert. */ } }
-
-  setOutput(enabled: boolean) {
-    return this.k.acquisition.runInstrumentTransaction(enabled ? 'enable-rf-output' : 'disable-rf-output', () => this.k.acquisition.runWithContinuousPaused(
-      enabled ? 'RF output enable' : 'RF output disable',
-      () => this.setOutputOwned(enabled),
-      () => !enabled,
-    ));
-  }
-
-  async setOutputOwned(enabled: boolean) {
-    const k = this.k;
-    k.requireConnected();
-    k.set({ error: undefined, acquisition: 'configuring' });
-    try {
-      await this.configureGeneratorOwned(generatorConfigSchema.parse(k.state.generator));
-      const next = await k.events.executeInstrumentFeature({ kind: 'rf-generator', action: 'set-output', enabled });
-      k.events.acceptFeatureResult(next);
-      k.set({ acquisition: 'complete' });
-      return next;
-    } catch (value) {
-      k.set({ acquisition: 'failed', error: errorMessage(value) });
-      throw value;
-    }
-  }
-
-  async setOutputFromUi(enabled: boolean): Promise<void> { try { await this.setOutput(enabled); } catch { /* Visible in the workspace alert. */ } }
 
   refreshDiagnostics(): Promise<readonly string[]> {
     return this.k.acquisition.runInstrumentTransaction('read-instrument-diagnostics', () => this.refreshDiagnosticsOwned());
@@ -232,31 +117,12 @@ export class FeaturesController {
       }
       this.requireRemoteGestureSession(sessionId);
       await k.events.executeInstrumentFeature({ kind: 'touch', action: 'tap', x: point.x, y: point.y });
-      if (resume && k.continuousRequested.current) {
-        while (true) {
-          if (!k.continuousRequested.current) break;
-          this.requireRemoteGestureSession(sessionId);
-          const targetRevision = k.analyzerRevision.current;
-          const configured = await k.acquisition.configureAnalyzer(k.state.analyzer, 'retuning');
-          if (!k.continuousRequested.current) break;
-          if (targetRevision !== k.analyzerRevision.current) continue;
-          this.requireRemoteGestureSession(sessionId);
-          await k.acquisition.startStreamingWithConfiguration(configured.configurationRevision);
-          if (!k.continuousRequested.current) {
-            await k.acquisition.stopStreamingAndReleaseConfiguration();
-            break;
-          }
-          if (targetRevision === k.analyzerRevision.current) break;
-          await k.acquisition.stopStreamingAndReleaseConfiguration();
-        }
-        if (k.continuousRequested.current) {
-          k.set({ acquisition: 'streaming', notice: 'Continuous acquisition resumed after remote screen tap' });
-        } else {
-          k.acquisition.completeContinuousStop('Continuous acquisition stopped after remote screen tap');
-        }
-      } else if (resume) {
-        k.acquisition.completeContinuousStop('Continuous acquisition stopped after remote screen tap');
-      }
+      // A remote tap invalidates the driver's admitted configuration. Do not
+      // synthesize a replacement from renderer memory; the operator applies
+      // the driver's generic controls again before starting a new stream.
+      if (resume) k.acquisition.completeContinuousStop(
+        'Continuous acquisition stopped after remote screen tap; apply driver controls to resume',
+      );
     } catch (value) {
       k.set({ acquisition: 'failed', error: `Remote screen tap failed: ${errorMessage(value)}` });
       throw value;

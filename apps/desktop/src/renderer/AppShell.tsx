@@ -6,9 +6,8 @@ import { DEVELOPMENT_RENDERER } from './development.js';
 import type { WorkspaceId } from './ui-contracts.js';
 import {
   createInitialRendererState,
-  selectGeneratorCapability,
+  selectGeneratorOperationAvailable,
   selectIqCapability,
-  selectSignalLabProfileCapability,
   shallowEqual,
   useStore,
   AtomizerStore,
@@ -90,13 +89,16 @@ const selectAppShellState = (state: AtomizerRendererState) => ({
   agentOpen: state.agentOpen,
   error: state.error,
   notice: state.notice,
-  analyzerStartHz: state.analyzer.startHz,
-  analyzerStopHz: state.analyzer.stopHz,
+  spectrumStartHz: state.instrument.session?.configuration?.configuration.kind === 'swept-spectrum'
+    ? state.instrument.session.configuration.configuration.startHz
+    : undefined,
+  spectrumStopHz: state.instrument.session?.configuration?.configuration.kind === 'swept-spectrum'
+    ? state.instrument.session.configuration.configuration.stopHz
+    : undefined,
   hasSweep: state.sweep !== undefined,
   connected: state.instrument.session !== undefined,
   iqAvailable: selectIqCapability(state) !== undefined,
-  generationAvailable: selectGeneratorCapability(state) !== undefined
-    || selectSignalLabProfileCapability(state) !== undefined,
+  generationAvailable: selectGeneratorOperationAvailable(state),
   sessionExecution: state.instrument.session?.provenance.execution,
 });
 
@@ -126,7 +128,7 @@ export function App({
   const classifierLifetimeGeneration = useRef(0);
   const state = useStore(store, selectAppShellState, shallowEqual);
   const {
-    workspace, agentOpen, error, notice, analyzerStartHz, analyzerStopHz,
+    workspace, agentOpen, error, notice, spectrumStartHz, spectrumStopHz,
     hasSweep, connected, iqAvailable, generationAvailable, sessionExecution,
   } = state;
 
@@ -172,8 +174,9 @@ export function App({
   // quarantined key's restored default is written back to storage.
   useEffect(() => { store.persistAll(); }, []);
   useEffect(() => {
-    store.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, analyzerStartHz, analyzerStopHz));
-  }, [analyzerStartHz, analyzerStopHz]);
+    if (spectrumStartHz === undefined || spectrumStopHz === undefined) return;
+    store.setKey('channelConfiguration', (current) => fitChannelConfigurationToSpan(current, spectrumStartHz, spectrumStopHz));
+  }, [spectrumStartHz, spectrumStopHz]);
   useEffect(() => {
     if (connected && !generationAvailable && workspace === 'generator') store.set({ workspace: 'spectrum' });
   }, [connected, generationAvailable, workspace]);

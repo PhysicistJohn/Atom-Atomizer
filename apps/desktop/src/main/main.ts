@@ -83,11 +83,10 @@ const shutdownGate = new SafeShutdownGate();
 const ipcAdmission = new BoundedPrivilegedIpcAdmission();
 app.setName('Atomizer');
 const neptuneRecentDevicesStore = new RecentP210DeviceStore(join(app.getPath('userData'), 'instrument'));
-const neptuneDriver = new NeptuneP210InstrumentDriver({ recentDevicesStore: neptuneRecentDevicesStore });
 const instrumentManager = new InstrumentManager(new InstrumentDriverRegistry([
   new TinySaZs407InstrumentDriver(device),
   new InProcessSignalLabDriver(),
-  neptuneDriver,
+  new NeptuneP210InstrumentDriver({ recentDevicesStore: neptuneRecentDevicesStore }),
 ]));
 const instrumentHost = new AtomizerInstrumentHost(
   instrumentManager,
@@ -141,7 +140,7 @@ function registerIpc(): void {
       computerType: (input) => computer.type(requireWindow(), input.expectedTarget, input.text),
       computerKey: (input) => computer.key(requireWindow(), input.expectedTarget, input.key),
       computerScroll: (input) => computer.scroll(requireWindow(), input.screenshotId, input.x, input.y, input.deltaX, input.deltaY),
-      addNeptuneManualEndpoint: (input) => neptuneDriver.addManualEndpoint(input.sourceKind, input.endpoint),
+      addManualEndpoint: (input) => instrumentManager.addManualEndpoint(input.endpoint),
     }, assertTrustedIpcEvent, ipcAdmission);
     unregisterIpc = () => {
       removeAuxiliaryIpc();

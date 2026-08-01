@@ -7,6 +7,8 @@ import {
   atomizerInstrumentStateSchema,
   atomizerInstrumentStartupStateSchema,
   atomizerInstrumentStreamingStateSchema,
+  canonicalOperationRequestSchema,
+  canonicalOperationResultSchema,
   instrumentCandidateSchema,
   instrumentConfigurationSchema,
   instrumentConfigurationStateSchema,
@@ -36,6 +38,9 @@ import {
   type InstrumentMeasurement,
   type InstrumentSessionSnapshot,
   type InstrumentSourceKind,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperationRequest,
+  type CanonicalOperationResult,
 } from '@tinysa/contracts';
 import type { InstrumentManager } from '@tinysa/instrument-runtime';
 import type {
@@ -72,6 +77,8 @@ type ManagerPort = Pick<InstrumentManager,
   | 'discover'
   | 'connect'
   | 'configure'
+  | 'canonicalSurface'
+  | 'executeCanonicalOperation'
   | 'acquire'
   | 'executeFeature'
   | 'disconnect'> & {
@@ -178,6 +185,19 @@ export class AtomizerInstrumentHost {
     return this.#withStreamingStopped(async () => {
       return instrumentConfigurationStateSchema.parse(await this.manager.configure(configuration));
     });
+  }
+
+  canonicalSurface(): CanonicalInstrumentSurface | undefined {
+    this.#requireOpen();
+    return this.manager.canonicalSurface();
+  }
+
+  executeCanonicalOperation(requestValue: CanonicalOperationRequest): Promise<CanonicalOperationResult> {
+    this.#requireSessionWorkAvailable('Canonical instrument operation');
+    const request = canonicalOperationRequestSchema.parse(requestValue);
+    return this.#withStreamingStopped(async () => canonicalOperationResultSchema.parse(
+      await this.manager.executeCanonicalOperation(request),
+    ));
   }
 
   acquire(): Promise<InstrumentMeasurement> {

@@ -1,16 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, CircleDot, Cpu, Download, Maximize2, Radar, Waves, ZoomIn, ZoomOut } from 'lucide-react';
-import { formatExactFrequency, formatFrequency } from '../format.js';
 import { DEVELOPMENT_RENDERER } from '../development.js';
 import {
-  type ComplexIqCapability,
-  type ComplexIqConfiguration,
   type ComplexIqMeasurement,
   type ComplexIqPreview,
 } from '../complex-iq.js';
 import type { ModulationClassification, RecoveredConstellation } from '../embedding-classifier-runtime.js';
 import type { GlobalClassificationIssue } from '../store.js';
-import { EditableParameter } from './ParameterRow.js';
+import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
+import type { CanonicalInstrumentSurface, CanonicalOperationParameterIntent } from '@tinysa/contracts';
 
 const MODULATION_LABELS: Record<string, string> = {
   cw: 'Continuous wave', am: 'AM', fm: 'FM',
@@ -18,38 +16,19 @@ const MODULATION_LABELS: Record<string, string> = {
 };
 function modLabel(id: string): string { return MODULATION_LABELS[id] ?? id.toUpperCase(); }
 function leafLabel(id: string): string { return id.replace(/-like$/, '').replaceAll('-', ' '); }
-const MINIMUM_MODULATION_CLASSIFICATION_SAMPLES = 4_096;
-// The FFT axis is driven by sample rate, while an independent capture
-// bandwidth describes the portion of that axis the receiver can actually
-// admit.  A very narrow passband (for example a persisted 200 kHz setting at
-// 50 MHz) otherwise looks like a wide, but mostly synthetic/noise, spectrum.
-const WIDE_SPAN_BANDWIDTH_RATIO = 0.8;
 
 // Bounded scalar identity of the latest capture. The raw measurement (with
 // its multi-megabyte sample payload) deliberately never crosses into props —
 // see IqContainer.
 export interface IqCaptureMeta extends Pick<ComplexIqMeasurement,
-  'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'
-  | 'profileReferenceCenterHz' | 'rfReferenceCenterHz' | 'nativeCarrierOffsetHz' | 'rfPlacement'
-  | 'outputCarrierOffsetHz' | 'rfTuneCenterHz' | 'signalBandwidthHz' | 'nativeSampleRateHz' | 'payloadKind'
-  | 'adcSignificantBits' | 'adcFullScaleCode' | 'powerReference'> {}
-
-export interface IqCaptureSetupProps {
-  configuration: ComplexIqConfiguration;
-  capability?: ComplexIqCapability;
-  captureMeta?: IqCaptureMeta;
-  busy: boolean;
-  captureUnavailableReason?: string;
-  onChange(configuration: ComplexIqConfiguration): void;
-}
+  'measurementId' | 'sequence' | 'centerHz' | 'sampleCount' | 'sampleRateHz' | 'sampleFormat' | 'qualification'> {}
 
 export function IqWorkspace({
-  configuration, capability, preview, previewError, captureMeta, modulation,
+  preview, previewError, captureMeta, modulation,
   classificationPending = false, classificationIssue, recovered, busy,
-  captureUnavailableReason, onChange, onExport,
+  onExport,
+  canonicalSurface, onCanonicalOperation,
 }: {
-  configuration: ComplexIqConfiguration;
-  capability?: ComplexIqCapability;
   preview?: ComplexIqPreview;
   previewError?: string;
   captureMeta?: IqCaptureMeta;
@@ -58,13 +37,16 @@ export function IqWorkspace({
   classificationIssue?: GlobalClassificationIssue;
   recovered?: RecoveredConstellation;
   busy: boolean;
-  captureUnavailableReason?: string;
-  onChange(configuration: ComplexIqConfiguration): void;
   onExport?(): void;
+  canonicalSurface?: CanonicalInstrumentSurface;
+  onCanonicalOperation?(operationId: string, parameters: readonly CanonicalOperationParameterIntent[]): void | Promise<unknown>;
 }) {
   const [plotZoom, setPlotZoom] = useState(1);
   const capture = captureMeta;
   const durationSeconds = capture ? capture.sampleCount / capture.sampleRateHz : undefined;
+  const acquisitionOperationIds = canonicalSurface?.operations
+    .filter((operation) => operation.scope !== 'source')
+    .map((operation) => operation.id);
 
   return <div
     className="iq-workspace"
@@ -86,7 +68,7 @@ export function IqWorkspace({
             <output aria-label="I/Q plot zoom">{formatPlotZoom(plotZoom)}</output>
           </div>
           {onExport && <button type="button" className="iq-export-button" data-agent-control="export.sigmf" disabled={!capture} aria-label="Export SigMF" title={capture ? 'Export byte-exact SigMF capture' : 'Acquire a capture before exporting'} onClick={onExport}><Download size={12}/><span>SigMF</span></button>}
-          <span className="iq-format-badge">{capture?.sampleFormat ?? configuration.sampleFormat}</span>
+          <span className="iq-format-badge">{capture?.sampleFormat ?? '—'}</span>
         </div>
       </header>
       <LiveModulationBar
@@ -113,92 +95,30 @@ export function IqWorkspace({
       </footer>
     </section>
 
-    <IqCaptureSetup
-      configuration={configuration}
-      capability={capability}
-      captureMeta={capture}
-      busy={busy}
-      captureUnavailableReason={captureUnavailableReason}
-      onChange={onChange}
-    />
+    {canonicalSurface && onCanonicalOperation
+      ? <CanonicalOperationPanel
+          surface={canonicalSurface}
+          operationIds={acquisitionOperationIds}
+          busy={busy}
+          className="iq-control-panel"
+          onExecute={onCanonicalOperation}
+        />
+      : <CanonicalOperationRequired title="I/Q capture controls"/>}
   </div>;
 }
 
-/** Driver-neutral I/Q controls shared by the I/Q workspace and every
- * host-derived scalar-spectrum view. A complex-I/Q-only source can therefore
- * retune and change capture geometry from Spectrum without Atomizer exposing
- * disabled native-sweep controls that the instrument never advertised. */
-export function IqCaptureSetup({
-  configuration,
-  capability,
-  captureMeta: capture,
-  busy,
-  captureUnavailableReason,
-  onChange,
-}: IqCaptureSetupProps) {
-  const equalRateBandwidth = capability?.bandwidthMode === 'equal-to-sample-rate';
-  const stagedTuneDiffersFromCapture = capture !== undefined
-    && capture.centerHz !== configuration.centerHz;
-  const passbandIsNarrowerThanDisplayedSpan = capability?.bandwidthMode === 'independent'
-    && configuration.bandwidthHz < configuration.sampleRateHz * WIDE_SPAN_BANDWIDTH_RATIO;
-  const classifiableSampleCount = minimumClassifiableSampleCount(capability);
-  const needsMoreSamplesForModulation = configuration.sampleCount < MINIMUM_MODULATION_CLASSIFICATION_SAMPLES;
+/**
+ * No renderer-owned fallback is permitted for an active instrument.  A
+ * canonical operation carries the driver-owned manual domain, mandatory Auto
+ * policy, effective value, and verification evidence as one atomic surface.
+ */
+export function CanonicalOperationRequired({ title = 'Instrument controls' }: { title?: string }) {
   return <section className="iq-control-panel">
-    <div className="panel-header"><div><Cpu size={14}/>Capture setup</div><span>{capability ? 'DRIVER ADVERTISED' : 'UNAVAILABLE'}</span></div>
-    <div className="parameter-stack iq-parameter-stack">
-      <EditableParameter label="Receiver tune" value={configuration.centerHz} displayValue={formatExactFrequency(configuration.centerHz)} unit="Hz" minimum={capability?.centerFrequencyHz.min} maximum={capability?.centerFrequencyHz.max} step={capability?.centerFrequencyHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, centerHz: Number(value) })}/>
-      <EditableParameter label="Sample rate" value={configuration.sampleRateHz} displayValue={formatFrequency(configuration.sampleRateHz)} unit="Hz" minimum={capability?.sampleRateHz.min} maximum={capability?.sampleRateHz.max} step={capability?.sampleRateHz.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleRateHz: Number(value) })}/>
-      <EditableParameter label={equalRateBandwidth ? 'Capture bandwidth · rate locked' : 'Capture bandwidth'} value={configuration.bandwidthHz} displayValue={formatFrequency(configuration.bandwidthHz)} unit="Hz" minimum={capability?.bandwidthHz.min} maximum={Math.min(capability?.bandwidthHz.max ?? 0, configuration.sampleRateHz)} step={capability?.bandwidthHz.step ?? 1} disabled={!capability || busy || equalRateBandwidth} onCommit={(value) => onChange({ ...configuration, bandwidthHz: Number(value) })}/>
-      <EditableParameter label="Complex samples" value={configuration.sampleCount} displayValue={configuration.sampleCount.toLocaleString()} minimum={capability?.sampleCount.min} maximum={capability?.sampleCount.max} step={capability?.sampleCount.step ?? 1} disabled={!capability || busy} onCommit={(value) => onChange({ ...configuration, sampleCount: Number(value) })}/>
+    <div className="panel-header"><div><Cpu size={14}/>{title}</div><span>DRIVER REQUIRED</span></div>
+    <div className="channel-contract-note" role="status" aria-label={`${title} unavailable`}>
+      <Activity size={14}/><p>The connected driver has not declared a canonical operation for this function. Atomizer has no mutable controls to render until the driver supplies parameter domains, an Auto policy, and verification evidence.</p>
     </div>
-    <div className="iq-driver-facts">
-      <span><small>Wire format</small><strong>{capability?.sampleFormat ?? '—'}</strong></span>
-      <span><small>Capture bytes</small><strong>{formatBytes(configuration.sampleCount * bytesPerSample(configuration.sampleFormat))}</strong></span>
-      {capture && <span><small>Captured tune</small><strong>{formatExactFrequency(capture.centerHz)}</strong></span>}
-      {capture?.payloadKind && <span><small>Payload lineage</small><strong>{capture.payloadKind.replaceAll('-', ' ')}</strong></span>}
-      {capture?.profileReferenceCenterHz !== undefined && <span>
-        <small>Profile signal center</small>
-        <strong>{formatExactFrequency(capture.profileReferenceCenterHz)} · {capture.rfPlacement?.replaceAll('-', ' ')}</strong>
-      </span>}
-      {capture?.rfReferenceCenterHz !== undefined && <span>
-        <small>Native RF reference</small>
-        <strong>{formatExactFrequency(capture.rfReferenceCenterHz)}</strong>
-      </span>}
-      {capture?.nativeCarrierOffsetHz !== undefined && <span>
-        <small>Carrier offset · native / output</small>
-        <strong>{formatSignedFrequency(capture.nativeCarrierOffsetHz)} / {formatSignedFrequency(capture.outputCarrierOffsetHz!)}</strong>
-      </span>}
-      {capture?.rfTuneCenterHz !== undefined && <span>
-        <small>Output RF tune center</small>
-        <strong>{formatExactFrequency(capture.rfTuneCenterHz)}</strong>
-      </span>}
-      {capture?.adcSignificantBits !== undefined && <span>
-        <small>AD9361 ADC evidence</small>
-        <strong>{capture.adcSignificantBits}-bit · full scale {capture.adcFullScaleCode} · {capture.powerReference?.replaceAll('-', ' ')}</strong>
-      </span>}
-    </div>
-    {captureUnavailableReason && <div className="inline-error" role="status">{captureUnavailableReason}</div>}
-    {passbandIsNarrowerThanDisplayedSpan && <div className="channel-contract-note" role="status">
-      <Activity size={14}/><p>Capture bandwidth is {formatFrequency(configuration.bandwidthHz)} while the plotted span follows the {formatFrequency(configuration.sampleRateHz)} sample rate. Only the center passband is physically admitted; increase Capture bandwidth for a wide-band view such as FM broadcast.</p>
-    </div>}
-    {needsMoreSamplesForModulation && <div className="channel-contract-note" role="status">
-      <Activity size={14}/><p>Modulation detection needs at least {MINIMUM_MODULATION_CLASSIFICATION_SAMPLES.toLocaleString()} complex samples.</p>
-      {classifiableSampleCount === undefined
-        ? <p>This source advertises fewer than {MINIMUM_MODULATION_CLASSIFICATION_SAMPLES.toLocaleString()} samples, so modulation detection is unavailable.</p>
-        : <button type="button" disabled={busy} onClick={() => onChange({ ...configuration, sampleCount: classifiableSampleCount })}>Use {classifiableSampleCount.toLocaleString()} samples</button>}
-    </div>}
-    {stagedTuneDiffersFromCapture && <div className="channel-contract-note" role="status"><Activity size={14}/><p>Receiver tune is staged at {formatExactFrequency(configuration.centerHz)}; the latest capture is still {formatExactFrequency(capture.centerHz)}. Select Single or Run to acquire fresh data.</p></div>}
-    <div className="channel-contract-note"><Activity size={14}/><p>Receiver tune applies on the next sidebar Single or Run. Atomizer preserves native encoding and validates exact byte geometry.</p></div>
   </section>;
-}
-
-function minimumClassifiableSampleCount(capability: ComplexIqCapability | undefined): number | undefined {
-  if (!capability || capability.sampleCount.max < MINIMUM_MODULATION_CLASSIFICATION_SAMPLES) return undefined;
-  const floor = Math.max(capability.sampleCount.min, MINIMUM_MODULATION_CLASSIFICATION_SAMPLES);
-  if (capability.sampleCount.step === undefined) return floor;
-  const index = Math.ceil((floor - capability.sampleCount.min) / capability.sampleCount.step);
-  const admitted = capability.sampleCount.min + Math.max(0, index) * capability.sampleCount.step;
-  return admitted <= capability.sampleCount.max ? admitted : undefined;
 }
 
 // Retained canvases with rAF latest-wins (same pattern as SpectrumPlot):
@@ -389,22 +309,10 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <span><small>{label}</small><strong>{value}</strong></span>;
 }
 
-function bytesPerSample(format: ComplexIqConfiguration['sampleFormat']): number {
-  return format === 'cf32le' ? 8 : format === 'ci16le' ? 4 : 2;
-}
-
-function formatBytes(bytes: number): string {
-  return bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(2)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
-}
-
 function formatDuration(seconds: number): string {
   if (seconds < .001) return `${(seconds * 1e6).toFixed(1)} µs`;
   if (seconds < 1) return `${(seconds * 1e3).toFixed(2)} ms`;
   return `${seconds.toFixed(3)} s`;
-}
-
-function formatSignedFrequency(hertz: number): string {
-  return `${hertz < 0 ? '−' : hertz > 0 ? '+' : ''}${formatFrequency(Math.abs(hertz))}`;
 }
 
 function formatDbfs(linear: number): string {

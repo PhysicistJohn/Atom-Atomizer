@@ -46,9 +46,10 @@ accumulated sweep count, and host-derived provenance.
 | View / Freeze | Preserve the last valid accumulated frame | Yes |
 | Off (`blank`) | Do not render; preserve its accumulated frame | Yes |
 
-Changing any staged analyzer acquisition configuration invalidates displayed
-host/device frames, history, detections, and classifications before a new sweep
-can be admitted. The accumulator also rejects grid-incompatible memory.
+Changing the driver-admitted acquisition configuration invalidates displayed
+host/device frames, history, detections, and classifications before evidence
+from the new configuration can be admitted. The accumulator also rejects
+grid-incompatible memory.
 Switching from Off or View back to its retained
 accumulation mode resumes only when the grid is identical; selecting a different
 accumulation mode begins a new frame. Reset
@@ -176,12 +177,12 @@ the low/high cutoff points and treats missing crossings as unavailable.
 The amplitude display is host-owned and contains a reference level, exactly ten
 vertical divisions, and a scale of 1, 2, 5, 10, or 20 dB/div. Auto Scale computes
 a readable 1/2/5-family scale from the latest complete sweep. Changing display
-scale never reconfigures the analyzer and never alters stored dBm arrays.
+scale never reconfigures the instrument and never alters stored dBm arrays.
 
-Analyzer trigger configuration remains firmware-commanded through the typed
-analyzer contract: Auto, Normal, or Single, with an explicit dBm level where
-required. Trigger settings are shown with acquisition physics rather than mixed
-into host trace math.
+When a driver declares trigger configuration, it remains a driver-owned
+canonical operation parameter with explicit Auto/Manual intent and verification.
+Trigger settings are shown with acquisition physics rather than mixed into host
+trace math.
 
 ## UI and Atom contract
 
@@ -205,9 +206,10 @@ inspection but is not a substitute for the typed measurement tools.
 For a peak-placement request Atom preloads `search_marker` together with the
 bounded `acquire_sweep` recovery dependency. Preloading does not acquire. Atom
 searches the assigned current complete host trace directly; only a no-data
-result or an explicit request for fresh evidence admits acquisition, which must
-complete before the search. It never invents a partial `configure_marker`
-replacement for peak placement.
+result or an explicit request for fresh evidence admits acquisition, which
+requires a compatible driver-admitted configuration and must complete before
+the search. It never invents a partial `configure_marker` replacement for peak
+placement.
 
 The active marker measurement card occupies a dedicated structural row between
 the spectrum header and plot canvas. It is never absolutely positioned over or
@@ -237,7 +239,7 @@ not clipped or stretched on non-square plots.
 - `MEAS-015`: all eight markers are off by default and the exact legacy untouched default migrates without rewriting edited banks.
 - `MEAS-016`: every host trace has an explicit operator-facing Off action; an empty host frame bank never falls back to an implicit H1 curve.
 - `MEAS-017`: D1–D4 visibility is explicit, defaults off, is separately agent-operable, and never mutates firmware trace state.
-- `MEAS-018`: a sweep whose `requested` analyzer configuration differs from the latest staged revision is quarantined before history, trace, detection, or classification reducers.
+- `MEAS-018`: a sweep whose bound configuration differs from the current admitted configuration is quarantined before history, trace, detection, or classification reducers.
 - `MEAS-019`: marker-local width classification depends only on assigned-trace half-power crossings and the RBW/grid resolution scale, never a protocol/profile label or 99% OBW.
 - `MEAS-020`: no-component, insufficient-prominence, lower/upper-truncated, and out-of-window cases expose an unavailable reason and never invent a 3 dB width or SVG bracket.
 - `MEAS-021`: marker signal/noise context is labeled peak-to-robust-floor and prominence, never calibrated SNR.

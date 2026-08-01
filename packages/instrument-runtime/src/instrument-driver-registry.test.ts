@@ -45,6 +45,34 @@ describe('InstrumentDriverRegistry', () => {
       connect: async () => { throw new Error('not used'); },
     } as unknown as InstrumentDriver])).toThrow(/pending-connection cleanup/);
   });
+
+  it('routes a manual address through driver-owned standard hooks without exposing a driver-specific failure', async () => {
+    const first = {
+      ...driver('signal-lab', ['signal-lab']),
+      addManualEndpoint: async () => ({ ok: false, message: 'native protocol detail' } as const),
+    } satisfies InstrumentDriver;
+    const second = {
+      ...driver('tinysa-zs407', ['serial-port']),
+      addManualEndpoint: async (endpoint: string) => endpoint === 'ip:10.0.0.250'
+        ? ({ ok: true } as const)
+        : ({ ok: false, message: 'another native protocol detail' } as const),
+    } satisfies InstrumentDriver;
+    const registry = new InstrumentDriverRegistry([first, second]);
+
+    await expect(registry.addManualEndpoint('ip:10.0.0.250')).resolves.toEqual({ ok: true });
+    await expect(registry.addManualEndpoint('ip:10.0.0.251')).resolves.toEqual({
+      ok: false,
+      message: 'The address could not be verified by an installed instrument driver.',
+    });
+  });
+
+  it('preserves a class driver receiver when dispatching its manual-address hook', async () => {
+    const driver = new MethodManualEndpointDriver();
+    const registry = new InstrumentDriverRegistry([driver]);
+
+    await expect(registry.addManualEndpoint('ip:10.0.0.250')).resolves.toEqual({ ok: true });
+    expect(driver.probed).toEqual(['ip:10.0.0.250']);
+  });
 });
 
 function driver(driverId: InstrumentDriverId, sourceKinds: readonly InstrumentSourceKind[]): InstrumentDriver {
@@ -55,4 +83,18 @@ function driver(driverId: InstrumentDriverId, sourceKinds: readonly InstrumentSo
     connect: async (_candidate: InstrumentCandidate) => { throw new Error('not used'); },
     cleanupPendingConnection: async () => undefined,
   };
+}
+
+class MethodManualEndpointDriver implements InstrumentDriver {
+  readonly driverId = 'tinysa-zs407' as const;
+  readonly sourceKinds = ['serial-port'] as const;
+  readonly probed: string[] = [];
+
+  async discover() { return { candidates: [], failures: [] }; }
+  async addManualEndpoint(endpoint: string) {
+    this.probed.push(endpoint);
+    return { ok: true } as const;
+  }
+  async connect(_candidate: InstrumentCandidate): Promise<never> { throw new Error('not used'); }
+  async cleanupPendingConnection() {}
 }
