@@ -1,5 +1,6 @@
 import type {
   CanonicalInstrumentSurface,
+  CanonicalOperation,
   CanonicalParameter,
   CanonicalParameterIntent,
   CanonicalParameterVerification,
@@ -64,10 +65,12 @@ export function canonicalBooleanParameter(
 export function canonicalOperationDefinition(input: Readonly<{
   id: string; label: string; description: string; scope: 'acquisition' | 'source' | 'instrument';
   parameters: readonly CanonicalParameter[]; outputs: readonly string[]; unavailable: boolean;
+  acquisitionKind?: NonNullable<CanonicalOperation['acquisitionKind']>;
   primary?: boolean; confirmation?: 'none' | 'high-impact';
 }>): CanonicalInstrumentSurface['operations'][number] {
   return {
     id: input.id, label: input.label, description: input.description, scope: input.scope,
+    ...(input.acquisitionKind === undefined ? {} : { acquisitionKind: input.acquisitionKind }),
     parameterIds: input.parameters.map((parameter) => parameter.id), outputs: [...input.outputs],
     availability: input.unavailable ? 'unavailable' : 'available', primary: input.primary ?? false,
     confirmation: input.confirmation ?? 'none',

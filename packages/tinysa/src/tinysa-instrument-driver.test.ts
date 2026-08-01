@@ -332,8 +332,8 @@ describe('TinySaZs407InstrumentDriver', () => {
         ]),
       },
       operations: expect.arrayContaining([
-        expect.objectContaining({ id: 'receiver.sweep', label: 'Sweep', primary: true, scope: 'acquisition' }),
-        expect.objectContaining({ id: 'receiver.power', label: 'Observe power', scope: 'acquisition' }),
+        expect.objectContaining({ id: 'receiver.sweep', label: 'Sweep', primary: true, scope: 'acquisition', acquisitionKind: 'swept-spectrum' }),
+        expect.objectContaining({ id: 'receiver.power', label: 'Observe power', scope: 'acquisition', acquisitionKind: 'detected-power-timeseries' }),
         expect.objectContaining({ id: 'source.configure', label: 'Configure source', scope: 'source' }),
         expect.objectContaining({ id: 'source.set-output', label: 'Set source output', scope: 'source', confirmation: 'high-impact' }),
       ]),

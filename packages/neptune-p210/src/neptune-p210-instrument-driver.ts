@@ -765,6 +765,8 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
         id: 'capture',
         label: 'Capture',
         description: 'Configure and prepare one bounded complex-sample capture.',
+        scope: 'acquisition',
+        acquisitionKind: 'complex-iq',
         parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
         outputs: ['Complex I/Q'],
         availability: this.#closed ? 'unavailable' : 'available',

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
+  CanonicalInstrumentSurface,
   InstrumentConfigurationState,
   InstrumentConfiguration,
   InstrumentSessionSnapshot,
@@ -45,13 +46,17 @@ function activeConfiguration(configuration: InstrumentConfiguration = spectrum):
 function installSession(
   runtime: ReturnType<typeof createRendererRuntime>,
   configuration?: InstrumentConfigurationState,
+  hasIqCapability = false,
 ): void {
   runtime.store.set({
     instrument: {
       ...runtime.store.get().instrument,
       session: {
         sessionId: 'canonical-session',
-        capabilities: { acquisitions: [], features: [] },
+        capabilities: {
+          acquisitions: hasIqCapability ? [{ kind: 'complex-iq' }] : [],
+          features: [],
+        },
         ...(configuration === undefined ? {} : { configuration }),
       } as unknown as InstrumentSessionSnapshot,
     },
@@ -59,7 +64,7 @@ function installSession(
 }
 
 describe('canonical acquisition routing', () => {
-  it('uses the active admitted spectrum configuration for Single without issuing a renderer configure', async () => {
+  it('uses the active admitted spectrum configuration for global Single without reconfiguring it', async () => {
     const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
     const configured = activeConfiguration();
     installSession(runtime, configured);
@@ -69,7 +74,7 @@ describe('canonical acquisition routing', () => {
     const configure = vi.fn();
     vi.stubGlobal('atomizerInstrument', { configure });
 
-    await runtime.acquisition.acquire();
+    await runtime.acquisition.acquireFromUi();
 
     expect(acquireConfigured).toHaveBeenCalledWith(configured);
     expect(configure).not.toHaveBeenCalled();
@@ -99,7 +104,7 @@ describe('canonical acquisition routing', () => {
     runtime.classification.dispose();
   });
 
-  it('starts Run with the active admitted spectrum revision without reconfiguring it', async () => {
+  it('starts global Run with the active admitted spectrum revision without reconfiguring it', async () => {
     const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
     const configured = activeConfiguration();
     installSession(runtime, configured);
@@ -108,7 +113,7 @@ describe('canonical acquisition routing', () => {
     const stopStreaming = vi.fn().mockResolvedValue({ status: 'stopped' });
     vi.stubGlobal('atomizerInstrument', { configure, startStreaming, stopStreaming });
 
-    await runtime.acquisition.startContinuous();
+    await runtime.acquisition.startContinuousFromUi();
 
     expect(startStreaming).toHaveBeenCalledOnce();
     expect(configure).not.toHaveBeenCalled();
@@ -125,6 +130,117 @@ describe('canonical acquisition routing', () => {
     await expect(runtime.acquisition.acquire()).rejects.toThrow('Apply driver controls before acquiring');
     await expect(runtime.acquisition.startContinuous()).rejects.toThrow('Apply driver controls before acquiring');
 
+    runtime.classification.dispose();
+  });
+
+  it('admits the driver-declared primary acquisition operation with Auto intents before global Single', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime);
+    const configured = activeConfiguration();
+    const surface = primarySpectrumSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const acquire = vi.spyOn(runtime.acquisition, 'acquire').mockResolvedValue({ id: 'sweep:automatic' } as never);
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.acquireFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'sweep', [
+      { parameterId: 'sweep.start', intent: { mode: 'auto' } },
+      { parameterId: 'sweep.stop', intent: { mode: 'auto' } },
+    ]);
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(runtime.store.get().error).toBeUndefined();
+    runtime.classification.dispose();
+  });
+
+  it('admits the same automatic primary operation before global Run', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime);
+    const configured = activeConfiguration();
+    const surface = primarySpectrumSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const start = vi.spyOn(runtime.acquisition, 'startContinuous').mockResolvedValue();
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.startContinuousFromUi();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(runtime.store.get().error).toBeUndefined();
+    runtime.classification.dispose();
+  });
+
+  it('selects a compatible complex I/Q operation over a primary spectrum operation before global Single', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime, undefined, true);
+    const configured = activeConfiguration(complexIq);
+    const surface = spectrumAndCaptureSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const acquire = vi.spyOn(runtime.acquisition, 'acquireIq').mockResolvedValue({ measurementId: 'iq:automatic' } as never);
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.acquireFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
+    expect(acquire).toHaveBeenCalledOnce();
+    runtime.classification.dispose();
+  });
+
+  it('selects the same compatible complex I/Q operation before global Run', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime, undefined, true);
+    const configured = activeConfiguration(complexIq);
+    const surface = spectrumAndCaptureSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const start = vi.spyOn(runtime.acquisition, 'startContinuous').mockResolvedValue();
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.startContinuousFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
+    expect(start).toHaveBeenCalledOnce();
+    runtime.classification.dispose();
+  });
+
+  it('publishes a global error instead of silently swallowing unavailable automatic setup', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime);
+    vi.stubGlobal('atomizerInstrument', { canonicalSurface: vi.fn().mockResolvedValue(undefined) });
+
+    await runtime.acquisition.acquireFromUi();
+
+    expect(runtime.store.get()).toMatchObject({
+      acquisition: 'failed',
+      error: 'The connected driver has not declared canonical acquisition controls',
+    });
     runtime.classification.dispose();
   });
 
@@ -196,6 +312,57 @@ describe('canonical acquisition routing', () => {
     runtime.classification.dispose();
   });
 });
+
+function primarySpectrumSurface(): CanonicalInstrumentSurface {
+  return {
+    schemaVersion: 1,
+    revision: 'surface:automatic-spectrum',
+    presentation: { title: 'Receiver', qualification: 'DRIVER DECLARED', facts: [] },
+    parameters: [
+      {
+        id: 'sweep.start', label: 'Start', group: 'Sweep', unit: 'Hz',
+        manual: { kind: 'integer', range: { min: 1, max: 1_000, step: 1 } },
+        auto: { resolver: 'driver', description: 'Driver selects a valid start.' },
+        requested: { mode: 'manual', value: 100 }, effectiveValue: 100, verification: 'driver-selected',
+      },
+      {
+        id: 'sweep.stop', label: 'Stop', group: 'Sweep', unit: 'Hz',
+        manual: { kind: 'integer', range: { min: 1, max: 1_000, step: 1 } },
+        auto: { resolver: 'driver', description: 'Driver selects a valid stop.' },
+        requested: { mode: 'manual', value: 200 }, effectiveValue: 200, verification: 'driver-selected',
+      },
+    ],
+    operations: [{
+      id: 'sweep', label: 'Sweep', scope: 'acquisition',
+      acquisitionKind: 'swept-spectrum',
+      parameterIds: ['sweep.start', 'sweep.stop'], outputs: ['Spectrum'],
+      availability: 'available', primary: true, confirmation: 'none',
+    }],
+  };
+}
+
+function spectrumAndCaptureSurface(): CanonicalInstrumentSurface {
+  const base = primarySpectrumSurface();
+  const spectrum = base.operations[0]!;
+  return {
+    ...base,
+    revision: 'surface:automatic-complex-iq',
+    parameters: [...base.parameters, {
+      id: 'capture.tune', label: 'Tune', group: 'Capture', unit: 'Hz',
+      manual: { kind: 'integer', range: { min: 1, max: 1_000, step: 1 } },
+      auto: { resolver: 'driver', description: 'Driver selects a valid tune.' },
+      requested: { mode: 'auto' }, effectiveValue: 100, verification: 'driver-selected',
+    }],
+    operations: [
+      spectrum,
+      {
+        id: 'capture', label: 'Capture', scope: 'acquisition', acquisitionKind: 'complex-iq',
+        parameterIds: ['capture.tune'], outputs: ['Complex I/Q'],
+        availability: 'available', primary: false, confirmation: 'none',
+      },
+    ],
+  };
+}
 
 function complexIqMeasurement(
   configured: InstrumentConfigurationState,

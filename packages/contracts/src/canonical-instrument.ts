@@ -162,6 +162,13 @@ export const canonicalParameterSchema = z.object({
 });
 export type CanonicalParameter = z.infer<typeof canonicalParameterSchema>;
 
+export const canonicalAcquisitionKindSchema = z.enum([
+  'swept-spectrum',
+  'complex-iq',
+  'detected-power-timeseries',
+]);
+export type CanonicalAcquisitionKind = z.infer<typeof canonicalAcquisitionKindSchema>;
+
 export const canonicalOperationSchema = z.object({
   id: canonicalOperationIdSchema,
   label: canonicalLabelSchema,
@@ -173,6 +180,12 @@ export const canonicalOperationSchema = z.object({
    * with the first acquisition-only surface revision.
    */
   scope: z.enum(['acquisition', 'source', 'instrument']).optional(),
+  /**
+   * The homogeneous result shape configured by an acquisition operation.
+   * Renderers route generic commands by this field rather than labels,
+   * outputs, or device-specific operation IDs.
+   */
+  acquisitionKind: canonicalAcquisitionKindSchema.optional(),
   parameterIds: z.array(canonicalParameterIdSchema).max(MAX_CANONICAL_PARAMETERS_V1),
   outputs: z.array(canonicalLabelSchema).max(16).default([]),
   availability: z.enum(['available', 'busy', 'unavailable']),
@@ -181,6 +194,13 @@ export const canonicalOperationSchema = z.object({
 }).strict().superRefine((operation, context) => {
   if (new Set(operation.parameterIds).size !== operation.parameterIds.length) {
     context.addIssue({ code: 'custom', path: ['parameterIds'], message: 'Operation parameter IDs must be unique' });
+  }
+  if (operation.acquisitionKind !== undefined && operation.scope !== 'acquisition') {
+    context.addIssue({
+      code: 'custom',
+      path: ['acquisitionKind'],
+      message: 'Acquisition kind is valid only for acquisition operations',
+    });
   }
 });
 export type CanonicalOperation = z.infer<typeof canonicalOperationSchema>;

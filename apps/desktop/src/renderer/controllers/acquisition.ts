@@ -1,6 +1,8 @@
 import {
   channelMeasurementConfigurationSchema,
   projectDetectedPowerTuneHz,
+  type CanonicalInstrumentSurface,
+  type CanonicalOperation,
   type ChannelMeasurementConfiguration,
   type DetectedSignal,
   type DetectedPowerCaptureReceipt,
@@ -20,7 +22,7 @@ import {
 import { formatFrequency } from '../format.js';
 import { resolveVisibleClassificationTargetSelection } from '../classification-target-selection.js';
 import { resolveRuntimeAdmittedCaptureTarget } from './classification-helpers.js';
-import { acquisitionModeForSession, HISTORY_LIMIT, selectIqCapability } from '../store.js';
+import { HISTORY_LIMIT, selectIqCapability } from '../store.js';
 import {
   CONTINUOUS_IQ_TRANSACTION,
   errorMessage,
@@ -36,6 +38,7 @@ import {
 // I/Q buffers per second keeps the 500 ms classifier trend responsive without
 // retaining an unbounded amount of evidence in the renderer.
 const MAXIMUM_GLOBAL_IQ_FRAMES_PER_SECOND = 10;
+type GlobalAcquisitionKind = 'complex-iq' | 'swept-spectrum';
 
 /** Pace complete I/Q buffers to their admitted capture duration without
  * producing frames faster than the browser can present them. Each published
@@ -563,8 +566,61 @@ export class AcquisitionController {
 
   async acquireFromUi(): Promise<void> {
     try {
+      await this.admitGlobalConfigurationFromAutomaticPrimary();
       await this.acquireGlobalFrame();
-    } catch { /* The owned acquisition path presents its boundary failure. */ }
+    } catch (value) {
+      this.k.set({ acquisition: 'failed', error: errorMessage(value) });
+    }
+  }
+
+  /**
+   * Global Run and Single are intentionally one-click operations.  Before a
+   * source has an admitted capture shape, use a driver-declared acquisition
+   * operation matching the generic result kind and explicit Auto intents.
+   * Atomizer never derives a device setting or guesses a native control; a
+   * manually admitted configuration always remains the next operation.
+   */
+  async admitGlobalConfigurationFromAutomaticPrimary(): Promise<void> {
+    const k = this.k;
+    const session = k.requireConnected();
+    const expectedKind: GlobalAcquisitionKind = selectIqCapability(k.state) === undefined
+      ? 'swept-spectrum'
+      : 'complex-iq';
+    if (session.configuration !== undefined) return;
+
+    const readSurface = window.atomizerInstrument.canonicalSurface;
+    if (!readSurface) throw new Error('The connected instrument does not publish canonical acquisition controls');
+    const surface = await readSurface();
+    if (!surface) throw new Error('The connected driver has not declared canonical acquisition controls');
+    if (k.state.instrument.session?.sessionId !== session.sessionId) {
+      throw new Error('Global acquisition setup was invalidated by a different instrument session');
+    }
+    const operation = automaticPrimaryAcquisitionOperation(surface, expectedKind);
+    if (!operation) {
+      throw new Error('The connected driver has no available automatic acquisition operation for Run or Single');
+    }
+    k.set({
+      acquisition: 'configuring',
+      error: undefined,
+      notice: `Preparing ${operation.label} with driver-selected values…`,
+    });
+    await k.events.executeCanonicalOperation(surface, operation.id, operation.parameterIds.map((parameterId) => ({
+      parameterId,
+      intent: { mode: 'auto' } as const,
+    })));
+    // The canonical acknowledgement carries its refreshed controls but not
+    // the admitted configuration. Read the authoritative state before the
+    // next transaction so IPC event ordering can never turn one click into a
+    // configuration race.
+    const observed = await window.atomizerInstrument.getState();
+    if (observed.session?.sessionId !== session.sessionId) {
+      throw new Error('Global acquisition setup completed for a different instrument session');
+    }
+    k.events.acceptInstrumentState(observed);
+    const configured = k.requireConnected().configuration;
+    if (!configured || configured.configuration.kind !== expectedKind) {
+      throw new Error(`The driver did not admit a ${expectedKind === 'complex-iq' ? 'complex I/Q' : 'spectrum'} configuration for Run or Single`);
+    }
   }
 
   acquireIq(): Promise<ComplexIqMeasurement> {
@@ -866,7 +922,23 @@ export class AcquisitionController {
     k.set({ continuous: false, acquisition: 'complete', notice: message });
   }
 
-  async startContinuousFromUi(): Promise<void> { try { await this.startContinuous(); } catch { /* Visible in the workspace alert. */ } }
+  async startContinuousFromUi(): Promise<void> {
+    try {
+      await this.admitGlobalConfigurationFromAutomaticPrimary();
+      await this.startContinuous();
+    } catch (value) {
+      // A failed compensating stop leaves an intentionally ambiguous stream
+      // owner behind. Preserve its Stop affordance instead of hiding a live
+      // hardware-recovery path behind the same UI wrapper that reports an
+      // ordinary setup failure.
+      if (this.k.continuousStreamOwnership.current || this.k.state.continuous) {
+        this.k.set({ error: errorMessage(value) });
+        return;
+      }
+      this.k.continuousRequested.current = false;
+      this.k.set({ continuous: false, acquisition: 'failed', error: errorMessage(value) });
+    }
+  }
   async stopContinuousFromUi(): Promise<void> { try { await this.stopContinuous(); } catch (value) { this.k.set({ error: errorMessage(value) }); } }
 
   acquireZeroSpan(): Promise<ZeroSpanCapture> {
@@ -976,6 +1048,24 @@ export class AcquisitionController {
   }
 
   async acquireZeroSpanFromUi(): Promise<void> { try { await this.acquireZeroSpan(); } catch { /* Visible in the workspace alert. */ } }
+}
+
+function automaticPrimaryAcquisitionOperation(
+  surface: CanonicalInstrumentSurface,
+  expectedKind: GlobalAcquisitionKind,
+): CanonicalOperation | undefined {
+  const candidates = surface.operations.filter((operation) =>
+    (operation.scope === undefined || operation.scope === 'acquisition')
+    && operation.availability === 'available'
+    && operation.confirmation === 'none');
+  const typed = candidates.filter((operation) => operation.acquisitionKind === expectedKind);
+  if (typed.length > 0) return typed.find((operation) => operation.primary) ?? typed[0];
+
+  // Compatibility for a v1 single-operation surface: its one result remains
+  // unambiguous, while a multi-operation legacy surface must declare kinds
+  // before Atomizer can safely auto-admit it.
+  const legacy = candidates.filter((operation) => operation.acquisitionKind === undefined);
+  return legacy.length === 1 ? legacy[0] : undefined;
 }
 
 // --- Pure functions retained from App.tsx (test-pinned exports) ---

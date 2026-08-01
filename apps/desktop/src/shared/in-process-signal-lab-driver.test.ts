@@ -63,6 +63,11 @@ describe('in-process SignalLab canonical surface', () => {
         'source.select-profile',
         'source.configure-channel',
       ]);
+      expect(initial.operations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'spectrum.sweep', acquisitionKind: 'swept-spectrum' }),
+        expect.objectContaining({ id: 'power.observe', acquisitionKind: 'detected-power-timeseries' }),
+        expect.objectContaining({ id: 'capture', acquisitionKind: 'complex-iq' }),
+      ]));
       expect(initial.parameters).toHaveLength(15);
       for (const parameter of initial.parameters) {
         expect(parameter.auto.resolver).toBe('driver');

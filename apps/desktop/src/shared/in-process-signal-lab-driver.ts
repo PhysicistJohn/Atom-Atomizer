@@ -877,6 +877,7 @@ type CanonicalAcquisitionOperationDefinition = readonly [
   description: string,
   parameterIds: readonly string[],
   output: string,
+  acquisitionKind: NonNullable<CanonicalOperation['acquisitionKind']>,
   primary?: boolean,
 ];
 type CanonicalOperationDefinition = Readonly<{
@@ -886,14 +887,15 @@ type CanonicalOperationDefinition = Readonly<{
   scope: NonNullable<CanonicalOperation['scope']>;
   parameterIds: readonly string[];
   outputs: readonly string[];
+  acquisitionKind?: NonNullable<CanonicalOperation['acquisitionKind']>;
   primary?: boolean;
   confirmation?: CanonicalOperation['confirmation'];
 }>;
 
 const CANONICAL_ACQUISITION_OPERATIONS = [
-  [CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum, 'Sweep', 'Configure and acquire one scalar spectrum.', [CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStartHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStopHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumPoints], 'Spectrum', true],
-  [CANONICAL_SIGNAL_LAB_OPERATIONS.power, 'Observe power', 'Configure and acquire one bounded power time series.', [CANONICAL_SIGNAL_LAB_PARAMETERS.powerCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.powerSamples], 'Power time series'],
-  [CANONICAL_SIGNAL_LAB_OPERATIONS.capture, 'Capture', 'Configure and prepare one bounded complex-sample capture.', [CANONICAL_SIGNAL_LAB_PARAMETERS.captureCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSampleRateHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureBandwidthHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSamples], 'Complex I/Q'],
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum, 'Sweep', 'Configure and acquire one scalar spectrum.', [CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStartHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStopHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumPoints], 'Spectrum', 'swept-spectrum', true],
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.power, 'Observe power', 'Configure and acquire one bounded power time series.', [CANONICAL_SIGNAL_LAB_PARAMETERS.powerCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.powerSamples], 'Power time series', 'detected-power-timeseries'],
+  [CANONICAL_SIGNAL_LAB_OPERATIONS.capture, 'Capture', 'Configure and prepare one bounded complex-sample capture.', [CANONICAL_SIGNAL_LAB_PARAMETERS.captureCenterHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSampleRateHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureBandwidthHz, CANONICAL_SIGNAL_LAB_PARAMETERS.captureSamples], 'Complex I/Q', 'complex-iq'],
 ] as const satisfies readonly CanonicalAcquisitionOperationDefinition[];
 
 function signalLabCanonicalSurface(input: Readonly<{
@@ -958,8 +960,8 @@ function signalLabCanonicalSurface(input: Readonly<{
     },
     parameters,
     operations: [
-      ...CANONICAL_ACQUISITION_OPERATIONS.map(([id, label, description, parameterIds, output, primary]) =>
-        canonicalOperation({ id, label, description, scope: 'acquisition', parameterIds, outputs: [output], primary }, input.closed)),
+      ...CANONICAL_ACQUISITION_OPERATIONS.map(([id, label, description, parameterIds, output, acquisitionKind, primary]) =>
+        canonicalOperation({ id, label, description, scope: 'acquisition', acquisitionKind, parameterIds, outputs: [output], primary }, input.closed)),
       ...source.operations,
     ],
   });

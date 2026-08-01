@@ -961,7 +961,7 @@ describe('NeptuneP210InstrumentDriver full-stack InstrumentManager integration',
     const surface = manager.canonicalSurface();
     if (!surface) throw new Error('Expected canonical capture surface');
     expect(surface.operations).toMatchObject([{
-      id: 'capture', primary: true,
+      id: 'capture', scope: 'acquisition', acquisitionKind: 'complex-iq', primary: true,
       parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
     }]);
     expect(surface.parameters.every((parameter) => parameter.auto.resolver === 'driver')).toBe(true);

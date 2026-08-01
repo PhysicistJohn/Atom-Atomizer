@@ -47,6 +47,8 @@ const surface: CanonicalInstrumentSurface = {
   operations: [{
     id: 'capture',
     label: 'Capture',
+    scope: 'acquisition',
+    acquisitionKind: 'complex-iq',
     parameterIds: ['capture.tune', 'capture.gain-mode'],
     outputs: ['Complex I/Q'],
     availability: 'available',
@@ -102,6 +104,20 @@ describe('canonical instrument surface', () => {
     expect(canonicalInstrumentSurfaceSchema.safeParse({
       ...surface,
       operations: [{ ...surface.operations[0], parameterIds: ['capture.tune', 'capture.tune'] }],
+    }).success).toBe(false);
+  });
+
+  it('declares an acquisition result shape only on acquisition operations', () => {
+    for (const acquisitionKind of ['swept-spectrum', 'complex-iq', 'detected-power-timeseries'] as const) {
+      expect(canonicalInstrumentSurfaceSchema.parse({
+        ...surface,
+        operations: [{ ...surface.operations[0], acquisitionKind }],
+      }).operations[0]?.acquisitionKind).toBe(acquisitionKind);
+    }
+
+    expect(canonicalInstrumentSurfaceSchema.safeParse({
+      ...surface,
+      operations: [{ ...surface.operations[0], scope: 'source', acquisitionKind: 'complex-iq' }],
     }).success).toBe(false);
   });
 });
