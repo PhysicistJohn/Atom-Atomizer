@@ -33,7 +33,7 @@ const sourceSurface: CanonicalInstrumentSurface = {
 };
 
 describe('generator workspace canonical source surface', () => {
-  it('forwards only generic operation IDs and recommended/custom intents', () => {
+  it('forwards only generic operation IDs and direct automatic intents', () => {
     const onCanonicalOperation = vi.fn();
     render(<GeneratorWorkspace
       canonicalSurface={sourceSurface}
@@ -42,7 +42,8 @@ describe('generator workspace canonical source surface', () => {
     />);
 
     expect(screen.queryByText(/SignalLab/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
+    expect(screen.queryByRole('button', { name: 'Apply settings' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Auto' }));
     expect(onCanonicalOperation).toHaveBeenCalledWith('source.select-profile', [
       { parameterId: 'source.profile', intent: { mode: 'auto' } },
     ]);

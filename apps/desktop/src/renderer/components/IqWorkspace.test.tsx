@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 describe('complex I/Q workspace', () => {
-  it('renders and executes only the driver-declared canonical capture operation', () => {
+  it('renders and immediately applies only the driver-declared canonical capture operation', () => {
     const onCanonicalOperation = vi.fn();
     render(<IqWorkspace
       busy={false}
@@ -106,12 +106,13 @@ describe('complex I/Q workspace', () => {
     />);
 
     expect(screen.queryByRole('combobox', { name: /mode$/i })).toBeNull();
-    const setting = screen.getByRole('button', { name: /^Receiver center/ });
-    expect(setting.textContent).toContain('Recommended');
+    const setting = screen.getByLabelText('Edit Receiver center');
     fireEvent.click(setting);
-    expect(screen.getByRole('radiogroup', { name: 'Receiver center setting mode' })).toBeTruthy();
-    expect(screen.getByText('Current value: Device readback')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
+    const editor = screen.getByRole('dialog', { name: 'Receiver center numeric entry' });
+    fireEvent.click(screen.getByRole('button', { name: 'Auto' }));
+    expect(editor.isConnected).toBe(false);
+    expect(screen.queryByRole('radiogroup', { name: /setting mode/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Apply settings' })).toBeNull();
     expect(onCanonicalOperation).toHaveBeenCalledWith('capture', [
       { parameterId: 'capture.tune', intent: { mode: 'auto' } },
     ]);

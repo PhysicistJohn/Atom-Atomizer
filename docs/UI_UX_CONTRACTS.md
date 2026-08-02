@@ -36,13 +36,13 @@ exceptions.
 | XP-06 | Recoverable interruption | Unplug, timeout, cancellation, window reload, and invalid input end in an actionable state without an indefinite spinner. |
 | XP-07 | Local and private | No remote font, asset, telemetry, inference, or account dependency exists in v1. |
 | XP-08 | Keyboard complete | Every core workflow is achievable without a pointer. |
-| XP-09 | Active functions | Every editable instrument value is a readable, full-row active function before it becomes an input. |
+| XP-09 | Active functions | Every visible instrument value opens its direct editor in one action. A committed explicit value or `Auto` applies immediately; only a driver-declared high-impact confirmation may add a safety action. |
 | XP-10 | Chromatic restraint | Application chrome is neutral; color identifies selection, state, risk, Atom, or measured data rather than decorating every surface. |
 | XP-11 | One active secondary surface | At most one top-level secondary surface is open at once. Opening Atom, Connection, Setup, Trace, Display, or a future peer closes the prior one; row-level editors belong to their owner and a safety/recovery confirmation may temporarily layer above it. |
-| XP-12 | One action, one observable result | An action immediately shows its admission, acquisition, success, failure, or unavailable reason. `Apply settings` stages an effective configuration; `Single` captures once; `Run` requests repeated captures; `Stop` stops. Those verbs keep their meaning wherever the active driver advertises them. |
-| XP-13 | Intent is not data | Recommended/Custom settings, the admitted device configuration, and the measured trace are distinct visible states. Zoom, pan, markers, and analysis windows never silently retune a receiver. |
+| XP-12 | One action, one observable result | An action immediately shows its admission, acquisition, success, failure, or unavailable reason. A setting terminal action applies its value; `Single` captures once; `Run` requests repeated captures; `Stop` stops. Those verbs keep their meaning wherever the active driver advertises them. |
+| XP-13 | Intent is not data | An `Auto` request, an explicit requested value, the admitted device configuration, and the measured trace are distinct visible states. Zoom, pan, markers, and analysis windows never silently retune a receiver. |
 | XP-14 | Generic instrument language | Atomizer renders driver-declared canonical operations, capabilities, constraints, and evidence. Device names, transport details, and native control dialects remain in the driver unless they are provenance the operator needs to inspect. |
-| XP-15 | Recommend first, customize deliberately | Every declared parameter offers a driver-resolved Recommended value and a validated Custom value. The UI shows the effective result and constraint outcome without exposing Auto/Manual implementation jargon. |
+| XP-15 | Direct values with Auto | Every declared parameter accepts a driver-resolved `Auto` request and a validated explicit value. Numeric controls put `Auto` in the number pad; other controls expose the same direct action. The UI never asks the operator to choose a Custom mode. |
 
 ## 2. Information architecture
 
@@ -100,7 +100,7 @@ independent source-capability boundaries.
 
 Atomizer discovers each statically registered driver independently and retains driver-scoped failures. Main loads an owner-only version-1 preference; every new write persists `{driverId,candidateKind,candidateId}`. When no preference file exists, the exact `signal-lab:default` candidate is the explicit factory default. Legacy v1 broad records remain readable but fail on ambiguity, while a stale exact candidate ID fails closed. The connection surface identifies every candidate by driver, source kind, display name, and truthful capability summary. It connects exactly one preferred match. A corrupt preference, no match, ambiguity, discovery/identity/bridge/evidence failure, or connection failure is actionable and never falls through to a different driver, source kind, or candidate. Changing the default is an explicit operator action after safe disconnection.
 
-SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-3 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. The driver, not the desktop, owns source-specific profile, channel, replay, and impairment details. Atomizer renders only the same driver-declared canonical operation surface it uses for every connected device: internally every setting has a driver-resolved or explicit-value intent, while the UI presents that as one direct `Recommended` or `Custom` setting row. Recommendations are resolved by the connected driver and the rendered effective value retains its verification basis. The desktop does not embed a source-specific control surface or expose an independent transport, preload, or source-of-truth path. Canonical controls do not silently extend Atom's authority.
+SignalLab remains a separate repository and application in `../Atom-SignalLab`, while Atomizer bundles its platform-neutral service and version-3 measurement contract directly into both editions behind the `signal-lab` driver. The UI identifies it as `SIGNALLAB · SYNTHETIC VISUAL PROJECTION` and never labels it as a tinySA, USB device, executable firmware, or RF emitter. The driver, not the desktop, owns source-specific profile, channel, replay, and impairment details. Atomizer renders only the same driver-declared canonical operation surface it uses for every connected device: internally every setting has a driver-resolved or explicit-value intent, while the UI makes the displayed value directly editable and exposes `Auto` as an immediate action. Driver resolution and rendered effective values retain their verification basis. The desktop does not embed a source-specific control surface or expose an independent transport, preload, or source-of-truth path. Canonical controls do not silently extend Atom's authority.
 
 Driver-reported SignalLab configuration metadata is provenance, not classifier truth: it never appears in a scalar measurement, detector input, classifier input, result rationale, or exported observation provenance. A driver-side configuration change invalidates the admitted acquisition configuration before the next acquisition. Service or contract failure is visible and cannot activate hardware or the twin. SignalLab advertises I/Q for all 44 closed profiles. Laboratory/reference captures retain `analytic-complex-baseband`; custom builders and the two unbounded Bluetooth long-dwell compositions retain `standards-derived-complex-baseband`; exact clean fixed-profile native bytes retain `independently-verified-digital-baseband`; clean transport transforms retain `derived-from-independently-verified-digital-baseband`; and any non-clean receiver preset is `receiver-impaired-complex-baseband`. The UI presents these as digital bytes and lineage, never as RF emission, antenna qualification, packet identity, regulatory approval, or product certification.
 
@@ -110,7 +110,7 @@ The renderer displays only main-owned RF session state. Physical `on`/`off` is l
 
 SignalLab's immutable canonical scalar corpus remains a pinned build-time source for the generated Bayesian observable model, separate from live source status. The active `SignalLab -> Atomizer` measurement edge does not activate the future `SignalLabStimulusIntent -> Firmware stimulus sink` edge. That edge remains `reserved-not-connected`; activating it requires a coordinated trio contract. The UI and Atom must present these edges separately and never imply a live generator-to-classifier side channel.
 
-NeptuneSDR P210 is a current receive-only `neptune-p210` candidate/driver with one bounded `ci16le` complex-I/Q capability, exact byte geometry, explicit converter evidence, and `uncalibrated-dbfs-relative` power reference. A routed endpoint can be entered and verified once in the source dialog, then rediscovered from the driver-owned recent-device store without a shell environment. The I/Q route exposes only the driver-declared canonical capture operation, presented as Recommended/Custom settings with verified effective values, plus byte-exact SigMF export. The driver declares that capture bandwidth must not exceed capture sample rate; Atomizer renders and preflights that relation generically without identifying the P210. Each accepted buffer also produces one instantaneous relative spectrum, so Spectrum, Waterfall, Channel, Detect, traces, and markers remain useful without pretending the source supplied native scalar sweeps or calibrated dBm. Run is a one-at-a-time backpressured sequence of complete bounded buffers; no chunk/overrun streaming contract is implied. RF generation, screen/touch/diagnostics, calibrated power, and MIMO controls remain absent because the driver advertises none of them. The physical `ip:10.0.0.250` receive path has passed live product-layer acceptance; QEMU-twin and RF/metrology qualification remain open.
+NeptuneSDR P210 is a current receive-only `neptune-p210` candidate/driver with one bounded `ci16le` complex-I/Q capability, exact byte geometry, explicit converter evidence, and `uncalibrated-dbfs-relative` power reference. A routed endpoint can be entered and verified once in the source dialog, then rediscovered from the driver-owned recent-device store without a shell environment. The I/Q route exposes only the driver-declared canonical capture operation: direct values, immediate `Auto`, verified effective values, and byte-exact SigMF export. The driver declares that capture bandwidth must not exceed capture sample rate; Atomizer renders and preflights that relation generically without identifying the P210. Each accepted buffer also produces one instantaneous relative spectrum, so Spectrum, Waterfall, Channel, Detect, traces, and markers remain useful without pretending the source supplied native scalar sweeps or calibrated dBm. Run is a one-at-a-time backpressured sequence of complete bounded buffers; no chunk/overrun streaming contract is implied. RF generation, screen/touch/diagnostics, calibrated power, and MIMO controls remain absent because the driver advertises none of them. The physical `ip:10.0.0.250` receive path has passed live product-layer acceptance; QEMU-twin and RF/metrology qualification remain open.
 
 ### 2.3.1 Firmware installation ownership
 
@@ -262,15 +262,16 @@ idle -> configuring -> acquiring -> complete
 ```
 
 - The route exists only while the active session advertises `complex-iq`.
-- The driver declares the capture operation, its internal recommendation/custom
+- The driver declares the capture operation, its internal automatic/explicit
   intents, center, rate, bandwidth, count, format, and optional coupling
-  constraints. The UI exposes one Recommended/Custom editor per setting, never
-  a separate protocol-mode selector. A successful operation admits the
-  effective configuration and its verification evidence; the renderer never
-  reconstructs it from local staging.
+  constraints. The UI exposes the value itself as the direct editor; committing
+  a value or `Auto` applies immediately, without a protocol-mode selector or
+  outer settings-apply action. A successful operation admits the effective
+  configuration and its verification evidence; the renderer never reconstructs
+  it from local staging.
 - A numeric relation may be evaluated before dispatch only when both referenced
-  values are explicit custom values. If either is Recommended, the driver
-  resolves the compatible pair as a unit; the renderer does not invent a value.
+  values are explicit values. If either is `Auto`, the driver resolves the
+  compatible pair as a unit; the renderer does not invent a value.
 - One driver operation returns one complete buffer. The application runs those
   operations one at a time in its global backpressured scheduler, paced by the
   admitted buffer duration and a 60 Hz display ceiling. Each complete buffer is
@@ -333,10 +334,10 @@ Rules:
 
 Spectrum owns no renderer-staged analyzer configuration. It renders only the
 active driver's declared acquisition operations and their parameter domains.
-Each declared parameter is presented as one direct `Recommended` or `Custom`
-setting. Recommended is resolved by the driver and a Custom value is validated
-against its declared domain. Unsupported operations are absent with an
-inspectable driver reason.
+Each declared parameter presents its current value as the direct editor. A
+committed explicit value is validated against the declared domain and applies
+immediately; `Auto` asks the driver to resolve it. Unsupported operations are
+absent with an inspectable driver reason.
 
 ### UX-SPC-02 — Admit an effective configuration
 
@@ -920,12 +921,12 @@ constraints. Atomizer may choose placement and generic layout only; it never
 derives native setting names, profile catalogs, or a device-family branch.
 Unsupported operations are absent with an inspectable driver reason.
 
-Every rendered parameter is a direct setting row with a visible `Recommended`
-or `Custom` state. Recommended requests driver resolution; Custom opens exactly
-one validated canonical value editor. The UI reports the resulting effective
-value and verification basis through progressive disclosure rather than
-protocol terminology. An operation request remains complete only when it carries
-one internal intent for every declared parameter.
+Every rendered parameter is a direct setting row: the visible value opens its
+editor in one action, and the editor's explicit-value or `Auto` terminal action
+applies immediately. The UI reports the resulting effective value and
+verification basis through progressive disclosure rather than protocol
+terminology. An operation request remains complete only when it carries one
+internal intent for every declared parameter.
 
 ### UX-GEN-01 — Apply a declared operation
 
@@ -962,10 +963,10 @@ never decays to off due to elapsed time.
 | `WaterfallView` | coherent sweep history, color/depth config | validated config intent | empty, populated, grid exclusions | bounded memory, canvas fidelity, scale labels |
 | `ChannelAnalysisView` | sweep, channel definition, display scale | validated definition intent | empty, result, out-of-span/error | integration windows, dBm/dBc, OBW evidence |
 | `MeasurementDock` | trace/marker/display configurations and readings | configure/search/reset/auto-scale intents | compact, marker, trace, display | calculations, overflow, persistence, keyboard |
-| `CanonicalOperationPanel` | driver-declared operation surface | verified Recommended/Custom operation request | available, busy, unavailable | direct setting rows, intent completeness, relation preflight, verification evidence |
+| `CanonicalOperationPanel` | driver-declared operation surface | verified automatic/explicit operation request | available, busy, unavailable | direct setting rows, immediate application, intent completeness, relation preflight, verification evidence |
 | `MetricStrip` | sweep, events, operation | none | empty/current/stale | atomic update, units |
 | `ClassificationWorkspace` | sweep, detector config/evidence, candidates, pipeline/model/result, compact capture status | config/auto-target/select/capture/classify | not analyzed, zero, qualifying, tracking, no capture, no model, running, unknown, result, failure | synchronized localization/provenance, non-scrolling status strip, and no invented certainty |
-| `IqWorkspace` | driver-declared canonical surface, complete capture | canonical operation request, export | driver-required, empty, acquiring, complete, invalid/failure | Recommended/Custom admission, bounded plotting, no symbol claim |
+| `IqWorkspace` | driver-declared canonical surface, complete capture | canonical operation request, export | driver-required, empty, acquiring, complete, invalid/failure | immediate canonical admission, bounded plotting, no symbol claim |
 | `GeneratorWorkspace` | driver-declared source/instrument operation surface | complete canonical operation request | driver-required, available, busy, unavailable, high-impact confirmation | generic setting placement, intent completeness, verification evidence, output safety transitions |
 | `DeviceWorkspace` | snapshot, diagnostics, screen frame | refresh/capture/touch/release | disconnected, ready, frame empty/current, failure | pixel framing, coordinates, high-impact guard |
 | `StatusBar` | connection, trace, verification, API | diagnostics intent | all global states | always visible and textual |

@@ -8,7 +8,7 @@ export interface ParameterOption {
   label: string;
 }
 
-export function EditableParameter({ label, value, displayValue, unit, type = 'number', minimum, maximum, step, stepBase, disabled = false, controlId, onCommit }: {
+export function EditableParameter({ label, value, displayValue, unit, type = 'number', minimum, maximum, step, stepBase, disabled = false, controlId, onCommit, onAuto }: {
   label: string;
   value: string | number;
   displayValue?: string;
@@ -26,6 +26,12 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
   disabled?: boolean;
   controlId?: string;
   onCommit(value: string): void;
+  /**
+   * Present only when the parameter's declared capability accepts a
+   * driver- or host-resolved automatic intent. The callback owns applying
+   * that intent; the entry surface merely provides the immediate Auto key.
+   */
+  onAuto?(): void;
 }) {
   const details = useRef<HTMLDetailsElement>(null);
   const summary = useRef<HTMLElement>(null);
@@ -170,7 +176,8 @@ export function EditableParameter({ label, value, displayValue, unit, type = 'nu
             <button type="button" aria-label="Toggle sign" onClick={toggleSign}>±</button>
             <button type="button" onClick={() => append('0')}>0</button>
             <button type="button" aria-label="Decimal point" onClick={() => append('.')}>.</button>
-            <button type="button" className="numeric-key-wide" onClick={() => { setDraft(''); setReplaceOnDigit(false); setError(undefined); }}>Clear</button>
+            {onAuto && <button type="button" className="numeric-key-auto" onClick={() => { closeEditor(); onAuto(); }}>Auto</button>}
+            <button type="button" className={`numeric-key-clear${onAuto ? '' : ' numeric-key-wide'}`} onClick={() => { setDraft(''); setReplaceOnDigit(false); setError(undefined); }}>Clear</button>
             <button type="button" aria-label="Backspace" onClick={() => { setDraft((current) => current.slice(0, -1)); setReplaceOnDigit(false); setError(undefined); }}><Delete size={17}/></button>
           </div> : <div className="numeric-keyboard-note">Type the value, then apply it.</div>}
           <div className="numeric-unit-keys" aria-label="Unit terminators">

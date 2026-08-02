@@ -167,49 +167,60 @@ async function canonicalSetup() {
   await press('measurement.setup');
   await waitFor('canonical-setup', `Boolean(document.querySelector('.canonical-operation-panel'))`, 20_000);
   const parameters = await evaluate(`(() => [...document.querySelectorAll('.canonical-operation-panel [data-canonical-parameter]')].map((node) => {
-    const summary = node.querySelector('button.canonical-setting-summary');
-    const state = [...(summary?.querySelectorAll('strong') ?? [])].map((item) => item.textContent?.trim() ?? '')
-      .find((value) => value === 'Recommended' || value === 'Custom');
-    return { id: node.getAttribute('data-canonical-parameter') ?? '', hasSummary: Boolean(summary),
-      disabled: Boolean(summary?.disabled), state };
+    const direct = node.querySelector('.canonical-direct-editor');
+    const control = direct?.querySelector('details.editable-parameter > summary, select, button.toggle-parameter, input');
+    return { id: node.getAttribute('data-canonical-parameter') ?? '', hasDirectEditor: Boolean(direct),
+      control: control?.tagName ?? '', disabled: Boolean(control?.matches(':disabled, [aria-disabled="true"]')) };
   }))()`);
   if (!parameters?.length) throw new Error('driver declared no canonical parameters');
-  const invalid = parameters.filter(({ hasSummary, state }) => !hasSummary || (state !== 'Recommended' && state !== 'Custom'));
-  if (invalid.length) throw new Error(`Recommended/Custom setting rows missing for ${invalid.map(({ id }) => id || 'unnamed').join(', ')}`);
+  const invalid = parameters.filter(({ hasDirectEditor, control }) => !hasDirectEditor || !control);
+  if (invalid.length) throw new Error(`direct value editor missing for ${invalid.map(({ id }) => id || 'unnamed').join(', ')}`);
   if (await evaluate(`Boolean(document.querySelector('.canonical-operation-panel select[aria-label$=" mode"]'))`)) {
     throw new Error('legacy Auto/Manual mode selector is still visible');
   }
-  pass('canonical-setup', `${parameters.length} parameter(s) expose direct Recommended/Custom settings`);
+  if (await evaluate(`Boolean(document.querySelector('.canonical-operation-panel .canonical-setting-summary, .canonical-operation-panel .canonical-setting-choices, .canonical-operation-panel .canonical-operation-apply, .canonical-operation-panel .canonical-recommendation'))`)) {
+    throw new Error('legacy staged canonical-setting surface is still visible');
+  }
+  if (await evaluate(`(() => [...document.querySelectorAll('.canonical-operation-panel button, .canonical-operation-panel strong, .canonical-operation-panel small')]
+    .some((node) => /^(Recommended|Custom|Apply settings|Use recommended)$/i.test((node.textContent ?? '').trim())))()`)) {
+    throw new Error('legacy Recommended/Custom action is still visible');
+  }
+  pass('canonical-setup', `${parameters.length} parameter(s) expose direct value editors`);
 
-  const recommended = await evaluate(`(() => {
-    const summaries = [...document.querySelectorAll('.canonical-operation-panel button.canonical-setting-summary')];
-    const reset = document.querySelector('.canonical-operation-panel button.canonical-reset');
-    if (!summaries.length || summaries.some((summary) => summary.disabled)) return false;
-    if (reset && !reset.disabled) reset.click();
-    return true;
+  const action = await evaluate(`(() => {
+    const compactAuto = [...document.querySelectorAll('.canonical-operation-panel .canonical-auto')]
+      .find((button) => !button.disabled);
+    if (compactAuto) { compactAuto.click(); return 'direct Auto'; }
+    const summary = [...document.querySelectorAll('.canonical-operation-panel details.editable-parameter > summary')]
+      .find((item) => item.getAttribute('aria-disabled') !== 'true' && !item.closest('.disabled'));
+    if (!summary) return false;
+    summary.click();
+    return 'keypad Auto';
   })()`);
-  if (!recommended) {
+  if (!action) {
     info('canonical-operation', 'visible operation is unavailable; contract was still checked');
     return;
   }
-  await waitFor('recommended-settings', `(() => { const summaries = [...document.querySelectorAll('.canonical-operation-panel button.canonical-setting-summary')]; return summaries.length > 0 && summaries.every((summary) => [...summary.querySelectorAll('strong')].some((item) => item.textContent?.trim() === 'Recommended')); })()`);
-  const operation = await evaluate(`(() => {
-    const apply = document.querySelector('.canonical-operation-panel .canonical-operation-apply button');
-    if (!apply || apply.disabled) return false; apply.click(); return apply.textContent?.trim() ?? 'operation';
-  })()`);
-  if (!operation) {
-    info('canonical-operation', 'no available operation to execute; Recommended settings were verified');
-    return;
+  if (action === 'keypad Auto') {
+    await waitFor('canonical-keypad-auto', `Boolean(document.querySelector('.numeric-entry-panel .numeric-key-auto:not(:disabled)'))`);
+    const keypadAuto = await evaluate(`(() => {
+      const button = document.querySelector('.numeric-entry-panel .numeric-key-auto');
+      if (!button || button.disabled) return false;
+      button.click();
+      return true;
+    })()`);
+    if (!keypadAuto) throw new Error('numeric canonical control did not offer Auto');
+    await waitFor('canonical-keypad-close', `!document.querySelector('.numeric-entry-panel')`);
   }
   const outcome = await waitFor('canonical-operation', `(() => {
     const panel = document.querySelector('.canonical-operation-panel');
     const alert = [...(panel?.querySelectorAll('[role="alert"]') ?? [])].map((node) => (node.textContent ?? '').trim()).find(Boolean);
     if (alert) return 'ERROR:' + alert;
-    const apply = panel?.querySelector('.canonical-operation-apply button');
-    return apply && !apply.disabled ? 'PASS' : '';
+    const controls = [...(panel?.querySelectorAll('.canonical-direct-editor summary, .canonical-direct-editor select, .canonical-direct-editor button.toggle-parameter, .canonical-direct-editor input, .canonical-direct-editor .canonical-auto') ?? [])];
+    return controls.length > 0 && controls.every((control) => !control.matches(':disabled, [aria-disabled="true"]')) ? 'PASS' : '';
   })()`);
   if (String(outcome).startsWith('ERROR:')) throw new Error(String(outcome).slice(6));
-  pass('canonical-operation', `${operation} executed with driver-resolved recommended settings`);
+  pass('canonical-operation', `${action} applied immediately through the generic canonical surface`);
 }
 
 const IQ_CAPTURE = `(() => {

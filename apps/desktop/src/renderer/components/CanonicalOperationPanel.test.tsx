@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CanonicalInstrumentSurface } from '@tinysa/contracts';
+import type { CanonicalInstrumentSurface, CanonicalParameterIntent } from '@tinysa/contracts';
 import { CanonicalOperationPanel } from './CanonicalOperationPanel.js';
 
 afterEach(cleanup);
@@ -87,54 +87,49 @@ function surface(): CanonicalInstrumentSurface {
   };
 }
 
-function expandSetting(label: string): void {
-  fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${label}`) }));
-}
-
-function chooseCustom(label: string): void {
-  expandSetting(label);
-  fireEvent.click(screen.getByRole('radio', { name: /^Custom/ }));
-}
-
 function applyNumeric(label: string, value: string, unit: string): void {
-  fireEvent.click(screen.getByLabelText(`Edit ${label} value`));
-  const editor = screen.getByRole('dialog', { name: `${label} value numeric entry` });
-  fireEvent.change(within(editor).getByRole('textbox', { name: `${label} value` }), { target: { value } });
+  fireEvent.click(screen.getByLabelText(`Edit ${label}`));
+  const editor = screen.getByRole('dialog', { name: `${label} numeric entry` });
+  fireEvent.change(within(editor).getByRole('textbox', { name: label }), { target: { value } });
   fireEvent.click(within(editor).getByRole('button', { name: `Apply ${unit}` }));
 }
 
+function useNumericAuto(label: string): void {
+  fireEvent.click(screen.getByLabelText(`Edit ${label}`));
+  const editor = screen.getByRole('dialog', { name: `${label} numeric entry` });
+  fireEvent.click(within(editor).getByRole('button', { name: 'Auto' }));
+}
+
+function captureIntents(overrides: Readonly<Record<string, CanonicalParameterIntent>> = {}) {
+  return ['frequency', 'samples', 'window', 'enabled', 'label'].map((parameterId) => ({
+    parameterId,
+    intent: overrides[parameterId] ?? { mode: 'auto' as const },
+  }));
+}
+
 describe('canonical operation panel', () => {
-  it('presents direct recommended setting rows instead of protocol-mode selectors', () => {
+  it('opens the visible value directly, without mode framing or an outer apply action', () => {
     render(<CanonicalOperationPanel surface={surface()} busy={false} onExecute={vi.fn()}/>);
 
-    expect(screen.getByText('Recommended settings')).toBeTruthy();
-    expect(screen.getByText(/Let the connected instrument choose a compatible configuration/i)).toBeTruthy();
-    expect(screen.queryByRole('combobox', { name: /mode$/i })).toBeNull();
-    expect(screen.queryByText('Automatic')).toBeNull();
-    expect(screen.queryByText('Manual')).toBeNull();
-    for (const label of ['Frequency', 'Samples', 'Window', 'Enabled', 'Label']) {
-      const setting = screen.getByRole('button', { name: new RegExp(`^${label}`) });
-      expect(setting.getAttribute('aria-expanded')).toBe('false');
-      expect(setting.textContent).toContain('Recommended');
-    }
-    expect(screen.queryByText('Device readback')).toBeNull();
+    expect(screen.queryByText('Recommended settings')).toBeNull();
+    expect(screen.queryByText('Recommended')).toBeNull();
+    expect(screen.queryByText('Custom')).toBeNull();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Apply settings' })).toBeNull();
+    expect(screen.getByLabelText('Edit Frequency')).toBeTruthy();
+    expect(screen.getByLabelText('Window')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /EnabledOn/ })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Label' })).toBeTruthy();
 
-    expandSetting('Frequency');
-    expect(screen.getByRole('radiogroup', { name: 'Frequency setting mode' })).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /^Recommended/ }).getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByText('Current value: Device readback')).toBeTruthy();
-    expect(screen.queryByLabelText('Edit Frequency value')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Edit Frequency'));
+    expect(screen.getByRole('dialog', { name: 'Frequency numeric entry' })).toBeTruthy();
   });
 
-  it('uses a focused Custom editor, emits generic manual intents, and restores recommendations', () => {
+  it('applies direct numeric, enum, boolean, text, and Auto changes immediately', () => {
     const onExecute = vi.fn();
-    render(<CanonicalOperationPanel surface={surface()} busy={false} onExecute={onExecute}/>);
+    const view = render(<CanonicalOperationPanel surface={surface()} busy={false} onExecute={onExecute}/>);
 
-    chooseCustom('Frequency');
-    expect(screen.getByRole('radio', { name: /^Custom/ }).getAttribute('aria-checked')).toBe('true');
     applyNumeric('Frequency', '100', 'MHz');
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
-
     expect(onExecute).toHaveBeenCalledWith('capture', [
       { parameterId: 'frequency', intent: { mode: 'manual', value: 100_000_000 } },
       { parameterId: 'samples', intent: { mode: 'auto' } },
@@ -143,9 +138,7 @@ describe('canonical operation panel', () => {
       { parameterId: 'label', intent: { mode: 'auto' } },
     ]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Use recommended' }));
-    expect(screen.getByRole('button', { name: /^Frequency/ }).textContent).toContain('Recommended');
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
+    useNumericAuto('Frequency');
     expect(onExecute).toHaveBeenLastCalledWith('capture', [
       { parameterId: 'frequency', intent: { mode: 'auto' } },
       { parameterId: 'samples', intent: { mode: 'auto' } },
@@ -153,6 +146,40 @@ describe('canonical operation panel', () => {
       { parameterId: 'enabled', intent: { mode: 'auto' } },
       { parameterId: 'label', intent: { mode: 'auto' } },
     ]);
+
+    fireEvent.change(screen.getByLabelText('Window'), { target: { value: 'narrow' } });
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents({ window: { mode: 'manual', value: 'narrow' } }));
+
+    fireEvent.click(screen.getByRole('button', { name: /EnabledOn/ }));
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents({
+      window: { mode: 'manual', value: 'narrow' },
+      enabled: { mode: 'manual', value: false },
+    }));
+
+    const windowParameter = view.container.querySelector<HTMLElement>('[data-canonical-parameter="window"]')!;
+    fireEvent.click(within(windowParameter).getByRole('button', { name: 'Auto' }));
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents({ enabled: { mode: 'manual', value: false } }));
+
+    const enabledParameter = view.container.querySelector<HTMLElement>('[data-canonical-parameter="enabled"]')!;
+    fireEvent.click(within(enabledParameter).getByRole('button', { name: 'Auto' }));
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents());
+
+    const text = screen.getByRole('textbox', { name: 'Label' });
+    fireEvent.focus(text);
+    fireEvent.change(text, { target: { value: 'changed' } });
+    expect(onExecute).toHaveBeenCalledTimes(6);
+    fireEvent.blur(text);
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents({ label: { mode: 'manual', value: 'changed' } }));
+
+    const labelParameter = view.container.querySelector<HTMLElement>('[data-canonical-parameter="label"]')!;
+    const labelAuto = within(labelParameter).getByRole('button', { name: 'Auto' });
+    fireEvent.focus(text);
+    fireEvent.change(text, { target: { value: 'discarded' } });
+    fireEvent.blur(text, { relatedTarget: labelAuto });
+    fireEvent.click(labelAuto);
+    expect(onExecute).toHaveBeenCalledTimes(8);
+    expect(onExecute).toHaveBeenLastCalledWith('capture', captureIntents());
+    expect((text as HTMLInputElement).value).toBe('initial');
   });
 
   it('uses a direct operation chooser, retains a peer selection across a fresh surface, and respects placement', () => {
@@ -189,9 +216,9 @@ describe('canonical operation panel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
     expect(screen.getByRole('button', { name: 'Measure' }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
+    applyNumeric('Samples', '128', 'Enter');
     expect(onExecute).toHaveBeenCalledWith('measure', [
-      { parameterId: 'samples', intent: { mode: 'auto' } },
+      { parameterId: 'samples', intent: { mode: 'manual', value: 128 } },
     ]);
 
     const refreshed = { ...initial, revision: 'canonical-surface-2' };
@@ -245,7 +272,7 @@ describe('canonical operation panel', () => {
     expect(screen.queryByText('Scan')).toBeNull();
   });
 
-  it('preflights driver-declared numeric constraints only when both values are custom', () => {
+  it('preflights driver-declared numeric constraints only when both values are explicit', () => {
     const onExecute = vi.fn();
     const constrained: CanonicalInstrumentSurface = {
       schemaVersion: 1,
@@ -295,20 +322,19 @@ describe('canonical operation panel', () => {
     };
     render(<CanonicalOperationPanel surface={constrained} busy={false} onExecute={onExecute}/>);
 
-    chooseCustom('Sample rate');
     applyNumeric('Sample rate', '2', 'MHz');
-    chooseCustom('Bandwidth');
     applyNumeric('Bandwidth', '4', 'MHz');
 
     expect(screen.getAllByText('Bandwidth must not exceed sample rate.')).toHaveLength(2);
-    const apply = screen.getByRole('button', { name: 'Apply settings' }) as HTMLButtonElement;
-    expect(apply.disabled).toBe(true);
-    fireEvent.click(apply);
-    expect(onExecute).not.toHaveBeenCalled();
+    expect(onExecute).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Apply settings' })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Use recommended' }));
+    useNumericAuto('Sample rate');
     expect(screen.queryByText('Bandwidth must not exceed sample rate.')).toBeNull();
-    expect((screen.getByRole('button', { name: 'Apply settings' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(onExecute).toHaveBeenLastCalledWith('capture', [
+      { parameterId: 'sample-rate', intent: { mode: 'auto' } },
+      { parameterId: 'bandwidth', intent: { mode: 'manual', value: 4_000_000 } },
+    ]);
   });
 
   it('uses the driver-declared high-impact confirmation without an operation-name branch', () => {
@@ -317,11 +343,11 @@ describe('canonical operation panel', () => {
     highImpact.operations[0] = { ...highImpact.operations[0]!, confirmation: 'high-impact' };
     render(<CanonicalOperationPanel surface={highImpact} busy={false} onExecute={onExecute}/>);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
+    applyNumeric('Frequency', '100', 'MHz');
     expect(onExecute).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert').textContent).toContain('driver-declared operation');
+    expect(screen.getByRole('alert').textContent).toContain('driver-declared change');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply Capture' }));
-    expect(onExecute).toHaveBeenCalledWith('capture', expect.any(Array));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Capture' }));
+    expect(onExecute).toHaveBeenCalledWith('capture', captureIntents({ frequency: { mode: 'manual', value: 100_000_000 } }));
   });
 });

@@ -47,6 +47,26 @@ describe('parameter-row contract', () => {
     expect(container.querySelector('details')?.open).toBe(false);
   });
 
+  it('offers an immediate Auto key only when the caller declares that capability', () => {
+    const commit = vi.fn();
+    const auto = vi.fn();
+    const { container } = render(<EditableParameter label="Sample rate" value={10_000_000} unit="Hz" onCommit={commit} onAuto={auto}/>);
+
+    fireEvent.click(screen.getByLabelText('Edit Sample rate'));
+    const dialog = screen.getByRole('dialog', { name: /Sample rate numeric entry/i });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Auto' }));
+
+    expect(auto).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(container.querySelector('details')?.open).toBe(false);
+    expect(screen.queryByRole('dialog', { name: /Sample rate numeric entry/i })).toBeNull();
+
+    const { unmount } = render(<EditableParameter label="Manual-only value" value={1} onCommit={vi.fn()}/>);
+    fireEvent.click(screen.getByLabelText('Edit Manual-only value'));
+    expect(screen.queryByRole('button', { name: 'Auto' })).toBeNull();
+    unmount();
+  });
+
   it('selects a readable sub-second unit and commits its base seconds exactly', () => {
     const commit = vi.fn();
     render(<EditableParameter label="Capture time" value={0.05} unit="s" minimum={0.003} maximum={60} step={0.001} onCommit={commit}/>);
