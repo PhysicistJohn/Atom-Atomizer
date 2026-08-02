@@ -67,7 +67,7 @@ describe('ConnectionController stale-candidate recovery', () => {
     // dialog immediately after must see the current, non-stale list.
     expect(runtime.store.get().candidates).toEqual([freshCandidate]);
     expect(runtime.store.get().error).toBeUndefined();
-    expect(runtime.store.get().connectionOpen).toBe(false);
+    expect(runtime.store.get().secondaryPanel).toBeUndefined();
   });
 
   it('surfaces a clear, honest error and never retries when the device is no longer in the fresh discovery at all', async () => {
