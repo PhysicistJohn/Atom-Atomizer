@@ -25,6 +25,7 @@ import type {
 } from '@tinysa/contracts';
 import { calculateSweepMetrics } from '@tinysa/analysis';
 import type { AcquisitionState } from '../ui-contracts.js';
+import { HISTORY_LIMIT } from '../store.js';
 import { formatFrequency, formatPowerLevel } from '../format.js';
 import { CanonicalOperationPanel, CanonicalOperationRequired } from './CanonicalOperationPanel.js';
 import { ChannelAnalysisView } from './ChannelAnalysisView.js';
@@ -198,7 +199,7 @@ export function MetricStrip({ sweep, detections, acquisition, historyCount }: { 
     <Metric icon={<RadioTower size={13}/>} accent="amber" label="Tracked" value={String(detections).padStart(2, '0')}/>
     <Metric icon={<BarChart3 size={13}/>} label="OBW · 99%" value={metrics ? formatFrequency(metrics.occupiedBandwidth99Hz) : '—'}/>
     <Metric icon={<Clock3 size={13}/>} label="Sweep" value={acquisition === 'retuning' ? 'RETUNING' : elapsedMilliseconds === undefined ? acquisition.toUpperCase() : `${elapsedMilliseconds.toFixed(0)} ms`} detail={pointCount === undefined ? undefined : `${pointCount} points · ${acquisition.toUpperCase()}`}/>
-    <Metric icon={<Repeat2 size={13}/>} label="History" value={`${historyCount} / 50`}/>
+    <Metric icon={<Repeat2 size={13}/>} label="History" value={`${historyCount} / ${HISTORY_LIMIT}`}/>
   </section>;
 }
 

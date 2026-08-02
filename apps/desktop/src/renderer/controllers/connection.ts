@@ -5,28 +5,12 @@ import type {
   InstrumentSessionSnapshot,
 } from '@tinysa/contracts';
 import { instrumentCandidateUiKey, sameInstrumentCandidateDescriptor } from '../ui-contracts.js';
+import { connectWithStaleCandidateRetry } from '../stale-candidate-retry.js';
 import {
   instrumentCandidateMatchesPreference,
   instrumentPreferenceSelectionForCandidate,
 } from '../instrument-preference.js';
 import { errorMessage, type RendererKernel } from './kernel.js';
-
-/**
- * `InstrumentManager` rejects `connect()` for any candidate that does not
- * exactly match its own latest completed discovery -- including a discovery
- * the renderer never itself requested (e.g. `writePreference()` runs one
- * internally before persisting a selection). A stale candidate is always
- * structurally recoverable: the underlying device did not change, only the
- * opaque discovery revision did, so re-discovering and matching the same
- * device by its stable identity (everything but `discoveryRevision` --
- * see `sameInstrumentCandidateDescriptor`) and retrying once is strictly
- * better than surfacing a confusing internal revision-mismatch message an
- * operator has no way to act on.
- */
-function isStaleCandidateMessage(value: unknown): boolean {
-  return errorMessage(value).toLowerCase().includes('stale')
-    && errorMessage(value).toLowerCase().includes('discovery');
-}
 
 export class ConnectionController {
   constructor(private readonly k: RendererKernel) {}
@@ -95,27 +79,11 @@ export class ConnectionController {
     k.set({ connectionBusy: true, error: undefined });
     k.invalidateAcquiredEvidence();
     try {
-      let next: InstrumentSessionSnapshot;
-      try {
-        next = await window.atomizerInstrument.connect(candidate);
-      } catch (value) {
-        if (!isStaleCandidateMessage(value)) throw value;
-        // See isStaleCandidateMessage's doc comment. Re-discover, match the
-        // same device by stable identity (never by object equality, since
-        // `discoveryRevision` is exactly what changed), and retry exactly
-        // once -- this must never loop, so a device that has genuinely
-        // disappeared or a second stale rejection surfaces a real error
-        // instead of retrying forever.
-        const fresh = await window.atomizerInstrument.discover();
-        this.acceptDiscovery(fresh.candidates, fresh.failures);
-        const rematched = fresh.candidates.find((value) => sameInstrumentCandidateDescriptor(value, candidate));
-        if (!rematched) {
-          throw new Error(
-            `${candidate.displayName} is no longer in the discovered instrument list -- it may have disappeared. Refresh and try again.`,
-          );
-        }
-        next = await window.atomizerInstrument.connect(rematched);
-      }
+      const next: InstrumentSessionSnapshot = await connectWithStaleCandidateRetry(candidate, {
+        connect: (value) => window.atomizerInstrument.connect(value),
+        discover: () => window.atomizerInstrument.discover(),
+        acceptDiscovery: (candidates, failures) => this.acceptDiscovery(candidates, failures),
+      });
       k.events.acceptSession(next);
       // Selecting a source connects and closes the chooser in one step.
       // Reopening it while connected shows the source list with the active

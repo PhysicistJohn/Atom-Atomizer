@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ComponentType } from 'react';
 import { installWebBridge } from '../src/web-bridge.js';
+import { connectWithStaleCandidateRetry } from '../../desktop/src/renderer/stale-candidate-retry.js';
 
 interface AtomizerWebAppProps {
   initialWorkspace?: 'spectrum' | 'generator';
@@ -41,7 +42,17 @@ export default function AtomizerWebPage() {
         try {
           const discovery = await window.atomizerInstrument.discover();
           const candidate = discovery.candidates.find((value) => value.sourceKind === 'signal-lab');
-          if (candidate) await window.atomizerInstrument.connect(candidate);
+          // The shell runs its own startup discovery concurrently with this
+          // one, and each mints a fresh discovery revision, so whichever
+          // lands last invalidates the other's candidates. Share the retry
+          // every other connect path already uses instead of failing the
+          // operator into the chooser.
+          if (candidate) {
+            await connectWithStaleCandidateRetry(candidate, {
+              connect: (value) => window.atomizerInstrument.connect(value),
+              discover: () => window.atomizerInstrument.discover(),
+            });
+          }
         } catch (error) {
           console.error('[Atomizer Web] automatic SignalLab connection failed', error);
         }

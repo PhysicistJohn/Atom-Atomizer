@@ -1399,6 +1399,17 @@ export interface DerivedSpectrumFromComplexIq {
 const HOST_DERIVED_SPECTRUM_MAXIMUM_FFT_SIZE = 4_096;
 
 /**
+ * Absolute floor for a host-derived bin, in dBm.
+ *
+ * Thermal noise alone is about -174 dBm/Hz, so nothing physical approaches
+ * this. It exists to stop FFT arithmetic on a mathematically silent input from
+ * printing impossible levels: guarding only against zero let leakage bins land
+ * near -290 dBm and robust-floor estimates near -369 dBm, which then dragged
+ * every adaptive detector threshold down onto numerical debris.
+ */
+export const HOST_DERIVED_SPECTRUM_FLOOR_DBM = -200;
+
+/**
  * Project a scalar power spectrum from a complex-I/Q capture: an averaged,
  * Hann-windowed Welch periodogram, fftshifted about the tuned center. A
  * spectrum is a projection of the complex I/Q vector -- producing one has
@@ -1434,7 +1445,10 @@ export function deriveSpectrumFromComplexIq(capture: {
   const windowSumSquares = window.reduce((sum, value) => sum + value * value, 0);
   const periodogram = welchPowerSpectrumPeriodicHann(re, im, fftSize);
   const normalization = fftSize * windowSumSquares;
-  const powerDbm = Array.from(periodogram, (bin) => milliwattsToDbm(Math.max(Number.MIN_VALUE, bin / normalization)));
+  const powerDbm = Array.from(periodogram, (bin) => Math.max(
+    HOST_DERIVED_SPECTRUM_FLOOR_DBM,
+    milliwattsToDbm(Math.max(Number.MIN_VALUE, bin / normalization)),
+  ));
 
   const binWidthHz = capture.sampleRateHz / fftSize;
   const frequencyHz = Array.from({ length: fftSize }, (_, bin) => capture.centerHz + (bin - fftSize / 2) * binWidthHz);

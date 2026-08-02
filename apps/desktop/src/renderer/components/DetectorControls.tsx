@@ -77,6 +77,9 @@ export function DetectionSettings({ sweep, config, busy, onConfig }: {
   </section>;
 }
 
+/** Rows rendered at once. A display cap only -- never a count. */
+const RENDERED_SIGNAL_REGION_LIMIT = 8;
+
 /** Visible projection of the frequency-local detector/tracker. The detector
  * has always run globally; this makes its candidate and promoted rows visible
  * without conflating them with modulation-classifier output. */
@@ -85,7 +88,7 @@ export function SignalDetectionResults({ sweep, detections, config }: {
   detections: readonly DetectedSignal[];
   config: SignalDetectionConfig;
 }) {
-  const current = detections
+  const admitted = detections
     .filter((signal) => signal.state !== 'released'
       && signal.missedSweeps === 0
       && Number.isFinite(signal.peakHz)
@@ -93,12 +96,16 @@ export function SignalDetectionResults({ sweep, detections, config }: {
       && Number.isFinite(signal.bandwidthHz)
       && Number.isFinite(signal.prominenceDb))
     .sort((left, right) => Number(right.state === 'active') - Number(left.state === 'active')
-      || right.peakDbm - left.peakDbm)
-    .slice(0, 8);
-  const activeCount = current.filter((signal) => signal.state === 'active').length;
-  const candidateCount = current.length - activeCount;
+      || right.peakDbm - left.peakDbm);
+  // Count the whole admitted set, then cap only what is rendered. Counting
+  // after the slice reported the cap itself as the tracked total, which
+  // silently disagreed with the spectrum metric strip.
+  const activeCount = admitted.filter((signal) => signal.state === 'active').length;
+  const candidateCount = admitted.length - activeCount;
+  const current = admitted.slice(0, RENDERED_SIGNAL_REGION_LIMIT);
+  const hiddenCount = admitted.length - current.length;
   return <section className="detection-results-panel" aria-label="Detected signal regions">
-    <header><span><RadioTower size={14}/><strong>Signal regions</strong></span><em aria-live="polite" aria-atomic="true">{activeCount} tracked · {candidateCount} candidate{candidateCount === 1 ? '' : 's'}</em></header>
+    <header><span><RadioTower size={14}/><strong>Signal regions</strong></span><em aria-live="polite" aria-atomic="true">{activeCount} tracked · {candidateCount} candidate{candidateCount === 1 ? '' : 's'}{hiddenCount > 0 ? ` · showing ${current.length}` : ''}</em></header>
     {current.length === 0
       ? <div className="detection-results-empty"><strong>{sweep ? 'No regions above threshold' : 'No sweep to detect'}</strong><span>{sweep ? 'Adjust the relative margin or acquire another frame.' : 'Use Single for one candidate look, or Run for persistent tracking.'}</span></div>
       : <div className="detection-result-list">{current.map((signal) => {
