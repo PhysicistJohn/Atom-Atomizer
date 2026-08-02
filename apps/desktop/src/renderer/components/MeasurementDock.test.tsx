@@ -22,9 +22,12 @@ const initialTraces = [
   { id: 4, mode: 'blank', averageCount: 8 },
 ] satisfies TraceBankConfiguration;
 
-function dock(traces: TraceBankConfiguration, onTrace = vi.fn()) {
+function dock(traces: TraceBankConfiguration, onTrace = vi.fn(), options: {
+  panel?: 'traces' | 'display';
+  onAutoScale?: () => void;
+} = {}) {
   return <MeasurementDock
-    panel="traces"
+    panel={options.panel ?? 'traces'}
     showTabs={false}
     traces={traces}
     frames={[]}
@@ -45,36 +48,56 @@ function dock(traces: TraceBankConfiguration, onTrace = vi.fn()) {
     onSearch={vi.fn()}
     onSearchConfiguration={vi.fn()}
     onDisplay={vi.fn()}
-    onAutoScale={vi.fn()}
+    onAutoScale={options.onAutoScale ?? vi.fn()}
   />;
 }
 
 describe('measurement dock trace mode', () => {
-  it('uses one direct trace mode control, including Off, without resetting the selected mode', () => {
+  it('uses direct trace outcomes, including Off, without resetting the selected trace', () => {
     const onTrace = vi.fn();
     const initialTrace = initialTraces[0]!;
     const view = render(dock(initialTraces, onTrace));
-    const mode = screen.getByRole('combobox', { name: 'Trace mode' }) as HTMLSelectElement;
+    const peakHold = screen.getByRole('radio', { name: /Peak hold/i });
 
-    expect(mode.value).toBe('max-hold');
-    expect([...mode.options].map((option) => [option.value, option.textContent])).toEqual([
-      ['blank', 'Off'],
-      ['clear-write', 'Clear / Write'],
-      ['max-hold', 'Maximum Hold'],
-      ['min-hold', 'Minimum Hold'],
-      ['average', 'Average'],
-      ['view', 'View / Freeze'],
-    ]);
+    expect((peakHold as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('radiogroup', { name: 'Trace 1 behavior' })).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: /Trace mode/i })).toBeNull();
     expect(view.container.querySelector('[data-agent-control="trace.1.enabled"]')).toBeNull();
 
-    fireEvent.change(mode, { target: { value: 'blank' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Off/i }));
     expect(onTrace).toHaveBeenLastCalledWith({ ...initialTrace, mode: 'blank' });
 
     const offTraces = [{ ...initialTrace, mode: 'blank' }, ...initialTraces.slice(1)] satisfies TraceBankConfiguration;
     view.rerender(dock(offTraces, onTrace));
-    const refreshedMode = screen.getByRole('combobox', { name: 'Trace mode' }) as HTMLSelectElement;
-    expect(refreshedMode.value).toBe('blank');
-    fireEvent.change(refreshedMode, { target: { value: 'view' } });
+    expect((screen.getByRole('radio', { name: /Off/i }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('radio', { name: /Freeze/i }));
     expect(onTrace).toHaveBeenLastCalledWith({ ...offTraces[0], mode: 'view' });
+  });
+
+  it('reveals the averaging amount only for the Average outcome', () => {
+    const onTrace = vi.fn();
+    const view = render(dock(initialTraces, onTrace));
+
+    expect(screen.queryByLabelText('Edit Sweeps to average')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /Average/i }));
+    expect(onTrace).toHaveBeenLastCalledWith({ ...initialTraces[0], mode: 'average' });
+
+    const averageTraces = [{ ...initialTraces[0]!, mode: 'average' }, ...initialTraces.slice(1)] satisfies TraceBankConfiguration;
+    view.rerender(dock(averageTraces, onTrace));
+    expect(screen.getByLabelText('Edit Sweeps to average')).toBeTruthy();
+  });
+
+  it('leads Display with fitting the latest trace and keeps manual scale in disclosure', () => {
+    const onAutoScale = vi.fn();
+    const view = render(dock(initialTraces, vi.fn(), { panel: 'display', onAutoScale }));
+    const manualScale = view.container.querySelector('details.display-manual-scale') as HTMLDetailsElement;
+
+    expect(screen.getByRole('button', { name: /Fit latest trace/i })).toBeTruthy();
+    expect(manualScale.open).toBe(false);
+    fireEvent.click(screen.getByText('Manual scale'));
+    expect(manualScale.open).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: /Fit latest trace/i }));
+    expect(onAutoScale).toHaveBeenCalledOnce();
   });
 });

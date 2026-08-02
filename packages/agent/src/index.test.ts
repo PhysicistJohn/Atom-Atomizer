@@ -174,6 +174,7 @@ describe('Atom agent contracts',()=>{
     expect(agentControlBinding('connection.retry-cleanup').preferredTool).toBe('disconnect_device');
     expect(agentControlBinding('measurement.setup').preferredTool).toBe('computer_action');
     expect(agentControlBinding('firmware-trace.2.visible').preferredTool).toBe('configure_firmware_trace_visibility');
+    expect(agentControlBinding('trace.1.mode.max-hold').preferredTool).toBe('configure_trace');
     expect(()=>agentControlBinding('unknown.uncontracted-control')).toThrow(/0 contract bindings/);
     // Retired never-rendered hooks stay retired: no binding may quietly readopt them.
     for(const retired of ['workspace.spectrum','workspace.detection','measurement.view.envelope-stft','classification.envelope-rbw','classification.envelope.trigger-level','stft.attenuation-mode','stft.window','stft.capture']){

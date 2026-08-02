@@ -952,6 +952,36 @@ describe('NeptuneP210InstrumentDriver full-stack InstrumentManager integration',
     };
   }
 
+  async function connectedManager(transport = new FakeTransport()) {
+    const driver = deterministicDriver(transport, { [NEPTUNE_P210_ENDPOINT_ENV_VAR]: PHYSICAL_ENDPOINT });
+    const manager = new InstrumentManager(new InstrumentDriverRegistry([driver]), deterministicRuntime());
+    const candidate = (await manager.discover()).candidates[0]!;
+    await manager.connect(candidate);
+    return { manager, transport };
+  }
+
+  async function executeCanonicalCapture(
+    manager: InstrumentManager,
+    intents: Readonly<{
+      sampleRate?: { mode: 'auto' } | { mode: 'manual'; value: number };
+      bandwidth?: { mode: 'auto' } | { mode: 'manual'; value: number };
+    }> = {},
+  ) {
+    const surface = manager.canonicalSurface();
+    if (!surface) throw new Error('Expected canonical capture surface');
+    return manager.executeCanonicalOperation({
+      sessionId: manager.snapshot()!.sessionId,
+      surfaceRevision: surface.revision,
+      operationId: 'capture',
+      parameters: [
+        { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+        { parameterId: 'capture.sample-rate', intent: intents.sampleRate ?? { mode: 'auto' } },
+        { parameterId: 'capture.bandwidth', intent: intents.bandwidth ?? { mode: 'auto' } },
+        { parameterId: 'capture.samples', intent: { mode: 'auto' } },
+      ],
+    });
+  }
+
   it('publishes a generic capture surface whose Auto policy is resolved inside the driver and retains RX-LO readback evidence', async () => {
     const transport = new FakeTransport();
     const driver = deterministicDriver(transport, { [NEPTUNE_P210_ENDPOINT_ENV_VAR]: PHYSICAL_ENDPOINT });
@@ -963,6 +993,13 @@ describe('NeptuneP210InstrumentDriver full-stack InstrumentManager integration',
     expect(surface.operations).toMatchObject([{
       id: 'capture', scope: 'acquisition', acquisitionKind: 'complex-iq', primary: true,
       parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
+      constraints: [{
+        kind: 'numeric-relation',
+        leftParameterId: 'capture.bandwidth',
+        relation: 'less-than-or-equal',
+        rightParameterId: 'capture.sample-rate',
+        message: 'Bandwidth must not exceed sample rate.',
+      }],
     }]);
     expect(surface.parameters.every((parameter) => parameter.auto.resolver === 'driver')).toBe(true);
     expect(surface.parameters.every((parameter) => parameter.requested.mode === 'auto')).toBe(true);
@@ -991,6 +1028,58 @@ describe('NeptuneP210InstrumentDriver full-stack InstrumentManager integration',
     });
     expect(result.surface.parameters.filter((parameter) => parameter.id !== 'capture.tune')
       .every((parameter) => parameter.requested.mode === 'auto')).toBe(true);
+    await manager.disconnect();
+  });
+
+  it('selects a valid all-Auto rate/bandwidth pair when the minimum bandwidth exceeds the preferred sample rate', async () => {
+    const transport = new FakeTransport();
+    transport.getDeviceAttributeImpl = async (_uri, _device, _channel, attribute) => {
+      if (attribute === 'sampling_frequency_available') return { raw: '[1000000 1 20000000]', numeric: null };
+      if (attribute === 'rf_bandwidth_available') return { raw: '[12000000 1 18000000]', numeric: null };
+      throw new Error('no other _available attribute on this fake device');
+    };
+    const { manager } = await connectedManager(transport);
+    const surface = manager.canonicalSurface();
+    if (!surface) throw new Error('Expected canonical capture surface');
+    expect(surface.parameters.find((parameter) => parameter.id === 'capture.sample-rate')?.effectiveValue).toBe(12_000_000);
+    expect(surface.parameters.find((parameter) => parameter.id === 'capture.bandwidth')?.effectiveValue).toBe(12_000_000);
+
+    await executeCanonicalCapture(manager);
+
+    expect(manager.snapshot()?.configuration?.configuration).toMatchObject({
+      kind: 'complex-iq', sampleRateHz: 12_000_000, bandwidthHz: 12_000_000,
+    });
+    expect(transport.setSampleRateHzCalls).toEqual([12_000_000]);
+    expect(transport.setRfBandwidthHzCalls).toEqual([12_000_000]);
+    await manager.disconnect();
+  });
+
+  it('raises Auto sample rate around a valid manual bandwidth and lowers Auto bandwidth to a valid manual sample rate', async () => {
+    const { manager, transport } = await connectedManager();
+
+    await executeCanonicalCapture(manager, { bandwidth: { mode: 'manual', value: 40_000_000 } });
+    expect(manager.snapshot()?.configuration?.configuration).toMatchObject({
+      kind: 'complex-iq', sampleRateHz: 40_000_000, bandwidthHz: 40_000_000,
+    });
+
+    await executeCanonicalCapture(manager, { sampleRate: { mode: 'manual', value: 4_000_000 } });
+    expect(manager.snapshot()?.configuration?.configuration).toMatchObject({
+      kind: 'complex-iq', sampleRateHz: 4_000_000, bandwidthHz: 4_000_000,
+    });
+    expect(transport.setSampleRateHzCalls).toEqual([40_000_000, 4_000_000]);
+    expect(transport.setRfBandwidthHzCalls).toEqual([40_000_000, 4_000_000]);
+    await manager.disconnect();
+  });
+
+  it('rejects an incompatible manual rate/bandwidth pair before changing the device', async () => {
+    const { manager, transport } = await connectedManager();
+
+    await expect(executeCanonicalCapture(manager, {
+      sampleRate: { mode: 'manual', value: 4_000_000 },
+      bandwidth: { mode: 'manual', value: 8_000_000 },
+    })).rejects.toThrow('Bandwidth must not exceed sample rate.');
+    expect(transport.setSampleRateHzCalls).toEqual([]);
+    expect(transport.setRfBandwidthHzCalls).toEqual([]);
     await manager.disconnect();
   });
 

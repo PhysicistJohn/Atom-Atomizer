@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Activity, CheckCircle2, Cpu, SlidersHorizontal } from 'lucide-react';
+import { Activity, CheckCircle2, ChevronRight, Cpu, RotateCcw, SlidersHorizontal, Sparkles } from 'lucide-react';
 import type {
+  CanonicalAcquisitionKind,
   CanonicalInstrumentSurface,
   CanonicalOperation,
+  CanonicalOperationConstraint,
   CanonicalOperationParameterIntent,
   CanonicalParameter,
   CanonicalParameterIntent,
@@ -17,6 +19,8 @@ export interface CanonicalOperationPanelProps {
   readonly operationId?: string;
   /** Optional host placement; operation semantics remain driver-owned. */
   readonly placement?: CanonicalOperationPlacement;
+  /** Optional result-shape context; never a driver or device-family branch. */
+  readonly acquisitionKind?: CanonicalAcquisitionKind;
   readonly busy: boolean;
   readonly className?: string;
   /**
@@ -32,30 +36,32 @@ export type CanonicalOperationPlacement = 'acquisition' | 'source';
 
 /**
  * A source-agnostic mutable-control surface.  The driver supplies both the
- * manual domain and the Auto policy for every parameter; Atomizer never
+ * custom-value domain and recommendation policy for every parameter; Atomizer never
  * derives a native value, native setting name, or source family branch here.
  */
 export function CanonicalOperationPanel({
   surface,
   operationId,
   placement,
+  acquisitionKind,
   busy,
   className,
   onExecute,
 }: CanonicalOperationPanelProps) {
-  const operations = operationsForPlacement(surface.operations, placement);
+  const operations = operationsForPlacement(surface.operations, placement, acquisitionKind);
   const [selectedOperationId, setSelectedOperationId] = useState<string | undefined>(
     () => operationId ?? defaultOperation(operations)?.id,
   );
   const operation = operationId === undefined
     ? operations.find((candidate) => candidate.id === selectedOperationId) ?? defaultOperation(operations)
     : operations.find((candidate) => candidate.id === operationId);
-  const resetKey = `${surface.revision}:${operation?.id ?? operationId ?? ''}`;
+  const resetKey = `${surface.revision}:${acquisitionKind ?? ''}:${operation?.id ?? operationId ?? ''}`;
   const parameters = operationParameters(surface, operation);
   const [intents, setIntents] = useState<Readonly<Record<string, CanonicalParameterIntent>>>(() => initialIntents(parameters));
   const [executing, setExecuting] = useState(false);
   const [executionError, setExecutionError] = useState<string>();
   const [confirmationPending, setConfirmationPending] = useState(false);
+  const [expandedParameterId, setExpandedParameterId] = useState<string>();
 
   // A new surface revision is a new driver truth.  Preserve deliberate edits
   // within a revision, but never carry them across a retune/configuration.
@@ -64,6 +70,7 @@ export function CanonicalOperationPanel({
     setExecuting(false);
     setExecutionError(undefined);
     setConfirmationPending(false);
+    setExpandedParameterId(undefined);
   }, [resetKey]);
 
   // An operation ID passed by a host intentionally pins the panel. Otherwise
@@ -74,7 +81,7 @@ export function CanonicalOperationPanel({
     setSelectedOperationId((current) => operations.some((operation) => operation.id === current)
       ? current
       : defaultOperation(operations)?.id);
-  }, [surface.revision, operationId, placement]);
+  }, [surface.revision, operationId, placement, acquisitionKind]);
 
   if (!operation) {
     return <section className={`canonical-operation-panel ${className ?? ''}`.trim()} role="status">
@@ -89,8 +96,10 @@ export function CanonicalOperationPanel({
     intent: intents[parameter.id] ?? parameter.requested,
   }));
   const invalidParameter = firstInvalidParameter(parameters, intents);
+  const constraintIssues = operationConstraintIssues(parameters, operation.constraints ?? [], intents);
+  const hasManualIntent = parameterIntents.some(({ intent }) => intent.mode === 'manual');
   const unavailable = operation.availability !== 'available';
-  const disabled = busy || executing || unavailable || invalidParameter !== undefined;
+  const disabled = busy || executing || unavailable || invalidParameter !== undefined || constraintIssues.length > 0;
 
   function updateIntent(parameterId: string, intent: CanonicalParameterIntent): void {
     setIntents((current) => ({ ...current, [parameterId]: intent }));
@@ -106,6 +115,16 @@ export function CanonicalOperationPanel({
       mode: 'manual',
       value: current.mode === 'manual' ? current.value : parameter.effectiveValue,
     });
+  }
+
+  function restoreRecommendations(): void {
+    setIntents(Object.fromEntries(parameters.map((parameter) => [parameter.id, { mode: 'auto' } as const])));
+  }
+
+  function customize(parameter: CanonicalParameter): void {
+    const current = intents[parameter.id] ?? parameter.requested;
+    if (current.mode === 'auto') updateMode(parameter, 'manual');
+    setExpandedParameterId(parameter.id);
   }
 
   function execute(): void {
@@ -132,41 +151,57 @@ export function CanonicalOperationPanel({
     }
   }
 
-  return <section className={`canonical-operation-panel ${className ?? ''}`.trim()} aria-label={`${operation.label} controls`}>
-    <div className="panel-header">
-      <div><SlidersHorizontal size={14}/><span>{operation.label}</span></div>
-      <span>{unavailable ? operation.availability.replaceAll('-', ' ') : 'DRIVER DECLARED'}</span>
-    </div>
-    {operationId === undefined && operations.length > 1 && <div className="canonical-operation-picker">
-      <SelectParameter
-        label="Operation"
-        value={operation.id}
-        options={operations.map((candidate) => ({
-          value: candidate.id,
-          label: candidate.availability === 'available'
-            ? candidate.label
-            : `${candidate.label} · ${candidate.availability.replaceAll('-', ' ')}`,
-        }))}
-        disabled={busy || executing}
-        onValue={setSelectedOperationId}
-      />
+  return <section className={`canonical-operation-panel ${className ?? ''}`.trim()} aria-label={`${operation.label} settings`}>
+    <header className="canonical-control-hero">
+      <span className="canonical-control-kicker"><SlidersHorizontal size={13}/>Instrument setup</span>
+      <div className="canonical-control-heading">
+        <div><h2>{operation.label}</h2>{operation.description && <p>{operation.description}</p>}</div>
+        <span className={unavailable ? 'unavailable' : hasManualIntent ? 'customized' : ''}>
+          {unavailable ? operation.availability.replaceAll('-', ' ') : hasManualIntent ? 'Custom' : 'Ready'}
+        </span>
+      </div>
+    </header>
+    {operationId === undefined && operations.length > 1 && <div className="canonical-operation-tabs" role="group" aria-label="Instrument operation">
+      {operations.map((candidate) => <button
+        key={candidate.id}
+        type="button"
+        aria-pressed={candidate.id === operation.id}
+        disabled={busy || executing || candidate.availability === 'unavailable'}
+        onClick={() => setSelectedOperationId(candidate.id)}
+      >{candidate.label}</button>)}
     </div>}
-    {operation.description && <p className="canonical-operation-description">{operation.description}</p>}
-    <div className="canonical-parameter-stack parameter-stack">
-      {parameters.map((parameter) => {
-        const intent = intents[parameter.id] ?? parameter.requested;
-        return <CanonicalParameterControl
-          key={parameter.id}
-          parameter={parameter}
-          intent={intent}
-          disabled={busy || executing || unavailable}
-          onMode={(mode) => updateMode(parameter, mode)}
-          onManualValue={(value) => updateIntent(parameter.id, { mode: 'manual', value })}
-        />;
-      })}
+    <div className="canonical-recommendation">
+      <div><Sparkles size={15}/><span><strong>Recommended settings</strong><small>Let the connected instrument choose a compatible configuration.</small></span></div>
+      <button type="button" className="canonical-reset" disabled={busy || executing || !hasManualIntent} onClick={restoreRecommendations}>
+        <RotateCcw size={12}/>Use recommended
+      </button>
+    </div>
+    <div className="canonical-setting-groups">
+      {parameterGroups(parameters).map(({ group, parameters: groupedParameters }) => <section key={group} className="canonical-setting-group" aria-label={`${group} settings`}>
+        <h3>{group}</h3>
+        {groupedParameters.map((parameter) => {
+          const intent = intents[parameter.id] ?? parameter.requested;
+          const issues = constraintIssues.filter((issue) => issue.parameterIds.includes(parameter.id));
+          return <CanonicalParameterControl
+            key={parameter.id}
+            parameter={parameter}
+            intent={intent}
+            constraintIssues={issues}
+            expanded={expandedParameterId === parameter.id}
+            disabled={busy || executing || unavailable}
+            onExpand={() => setExpandedParameterId((current) => current === parameter.id ? undefined : parameter.id)}
+            onRecommended={() => updateMode(parameter, 'auto')}
+            onCustomize={() => customize(parameter)}
+            onManualValue={(value) => updateIntent(parameter.id, { mode: 'manual', value })}
+          />;
+        })}
+      </section>)}
     </div>
     {invalidParameter && <div className="inline-error" role="alert">
       {invalidParameter.parameter.label}: {invalidParameter.issue}
+    </div>}
+    {constraintIssues.length > 0 && <div className="inline-error" role="alert">
+      Resolve the highlighted settings before applying this configuration.
     </div>}
     {executionError && <div className="inline-error" role="alert">{executionError}</div>}
     {confirmationPending && <div className="canonical-operation-confirmation" role="alert">
@@ -176,15 +211,15 @@ export function CanonicalOperationPanel({
         <button type="button" data-agent-exclusion="human-canonical-operation-boundary" data-agent-risk="high-impact" onClick={execute}>Confirm and apply {operation.label}</button>
       </div>
     </div>}
-    <div className="panel-action">
+    <div className="canonical-operation-apply">
       <button
         type="button"
-        className="secondary full"
+        className="full"
         data-agent-exclusion="human-canonical-operation-boundary"
         disabled={disabled}
         onClick={execute}
       >
-        <CheckCircle2 size={14}/>{executing ? 'Applying…' : confirmationPending ? `Review ${operation.label}` : `Apply ${operation.label}`}
+        <CheckCircle2 size={14}/>{executing ? 'Applying settings…' : confirmationPending ? `Review ${operation.label}` : 'Apply settings'}
       </button>
     </div>
   </section>;
@@ -192,14 +227,15 @@ export function CanonicalOperationPanel({
 
 /**
  * No renderer-owned fallback is permitted for an active instrument. A
- * canonical operation is the atomic source of its manual domain, Auto policy,
+ * canonical operation is the atomic source of its custom-value domain, driver
+ * recommendation policy,
  * effective value, and verification evidence.
  */
 export function CanonicalOperationRequired({ title = 'Instrument controls' }: { title?: string }) {
   return <section className="iq-control-panel">
     <div className="panel-header"><div><Cpu size={14}/>{title}</div><span>DRIVER REQUIRED</span></div>
     <div className="channel-contract-note" role="status" aria-label={`${title} unavailable`}>
-      <Activity size={14}/><p>The connected driver has not declared a canonical operation for this function. Atomizer has no mutable controls to render until the driver supplies parameter domains, an Auto policy, and verification evidence.</p>
+      <Activity size={14}/><p>The connected driver has not declared a canonical operation for this function. Atomizer has no mutable controls to render until the driver supplies parameter domains, recommendation policy, and verification evidence.</p>
     </div>
   </section>;
 }
@@ -207,32 +243,73 @@ export function CanonicalOperationRequired({ title = 'Instrument controls' }: { 
 function CanonicalParameterControl({
   parameter,
   intent,
+  constraintIssues,
+  expanded,
   disabled,
-  onMode,
+  onExpand,
+  onRecommended,
+  onCustomize,
   onManualValue,
 }: {
   parameter: CanonicalParameter;
   intent: CanonicalParameterIntent;
+  constraintIssues: readonly CanonicalConstraintIssue[];
+  expanded: boolean;
   disabled: boolean;
-  onMode(mode: 'auto' | 'manual'): void;
+  onExpand(): void;
+  onRecommended(): void;
+  onCustomize(): void;
   onManualValue(value: CanonicalParameterScalarValue): void;
 }) {
   const issue = intent.mode === 'manual' ? manualValueIssue(parameter, intent.value) : undefined;
-  return <div className="canonical-parameter" data-canonical-parameter={parameter.id}>
-    <SelectParameter
-      label={`${parameter.label} mode`}
-      value={intent.mode}
-      options={MODE_OPTIONS}
+  const selectedValue = intent.mode === 'manual' ? intent.value : parameter.effectiveValue;
+  // A surface only has an honest resolved recommendation when it was itself
+  // emitted with the recommended intent. Switching a currently configured
+  // custom setting back locally must not present the old custom value as if
+  // the driver had recommended it.
+  const recommendedValueKnown = parameter.requested.mode === 'auto';
+  const summaryValue = intent.mode === 'auto' && !recommendedValueKnown
+    ? 'Chosen on apply'
+    : formatParameterValue(parameter, selectedValue);
+  const issueIds = [
+    ...(issue ? [`${parameter.id}-manual-issue`] : []),
+    ...constraintIssues.map((_, index) => `${parameter.id}-constraint-${index}`),
+  ];
+  return <div className={`canonical-parameter${expanded ? ' expanded' : ''}`} data-canonical-parameter={parameter.id}>
+    <button
+      type="button"
+      className="canonical-setting-summary"
+      aria-expanded={expanded}
+      aria-controls={`${parameter.id}-setting-editor`}
+      aria-describedby={issueIds.length === 0 ? undefined : issueIds.join(' ')}
       disabled={disabled}
-      onValue={(value) => onMode(value === 'manual' ? 'manual' : 'auto')}
-    />
-    {intent.mode === 'manual' && <ManualParameterControl parameter={parameter} value={intent.value} disabled={disabled} onValue={onManualValue}/>}
-    <div className="canonical-parameter-evidence">
-      <span><small>{parameter.group} · effective</small><strong>{formatParameterValue(parameter, parameter.effectiveValue)}</strong></span>
-      <span><small>Verification</small><strong>{sentenceCase(parameter.verification)}</strong></span>
-      <p>{parameter.auto.description}</p>
-    </div>
-    {issue && <span className="canonical-parameter-error" role="alert">{issue}</span>}
+      onClick={onExpand}
+    >
+      <span><small>{parameter.label}</small><strong>{intent.mode === 'auto' ? 'Recommended' : 'Custom'}</strong></span>
+      <span><strong>{summaryValue}</strong><ChevronRight size={15}/></span>
+    </button>
+    {expanded && <div id={`${parameter.id}-setting-editor`} className="canonical-setting-editor">
+      <div className="canonical-setting-choices" role="radiogroup" aria-label={`${parameter.label} setting mode`}>
+        <button type="button" role="radio" aria-checked={intent.mode === 'auto'} disabled={disabled} onClick={onRecommended}>
+          <span><strong>Recommended</strong><small>{recommendedValueKnown ? `${formatParameterValue(parameter, parameter.effectiveValue)} · selected by instrument` : 'The connected instrument will choose a compatible value.'}</small></span>
+          {intent.mode === 'auto' && <CheckCircle2 size={15}/>}
+        </button>
+        <button type="button" role="radio" aria-checked={intent.mode === 'manual'} disabled={disabled} onClick={onCustomize}>
+          <span><strong>Custom</strong><small>Choose a value for this measurement.</small></span>
+          {intent.mode === 'manual' && <CheckCircle2 size={15}/>}
+        </button>
+      </div>
+      {intent.mode === 'manual' && <div className="canonical-custom-editor">
+        <ManualParameterControl parameter={parameter} value={intent.value} disabled={disabled} onValue={onManualValue}/>
+      </div>}
+      <details className="canonical-setting-details">
+        <summary>Details</summary>
+        <p>{parameter.auto.description}</p>
+        <span>Current value: {sentenceCase(parameter.verification)}</span>
+      </details>
+    </div>}
+    {issue && <span id={`${parameter.id}-manual-issue`} className="canonical-parameter-error" role="alert">{issue}</span>}
+    {constraintIssues.map((constraint, index) => <span key={constraint.key} id={`${parameter.id}-constraint-${index}`} className="canonical-parameter-error" role="alert">{constraint.message}</span>)}
   </div>;
 }
 
@@ -309,14 +386,81 @@ function ManualParameterControl({
   }
 }
 
-const MODE_OPTIONS = [{ value: 'auto', label: 'Automatic' }, { value: 'manual', label: 'Manual' }] as const;
-
 function operationsForPlacement(
   operations: readonly CanonicalOperation[],
   placement: CanonicalOperationPlacement | undefined,
+  acquisitionKind: CanonicalAcquisitionKind | undefined,
 ): readonly CanonicalOperation[] {
-  if (placement === 'source') return operations.filter(({ scope }) => scope === 'source' || scope === 'instrument');
-  return placement === 'acquisition' ? operations.filter(({ scope }) => scope !== 'source') : operations;
+  const candidates = placement === 'source'
+    ? operations.filter(({ scope }) => scope === 'source' || scope === 'instrument')
+    : placement === 'acquisition'
+      ? operations.filter(({ scope }) => scope !== 'source')
+      : operations;
+  if (acquisitionKind === undefined) return candidates;
+  const acquisitionCandidates = candidates.filter(({ scope }) => scope !== 'source');
+  const typed = acquisitionCandidates.filter((operation) => operation.acquisitionKind === acquisitionKind);
+  if (typed.length > 0) return typed;
+  const legacy = acquisitionCandidates.filter((operation) => operation.acquisitionKind === undefined);
+  return legacy.length === 1 ? legacy : [];
+}
+
+type CanonicalConstraintIssue = Readonly<{
+  key: string;
+  message: string;
+  parameterIds: readonly [string, string];
+}>;
+
+function parameterGroups(parameters: readonly CanonicalParameter[]): readonly Readonly<{
+  group: string;
+  parameters: readonly CanonicalParameter[];
+}>[] {
+  const groups = new Map<string, CanonicalParameter[]>();
+  for (const parameter of parameters) {
+    const group = groups.get(parameter.group);
+    if (group) group.push(parameter);
+    else groups.set(parameter.group, [parameter]);
+  }
+  return [...groups].map(([group, groupedParameters]) => ({ group, parameters: groupedParameters }));
+}
+
+function operationConstraintIssues(
+  parameters: readonly CanonicalParameter[],
+  constraints: readonly CanonicalOperationConstraint[],
+  intents: Readonly<Record<string, CanonicalParameterIntent>>,
+): readonly CanonicalConstraintIssue[] {
+  const parameterById = new Map(parameters.map((parameter) => [parameter.id, parameter] as const));
+  const issues: CanonicalConstraintIssue[] = [];
+  for (const constraint of constraints) {
+    const leftParameter = parameterById.get(constraint.leftParameterId);
+    const rightParameter = parameterById.get(constraint.rightParameterId);
+    const leftIntent = leftParameter && (intents[leftParameter.id] ?? leftParameter.requested);
+    const rightIntent = rightParameter && (intents[rightParameter.id] ?? rightParameter.requested);
+    // Any recommended value can be resolved as a pair by the connected
+    // driver. Only two explicit custom values form a deterministic invalid
+    // draft that Atomizer can honestly reject before touching hardware.
+    if (!leftIntent || !rightIntent || leftIntent.mode !== 'manual' || rightIntent.mode !== 'manual'
+      || typeof leftIntent.value !== 'number' || typeof rightIntent.value !== 'number') continue;
+    if (numericRelationHolds(leftIntent.value, constraint.relation, rightIntent.value)) continue;
+    issues.push({
+      key: `${constraint.leftParameterId}:${constraint.relation}:${constraint.rightParameterId}`,
+      message: constraint.message,
+      parameterIds: [constraint.leftParameterId, constraint.rightParameterId],
+    });
+  }
+  return issues;
+}
+
+function numericRelationHolds(
+  left: number,
+  relation: CanonicalOperationConstraint['relation'],
+  right: number,
+): boolean {
+  switch (relation) {
+    case 'less-than': return left < right;
+    case 'less-than-or-equal': return left <= right;
+    case 'greater-than': return left > right;
+    case 'greater-than-or-equal': return left >= right;
+  }
 }
 
 function defaultOperation(operations: readonly CanonicalOperation[]): CanonicalOperation | undefined {

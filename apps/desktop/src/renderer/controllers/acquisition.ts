@@ -586,7 +586,7 @@ export class AcquisitionController {
     const expectedKind: GlobalAcquisitionKind = selectIqCapability(k.state) === undefined
       ? 'swept-spectrum'
       : 'complex-iq';
-    if (session.configuration !== undefined) return;
+    if (session.configuration?.configuration.kind === expectedKind) return;
 
     const readSurface = window.atomizerInstrument.canonicalSurface;
     if (!readSurface) throw new Error('The connected instrument does not publish canonical acquisition controls');

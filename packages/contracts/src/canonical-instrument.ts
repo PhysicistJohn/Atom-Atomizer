@@ -169,6 +169,24 @@ export const canonicalAcquisitionKindSchema = z.enum([
 ]);
 export type CanonicalAcquisitionKind = z.infer<typeof canonicalAcquisitionKindSchema>;
 
+/**
+ * A driver-declared relationship between two numeric operation parameters.
+ * This keeps cross-setting safety inside the canonical surface rather than
+ * asking Atomizer to recognize a particular device or control family.
+ */
+export const canonicalOperationConstraintSchema = z.object({
+  kind: z.literal('numeric-relation'),
+  leftParameterId: canonicalParameterIdSchema,
+  relation: z.enum(['less-than', 'less-than-or-equal', 'greater-than', 'greater-than-or-equal']),
+  rightParameterId: canonicalParameterIdSchema,
+  message: canonicalDescriptionSchema,
+}).strict().superRefine((constraint, context) => {
+  if (constraint.leftParameterId === constraint.rightParameterId) {
+    context.addIssue({ code: 'custom', path: ['rightParameterId'], message: 'A parameter relation must name two different parameters' });
+  }
+});
+export type CanonicalOperationConstraint = z.infer<typeof canonicalOperationConstraintSchema>;
+
 export const canonicalOperationSchema = z.object({
   id: canonicalOperationIdSchema,
   label: canonicalLabelSchema,
@@ -187,6 +205,7 @@ export const canonicalOperationSchema = z.object({
    */
   acquisitionKind: canonicalAcquisitionKindSchema.optional(),
   parameterIds: z.array(canonicalParameterIdSchema).max(MAX_CANONICAL_PARAMETERS_V1),
+  constraints: z.array(canonicalOperationConstraintSchema).max(MAX_CANONICAL_PARAMETERS_V1).optional(),
   outputs: z.array(canonicalLabelSchema).max(16).default([]),
   availability: z.enum(['available', 'busy', 'unavailable']),
   primary: z.boolean().default(false),
@@ -239,6 +258,7 @@ export const canonicalInstrumentSurfaceSchema = z.object({
     context.addIssue({ code: 'custom', path: ['operations'], message: 'A canonical surface can declare at most one primary operation' });
   }
   const parameterIdSet = new Set(parameterIds);
+  const parametersById = new Map(surface.parameters.map((parameter) => [parameter.id, parameter] as const));
   for (const [operationIndex, operation] of surface.operations.entries()) {
     for (const [parameterIndex, parameterId] of operation.parameterIds.entries()) {
       if (!parameterIdSet.has(parameterId)) {
@@ -247,6 +267,26 @@ export const canonicalInstrumentSurfaceSchema = z.object({
           path: ['operations', operationIndex, 'parameterIds', parameterIndex],
           message: `Operation references undeclared parameter ${parameterId}`,
         });
+      }
+    }
+    const operationParameterIds = new Set(operation.parameterIds);
+    for (const [constraintIndex, constraint] of (operation.constraints ?? []).entries()) {
+      for (const side of ['leftParameterId', 'rightParameterId'] as const) {
+        const parameterId = constraint[side];
+        const parameter = parametersById.get(parameterId);
+        if (!operationParameterIds.has(parameterId)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['operations', operationIndex, 'constraints', constraintIndex, side],
+            message: `Operation constraint references parameter ${parameterId} outside this operation`,
+          });
+        } else if (parameter?.manual.kind !== 'number' && parameter?.manual.kind !== 'integer') {
+          context.addIssue({
+            code: 'custom',
+            path: ['operations', operationIndex, 'constraints', constraintIndex, side],
+            message: 'Numeric parameter relations require numeric or integer parameters',
+          });
+        }
       }
     }
   }
@@ -303,5 +343,30 @@ export function canonicalOperationParameterIntentsFor(
   if (request.parameters.some((parameter) => !operation.parameterIds.includes(parameter.parameterId))) {
     throw new RangeError(`Canonical operation ${operationId} received a parameter it does not own`);
   }
-  return new Map(request.parameters.map((parameter) => [parameter.parameterId, parameter.intent] as const));
+  const intents = new Map(request.parameters.map((parameter) => [parameter.parameterId, parameter.intent] as const));
+  for (const constraint of operation.constraints ?? []) {
+    const left = intents.get(constraint.leftParameterId);
+    const right = intents.get(constraint.rightParameterId);
+    // A recommended value is deliberately resolved by the driver as part of
+    // its complete configuration. Only two explicit numeric custom values are
+    // a deterministic relation that this portable request guard can reject.
+    if (left?.mode !== 'manual' || right?.mode !== 'manual'
+      || typeof left.value !== 'number' || typeof right.value !== 'number') continue;
+    if (numericConstraintRelationHolds(left.value, constraint.relation, right.value)) continue;
+    throw new RangeError(constraint.message);
+  }
+  return intents;
+}
+
+function numericConstraintRelationHolds(
+  left: number,
+  relation: CanonicalOperationConstraint['relation'],
+  right: number,
+): boolean {
+  switch (relation) {
+    case 'less-than': return left < right;
+    case 'less-than-or-equal': return left <= right;
+    case 'greater-than': return left > right;
+    case 'greater-than-or-equal': return left >= right;
+  }
 }

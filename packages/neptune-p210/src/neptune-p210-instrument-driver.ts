@@ -54,6 +54,7 @@ import {
   instrumentFeatureCommandSchema,
   instrumentMeasurementSchema,
   type InstrumentCandidate,
+  type CanonicalParameterIntent,
   type InstrumentCandidateDescriptor,
   type InstrumentCapabilities,
   type InstrumentConfiguration,
@@ -70,6 +71,9 @@ import {
 import {
   canonicalIntegerParameter,
   canonicalRangeValue,
+  canonicalRangeValueAtLeast,
+  canonicalRangeValueAtMost,
+  maximumReachableRangeValue,
   requireCanonicalRange,
   resolveCanonicalInteger,
   CanonicalOperationResolution,
@@ -662,6 +666,10 @@ interface BoundConfiguration {
   readonly sampleCount: number;
 }
 
+type ComplexIqCapability = Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }>;
+type ComplexIqConfiguration = Extract<InstrumentConfiguration, { kind: 'complex-iq' }>;
+type CaptureRateBandwidth = Readonly<{ sampleRateHz: number; bandwidthHz: number }>;
+
 class NeptuneP210InstrumentSession implements InstrumentSession {
   readonly driverId = NEPTUNE_P210_DRIVER_ID;
   readonly rfOutput = 'not-supported' as const;
@@ -714,7 +722,7 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
   get canonicalSurface(): CanonicalInstrumentSurface {
     const capability = this.#complexIqCapability();
     const current = this.#currentConfiguration();
-    const automatic = this.#automaticConfiguration(capability, current);
+    const automatic = this.#automaticConfiguration(capability);
     const effective = current ?? automatic;
     const configured = current !== undefined;
     const revision = this.#configuration?.command.configurationRevision ?? 'default';
@@ -768,6 +776,13 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
         scope: 'acquisition',
         acquisitionKind: 'complex-iq',
         parameterIds: ['capture.tune', 'capture.sample-rate', 'capture.bandwidth', 'capture.samples'],
+        constraints: [{
+          kind: 'numeric-relation',
+          leftParameterId: 'capture.bandwidth',
+          relation: 'less-than-or-equal',
+          rightParameterId: 'capture.sample-rate',
+          message: 'Bandwidth must not exceed sample rate.',
+        }],
         outputs: ['Complex I/Q'],
         availability: this.#closed ? 'unavailable' : 'available',
         primary: true,
@@ -784,26 +799,11 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     }
     const intents = canonicalOperationParameterIntentsFor(surface, 'capture', requestValue);
     const capability = this.#complexIqCapability();
-    const automatic = this.#automaticConfiguration(capability, this.#currentConfiguration());
+    const automatic = this.#automaticConfiguration(capability);
     const centerHz = resolveCanonicalInteger(
       intents.get('capture.tune'), automatic.centerHz, capability.centerFrequencyHz, 'Capture tune',
     );
-    const sampleRateHz = resolveCanonicalInteger(
-      intents.get('capture.sample-rate'), automatic.sampleRateHz, capability.sampleRateHz, 'Capture sample rate',
-    );
-    // An automatic passband is allowed to depend on the requested automatic
-    // or manual sample rate.  That policy belongs here, not in Atomizer.
-    const automaticBandwidthHz = canonicalRangeValue(
-      capability.bandwidthHz,
-      Math.min(automatic.bandwidthHz, sampleRateHz),
-      CANONICAL_CAPTURE_SELECTION_ERROR,
-    );
-    const bandwidthHz = resolveCanonicalInteger(
-      intents.get('capture.bandwidth'), automaticBandwidthHz, capability.bandwidthHz, 'Capture bandwidth',
-    );
-    if (bandwidthHz > sampleRateHz) {
-      throw new RangeError('Capture bandwidth cannot exceed its selected sample rate');
-    }
+    const { sampleRateHz, bandwidthHz } = this.#resolveCaptureRateBandwidth(intents, capability, automatic);
     const sampleCount = resolveCanonicalInteger(
       intents.get('capture.samples'), automatic.sampleCount, capability.sampleCount, 'Capture samples',
     );
@@ -997,7 +997,7 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     if (this.#closed) throw new Error('Neptune P210 instrument session is closed');
   }
 
-  #complexIqCapability(): Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }> {
+  #complexIqCapability(): ComplexIqCapability {
     const capability = this.capabilities.acquisitions.find((entry) => entry.kind === 'complex-iq');
     if (!capability || capability.kind !== 'complex-iq') {
       throw new Error('Connected capture interface no longer advertises complex samples');
@@ -1005,19 +1005,32 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
     return capability;
   }
 
-  #currentConfiguration(): Extract<InstrumentConfiguration, { kind: 'complex-iq' }> | undefined {
+  #currentConfiguration(): ComplexIqConfiguration | undefined {
     const configuration = this.#configuration?.command.configuration;
     return configuration?.kind === 'complex-iq' ? configuration : undefined;
   }
 
   #automaticConfiguration(
-    capability: Extract<InstrumentCapabilities['acquisitions'][number], { kind: 'complex-iq' }>,
-    current: Extract<InstrumentConfiguration, { kind: 'complex-iq' }> | undefined,
-  ): Extract<InstrumentConfiguration, { kind: 'complex-iq' }> {
-    if (current) return current;
-    const sampleRateHz = canonicalRangeValue(capability.sampleRateHz, 10_000_000, CANONICAL_CAPTURE_SELECTION_ERROR);
-    const bandwidthHz = canonicalRangeValue(capability.bandwidthHz, Math.min(8_000_000, sampleRateHz), CANONICAL_CAPTURE_SELECTION_ERROR);
-    if (bandwidthHz > sampleRateHz) {
+    capability: ComplexIqCapability,
+  ): ComplexIqConfiguration {
+    const sampleRateHz = canonicalRangeValueAtLeast(
+      capability.sampleRateHz,
+      10_000_000,
+      capability.bandwidthHz.min,
+      CANONICAL_CAPTURE_SELECTION_ERROR,
+    );
+    if (sampleRateHz === undefined) {
+      throw new RangeError(
+        `Capture driver could not select an automatic sample rate that admits the minimum ${capability.bandwidthHz.min} Hz bandwidth`,
+      );
+    }
+    const bandwidthHz = canonicalRangeValueAtMost(
+      capability.bandwidthHz,
+      8_000_000,
+      sampleRateHz,
+      CANONICAL_CAPTURE_SELECTION_ERROR,
+    );
+    if (bandwidthHz === undefined) {
       throw new RangeError('Capture driver could not select an automatic bandwidth within its sample-rate limit');
     }
     return {
@@ -1028,6 +1041,75 @@ class NeptuneP210InstrumentSession implements InstrumentSession {
       sampleCount: canonicalRangeValue(capability.sampleCount, 262_144, CANONICAL_CAPTURE_SELECTION_ERROR),
       sampleFormat: capability.sampleFormat,
     };
+  }
+
+  /**
+   * Resolve the dependent capture controls together.  A manual setting is
+   * never changed, but its Auto counterpart is selected around it when the
+   * capability admits that pair.  Keeping this policy in the driver means
+   * Atomizer only ever handles homogeneous intents and resolved values.
+   */
+  #resolveCaptureRateBandwidth(
+    intents: ReadonlyMap<string, CanonicalParameterIntent>,
+    capability: ComplexIqCapability,
+    automatic: ComplexIqConfiguration,
+  ): CaptureRateBandwidth {
+    const sampleRateIntent = intents.get('capture.sample-rate');
+    const bandwidthIntent = intents.get('capture.bandwidth');
+    const requestedSampleRateHz = resolveCanonicalInteger(
+      sampleRateIntent, automatic.sampleRateHz, capability.sampleRateHz, 'Capture sample rate',
+    );
+    const requestedBandwidthHz = resolveCanonicalInteger(
+      bandwidthIntent, automatic.bandwidthHz, capability.bandwidthHz, 'Capture bandwidth',
+    );
+    // resolveCanonicalInteger above gives each missing or malformed intent a
+    // parameter-specific error. The guards make the pairing policy explicit
+    // to TypeScript as well as to readers.
+    if (!sampleRateIntent || !bandwidthIntent) {
+      throw new RangeError('Capture rate and bandwidth intents are required');
+    }
+
+    const sampleRateIsAuto = sampleRateIntent.mode === 'auto';
+    const bandwidthIsAuto = bandwidthIntent.mode === 'auto';
+    if (!sampleRateIsAuto && !bandwidthIsAuto) {
+      if (requestedBandwidthHz > requestedSampleRateHz) {
+        throw new RangeError(
+          `Manual capture bandwidth ${requestedBandwidthHz} Hz exceeds the manually selected sample rate ${requestedSampleRateHz} Hz. `
+            + 'Set bandwidth at or below the sample rate, or return either setting to Auto.',
+        );
+      }
+      return { sampleRateHz: requestedSampleRateHz, bandwidthHz: requestedBandwidthHz };
+    }
+
+    const sampleRateHz = sampleRateIsAuto
+      ? canonicalRangeValueAtLeast(
+        capability.sampleRateHz,
+        automatic.sampleRateHz,
+        bandwidthIsAuto ? capability.bandwidthHz.min : requestedBandwidthHz,
+        CANONICAL_CAPTURE_SELECTION_ERROR,
+      )
+      : requestedSampleRateHz;
+    if (sampleRateHz === undefined) {
+      throw new RangeError(
+        `Manual capture bandwidth ${requestedBandwidthHz} Hz cannot be paired with an automatic sample rate. `
+          + `The highest admitted sample rate is ${maximumReachableRangeValue(capability.sampleRateHz)} Hz.`,
+      );
+    }
+    const bandwidthHz = bandwidthIsAuto
+      ? canonicalRangeValueAtMost(
+        capability.bandwidthHz,
+        automatic.bandwidthHz,
+        sampleRateHz,
+        CANONICAL_CAPTURE_SELECTION_ERROR,
+      )
+      : requestedBandwidthHz;
+    if (bandwidthHz === undefined) {
+      throw new RangeError(
+        `Automatic capture bandwidth cannot fit the manually selected ${requestedSampleRateHz} Hz sample rate. `
+          + `The smallest admitted bandwidth is ${capability.bandwidthHz.min} Hz.`,
+      );
+    }
+    return { sampleRateHz, bandwidthHz };
   }
 }
 

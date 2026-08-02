@@ -76,7 +76,7 @@ export function Sidebar({
     : 'Acquire one global spectrum analysis frame';
   const acquisitionStatus = continuous
     ? acquisition === 'stopping' ? 'Stopping global analysis' : acquisition === 'retuning' ? 'Retuning global analysis' : globalAnalysisLabel
-    : acquiringSingle ? 'Collecting' : acquisition === 'configuring' ? 'Configuring' : connected ? 'Ready' : 'Offline';
+    : acquiringSingle ? 'Collecting' : acquisition === 'configuring' ? 'Configuring' : acquisition === 'complete' ? 'Captured' : acquisition === 'failed' ? 'Needs attention' : connected ? 'Ready' : 'Offline';
   return <aside className="sidebar">
     <nav aria-label="Primary navigation">
       {measurementViews.map((item) => {

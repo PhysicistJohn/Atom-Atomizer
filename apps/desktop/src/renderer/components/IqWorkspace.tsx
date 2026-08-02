@@ -96,6 +96,7 @@ export function IqWorkspace({
       ? <CanonicalOperationPanel
           surface={canonicalSurface}
           placement="acquisition"
+          acquisitionKind="complex-iq"
           busy={busy}
           className="iq-control-panel"
           onExecute={onCanonicalOperation}

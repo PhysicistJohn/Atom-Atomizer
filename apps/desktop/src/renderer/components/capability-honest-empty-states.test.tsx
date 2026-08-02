@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, within } from '@testing-library/react';
 import type { ChannelMeasurementConfiguration, SpectrumDisplayConfiguration, WaterfallConfiguration } from '@tinysa/contracts';
 import { SpectrumPlot } from './SpectrumPlot.js';
 import { WaterfallView } from './WaterfallView.js';
@@ -105,7 +105,21 @@ describe('Spectrum/Waterfall/Channel distinguish "no data yet" from "no spectrum
       const view = render(<ChannelAnalysisView configuration={configuration} display={display} spectrumCapabilityAvailable onConfiguration={() => {}}/>);
       const empty = requireEmptyState(view.container, '.analysis-empty');
       expect(within(empty).getByText('No sweep')).toBeTruthy();
-      expect(within(empty).getByText('Acquire the carrier and adjacent windows.')).toBeTruthy();
+      expect(within(empty).getByText('Capture a frame, then fit the strongest signal or set the analysis window.')).toBeTruthy();
+      expect(within(empty).queryByRole('button', { name: 'Capture a fresh analysis frame' })).toBeNull();
+    });
+
+    it('offers the supplied generic capture action only when a scalar view is possible', () => {
+      const onCapture = vi.fn();
+      const view = render(<ChannelAnalysisView configuration={configuration} display={display} spectrumCapabilityAvailable onCapture={onCapture} onConfiguration={() => {}}/>);
+      const empty = requireEmptyState(view.container, '.analysis-empty');
+      const capture = within(empty).getByRole('button', { name: 'Capture a fresh analysis frame' });
+      expect(capture.textContent).toContain('Capture');
+      fireEvent.click(capture);
+      expect(onCapture).toHaveBeenCalledOnce();
+
+      view.rerender(<ChannelAnalysisView configuration={configuration} display={display} spectrumCapabilityAvailable={false} onCapture={onCapture} onConfiguration={() => {}}/>);
+      expect(within(requireEmptyState(view.container, '.analysis-empty')).queryByRole('button', { name: 'Capture a fresh analysis frame' })).toBeNull();
     });
 
     it('shows the honest no-capability state for a source with neither swept-spectrum nor complex-I/Q', () => {

@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { Download } from 'lucide-react';
 import { readMarkers } from '@tinysa/analysis';
 import { MeasurementWorkspace } from '../components/MeasurementWorkspace.js';
-import { selectBusy, selectSpectrumCapabilityAvailable, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
+import { selectAcquisitionDisabledReason, selectBusy, selectSpectrumCapabilityAvailable, shallowEqual, useStore, type AtomizerRendererState } from '../store.js';
 import type { RendererRuntime } from '../AppShell.js';
 
 const selectMeasurementState = (state: AtomizerRendererState) => ({
@@ -41,10 +41,15 @@ export function MeasurementContainer({ runtime, measurementActions }: {
   measurementActions: ReactNode;
 }) {
   const { measurement, kernel } = runtime;
-  const s = useStore(runtime.store, (state) => ({
-    ...selectMeasurementState(state),
-    busy: selectBusy(state, kernel.instrumentTransactionOwner.current),
-  }), shallowEqual);
+  const s = useStore(runtime.store, (state) => {
+    const busy = selectBusy(state, kernel.instrumentTransactionOwner.current);
+    return {
+      ...selectMeasurementState(state),
+      busy,
+      captureAvailable: state.canonicalSurface !== undefined
+        && selectAcquisitionDisabledReason(state, busy) === undefined,
+    };
+  }, shallowEqual);
   const markerReadings = useMemo(
     () => readMarkers(s.markers, s.traceFrames, s.detections),
     [s.markers, s.traceFrames, s.detections],
@@ -55,6 +60,7 @@ export function MeasurementContainer({ runtime, measurementActions }: {
     canonicalSurface={s.canonicalSurface} onCanonicalOperation={s.canonicalSurface
       ? (operationId, parameters) => runtime.events.executeCanonicalOperation(s.canonicalSurface!, operationId, parameters)
       : undefined} spectrumCapabilityAvailable={s.spectrumCapabilityAvailable} busy={s.busy} streaming={s.continuous}
+    onCapture={s.captureAvailable ? () => void runtime.acquisition.acquireFromUi() : undefined}
     sweep={s.sweep} history={s.history} detections={s.detections} acquisition={s.acquisition}
     traces={s.traceConfiguration} frames={s.traceFrames} firmwareFrames={s.firmwareTraceFrames} visibleFirmwareTraceIds={s.visibleFirmwareTraceIds} onFirmwareTraceVisibility={(traceId, visible) => measurement.configureFirmwareTraceVisibility(traceId, visible)} activeTraceId={s.activeTraceId} onActiveTrace={(traceId) => runtime.store.set({ activeTraceId: traceId })} markers={s.markers} readings={markerReadings}
     activeMarkerId={s.activeMarkerId} markerSearch={s.markerSearchConfiguration} display={s.displayConfiguration}

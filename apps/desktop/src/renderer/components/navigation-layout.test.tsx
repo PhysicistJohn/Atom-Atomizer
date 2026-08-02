@@ -139,6 +139,26 @@ describe('desktop navigation and compact measurement layout', () => {
     expect(onStop).toHaveBeenCalledOnce();
   });
 
+  it('keeps a completed single acquisition visibly acknowledged', () => {
+    const view = render(<Sidebar
+      active="spectrum"
+      measurementView="spectrum"
+      output="off"
+      generationAvailable
+      connected
+      acquisition="complete"
+      continuous={false}
+      acquisitionBusy={false}
+      acquisitionDisabled={false}
+      onSelect={vi.fn()}
+      onMeasurementView={vi.fn()}
+      onRun={vi.fn()}
+      onSingle={vi.fn()}
+      onStop={vi.fn()}
+    />);
+    expect(within(view.container).getByRole('region', { name: 'Acquisition controls' }).textContent).toContain('Captured');
+  });
+
   it('keeps Spectrum, Waterfall, and Channel out of the Spectrum top utility bar', () => {
     const view = render(<MeasurementWorkspace
       measurementActions={<button type="button">Export CSV</button>}

@@ -167,46 +167,49 @@ async function canonicalSetup() {
   await press('measurement.setup');
   await waitFor('canonical-setup', `Boolean(document.querySelector('.canonical-operation-panel'))`, 20_000);
   const parameters = await evaluate(`(() => [...document.querySelectorAll('.canonical-operation-panel [data-canonical-parameter]')].map((node) => {
-    const mode = node.querySelector('select[aria-label$=" mode"]');
-    return { id: node.getAttribute('data-canonical-parameter') ?? '', disabled: Boolean(mode?.disabled),
-      options: mode ? [...mode.options].map((option) => option.textContent?.trim() ?? '') : [] };
+    const summary = node.querySelector('button.canonical-setting-summary');
+    const state = [...(summary?.querySelectorAll('strong') ?? [])].map((item) => item.textContent?.trim() ?? '')
+      .find((value) => value === 'Recommended' || value === 'Custom');
+    return { id: node.getAttribute('data-canonical-parameter') ?? '', hasSummary: Boolean(summary),
+      disabled: Boolean(summary?.disabled), state };
   }))()`);
   if (!parameters?.length) throw new Error('driver declared no canonical parameters');
-  const invalid = parameters.filter(({ options }) => !options.includes('Automatic') || !options.includes('Manual'));
-  if (invalid.length) throw new Error(`Auto/Manual modes missing for ${invalid.map(({ id }) => id || 'unnamed').join(', ')}`);
-  pass('canonical-setup', `${parameters.length} parameter(s) expose Automatic and Manual`);
+  const invalid = parameters.filter(({ hasSummary, state }) => !hasSummary || (state !== 'Recommended' && state !== 'Custom'));
+  if (invalid.length) throw new Error(`Recommended/Custom setting rows missing for ${invalid.map(({ id }) => id || 'unnamed').join(', ')}`);
+  if (await evaluate(`Boolean(document.querySelector('.canonical-operation-panel select[aria-label$=" mode"]'))`)) {
+    throw new Error('legacy Auto/Manual mode selector is still visible');
+  }
+  pass('canonical-setup', `${parameters.length} parameter(s) expose direct Recommended/Custom settings`);
 
-  const auto = await evaluate(`(() => {
-    const modes = [...document.querySelectorAll('.canonical-operation-panel [data-canonical-parameter] select[aria-label$=" mode"]')];
-    if (!modes.length || modes.some((mode) => mode.disabled)) return false;
-    for (const mode of modes) {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(mode, 'auto');
-      mode.dispatchEvent(new Event('input', { bubbles: true })); mode.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+  const recommended = await evaluate(`(() => {
+    const summaries = [...document.querySelectorAll('.canonical-operation-panel button.canonical-setting-summary')];
+    const reset = document.querySelector('.canonical-operation-panel button.canonical-reset');
+    if (!summaries.length || summaries.some((summary) => summary.disabled)) return false;
+    if (reset && !reset.disabled) reset.click();
     return true;
   })()`);
-  if (!auto) {
+  if (!recommended) {
     info('canonical-operation', 'visible operation is unavailable; contract was still checked');
     return;
   }
-  await waitFor('auto-intents', `(() => { const modes = [...document.querySelectorAll('.canonical-operation-panel [data-canonical-parameter] select[aria-label$=" mode"]')]; return modes.length > 0 && modes.every((mode) => mode.value === 'auto'); })()`);
+  await waitFor('recommended-settings', `(() => { const summaries = [...document.querySelectorAll('.canonical-operation-panel button.canonical-setting-summary')]; return summaries.length > 0 && summaries.every((summary) => [...summary.querySelectorAll('strong')].some((item) => item.textContent?.trim() === 'Recommended')); })()`);
   const operation = await evaluate(`(() => {
-    const apply = document.querySelector('.canonical-operation-panel button[data-agent-exclusion="human-canonical-operation-boundary"]');
+    const apply = document.querySelector('.canonical-operation-panel .canonical-operation-apply button');
     if (!apply || apply.disabled) return false; apply.click(); return apply.textContent?.trim() ?? 'operation';
   })()`);
   if (!operation) {
-    info('canonical-operation', 'no available operation to execute; Auto intents were verified');
+    info('canonical-operation', 'no available operation to execute; Recommended settings were verified');
     return;
   }
   const outcome = await waitFor('canonical-operation', `(() => {
     const panel = document.querySelector('.canonical-operation-panel');
     const alert = [...(panel?.querySelectorAll('[role="alert"]') ?? [])].map((node) => (node.textContent ?? '').trim()).find(Boolean);
     if (alert) return 'ERROR:' + alert;
-    const apply = panel?.querySelector('button[data-agent-exclusion="human-canonical-operation-boundary"]');
+    const apply = panel?.querySelector('.canonical-operation-apply button');
     return apply && !apply.disabled ? 'PASS' : '';
   })()`);
   if (String(outcome).startsWith('ERROR:')) throw new Error(String(outcome).slice(6));
-  pass('canonical-operation', `${operation} executed with driver-resolved Auto intents`);
+  pass('canonical-operation', `${operation} executed with driver-resolved recommended settings`);
 }
 
 const IQ_CAPTURE = `(() => {

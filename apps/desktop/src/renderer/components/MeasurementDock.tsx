@@ -123,10 +123,18 @@ export function MeasurementDock(props: MeasurementDockProps) {
 
     {panel === 'traces' && <TracePanel {...props}/>}
 
-    {panel === 'display' && <div className="measurement-panel display-panel parameter-stack">
-      <EditableParameter label="Reference level" value={props.display.referenceLevelDbm} displayValue={`${props.display.referenceLevelDbm} ${powerAxisUnit(displayFrame?.powerReference)}`} unit={powerAxisUnit(displayFrame?.powerReference)} minimum={-150} maximum={30} controlId="display.reference-level" onCommit={(value) => props.onDisplay({ ...props.display, referenceLevelDbm: Number(value) })}/>
-      <SelectParameter label="Vertical scale" value={props.display.decibelsPerDivision} options={[1, 2, 5, 10, 20].map((value) => ({ value, label: `${value} dB / division` }))} controlId="display.scale" onValue={(value) => props.onDisplay({ ...props.display, decibelsPerDivision: Number(value) as SpectrumDisplayConfiguration['decibelsPerDivision'] })}/>
-      <div className="panel-action"><button className="secondary full" onClick={props.onAutoScale} data-agent-control="display.auto-scale"><Gauge size={14}/>Auto scale latest trace</button></div>
+    {panel === 'display' && <div className="measurement-panel display-panel">
+      <section className="display-fit-action" aria-label="Fit display scale">
+        <div><strong>Fit the display</strong><span>Set both axes from the latest trace.</span></div>
+        <button className="secondary" onClick={props.onAutoScale} data-agent-control="display.auto-scale"><Gauge size={14}/>Fit latest trace</button>
+      </section>
+      <details className="display-manual-scale">
+        <summary><span>Manual scale</span><small>{props.display.referenceLevelDbm} {powerAxisUnit(displayFrame?.powerReference)} · {props.display.decibelsPerDivision} dB / div</small></summary>
+        <div className="parameter-stack">
+          <EditableParameter label="Reference level" value={props.display.referenceLevelDbm} displayValue={`${props.display.referenceLevelDbm} ${powerAxisUnit(displayFrame?.powerReference)}`} unit={powerAxisUnit(displayFrame?.powerReference)} minimum={-150} maximum={30} controlId="display.reference-level" onCommit={(value) => props.onDisplay({ ...props.display, referenceLevelDbm: Number(value) })}/>
+          <SelectParameter label="Vertical scale" value={props.display.decibelsPerDivision} options={[1, 2, 5, 10, 20].map((value) => ({ value, label: `${value} dB / division` }))} controlId="display.scale" onValue={(value) => props.onDisplay({ ...props.display, decibelsPerDivision: Number(value) as SpectrumDisplayConfiguration['decibelsPerDivision'] })}/>
+        </div>
+      </details>
     </div>}
   </section>;
 }
@@ -142,20 +150,48 @@ function TracePanel(props: MeasurementDockProps) {
   if (!trace) throw new Error(`Trace ${props.activeTraceId} does not exist`);
   const frame = props.frames.find((item) => item.traceId === trace.id);
   const firmwareOverlays = props.firmwareFrames.filter((item) => item.traceId !== 1);
+  const visibleOverlayCount = firmwareOverlays.filter((item) => props.visibleFirmwareTraceIds.includes(item.traceId)).length;
   return <div className="measurement-panel trace-panel">
-    <div className="trace-selector">{props.traces.map((item) => <button key={item.id} className={`t${item.id} ${item.id === trace.id ? 'active' : ''}`} onClick={() => props.onActiveTrace(item.id)} data-agent-control={`trace.${item.id}.select`}><i className={`trace-color t${item.id}`}/><span>TRACE {item.id}</span></button>)}</div>
-    <div className="trace-readout"><span><i className={`trace-color t${trace.id}`}/><small>TRACE {trace.id}</small></span><strong>{traceModeLabel(trace.mode)}</strong><em>{frame ? `${frame.sweepCount} sweep${frame.sweepCount === 1 ? '' : 's'} captured` : 'No data captured'}</em></div>
-    <div className="parameter-stack trace-settings">
-      <SelectParameter label="Trace mode" value={trace.mode} options={[{ value: 'blank', label: 'Off' }, { value: 'clear-write', label: 'Clear / Write' }, { value: 'max-hold', label: 'Maximum Hold' }, { value: 'min-hold', label: 'Minimum Hold' }, { value: 'average', label: 'Average' }, { value: 'view', label: 'View / Freeze' }]} controlId={`trace.${trace.id}.mode`} onValue={(value) => props.onTrace({ ...trace, mode: value as TraceConfiguration['mode'] })}/>
-      {trace.mode === 'average' && <EditableParameter label="Average count" value={trace.averageCount} displayValue={`${trace.averageCount} sweeps`} minimum={2} maximum={100} step={1} controlId={`trace.${trace.id}.average-count`} onCommit={(value) => props.onTrace({ ...trace, averageCount: Number(value) })}/>}
-    </div>
-    <div className="panel-action"><button className="secondary full" onClick={() => props.onTraceReset(trace.id)} data-agent-control={`trace.${trace.id}.reset`}><RotateCcw size={14}/>Reset Trace {trace.id}</button></div>
-    {firmwareOverlays.length > 0 && <section className="firmware-trace-bank">
-      <div className="panel-section-label"><span>Instrument overlays</span><small>Explicit readback · off by default</small></div>
+    <div className="trace-selector" aria-label="Choose a trace to configure">{props.traces.map((item) => <button key={item.id} className={`t${item.id} ${item.id === trace.id ? 'active' : ''}`} aria-pressed={item.id === trace.id} onClick={() => props.onActiveTrace(item.id)} data-agent-control={`trace.${item.id}.select`}><i className={`trace-color t${item.id}`}/><span>TRACE {item.id}</span><small>{traceModeLabel(item.mode)}</small></button>)}</div>
+    <div className="trace-readout"><span><i className={`trace-color t${trace.id}`}/><small>TRACE {trace.id}</small></span><strong>{traceModeLabel(trace.mode)}</strong><em>{frame ? `${frame.sweepCount} sweep${frame.sweepCount === 1 ? '' : 's'} captured` : 'Waiting for a sweep'}</em></div>
+    <section className="trace-behavior" aria-labelledby={`trace-${trace.id}-behavior-label`}>
+      <div className="panel-section-label"><span id={`trace-${trace.id}-behavior-label`}>How this trace updates</span><small>Choose an outcome for new sweeps</small></div>
+      <div className="trace-behavior-grid" role="radiogroup" aria-label={`Trace ${trace.id} behavior`} data-agent-control={`trace.${trace.id}.mode`}>
+        {TRACE_BEHAVIOR_OPTIONS.map((option) => <label
+          key={option.value}
+          className={trace.mode === option.value ? 'active' : ''}
+        ><input
+          type="radio"
+          name={`trace-${trace.id}-behavior`}
+          checked={trace.mode === option.value}
+          onChange={() => props.onTrace({ ...trace, mode: option.value })}
+          data-agent-control={`trace.${trace.id}.mode.${option.value}`}
+        /><span><strong>{option.label}</strong><small>{option.description}</small></span></label>)}
+      </div>
+      {trace.mode === 'average' && <div className="parameter-stack trace-behavior-detail">
+        <EditableParameter label="Sweeps to average" value={trace.averageCount} displayValue={`${trace.averageCount} sweeps`} minimum={2} maximum={100} step={1} controlId={`trace.${trace.id}.average-count`} onCommit={(value) => props.onTrace({ ...trace, averageCount: Number(value) })}/>
+      </div>}
+    </section>
+    <div className="panel-action"><button className="secondary full" onClick={() => props.onTraceReset(trace.id)} data-agent-control={`trace.${trace.id}.reset`}><RotateCcw size={14}/>Clear captured data</button></div>
+    {firmwareOverlays.length > 0 && <details className="firmware-trace-bank">
+      <summary><span>Instrument overlays</span><small>{visibleOverlayCount === 0 ? 'Hidden' : `${visibleOverlayCount} shown`}</small></summary>
       <div className="parameter-stack">{firmwareOverlays.map((item) => <ToggleParameter key={item.traceId} label={`D${item.traceId} · ${firmwareTraceRole(item)}`} value={props.visibleFirmwareTraceIds.includes(item.traceId)} controlId={`firmware-trace.${item.traceId}.visible`} onToggle={(visible) => props.onFirmwareTraceVisibility(item.traceId, visible)}/>)}</div>
-    </section>}
+    </details>}
   </div>;
 }
+
+const TRACE_BEHAVIOR_OPTIONS: readonly Readonly<{
+  value: TraceConfiguration['mode'];
+  label: string;
+  description: string;
+}>[] = [
+  { value: 'clear-write', label: 'Live', description: 'Show the latest sweep' },
+  { value: 'max-hold', label: 'Peak hold', description: 'Keep the highest values' },
+  { value: 'average', label: 'Average', description: 'Smooth repeated sweeps' },
+  { value: 'view', label: 'Freeze', description: 'Keep this trace unchanged' },
+  { value: 'min-hold', label: 'Minimum hold', description: 'Keep the lowest values' },
+  { value: 'blank', label: 'Off', description: 'Hide this trace' },
+];
 
 function formatMarkerReading(reading: MarkerReading | undefined): string {
   if (!reading) return '—';
@@ -218,7 +254,11 @@ function crossingUnavailableReason(reason: 'lower-crossing-not-observed' | 'uppe
 function formatSignedFrequency(value: number): string { return `${value >= 0 ? '+' : '−'}${formatFrequency(Math.abs(value))}`; }
 function traceModeLabel(value: TraceConfiguration['mode']): string {
   if (value === 'blank') return 'Off';
-  return formatLabel(value).replace('Min ', 'Minimum ').replace('Max ', 'Maximum ');
+  if (value === 'clear-write') return 'Live';
+  if (value === 'max-hold') return 'Peak hold';
+  if (value === 'min-hold') return 'Minimum hold';
+  if (value === 'view') return 'Freeze';
+  return formatLabel(value);
 }
 function firmwareTraceRole(frame: FirmwareTraceFrame): string {
   const role = frame.role === 'measured' ? 'Measured' : frame.role === 'raw' ? 'Raw' : 'Stored';

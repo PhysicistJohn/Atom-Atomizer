@@ -66,7 +66,17 @@ describe('in-process SignalLab canonical surface', () => {
       expect(initial.operations).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: 'spectrum.sweep', acquisitionKind: 'swept-spectrum' }),
         expect.objectContaining({ id: 'power.observe', acquisitionKind: 'detected-power-timeseries' }),
-        expect.objectContaining({ id: 'capture', acquisitionKind: 'complex-iq' }),
+        expect.objectContaining({
+          id: 'capture',
+          acquisitionKind: 'complex-iq',
+          constraints: [{
+            kind: 'numeric-relation',
+            leftParameterId: 'capture.bandwidth',
+            relation: 'less-than-or-equal',
+            rightParameterId: 'capture.sample-rate',
+            message: 'Bandwidth must not exceed sample rate.',
+          }],
+        }),
       ]));
       expect(initial.parameters).toHaveLength(15);
       for (const parameter of initial.parameters) {

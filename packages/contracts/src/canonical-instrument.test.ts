@@ -120,4 +120,103 @@ describe('canonical instrument surface', () => {
       operations: [{ ...surface.operations[0], scope: 'source', acquisitionKind: 'complex-iq' }],
     }).success).toBe(false);
   });
+
+  it('accepts only numeric, operation-local parameter relations', () => {
+    const numericSurface: CanonicalInstrumentSurface = {
+      ...surface,
+      parameters: [
+        surface.parameters[0]!,
+        surface.parameters[1]!,
+        {
+          id: 'capture.rate', label: 'Rate', group: 'Capture', unit: 'Hz',
+          manual: { kind: 'integer', range: { min: 1, max: 1_000, step: 1 } },
+          auto: { resolver: 'driver', description: 'Choose a valid rate.' },
+          requested: { mode: 'auto' }, effectiveValue: 100, verification: 'driver-selected',
+        },
+      ],
+      operations: [{
+        ...surface.operations[0]!,
+        parameterIds: ['capture.tune', 'capture.gain-mode', 'capture.rate'],
+        constraints: [{
+          kind: 'numeric-relation',
+          leftParameterId: 'capture.tune',
+          relation: 'less-than-or-equal',
+          rightParameterId: 'capture.rate',
+          message: 'Tune must not exceed rate.',
+        }],
+      }],
+    };
+    expect(canonicalInstrumentSurfaceSchema.parse(numericSurface)).toEqual(numericSurface);
+
+    expect(canonicalInstrumentSurfaceSchema.safeParse({
+      ...numericSurface,
+      operations: [{
+        ...numericSurface.operations[0],
+        constraints: [{
+          ...numericSurface.operations[0]!.constraints![0]!,
+          rightParameterId: 'capture.gain-mode',
+        }],
+      }],
+    }).success).toBe(false);
+    expect(canonicalInstrumentSurfaceSchema.safeParse({
+      ...numericSurface,
+      operations: [{
+        ...numericSurface.operations[0],
+        constraints: [{
+          ...numericSurface.operations[0]!.constraints![0]!,
+          rightParameterId: 'missing',
+        }],
+      }],
+    }).success).toBe(false);
+  });
+
+  it('rejects only explicitly-custom constraint violations before a driver resolves recommendations', () => {
+    const constrained: CanonicalInstrumentSurface = {
+      ...surface,
+      parameters: [
+        {
+          ...surface.parameters[0]!,
+          id: 'capture.bandwidth',
+          label: 'Bandwidth',
+          requested: { mode: 'auto' },
+          effectiveValue: 8_000_000,
+          manual: { kind: 'integer', range: { min: 1_000_000, max: 20_000_000, step: 1_000_000 } },
+        },
+        {
+          ...surface.parameters[0]!,
+          id: 'capture.rate',
+          label: 'Sample rate',
+          requested: { mode: 'auto' },
+          effectiveValue: 10_000_000,
+          manual: { kind: 'integer', range: { min: 1_000_000, max: 30_000_000, step: 1_000_000 } },
+        },
+      ],
+      operations: [{
+        ...surface.operations[0]!,
+        parameterIds: ['capture.bandwidth', 'capture.rate'],
+        constraints: [{
+          kind: 'numeric-relation',
+          leftParameterId: 'capture.bandwidth',
+          relation: 'less-than-or-equal',
+          rightParameterId: 'capture.rate',
+          message: 'Bandwidth must not exceed sample rate.',
+        }],
+      }],
+    };
+    const request = {
+      sessionId: 'session:1',
+      surfaceRevision: constrained.revision,
+      operationId: 'capture',
+      parameters: [
+        { parameterId: 'capture.bandwidth', intent: { mode: 'manual' as const, value: 20_000_000 } },
+        { parameterId: 'capture.rate', intent: { mode: 'manual' as const, value: 10_000_000 } },
+      ],
+    };
+    expect(() => canonicalOperationParameterIntentsFor(constrained, 'capture', request))
+      .toThrow('Bandwidth must not exceed sample rate.');
+    expect(canonicalOperationParameterIntentsFor(constrained, 'capture', {
+      ...request,
+      parameters: [{ parameterId: 'capture.bandwidth', intent: { mode: 'manual', value: 20_000_000 } }, { parameterId: 'capture.rate', intent: { mode: 'auto' } }],
+    }).get('capture.rate')).toEqual({ mode: 'auto' });
+  });
 });

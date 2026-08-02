@@ -3,7 +3,10 @@ import {
   CANONICAL_DRIVER_AUTO_DESCRIPTION,
   canonicalEnumParameter,
   canonicalNumericParameter,
+  canonicalOperationDefinition,
   canonicalRangeValue,
+  canonicalRangeValueAtLeast,
+  canonicalRangeValueAtMost,
   maximumReachableRangeValue,
   rangeAdmits,
   resolveCanonicalEnumIntent,
@@ -47,5 +50,45 @@ describe('canonical parameter helpers', () => {
     expect(rangeAdmits(10, range)).toBe(true);
     expect(rangeAdmits(9, range)).toBe(false);
     expect(() => canonicalRangeValue({ min: Number.MAX_SAFE_INTEGER + 1, max: Number.MAX_SAFE_INTEGER + 1 }, 0, 'Canonical capture selection is not a safe integer')).toThrow('Canonical capture selection is not a safe integer');
+  });
+
+  it('selects canonical grid values that honor dependent lower and upper bounds', () => {
+    const range = { min: 1, max: 10, step: 3 };
+    expect(canonicalRangeValueAtLeast(range, 1, 5)).toBe(7);
+    expect(canonicalRangeValueAtLeast(range, 10, 11)).toBeUndefined();
+    expect(canonicalRangeValueAtMost(range, 10, 6)).toBe(4);
+    expect(canonicalRangeValueAtMost(range, 1, 0)).toBeUndefined();
+  });
+
+  it('preserves driver-declared constraints on their canonical operation', () => {
+    const sampleRate = canonicalNumericParameter(
+      'integer', 'capture.sample-rate', 'Sample rate', 'Capture', 'Hz', { min: 1, max: 10, step: 1 },
+      { value: 8, verification: 'driver-selected' },
+    );
+    const bandwidth = canonicalNumericParameter(
+      'integer', 'capture.bandwidth', 'Bandwidth', 'Capture', 'Hz', { min: 1, max: 10, step: 1 },
+      { value: 4, verification: 'driver-selected' },
+    );
+    const constraints = [{
+      kind: 'numeric-relation' as const,
+      leftParameterId: bandwidth.id,
+      relation: 'less-than-or-equal' as const,
+      rightParameterId: sampleRate.id,
+      message: 'Bandwidth must not exceed sample rate.',
+    }];
+
+    const operation = canonicalOperationDefinition({
+      id: 'capture',
+      label: 'Capture',
+      description: 'Configure a bounded complex sample capture.',
+      scope: 'acquisition',
+      parameters: [sampleRate, bandwidth],
+      outputs: ['Complex I/Q'],
+      unavailable: false,
+      constraints,
+    });
+
+    expect(operation.constraints).toEqual(constraints);
+    expect(operation.constraints).not.toBe(constraints);
   });
 });

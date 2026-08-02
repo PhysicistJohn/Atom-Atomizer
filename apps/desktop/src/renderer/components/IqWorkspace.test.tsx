@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalInstrumentSurface, InstrumentMeasurement } from '@tinysa/contracts';
 import {
@@ -34,6 +34,8 @@ const canonicalCaptureSurface = {
   operations: [{
     id: 'capture',
     label: 'Capture',
+    scope: 'acquisition',
+    acquisitionKind: 'complex-iq',
     parameterIds: ['capture.tune'],
     outputs: ['Complex samples'],
     availability: 'available',
@@ -103,14 +105,46 @@ describe('complex I/Q workspace', () => {
       onCanonicalOperation={onCanonicalOperation}
     />);
 
-    const mode = screen.getByRole('combobox', { name: 'Receiver center mode' });
-    expect(within(mode).getByRole('option', { name: 'Automatic' })).toBeTruthy();
-    expect(within(mode).getByRole('option', { name: 'Manual' })).toBeTruthy();
-    expect(screen.getByText('Device readback')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Apply Capture' }));
+    expect(screen.queryByRole('combobox', { name: /mode$/i })).toBeNull();
+    const setting = screen.getByRole('button', { name: /^Receiver center/ });
+    expect(setting.textContent).toContain('Recommended');
+    fireEvent.click(setting);
+    expect(screen.getByRole('radiogroup', { name: 'Receiver center setting mode' })).toBeTruthy();
+    expect(screen.getByText('Current value: Device readback')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }));
     expect(onCanonicalOperation).toHaveBeenCalledWith('capture', [
       { parameterId: 'capture.tune', intent: { mode: 'auto' } },
     ]);
+  });
+
+  it('shows only complex-I/Q controls when a driver declares multiple result shapes', () => {
+    const mixedSurface: CanonicalInstrumentSurface = {
+      ...canonicalCaptureSurface,
+      revision: 'iq-canonical-surface-2',
+      operations: [
+        canonicalCaptureSurface.operations[0]!,
+        {
+          id: 'spectrum',
+          label: 'Sweep',
+          scope: 'acquisition',
+          acquisitionKind: 'swept-spectrum',
+          parameterIds: ['capture.tune'],
+          outputs: ['Spectrum'],
+          availability: 'available',
+          primary: false,
+          confirmation: 'none',
+        },
+      ],
+    };
+    render(<IqWorkspace
+      busy={false}
+      canonicalSurface={mixedSurface}
+      onCanonicalOperation={vi.fn()}
+    />);
+
+    expect(screen.getByRole('heading', { name: 'Capture', level: 2 })).toBeTruthy();
+    expect(screen.queryByRole('tablist', { name: 'Instrument operation' })).toBeNull();
+    expect(screen.queryByText('Sweep')).toBeNull();
   });
 
   it('fails closed to a generic driver-required state instead of rendering legacy mutable setup', () => {

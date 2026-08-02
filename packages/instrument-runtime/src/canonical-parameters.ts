@@ -1,6 +1,7 @@
 import type {
   CanonicalInstrumentSurface,
   CanonicalOperation,
+  CanonicalOperationConstraint,
   CanonicalParameter,
   CanonicalParameterIntent,
   CanonicalParameterVerification,
@@ -12,7 +13,7 @@ export type CanonicalEffective<Value extends number | string | boolean> = Readon
   value: Value;
   verification: CanonicalParameterVerification;
 }>;
-export const CANONICAL_DRIVER_AUTO_DESCRIPTION = 'The connected driver selects a valid setting when Auto is requested.';
+export const CANONICAL_DRIVER_AUTO_DESCRIPTION = 'The connected driver selects a valid setting when Recommended is selected.';
 
 export function canonicalRange(range: CanonicalNumericRange): { min: number; max: number; step?: number } {
   return { min: range.min, max: range.max, ...(range.step === undefined ? {} : { step: range.step }) };
@@ -66,11 +67,13 @@ export function canonicalOperationDefinition(input: Readonly<{
   id: string; label: string; description: string; scope: 'acquisition' | 'source' | 'instrument';
   parameters: readonly CanonicalParameter[]; outputs: readonly string[]; unavailable: boolean;
   acquisitionKind?: NonNullable<CanonicalOperation['acquisitionKind']>;
+  constraints?: readonly CanonicalOperationConstraint[];
   primary?: boolean; confirmation?: 'none' | 'high-impact';
 }>): CanonicalInstrumentSurface['operations'][number] {
   return {
     id: input.id, label: input.label, description: input.description, scope: input.scope,
     ...(input.acquisitionKind === undefined ? {} : { acquisitionKind: input.acquisitionKind }),
+    ...(input.constraints === undefined ? {} : { constraints: [...input.constraints] }),
     parameterIds: input.parameters.map((parameter) => parameter.id), outputs: [...input.outputs],
     availability: input.unavailable ? 'unavailable' : 'available', primary: input.primary ?? false,
     confirmation: input.confirmation ?? 'none',
@@ -154,10 +157,43 @@ export function canonicalRangeValue(
   range: CanonicalNumericRange, preferred: number, safeIntegerMessage = 'Canonical range selection is not a safe integer',
 ): number {
   const step = range.step ?? 1;
-  const maximum = range.min + Math.floor((range.max - range.min) / step) * step;
+  const maximum = maximumCanonicalRangeValue(range);
   const value = range.min + Math.round((Math.min(maximum, Math.max(range.min, preferred)) - range.min) / step) * step;
   if (!Number.isSafeInteger(value)) throw new RangeError(safeIntegerMessage);
   return value;
+}
+
+/** Select an admitted range value at or above `minimum`, without rounding beneath it. */
+export function canonicalRangeValueAtLeast(
+  range: CanonicalNumericRange,
+  preferred: number,
+  minimum: number,
+  safeIntegerMessage = 'Canonical range selection is not a safe integer',
+): number | undefined {
+  const selected = canonicalRangeValue(range, Math.max(preferred, minimum), safeIntegerMessage);
+  if (selected >= minimum) return selected;
+  const step = range.step ?? 1;
+  const candidate = range.min + Math.ceil((minimum - range.min) / step) * step;
+  return Number.isSafeInteger(candidate) && candidate <= maximumCanonicalRangeValue(range) ? candidate : undefined;
+}
+
+/** Select an admitted range value at or below `maximum`, without rounding above it. */
+export function canonicalRangeValueAtMost(
+  range: CanonicalNumericRange,
+  preferred: number,
+  maximum: number,
+  safeIntegerMessage = 'Canonical range selection is not a safe integer',
+): number | undefined {
+  const selected = canonicalRangeValue(range, Math.min(preferred, maximum), safeIntegerMessage);
+  if (selected <= maximum) return selected;
+  const step = range.step ?? 1;
+  const candidate = range.min + Math.floor((maximum - range.min) / step) * step;
+  return Number.isSafeInteger(candidate) && candidate >= range.min ? candidate : undefined;
+}
+
+function maximumCanonicalRangeValue(range: CanonicalNumericRange): number {
+  const step = range.step ?? 1;
+  return range.min + Math.floor((range.max - range.min) / step) * step;
 }
 
 export function resolveCanonicalInteger(

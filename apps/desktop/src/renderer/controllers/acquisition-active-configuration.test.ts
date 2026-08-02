@@ -34,10 +34,13 @@ const complexIq: InstrumentConfiguration = {
   sampleFormat: 'cf32le',
 };
 
-function activeConfiguration(configuration: InstrumentConfiguration = spectrum): InstrumentConfigurationState {
+function activeConfiguration(
+  configuration: InstrumentConfiguration = spectrum,
+  configurationRevision = 'configuration:canonical',
+): InstrumentConfigurationState {
   return {
     sessionId: 'canonical-session',
-    configurationRevision: 'configuration:canonical',
+    configurationRevision,
     configuration,
     configuredAt: '2026-08-01T00:00:00.000Z',
   };
@@ -210,6 +213,54 @@ describe('canonical acquisition routing', () => {
     const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
     installSession(runtime, undefined, true);
     const configured = activeConfiguration(complexIq);
+    const surface = spectrumAndCaptureSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const start = vi.spyOn(runtime.acquisition, 'startContinuous').mockResolvedValue();
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.startContinuousFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
+    expect(start).toHaveBeenCalledOnce();
+    runtime.classification.dispose();
+  });
+
+  it('re-admits complex I/Q over a pre-admitted spectrum configuration before global Single', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime, activeConfiguration(), true);
+    const configured = activeConfiguration(complexIq, 'configuration:automatic-iq');
+    const surface = spectrumAndCaptureSurface();
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const acquire = vi.spyOn(runtime.acquisition, 'acquireIq').mockResolvedValue({ measurementId: 'iq:automatic' } as never);
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
+
+    await runtime.acquisition.acquireFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
+    expect(acquire).toHaveBeenCalledOnce();
+    runtime.classification.dispose();
+  });
+
+  it('re-admits complex I/Q over a pre-admitted spectrum configuration before global Run', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    installSession(runtime, activeConfiguration(), true);
+    const configured = activeConfiguration(complexIq, 'configuration:automatic-iq');
     const surface = spectrumAndCaptureSurface();
     const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
       runtime.events.acceptConfiguration(configured);

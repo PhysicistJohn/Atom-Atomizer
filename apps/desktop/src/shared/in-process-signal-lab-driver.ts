@@ -10,6 +10,7 @@ import {
   signalLabOutputOneShotSampleLimit,
   type CanonicalInstrumentSurface,
   type CanonicalOperation,
+  type CanonicalOperationConstraint,
   type CanonicalOperationRequest,
   type CanonicalParameter,
   type CanonicalParameterIntent,
@@ -839,7 +840,7 @@ const CANONICAL_SIGNAL_LAB_PARAMETERS = {
   sourceChannelFadingRateHz: 'source.channel.fading-rate',
 } as const;
 
-const CANONICAL_SOURCE_AUTO_DESCRIPTION = 'The connected driver resolves Auto from its current admitted source state.';
+const CANONICAL_SOURCE_AUTO_DESCRIPTION = 'The connected driver resolves the recommendation from its current admitted source state.';
 const CANONICAL_RECEIVER_IMPAIRMENT_VALUES = [
   'clean',
   'awgn',
@@ -888,9 +889,18 @@ type CanonicalOperationDefinition = Readonly<{
   parameterIds: readonly string[];
   outputs: readonly string[];
   acquisitionKind?: NonNullable<CanonicalOperation['acquisitionKind']>;
+  constraints?: readonly CanonicalOperationConstraint[];
   primary?: boolean;
   confirmation?: CanonicalOperation['confirmation'];
 }>;
+
+const CANONICAL_CAPTURE_BANDWIDTH_CONSTRAINTS = [{
+  kind: 'numeric-relation' as const,
+  leftParameterId: CANONICAL_SIGNAL_LAB_PARAMETERS.captureBandwidthHz,
+  relation: 'less-than-or-equal' as const,
+  rightParameterId: CANONICAL_SIGNAL_LAB_PARAMETERS.captureSampleRateHz,
+  message: 'Bandwidth must not exceed sample rate.',
+}] as const satisfies readonly CanonicalOperationConstraint[];
 
 const CANONICAL_ACQUISITION_OPERATIONS = [
   [CANONICAL_SIGNAL_LAB_OPERATIONS.spectrum, 'Sweep', 'Configure and acquire one scalar spectrum.', [CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStartHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumStopHz, CANONICAL_SIGNAL_LAB_PARAMETERS.spectrumPoints], 'Spectrum', 'swept-spectrum', true],
@@ -961,7 +971,19 @@ function signalLabCanonicalSurface(input: Readonly<{
     parameters,
     operations: [
       ...CANONICAL_ACQUISITION_OPERATIONS.map(([id, label, description, parameterIds, output, acquisitionKind, primary]) =>
-        canonicalOperation({ id, label, description, scope: 'acquisition', acquisitionKind, parameterIds, outputs: [output], primary }, input.closed)),
+        canonicalOperation({
+          id,
+          label,
+          description,
+          scope: 'acquisition',
+          acquisitionKind,
+          parameterIds,
+          outputs: [output],
+          primary,
+          ...(id === CANONICAL_SIGNAL_LAB_OPERATIONS.capture
+            ? { constraints: CANONICAL_CAPTURE_BANDWIDTH_CONSTRAINTS }
+            : {}),
+        }, input.closed)),
       ...source.operations,
     ],
   });
@@ -1036,13 +1058,15 @@ function canonicalOperation(
   definition: CanonicalOperationDefinition,
   unavailable = false,
 ): CanonicalOperation {
+  const { constraints, ...operation } = definition;
   return {
-    ...definition,
-    parameterIds: [...definition.parameterIds],
-    outputs: [...definition.outputs],
+    ...operation,
+    parameterIds: [...operation.parameterIds],
+    ...(constraints === undefined ? {} : { constraints: [...constraints] }),
+    outputs: [...operation.outputs],
     availability: unavailable ? 'unavailable' : 'available',
-    primary: definition.primary ?? false,
-    confirmation: definition.confirmation ?? 'none',
+    primary: operation.primary ?? false,
+    confirmation: operation.confirmation ?? 'none',
   };
 }
 

@@ -2848,9 +2848,9 @@ describe('operator vertical slice', () => {
     expect(container.querySelector('.firmware-trace')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /^Traces$/i }));
-    const traceMode = screen.getByRole('combobox', { name: 'Trace mode' });
-    fireEvent.change(traceMode, { target: { value: 'blank' } });
-    await waitFor(() => expect((traceMode as HTMLSelectElement).value).toBe('blank'));
+    const traceMode = screen.getByRole('radio', { name: /^Off/i });
+    fireEvent.click(traceMode);
+    await waitFor(() => expect((traceMode as HTMLInputElement).checked).toBe(true));
     await waitFor(() => expect(container.querySelector('.trace-line.t1')).toBeNull());
     expect(screen.queryByRole('button', { name: /D2 · Stored/i })).toBeNull();
   });

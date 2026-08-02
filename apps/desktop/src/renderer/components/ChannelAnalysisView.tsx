@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react';
-import { BarChart3, Brackets, Radio, ScanSearch } from 'lucide-react';
+import { BarChart3, Brackets, Play, Radio, ScanSearch } from 'lucide-react';
 import type { ChannelMeasurementConfiguration, ChannelMeasurementResult, SpectrumDisplayConfiguration, Sweep, SweepPowerReference } from '@tinysa/contracts';
 import { fitChannelConfigurationToSweep, measureChannel } from '@tinysa/analysis';
 import { formatFrequency, formatPowerDensity, formatPowerLevel, powerAxisUnit } from '../format.js';
@@ -12,10 +12,12 @@ export interface ChannelAnalysisViewProps {
   display: SpectrumDisplayConfiguration;
   /** See SpectrumPlotProps.spectrumCapabilityAvailable's doc comment -- same distinction, same reason. */
   spectrumCapabilityAvailable?: boolean;
+  /** Generic one-frame acquisition supplied by the owning workspace. */
+  onCapture?(): void;
   onConfiguration(configuration: ChannelMeasurementConfiguration): void;
 }
 
-export function ChannelAnalysisView({ sweep, configuration, display, spectrumCapabilityAvailable = true, onConfiguration }: ChannelAnalysisViewProps) {
+export function ChannelAnalysisView({ sweep, configuration, display, spectrumCapabilityAvailable = true, onCapture, onConfiguration }: ChannelAnalysisViewProps) {
   const measurement = useMemo(() => evaluate(sweep, configuration), [sweep, configuration]);
   const [fitStatus, setFitStatus] = useState<{ sweepId: string; kind: 'success' | 'unavailable'; message: string }>();
   useEffect(() => {
@@ -46,7 +48,7 @@ export function ChannelAnalysisView({ sweep, configuration, display, spectrumCap
   };
   return <section className="channel-analysis-view" aria-label="Channel power, 3 dB bandwidth, ACP, and occupied bandwidth">
     <div className="channel-visual">
-      <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result} spectrumCapabilityAvailable={spectrumCapabilityAvailable}/>
+      <ChannelPlot sweep={sweep} configuration={configuration} display={display} result={measurement.result} spectrumCapabilityAvailable={spectrumCapabilityAvailable} onCapture={onCapture}/>
       {measurement.result && <ChannelResults result={measurement.result} powerReference={sweep?.powerReference}/>}
       {measurement.error && <div className="measurement-error" role="alert"><strong>Measurement unavailable</strong><span>{measurement.error}</span></div>}
     </div>
@@ -75,7 +77,7 @@ export function ChannelAnalysisView({ sweep, configuration, display, spectrumCap
   </section>;
 }
 
-function ChannelPlot({ sweep, configuration, display, result, spectrumCapabilityAvailable = true }: { sweep?: Sweep; configuration: ChannelMeasurementConfiguration; display: SpectrumDisplayConfiguration; result?: ChannelMeasurementResult; spectrumCapabilityAvailable?: boolean }) {
+function ChannelPlot({ sweep, configuration, display, result, spectrumCapabilityAvailable = true, onCapture }: { sweep?: Sweep; configuration: ChannelMeasurementConfiguration; display: SpectrumDisplayConfiguration; result?: ChannelMeasurementResult; spectrumCapabilityAvailable?: boolean; onCapture?(): void }) {
   const width = 1000;
   const height = 420;
   const gradientId = `${useId().replaceAll(':', '')}-channel-trace-fill`;
@@ -125,7 +127,7 @@ function ChannelPlot({ sweep, configuration, display, result, spectrumCapability
     : undefined;
   return <div className="channel-plot-shell">
     <div className="channel-y-axis"><span>{maximum}</span><span>{minimum}</span><em>{powerAxisUnit(sweep?.powerReference)}</em></div>
-    {!plotSweep || !geometry ? <div className="analysis-empty"><Radio size={23}/><strong>{sweep ? 'Spectrum unavailable' : spectrumCapabilityAvailable ? 'No sweep' : 'No scalar spectrum capability'}</strong><span>{sweep ? 'The live trace grid was invalid and was not rendered.' : spectrumCapabilityAvailable ? 'Acquire the carrier and adjacent windows.' : 'The connected source has no swept-spectrum or complex-I/Q acquisition -- it can never produce a channel sweep here.'}</span></div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
+    {!plotSweep || !geometry ? <div className="analysis-empty"><Radio size={23}/><strong>{sweep ? 'Spectrum unavailable' : spectrumCapabilityAvailable ? 'No sweep' : 'No scalar spectrum capability'}</strong><span>{sweep ? 'The live trace grid was invalid and was not rendered.' : spectrumCapabilityAvailable ? 'Capture a frame, then fit the strongest signal or set the analysis window.' : 'The connected source has no swept-spectrum or complex-I/Q acquisition -- it can never produce a channel sweep here.'}</span>{spectrumCapabilityAvailable && onCapture && <button type="button" className="secondary compact channel-empty-capture" aria-label="Capture a fresh analysis frame" onClick={onCapture}><Play size={12} fill="currentColor"/>Capture</button>}</div> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Channel measurement spectrum">
       <defs><linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#64d2ff" stopOpacity=".18"/><stop offset="1" stopColor="#0a84ff" stopOpacity="0"/></linearGradient></defs>
       {Array.from({ length: 9 }, (_, index) => <line key={`v${index}`} x1={index * width / 8} x2={index * width / 8} y1="0" y2={height} className="plot-grid"/>)}
       {Array.from({ length: 6 }, (_, index) => <line key={`h${index}`} x1="0" x2={width} y1={index * height / 5} y2={index * height / 5} className="plot-grid"/>)}

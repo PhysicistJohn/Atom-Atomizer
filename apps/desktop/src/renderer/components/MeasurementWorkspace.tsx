@@ -46,6 +46,8 @@ export interface MeasurementWorkspaceProps {
   spectrumCapabilityAvailable: boolean;
   busy: boolean;
   streaming: boolean;
+  /** The generic global single-frame acquisition action, when currently available. */
+  onCapture?(): void;
   sweep?: Sweep;
   history: readonly Sweep[];
   detections: readonly DetectedSignal[];
@@ -159,7 +161,7 @@ export function MeasurementWorkspace(props: MeasurementWorkspaceProps) {
       <div className="measurement-stage-content" aria-label="Measurement view">
         {view === 'spectrum' && <div className="spectrum-stage"><SpectrumPlot sweep={props.sweep} traces={props.frames} firmwareTraces={props.firmwareFrames} visibleFirmwareTraceIds={props.visibleFirmwareTraceIds} activeTraceId={props.activeTraceId} markers={props.readings} activeMarkerId={props.activeMarkerId} display={props.display} onMarkerPlace={props.onMarkerPlace} detections={activeDetections} busy={props.busy} spectrumCapabilityAvailable={props.spectrumCapabilityAvailable}/><MetricStrip sweep={props.sweep} detections={activeDetections.length} acquisition={props.acquisition} historyCount={props.history.length}/></div>}
         {view === 'waterfall' && <WaterfallView history={props.history} configuration={props.waterfall} spectrumCapabilityAvailable={props.spectrumCapabilityAvailable} onConfiguration={props.onWaterfall}/>}
-        {view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} spectrumCapabilityAvailable={props.spectrumCapabilityAvailable} onConfiguration={props.onChannel}/>}
+        {view === 'channel' && <ChannelAnalysisView sweep={props.sweep} configuration={props.channel} display={props.display} spectrumCapabilityAvailable={props.spectrumCapabilityAvailable} onCapture={props.onCapture} onConfiguration={props.onChannel}/>}
       </div>
     </div>
   </section>;
