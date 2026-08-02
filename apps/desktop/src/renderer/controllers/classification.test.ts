@@ -46,22 +46,44 @@ describe('application-global classification controller', () => {
       },
     });
 
-    const admitted: readonly [number, number][] = [
+    const legacyRate: readonly [number, number][] = [
       [4_096, 4_096],
       [8_191, 4_096],
       [8_192, 8_192],
       [16_383, 8_192],
       [16_384, 16_384],
       [20_000, 16_384],
+      [32_767, 16_384],
       [32_768, 32_768],
-      [32_769, 32_768],
+      [200_000, 32_768],
     ];
-    for (const [sampleCount] of admitted) {
-      controller.ingestIq(capture(`iq-${sampleCount}`, sampleCount, { sampleCount }));
+    for (const [sampleCount] of legacyRate) {
+      controller.ingestIq(capture(`v3-${sampleCount}`, sampleCount, { sampleCount }));
+      await flushMicrotasks();
+    }
+    expect(executor.iqSampleCounts).toEqual(legacyRate.map(([, expected]) => expected));
+
+    const exactDacsRate: readonly [number, number][] = [
+      [19_999, 16_384],
+      [20_000, 20_000],
+      [32_767, 20_000],
+      [32_768, 32_768],
+      [50_000, 50_000],
+      [199_999, 50_000],
+      [200_000, 200_000],
+      [262_144, 200_000],
+    ];
+    for (const [sampleCount] of exactDacsRate) {
+      controller.ingestIq(capture(`dacs-${sampleCount}`, sampleCount, {
+        sampleCount,
+        sampleRateHz: 20_000_000,
+      }));
       await flushMicrotasks();
     }
 
-    expect(executor.iqSampleCounts).toEqual(admitted.map(([, expected]) => expected));
+    expect(executor.iqSampleCounts.slice(legacyRate.length)).toEqual(
+      exactDacsRate.map(([, expected]) => expected),
+    );
     expect(store.get().classification.issue).toBeUndefined();
     controller.dispose();
   });

@@ -12,6 +12,14 @@ const MODULATION_LABELS: Record<string, string> = {
 };
 function modLabel(id: string): string { return MODULATION_LABELS[id] ?? id.toUpperCase(); }
 function leafLabel(id: string): string { return id.replace(/-like$/, '').replaceAll('-', ' '); }
+function runtimeLabel(result: ModulationClassification): string | undefined {
+  if (result.runtime?.model === 'dacs-v7') {
+    return `DACS V7 · ${result.runtime.dwell?.toUpperCase()} · V3 OPEN-SET · WASM`;
+  }
+  if (result.runtime?.model === 'time-domain-v3') return 'TIME-DOMAIN V3';
+  if (result.runtime?.model === 'magnitude-v2') return 'MAGNITUDE V2';
+  return undefined;
+}
 
 /**
  * The Detect panel: the browser-native embedding modulation classifier plus the
@@ -47,6 +55,9 @@ export function DetectWorkspace({
 }) {
   const showIssue = source !== 'none' && !pending && classificationIssue !== undefined;
   const visibleModulation = showIssue ? undefined : modulation;
+  const visibleRuntimeLabel = visibleModulation
+    ? runtimeLabel(visibleModulation)
+    : undefined;
   return (
     <div
       className="detect-workspace"
@@ -62,6 +73,7 @@ export function DetectWorkspace({
           {visibleModulation && (
             <span className="detect-flavor">
               {visibleModulation.flavor === 'iq' ? 'COMPLEX I/Q' : 'MAGNITUDE · SCALAR'}
+              {visibleRuntimeLabel ? ` · ${visibleRuntimeLabel}` : ''}
               {sampleCount > 0
                 ? ` · ${live ? 'LIVE · ' : ''}${DETECT_CONSENSUS_WINDOW_MS} MS TREND · ${sampleCount} ${sampleCount === 1 ? 'SAMPLE' : 'SAMPLES'}`
                 : ''}

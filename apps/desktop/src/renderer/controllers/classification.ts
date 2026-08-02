@@ -8,14 +8,17 @@ import type { ModulationClassification } from '../embedding-classifier-runtime.j
 import type { ClassificationWorkerRequest, ClassificationWorkerResponse } from '../classification-worker-protocol.js';
 import type { RendererKernel } from './kernel.js';
 
-// Frozen live-v3 capture geometry. The prefixes are contiguous: no
-// plotting-style subsampling is allowed at this boundary. The causal stage-one
-// gate uses its own first-16K
-// prefix internally for captures longer than 16K.
+// Every admitted prefix is contiguous: no plotting-style subsampling is
+// allowed at this boundary. The released v3 gate consumes its own tested
+// prefixes internally; exact-rate DACS refinement receives the largest trained
+// 20K / 50K / 200K dwell present in the capture.
 const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
 const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
 const CLASSIFICATION_IQ_LONG_SAMPLES = 16_384;
-const CLASSIFICATION_IQ_MAX_SAMPLES = 32_768;
+const CLASSIFICATION_IQ_V3_MAX_SAMPLES = 32_768;
+const CLASSIFICATION_IQ_DACS_SHORT_SAMPLES = 20_000;
+const CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES = 50_000;
+const CLASSIFICATION_IQ_DACS_LONG_SAMPLES = 200_000;
 const CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE =
   'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.';
 
@@ -23,18 +26,33 @@ const CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE =
  * Select the admitted contiguous capture prefix for modulation classification.
  * Captures below the minimum independently tested geometry produce no sample.
  */
-export function classificationIqPrefixLength(sampleCount: number): number | undefined {
+export function classificationIqPrefixLength(
+  sampleCount: number,
+  sampleRateHz?: number,
+): number | undefined {
   if (!Number.isInteger(sampleCount) || sampleCount < CLASSIFICATION_IQ_MIN_SAMPLES) {
     return undefined;
   }
   if (sampleCount < CLASSIFICATION_IQ_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_MIN_SAMPLES;
   if (sampleCount < CLASSIFICATION_IQ_LONG_SAMPLES) return CLASSIFICATION_IQ_MEDIUM_SAMPLES;
-  if (sampleCount < CLASSIFICATION_IQ_MAX_SAMPLES) return CLASSIFICATION_IQ_LONG_SAMPLES;
-  return CLASSIFICATION_IQ_MAX_SAMPLES;
+  if (sampleRateHz !== 20_000_000) {
+    if (sampleCount < CLASSIFICATION_IQ_V3_MAX_SAMPLES) return CLASSIFICATION_IQ_LONG_SAMPLES;
+    return CLASSIFICATION_IQ_V3_MAX_SAMPLES;
+  }
+  if (sampleCount < CLASSIFICATION_IQ_DACS_SHORT_SAMPLES) return CLASSIFICATION_IQ_LONG_SAMPLES;
+  if (sampleCount < CLASSIFICATION_IQ_V3_MAX_SAMPLES) return CLASSIFICATION_IQ_DACS_SHORT_SAMPLES;
+  if (sampleCount < CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_V3_MAX_SAMPLES;
+  if (sampleCount < CLASSIFICATION_IQ_DACS_LONG_SAMPLES) return CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES;
+  return CLASSIFICATION_IQ_DACS_LONG_SAMPLES;
 }
 
 export interface ClassificationExecutor {
-  classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification>;
+  classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    sampleRateHz: number,
+  ): Promise<ModulationClassification>;
   classifyScalar(
     powerDbm: readonly number[],
     frequencyHz: readonly number[],
@@ -266,10 +284,18 @@ export class ClassificationController {
   }
 
   private classifyIq(capture: ComplexIqMeasurement): Promise<ModulationClassification | undefined> {
-    const prefixLength = classificationIqPrefixLength(capture.sampleCount);
+    const prefixLength = classificationIqPrefixLength(
+      capture.sampleCount,
+      capture.sampleRateHz,
+    );
     if (prefixLength === undefined) return Promise.resolve(undefined);
     const { re, im } = decodeComplexIqChannels(capture, prefixLength);
-    return this.executor.classifyIq(re, im, capture.bandwidthHz);
+    return this.executor.classifyIq(
+      re,
+      im,
+      capture.bandwidthHz,
+      capture.sampleRateHz,
+    );
   }
 }
 
@@ -292,8 +318,20 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
     readonly reject: (reason: unknown) => void;
   }>();
 
-  classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification> {
-    return this.dispatch({ id: ++this.nextId, kind: 'iq', real, imaginary, bandwidthHz })
+  classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    sampleRateHz: number,
+  ): Promise<ModulationClassification> {
+    return this.dispatch({
+      id: ++this.nextId,
+      kind: 'iq',
+      real,
+      imaginary,
+      bandwidthHz,
+      sampleRateHz,
+    })
       .then((result) => {
         if (!result) throw new Error('I/Q classifier returned no result');
         return result;
@@ -364,9 +402,14 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
 }
 
 class InlineClassificationExecutor implements ClassificationExecutor {
-  async classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification> {
+  async classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    sampleRateHz: number,
+  ): Promise<ModulationClassification> {
     const { classifyIqModulation } = await import('../embedding-classifier-runtime.js');
-    return classifyIqModulation(real, imaginary, bandwidthHz);
+    return classifyIqModulation(real, imaginary, bandwidthHz, sampleRateHz);
   }
 
   async classifyScalar(

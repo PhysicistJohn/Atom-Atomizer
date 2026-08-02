@@ -46,9 +46,19 @@ describe('classification executors', () => {
     const real = new Float64Array([1, 2, 3]);
     const imaginary = new Float64Array([-1, -2, -3]);
 
-    const result = await executor.classifyIq(real, imaginary, 2_000_000);
+    const result = await executor.classifyIq(
+      real,
+      imaginary,
+      2_000_000,
+      20_000_000,
+    );
 
-    expect(classifyIqModulation).toHaveBeenCalledWith(real, imaginary, 2_000_000);
+    expect(classifyIqModulation).toHaveBeenCalledWith(
+      real,
+      imaginary,
+      2_000_000,
+      20_000_000,
+    );
     expect(classifyScalarSweep).not.toHaveBeenCalled();
     expect(result).toEqual(stageOneRejection);
     executor.dispose();
@@ -59,7 +69,12 @@ describe('classification executors', () => {
     const executor = createClassificationExecutor();
     const real = new Float64Array([1, 2, 3]);
     const imaginary = new Float64Array([-1, -2, -3]);
-    const pending = executor.classifyIq(real, imaginary, 2_000_000);
+    const pending = executor.classifyIq(
+      real,
+      imaginary,
+      2_000_000,
+      20_000_000,
+    );
     const worker = FakeWorker.instances[0]!;
 
     expect(worker.url.toString()).toContain('classification-worker.ts');
@@ -70,6 +85,7 @@ describe('classification executors', () => {
       real,
       imaginary,
       bandwidthHz: 2_000_000,
+      sampleRateHz: 20_000_000,
     });
     expect(worker.lastTransfer).toEqual([real.buffer, imaginary.buffer]);
 

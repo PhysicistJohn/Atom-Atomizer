@@ -54,6 +54,31 @@ describe('DetectWorkspace', () => {
     expect(screen.getByText(/Occupied bandwidth ≈ 12% of sample rate/i)).toBeDefined();
   });
 
+  it('identifies the sealed DACS refinement path and trained dwell', () => {
+    render(
+      <DetectWorkspace
+        {...baseProps}
+        source="iq"
+        pending={false}
+        modulation={{
+          ...iqResult,
+          runtime: {
+            model: 'dacs-v7',
+            openSetGate: 'time-domain-v3',
+            dwell: '2.5ms',
+            dwellSamples: 50_000,
+            executionProvider: 'wasm',
+            confidenceLogit: 1.25,
+          },
+        }}
+        sampleCount={1}
+      />,
+    );
+    expect(screen.getByText(
+      'COMPLEX I/Q · DACS V7 · 2.5MS · V3 OPEN-SET · WASM · 500 MS TREND · 1 SAMPLE',
+    )).toBeDefined();
+  });
+
   it('classifies only while pending and replaces a stale result with an actionable classifier issue', () => {
     const view = render(
       <DetectWorkspace
