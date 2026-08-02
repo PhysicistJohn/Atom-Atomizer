@@ -1,8 +1,8 @@
 # Atomizer UI/UX and Analysis Contracts
 
 Status: execution baseline  
-Version: 2.3.0
-Updated: 2026-07-17
+Version: 2.4.0
+Updated: 2026-08-01
 
 This document is normative. It decomposes the desktop experience into testable contracts. `PLAN.md` defines the product outcome; `CONTRACTS.md` defines program work packages; this file defines what each operator workflow, screen, component, state, and analysis mode must do.
 
@@ -21,6 +21,11 @@ No screen may obscure the answers to questions 1–3. Measurement views must ans
 
 ### 1.1 Experience principles
 
+When rules compete, preserve instrument truth and safety first, the active
+measurement second, the operator's current task third, and visual density last.
+These are application-wide interaction rules, not source- or device-specific
+exceptions.
+
 | ID | Principle | Enforceable rule |
 |---|---|---|
 | XP-01 | Instrument truth | Requested, commanded, verified, stale, simulated, and unknown states are visually and semantically distinct. |
@@ -33,6 +38,11 @@ No screen may obscure the answers to questions 1–3. Measurement views must ans
 | XP-08 | Keyboard complete | Every core workflow is achievable without a pointer. |
 | XP-09 | Active functions | Every editable instrument value is a readable, full-row active function before it becomes an input. |
 | XP-10 | Chromatic restraint | Application chrome is neutral; color identifies selection, state, risk, Atom, or measured data rather than decorating every surface. |
+| XP-11 | One active secondary surface | At most one top-level secondary surface is open at once. Opening Atom, Connection, Setup, Trace, Display, or a future peer closes the prior one; row-level editors belong to their owner and a safety/recovery confirmation may temporarily layer above it. |
+| XP-12 | One action, one observable result | An action immediately shows its admission, acquisition, success, failure, or unavailable reason. `Apply settings` stages an effective configuration; `Single` captures once; `Run` requests repeated captures; `Stop` stops. Those verbs keep their meaning wherever the active driver advertises them. |
+| XP-13 | Intent is not data | Recommended/Custom settings, the admitted device configuration, and the measured trace are distinct visible states. Zoom, pan, markers, and analysis windows never silently retune a receiver. |
+| XP-14 | Generic instrument language | Atomizer renders driver-declared canonical operations, capabilities, constraints, and evidence. Device names, transport details, and native control dialects remain in the driver unless they are provenance the operator needs to inspect. |
+| XP-15 | Recommend first, customize deliberately | Every declared parameter offers a driver-resolved Recommended value and a validated Custom value. The UI shows the effective result and constraint outcome without exposing Auto/Manual implementation jargon. |
 
 ## 2. Information architecture
 

@@ -121,7 +121,12 @@ export class ConnectionController {
       // Reopening it while connected shows the source list with the active
       // source marked (no dead-end "Connected" screen), so switching or
       // disconnecting stays one click away.
-      k.set({ connectionOpen: false, notice: connectionNotice(next) });
+      k.store.update((current) => ({
+        // An operator can move from the connection sheet to Atom while the
+        // request is in flight. Only release the surface this request owns.
+        secondaryPanel: current.secondaryPanel === 'connection' ? undefined : current.secondaryPanel,
+        notice: connectionNotice(next),
+      }));
       return next;
     } catch (value) {
       k.set({ error: errorMessage(value) });

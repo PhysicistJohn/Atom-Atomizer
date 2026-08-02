@@ -4,7 +4,7 @@ import { shallowEqual, useStore, type AtomizerRendererState } from '../store.js'
 import type { RendererRuntime } from '../AppShell.js';
 
 export function ConnectionContainer({ runtime }: { runtime: RendererRuntime }) {
-  const open = useStore(runtime.store, (state) => state.connectionOpen);
+  const open = useStore(runtime.store, (state) => state.secondaryPanel === 'connection');
   return open ? <OpenConnectionDialog runtime={runtime}/> : null;
 }
 
@@ -36,6 +36,6 @@ function OpenConnectionDialog({ runtime }: { runtime: RendererRuntime }) {
     onDisconnect={() => void connection.disconnect()}
     onMakeDefault={() => void connection.makeSelectedDefault()}
     onAddManualEndpoint={(endpoint) => connection.addManualEndpoint(endpoint)}
-    onClose={() => runtime.store.set({ connectionOpen: false })}
+    onClose={() => runtime.store.setKey('secondaryPanel', (panel) => panel === 'connection' ? undefined : panel)}
   />;
 }

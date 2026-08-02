@@ -28,10 +28,10 @@ describe('renderer store selectors', () => {
     function Probe() {
       const state = useStore(store, (current) => ({
         workspace: current.workspace,
-        agentOpen: current.agentOpen,
+        secondaryPanel: current.secondaryPanel,
       }), shallowEqual);
       renders++;
-      return <output>{state.workspace}:{String(state.agentOpen)}</output>;
+      return <output>{state.workspace}:{String(state.secondaryPanel)}</output>;
     }
 
     render(<Probe/>);
@@ -42,20 +42,32 @@ describe('renderer store selectors', () => {
 
     act(() => store.set({ workspace: 'classification' }));
     expect(renders).toBe(2);
-    expect(screen.getByText('classification:false')).toBeDefined();
+    expect(screen.getByText('classification:undefined')).toBeDefined();
   });
 
   it('reselects the current snapshot when an inline selector changes identity', () => {
     const store = createStore();
-    function Probe({ selectAgent }: { selectAgent: boolean }) {
-      const value = useStore(store, (state) => selectAgent ? state.agentOpen : state.workspace);
+    function Probe({ selectSecondaryPanel }: { selectSecondaryPanel: boolean }) {
+      const value = useStore(store, (state) => selectSecondaryPanel ? state.secondaryPanel : state.workspace);
       return <output>{String(value)}</output>;
     }
 
-    const view = render(<Probe selectAgent={false}/>);
+    const view = render(<Probe selectSecondaryPanel={false}/>);
     expect(screen.getByText('spectrum')).toBeDefined();
-    view.rerender(<Probe selectAgent={true}/>);
-    expect(screen.getByText('false')).toBeDefined();
+    view.rerender(<Probe selectSecondaryPanel/>);
+    expect(screen.getByText('undefined')).toBeDefined();
+  });
+
+  it('gives peer secondary surfaces one shared owner', () => {
+    const store = createStore();
+    act(() => store.set({ secondaryPanel: 'atom' }));
+    expect(store.get().secondaryPanel).toBe('atom');
+
+    act(() => store.set({ secondaryPanel: 'measurement' }));
+    expect(store.get().secondaryPanel).toBe('measurement');
+
+    act(() => store.set({ secondaryPanel: 'connection' }));
+    expect(store.get().secondaryPanel).toBe('connection');
   });
 
   it('publishes every store revision through the zero-DOM commit leaf', async () => {

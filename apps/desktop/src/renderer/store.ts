@@ -105,6 +105,13 @@ export function visibleMeasurementView(value: unknown): MeasurementViewId {
 
 export type ContinuousAcquisitionMode = 'spectrum' | 'complex-iq';
 
+/**
+ * The renderer permits one peer secondary surface at a time. Editors,
+ * popovers, and confirmations remain children of their owning surface and
+ * deliberately do not participate in this selection.
+ */
+export type SecondaryPanel = 'atom' | 'connection' | 'measurement';
+
 export type GlobalClassificationIssue =
   | {
       readonly kind: 'unavailable';
@@ -129,7 +136,7 @@ export interface GlobalClassificationState {
 export interface AtomizerRendererState {
   readonly workspace: WorkspaceId;
   readonly measurementView: MeasurementViewId;
-  readonly agentOpen: boolean;
+  readonly secondaryPanel: SecondaryPanel | undefined;
   readonly instrument: AtomizerInstrumentState;
   /**
    * Driver-emitted interaction surface.  This deliberately sits alongside
@@ -140,7 +147,6 @@ export interface AtomizerRendererState {
   readonly candidates: InstrumentCandidate[];
   readonly discoveryFailures: InstrumentDiscoveryFailure[];
   readonly selectedCandidateId: string | undefined;
-  readonly connectionOpen: boolean;
   readonly connectionBusy: boolean;
   readonly detectionConfig: SignalDetectionConfig;
   readonly zeroConfig: ZeroSpanConfig;
@@ -266,13 +272,12 @@ export function createInitialRendererState(options: {
   return {
     workspace: options.initialWorkspace,
     measurementView: loadStored('measurement-view', visibleMeasurementView, 'spectrum'),
-    agentOpen: options.initialAgentOpen,
+    secondaryPanel: options.initialAgentOpen ? 'atom' : undefined,
     instrument: INITIAL_INSTRUMENT_STATE,
     canonicalSurface: undefined,
     candidates: [],
     discoveryFailures: [],
     selectedCandidateId: undefined,
-    connectionOpen: false,
     connectionBusy: false,
     detectionConfig: loadStored('detector', parseStoredDetection, DEFAULT_DETECTION),
     zeroConfig: loadStored('zero-span', zeroSpanConfigSchema.parse, DEFAULT_ZERO_SPAN),

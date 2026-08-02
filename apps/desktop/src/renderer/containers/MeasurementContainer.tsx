@@ -9,6 +9,7 @@ const selectMeasurementState = (state: AtomizerRendererState) => ({
   measurementView: state.measurementView,
   spectrumCapabilityAvailable: selectSpectrumCapabilityAvailable(state),
   canonicalSurface: state.canonicalSurface,
+  secondaryPanel: state.secondaryPanel,
   sweep: state.sweep,
   history: state.history,
   detections: state.detections,
@@ -56,6 +57,8 @@ export function MeasurementContainer({ runtime, measurementActions }: {
   );
   return <MeasurementWorkspace
     measurementActions={measurementActions}
+    secondaryPanelActive={s.secondaryPanel === 'measurement'}
+    onSecondaryPanelActiveChange={(active) => runtime.store.setKey('secondaryPanel', (panel) => active ? 'measurement' : panel === 'measurement' ? undefined : panel)}
     view={s.measurementView}
     canonicalSurface={s.canonicalSurface} onCanonicalOperation={s.canonicalSurface
       ? (operationId, parameters) => runtime.events.executeCanonicalOperation(s.canonicalSurface!, operationId, parameters)

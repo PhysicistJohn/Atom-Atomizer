@@ -86,7 +86,7 @@ export interface AppProps {
 
 const selectAppShellState = (state: AtomizerRendererState) => ({
   workspace: state.workspace,
-  agentOpen: state.agentOpen,
+  secondaryPanel: state.secondaryPanel,
   error: state.error,
   notice: state.notice,
   spectrumStartHz: state.instrument.session?.configuration?.configuration.kind === 'swept-spectrum'
@@ -128,9 +128,10 @@ export function App({
   const classifierLifetimeGeneration = useRef(0);
   const state = useStore(store, selectAppShellState, shallowEqual);
   const {
-    workspace, agentOpen, error, notice, spectrumStartHz, spectrumStopHz,
+    workspace, secondaryPanel, error, notice, spectrumStartHz, spectrumStopHz,
     hasSweep, connected, iqAvailable, generationAvailable, sessionExecution,
   } = state;
+  const agentOpen = secondaryPanel === 'atom';
 
   useEffect(() => {
     kernel.rendererMounted.current = true;
@@ -184,6 +185,13 @@ export function App({
     if (connected && !iqAvailable && workspace === 'iq') store.set({ workspace: 'spectrum' });
   }, [connected, iqAvailable, workspace]);
   useEffect(() => {
+    // The measurement drawer belongs to Spectrum. Leaving that workspace must
+    // release the shared secondary surface rather than leave a hidden owner.
+    if (workspace !== 'spectrum' && secondaryPanel === 'measurement') {
+      store.set({ secondaryPanel: undefined });
+    }
+  }, [secondaryPanel, workspace]);
+  useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => store.set({ notice: undefined }), 4_000);
     return () => window.clearTimeout(timeout);
@@ -220,7 +228,7 @@ export function App({
       {workspace === 'generator' && <GeneratorContainer runtime={runtime}/>}
       {workspace === 'device' && <DeviceContainer runtime={runtime}/>}
     </section>
-    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={sessionExecution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => store.set({ agentOpen: false })} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
+    <AtomAgentPanel open={agentOpen} state={agent.state} status={agent.status} messages={agent.messages} approval={agent.approval} execution={sessionExecution} microphoneMuted={agent.microphoneMuted} speakerMuted={agent.speakerMuted} usage={agent.usage} rateLimits={agent.rateLimits} onClose={() => store.setKey('secondaryPanel', (panel) => panel === 'atom' ? undefined : panel)} onSend={agent.sendText} onVoice={agent.startVoice} onMicrophoneMute={agent.setMicrophoneMute} onSpeakerMute={agent.setSpeakerMute} onApproval={agent.resolveApproval}/>
     <ConnectionContainer runtime={runtime}/>
   </main>;
 }

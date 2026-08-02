@@ -1810,11 +1810,6 @@ describe('operator vertical slice', () => {
   });
 
   it('exposes retained failed-connect cleanup and blocks a new connection until the safe retry succeeds', async () => {
-    vi.mocked(window.atomAgent.status).mockResolvedValue({ configured: true, model: 'gpt-realtime-2.1', voice: 'ballad', reasoningEffort: 'high', textAgent: true, realtime: true, textTransport: 'realtime-websocket' });
-    vi.mocked(window.atomAgent.agentTurn)
-      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-0', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'cleanup-inspect-load', name: 'load_atom_tools', arguments: '{"toolNames":["inspect_interface"]}' }] })
-      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-1', transport: 'realtime-websocket', text: '', toolCalls: [{ callId: 'cleanup-inspect', name: 'inspect_interface', arguments: '{}' }] })
-      .mockResolvedValueOnce({ conversationId: 'cleanup-inspect-2', transport: 'realtime-websocket', text: 'Safe cleanup is available.', toolCalls: [] });
     render(<App/>);
     const connectionButton = await screen.findByRole('button', { name: /No instrument.*Choose an instrument source/i });
     await waitFor(() => expect(window.atomizerInstrument.discover).toHaveBeenCalledOnce());
@@ -1833,22 +1828,6 @@ describe('operator vertical slice', () => {
     expect(within(dialog).getAllByRole('button').filter((b) => b.getAttribute('data-agent-control')?.startsWith('connection.candidate'))
       .every((b) => b.hasAttribute('disabled'))).toBe(true);
 
-    const composer = await screen.findByPlaceholderText(/Ask Atom/i);
-    fireEvent.change(composer, { target: { value: 'Inspect the cleanup control.' } });
-    fireEvent.click(screen.getByRole('button', { name: /Send to Atom/i }));
-    await waitFor(() => expect(window.atomAgent.agentTurn).toHaveBeenCalledTimes(3));
-    const inspected = JSON.parse(vi.mocked(window.atomAgent.agentTurn).mock.calls[2]?.[0].toolOutputs?.[0]?.output ?? '{}') as {
-      ok?: boolean;
-      output?: { rendered?: readonly { controlId?: string; enabled?: boolean; preferredTool?: string }[] };
-    };
-    expect(inspected).toMatchObject({
-      ok: true,
-      output: {
-        rendered: expect.arrayContaining([
-          expect.objectContaining({ controlId: 'connection.retry-cleanup', enabled: true, preferredTool: 'disconnect_device' }),
-        ]),
-      },
-    });
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retry safe cleanup' }));
     await waitFor(() => expect(window.atomizerInstrument.disconnect).toHaveBeenCalledOnce());

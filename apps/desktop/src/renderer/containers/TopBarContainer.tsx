@@ -29,7 +29,7 @@ export const TopBarContainer = memo(function TopBarContainer({
     instrument={instrument}
     agentOpen={agentOpen}
     agentConfigured={agentConfigured}
-    onConnection={() => runtime.store.set({ connectionOpen: true })}
-    onAgent={() => runtime.store.setKey('agentOpen', (value) => !value)}
+    onConnection={() => runtime.store.set({ secondaryPanel: 'connection' })}
+    onAgent={() => runtime.store.setKey('secondaryPanel', (panel) => panel === 'atom' ? undefined : 'atom')}
   />;
 });
