@@ -111,4 +111,34 @@ describe('DetectWorkspace', () => {
     expect(screen.queryByText(/Occupied bandwidth ≈/i)).toBeNull();
     expect(document.querySelector('.detect-bar')).toBeNull();
   });
+
+  it('does not claim an occupied bandwidth for an exact-zero v4 capture', () => {
+    const noSignal: ModulationClassification = {
+      ...iqResult,
+      modulation: 'unknown',
+      family: 'unknown',
+      confidence: 0,
+      isUnknown: true,
+      candidates: [],
+      topLeaf: undefined,
+      bwFraction: 1,
+      rejection: {
+        stage: 0,
+        reason: 'no-signal',
+      },
+    };
+    render(
+      <DetectWorkspace
+        {...baseProps}
+        source="iq"
+        pending={false}
+        modulation={noSignal}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Exact-zero capture rejected as no signal/i),
+    ).toBeDefined();
+    expect(screen.queryByText(/Occupied bandwidth ≈/i)).toBeNull();
+  });
 });

@@ -1,4 +1,8 @@
-import type { ModulationClassification } from './embedding-classifier-runtime.js';
+import type {
+  IqClassifierPrototypeSource,
+  ModulationClassification,
+} from './embedding-classifier-runtime.js';
+import type { TrustedIqGeometryContext } from './iq-classification-geometry.js';
 
 export type ClassificationWorkerRequest =
   | {
@@ -7,6 +11,8 @@ export type ClassificationWorkerRequest =
       readonly real: Float64Array;
       readonly imaginary: Float64Array;
       readonly bandwidthHz: number;
+      readonly prototypeSource: IqClassifierPrototypeSource;
+      readonly trustedGeometry?: TrustedIqGeometryContext;
     }
   | {
       readonly id: number;

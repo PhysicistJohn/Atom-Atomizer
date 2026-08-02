@@ -43,9 +43,29 @@ describe('packaged classifier asset protocol', () => {
   });
 
   it.each([
+    'time-domain-profile-bank-v4.json',
+    'time-domain-profile-bank-openset-v4.json',
+    'time-domain-profile-bank-display-calibration-v4.json',
+  ])('serves the exact v4 package basename %s', async (filename) => {
+    const root = await mkdtemp(resolve(tmpdir(), 'atomizer-classifier-assets-'));
+    temporaryDirectories.push(root);
+    const source = new TextEncoder().encode(`{"asset":"${filename}"}`);
+    await writeFile(resolve(root, filename), source);
+
+    const result = await classifierAssetResponse(
+      new Request(`${ATOMIZER_CLASSIFIER_ASSET_ORIGIN}/${filename}`),
+      root,
+    );
+
+    expect(result.status).toBe(200);
+    expect(new Uint8Array(await result.arrayBuffer())).toEqual(source);
+  });
+
+  it.each([
     'subdirectory/runtime-package-manifest.json',
     'runtime-package-manifest.json%2fextra',
     'untracked.json',
+    'time-domain-v3-classifier-weights.json',
     'runtime-package-manifest.json?alternate=true',
   ])('rejects non-canonical request path %s', async (path) => {
     const result = await classifierAssetResponse(

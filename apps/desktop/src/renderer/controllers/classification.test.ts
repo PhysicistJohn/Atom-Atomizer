@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import type { DetectedSignal, Sweep } from '@tinysa/contracts';
-import type { ModulationClassification } from '../embedding-classifier-runtime.js';
+import type {
+  DetectedSignal,
+  InstrumentSessionSnapshot,
+  Sweep,
+} from '@tinysa/contracts';
+import type {
+  IqClassifierPrototypeSource,
+  ModulationClassification,
+  TrustedIqGeometryContext,
+} from '../embedding-classifier-runtime.js';
+import { TRUSTED_IQ_GEOMETRY_CONTEXT_KIND } from '../iq-classification-geometry.js';
 import type { ComplexIqMeasurement } from '../complex-iq.js';
 import { AtomizerStore, createInitialRendererState } from '../store.js';
 import { RendererKernel } from './kernel.js';
@@ -53,8 +62,8 @@ describe('application-global classification controller', () => {
       [16_383, 8_192],
       [16_384, 16_384],
       [20_000, 16_384],
-      [32_768, 32_768],
-      [32_769, 32_768],
+      [32_768, 16_384],
+      [32_769, 16_384],
     ];
     for (const [sampleCount] of admitted) {
       controller.ingestIq(capture(`iq-${sampleCount}`, sampleCount, { sampleCount }));
@@ -63,6 +72,173 @@ describe('application-global classification controller', () => {
 
     expect(executor.iqSampleCounts).toEqual(admitted.map(([, expected]) => expected));
     expect(store.get().classification.issue).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('routes native and scaled fixed-profile geometry without exposing profile/class features', async () => {
+    const executor = new ImmediateExecutor();
+    const { store, controller } = setup(executor, () => 0);
+    store.set({
+      instrument: {
+        ...store.get().instrument,
+        session: fixedProfileSignalLabSession(),
+      },
+    });
+
+    controller.ingestIq(capture('signal-lab-native', 1, {
+      qualification: 'independently-verified-digital-baseband',
+      nativeSampleRateHz: 56_000_000,
+    }));
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual(['current']);
+    expect(executor.iqSampleCounts).toEqual([16_384]);
+    expect(executor.trustedGeometries).toEqual([{
+      kind: TRUSTED_IQ_GEOMETRY_CONTEXT_KIND,
+      sampleRateHz: 56_000_000,
+      nativeSampleRateHz: 56_000_000,
+    }]);
+
+    controller.ingestIq(capture('signal-lab-scaled', 2, {
+      sampleRateHz: 28_000_000,
+      qualification: 'derived-from-independently-verified-digital-baseband',
+      nativeSampleRateHz: 56_000_000,
+    }));
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual(['current', 'current']);
+    expect(executor.trustedGeometries[1]).toEqual({
+      kind: TRUSTED_IQ_GEOMETRY_CONTEXT_KIND,
+      sampleRateHz: 28_000_000,
+      nativeSampleRateHz: 56_000_000,
+    });
+    expect(Object.keys(executor.trustedGeometries[1]!).sort()).toEqual([
+      'kind',
+      'nativeSampleRateHz',
+      'sampleRateHz',
+    ]);
+
+    controller.ingestIq(capture('stale-same-session', 3, {
+      producerConfigurationEpoch: 'producer-epoch-0',
+    }));
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual([
+      'current',
+      'current',
+      'historical',
+    ]);
+    expect(executor.trustedGeometries.at(-1)).toBeUndefined();
+
+    store.set({
+      instrument: {
+        ...store.get().instrument,
+        session: {
+          sessionId: 'session-1',
+          provenance: {
+            sourceKind: 'signal-lab',
+            producerConfigurationEpoch: 'producer-epoch-1',
+          },
+          capabilities: {
+            features: [{
+              kind: 'signal-lab-profile-selection',
+              selectedProfileId: 'am',
+            }],
+          },
+        } as unknown as InstrumentSessionSnapshot,
+      },
+    });
+    controller.ingestIq(capture('signal-lab-analog', 4));
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual([
+      'current',
+      'current',
+      'historical',
+      'historical',
+    ]);
+
+    controller.ingestIq({
+      ...capture('stale-other-session', 5),
+      sessionId: 'other-session',
+    });
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual([
+      'current',
+      'current',
+      'historical',
+      'historical',
+      'historical',
+    ]);
+
+    store.set({
+      instrument: {
+        ...store.get().instrument,
+        session: {
+          sessionId: 'session-1',
+          provenance: { sourceKind: 'serial-port' },
+        } as unknown as InstrumentSessionSnapshot,
+      },
+    });
+    controller.ingestIq(capture('physical-sdr', 6));
+    await flushMicrotasks();
+    expect(executor.prototypeSources).toEqual([
+      'current',
+      'current',
+      'historical',
+      'historical',
+      'historical',
+      'historical',
+    ]);
+    controller.dispose();
+  });
+
+  it.each([
+    {
+      name: 'measurement omits native rate',
+      sessionNativeSampleRateHz: 56_000_000,
+      captureNativeSampleRateHz: undefined,
+    },
+    {
+      name: 'measurement and capability native rates disagree',
+      sessionNativeSampleRateHz: 56_000_000,
+      captureNativeSampleRateHz: 122_880_000,
+    },
+    {
+      name: 'current profile has no fixed native capability',
+      sessionNativeSampleRateHz: null,
+      captureNativeSampleRateHz: 56_000_000,
+    },
+  ])('fails closed when $name', async ({
+    sessionNativeSampleRateHz,
+    captureNativeSampleRateHz,
+  }) => {
+    const executor = new ImmediateExecutor();
+    const { store, controller } = setup(executor, () => 0);
+    store.set({
+      instrument: {
+        ...store.get().instrument,
+        session: fixedProfileSignalLabSession(sessionNativeSampleRateHz),
+      },
+    });
+
+    controller.ingestIq(capture('untrusted-current-geometry', 1, {
+      qualification: 'independently-verified-digital-baseband',
+      ...(captureNativeSampleRateHz === undefined
+        ? {}
+        : { nativeSampleRateHz: captureNativeSampleRateHz }),
+    }));
+    await flushMicrotasks();
+
+    expect(executor.prototypeSources).toEqual([]);
+    expect(store.get().classification).toMatchObject({
+      source: 'iq',
+      pending: false,
+      sampleCount: 0,
+      result: undefined,
+      issue: {
+        kind: 'failure',
+        message: expect.stringMatching(
+          /Current-route native geometry is unavailable/i,
+        ),
+      },
+    });
     controller.dispose();
   });
 
@@ -281,9 +457,21 @@ function setup(executor: ClassificationExecutor, now: () => number) {
 class ImmediateExecutor implements ClassificationExecutor {
   readonly iqFirstComponents: number[] = [];
   readonly iqSampleCounts: number[] = [];
-  classifyIq(real: Float64Array): Promise<ModulationClassification> {
+  readonly prototypeSources: IqClassifierPrototypeSource[] = [];
+  readonly trustedGeometries: Array<
+    TrustedIqGeometryContext | undefined
+  > = [];
+  classifyIq(
+    real: Float64Array,
+    _imaginary: Float64Array,
+    _bandwidthHz: number,
+    prototypeSource: IqClassifierPrototypeSource,
+    trustedGeometry?: TrustedIqGeometryContext,
+  ): Promise<ModulationClassification> {
     this.iqFirstComponents.push(real[0]!);
     this.iqSampleCounts.push(real.length);
+    this.prototypeSources.push(prototypeSource);
+    this.trustedGeometries.push(trustedGeometry);
     return Promise.resolve(result({ ofdm: 0.8, dsss: 0.2 }));
   }
   classifyScalar(): Promise<undefined> { return Promise.resolve(undefined); }
@@ -321,7 +509,12 @@ function capture(
   measurementId: string,
   sequence: number,
   overrides: Partial<Pick<ComplexIqMeasurement,
-    'producerConfigurationEpoch' | 'sampleRateHz' | 'bandwidthHz' | 'sampleCount'
+    | 'producerConfigurationEpoch'
+    | 'sampleRateHz'
+    | 'nativeSampleRateHz'
+    | 'bandwidthHz'
+    | 'sampleCount'
+    | 'qualification'
   >> = {},
 ): ComplexIqMeasurement {
   const sampleCount = overrides.sampleCount ?? 16_384;
@@ -329,15 +522,52 @@ function capture(
   const view = new DataView(samples.buffer);
   view.setFloat32(0, sequence, true);
   view.setFloat32(4, -sequence, true);
+  const sampleRateHz = overrides.sampleRateHz ?? 56_000_000;
+  const trustedGeometry = overrides.nativeSampleRateHz === undefined
+    ? {}
+    : {
+        nativeSampleRateHz: overrides.nativeSampleRateHz,
+        transformReceipt: {
+          sourceSampleRateHz: overrides.nativeSampleRateHz,
+          outputSampleRateHz: sampleRateHz,
+        } as NonNullable<ComplexIqMeasurement['transformReceipt']>,
+      };
   return {
     schemaVersion: 1, kind: 'complex-iq', measurementId, sessionId: 'session-1',
     configurationRevision: 'configuration-1', producerConfigurationEpoch: 'producer-epoch-1', sequence,
     capturedAt: new Date(Date.UTC(2026, 6, 22, 0, 0, sequence)).toISOString(), elapsedMilliseconds: 5,
     resolutionBandwidthHz: null, attenuationDb: null, qualification: 'analytic-complex-baseband', complete: true,
-    centerHz: 100_000_000, sampleRateHz: 56_000_000, bandwidthHz: 40_000_000,
+    centerHz: 100_000_000, sampleRateHz, bandwidthHz: 40_000_000,
     sampleFormat: 'cf32le', sampleCount, samples,
+    ...trustedGeometry,
     ...overrides,
   };
+}
+
+function fixedProfileSignalLabSession(
+  nativeSampleRateHz: number | null = 56_000_000,
+): InstrumentSessionSnapshot {
+  return {
+    sessionId: 'session-1',
+    provenance: {
+      sourceKind: 'signal-lab',
+      producerConfigurationEpoch: 'producer-epoch-1',
+    },
+    capabilities: {
+      features: [{
+        kind: 'signal-lab-profile-selection',
+        selectedProfileId: 'wifi-hr-dsss-11m',
+        profiles: [{
+          profileId: 'wifi-hr-dsss-11m',
+          qualification: 'independently-verified-digital-baseband',
+        }],
+        iqProfiles: [{
+          profileId: 'wifi-hr-dsss-11m',
+          nativeSampleRateHz,
+        }],
+      }],
+    },
+  } as unknown as InstrumentSessionSnapshot;
 }
 
 function result(distribution: Record<string, number>): ModulationClassification {

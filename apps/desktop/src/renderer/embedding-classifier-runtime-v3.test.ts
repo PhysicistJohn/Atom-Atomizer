@@ -1,9 +1,8 @@
 /// <reference types="node" />
 
 import { readFile } from 'node:fs/promises';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
-  classifyIqModulation,
   loadTimeDomainV3ModulationAdapter,
   type IqModulationClassifier,
 } from './embedding-classifier-runtime.js';
@@ -102,6 +101,8 @@ function classify(
   return classifier.classifyIq(
     Float64Array.from(fixture.iq.in_phase),
     Float64Array.from(fixture.iq.quadrature),
+    undefined,
+    'historical',
   );
 }
 
@@ -184,8 +185,11 @@ describe('Atomizer v3 dual-fusion runtime package', () => {
       },
     });
     expect(result.posterior).toBeUndefined();
-    expect(result.rejection!.score).toBeGreaterThan(
-      result.rejection!.threshold,
+    if (result.rejection?.stage !== 1) {
+      throw new Error('fixture did not produce the expected stage-1 rejection');
+    }
+    expect(result.rejection.score).toBeGreaterThan(
+      result.rejection.threshold,
     );
   });
 
@@ -203,8 +207,11 @@ describe('Atomizer v3 dual-fusion runtime package', () => {
       },
     });
     expect(result.posterior).toBeUndefined();
-    expect(result.rejection!.score).toBeGreaterThan(
-      result.rejection!.threshold,
+    if (result.rejection?.stage !== 2) {
+      throw new Error('fixture did not produce the expected stage-2 rejection');
+    }
+    expect(result.rejection.score).toBeGreaterThan(
+      result.rejection.threshold,
     );
   });
 
@@ -261,12 +268,11 @@ describe('Atomizer v3 dual-fusion runtime package', () => {
     expect(architectureRequests).toEqual(['runtime-package-manifest.json']);
   });
 
-  it('retries production startup after a transient manifest fetch failure', async () => {
+  it('can retry an explicit legacy-package audit after a transient fetch failure', async () => {
     const retryRequests: string[] = [];
     const releaseFetch = packageFetch(releasePackageRoot, retryRequests);
     let failFirstManifest = true;
-    vi.stubGlobal('location', new URL('https://fixture.invalid/'));
-    vi.stubGlobal('fetch', (async (input, init) => {
+    const retryFetch = (async (input, init) => {
       const requestedUrl = input instanceof Request
         ? new URL(input.url)
         : new URL(input.toString());
@@ -279,28 +285,24 @@ describe('Atomizer v3 dual-fusion runtime package', () => {
         return new Response('temporarily unavailable', { status: 503 });
       }
       return releaseFetch(input, init);
-    }) satisfies typeof fetch);
-    try {
-      await expect(classifyIqModulation(
-        Float64Array.from(knownRow.iq.in_phase),
-        Float64Array.from(knownRow.iq.quadrature),
-      )).rejects.toThrow(/fetch failed.*503/);
+    }) satisfies typeof fetch;
+    await expect(loadTimeDomainV3ModulationAdapter({
+      manifestUrl: remoteManifestUrl,
+      fetcher: retryFetch,
+    })).rejects.toThrow(/fetch failed.*503/);
 
-      const result = await classifyIqModulation(
-        Float64Array.from(knownRow.iq.in_phase),
-        Float64Array.from(knownRow.iq.quadrature),
-      );
-      expect(result).toMatchObject({
-        family: knownRow.decision_label,
-        isUnknown: false,
-      });
-      expect(
-        retryRequests.filter(
-          (filename) => filename === 'runtime-package-manifest.json',
-        ),
-      ).toHaveLength(2);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const production = await loadTimeDomainV3ModulationAdapter({
+      manifestUrl: remoteManifestUrl,
+      fetcher: retryFetch,
+    });
+    expect(classify(production, knownRow)).toMatchObject({
+      family: knownRow.decision_label,
+      isUnknown: false,
+    });
+    expect(
+      retryRequests.filter(
+        (filename) => filename === 'runtime-package-manifest.json',
+      ),
+    ).toHaveLength(2);
   });
 });

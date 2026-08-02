@@ -1,0 +1,52 @@
+{
+ "schema": "atomos.v4.time-domain-profile-bank.runtime-package",
+ "schema_version": 1,
+ "status": "staging_not_release",
+ "development_only": true,
+ "architecture": {
+  "classifier_and_policy_bytes_mutually_bound": true,
+  "trusted_prototype_source_required": true,
+  "classifier_precedes_route_conditioned_abstention": true,
+  "display_calibration_has_decision_authority": false,
+  "runtime_length_policy_by_prototype_source": {
+   "historical": {
+    "kind": "largest_supported_prefix_not_exceeding_valid_sample_count",
+    "observation_length_reporting_rule": "largest_supported_prefix_not_exceeding_valid_sample_count"
+   },
+   "current": {
+    "kind": "fixed_causal_prefix",
+    "effective_runtime_input_length": 4096,
+    "observation_length_reporting_rule": "largest_supported_prefix_not_exceeding_valid_sample_count"
+   }
+  }
+ },
+ "assets": {
+  "time-domain-profile-bank-v4.json": {
+   "path": "time-domain-profile-bank-v4.json",
+   "bytes": 2382864,
+   "sha256": "c0dc837ddacd0bd3055701719a567e8011392180ad2421c007cc2a20e927d86a",
+   "schema": "atomos.v4.time-domain-current-source-profile-bank.browser-weights",
+   "schema_version": 2,
+   "runtime_role": "accepted_known_classifier",
+   "required_for_decision": true
+  },
+  "time-domain-profile-bank-openset-v4.json": {
+   "path": "time-domain-profile-bank-openset-v4.json",
+   "bytes": 2756019,
+   "sha256": "57f3262bb6c10785a766ef6834b88fc2c8daaeae3ef9d1c9e747658c8bfc3bea",
+   "schema": "atomos.v4.time-domain-current-source.external-openset-policy",
+   "schema_version": 5,
+   "runtime_role": "external_abstention_policy",
+   "required_for_decision": true
+  },
+  "time-domain-profile-bank-display-calibration-v4.json": {
+   "path": "time-domain-profile-bank-display-calibration-v4.json",
+   "bytes": 491,
+   "sha256": "41d02e0b579931bb7926436025bd77dcf472cba03d89e1eb607ec339aea00087",
+   "schema": "atomos.v4.time-domain-profile-bank.display-calibration",
+   "schema_version": 1,
+   "runtime_role": "conditional_display_calibration",
+   "required_for_decision": false
+  }
+ }
+}

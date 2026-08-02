@@ -19,7 +19,7 @@ export default defineConfig({
   ],
   root,
   base: './',
-  // Browser and packaged-desktop builds consume one byte-identical static v3
+  // Browser and packaged-desktop builds consume one byte-identical static v4
   // runtime package. The large JSON assets stay outside JavaScript chunks.
   publicDir: sharedPublicRoot,
   resolve: {

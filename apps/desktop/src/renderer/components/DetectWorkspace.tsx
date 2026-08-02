@@ -16,8 +16,8 @@ function leafLabel(id: string): string { return id.replace(/-like$/, '').replace
 /**
  * The Detect panel: the browser-native embedding modulation classifier plus the
  * shared signal-detector settings and detected-power envelope capture. Runs on
- * complex I/Q (SDR/SignalLab) or a scalar power spectrum (tinySA) — whichever the
- * connected instrument provides — and reports the modulation family, confidence,
+ * complex I/Q or a scalar power spectrum — whichever the connected instrument
+ * provides — and reports the modulation family, confidence,
  * candidate distribution, and the fused protocol-leaf guess.
  */
 export function DetectWorkspace({
@@ -104,7 +104,9 @@ export function DetectWorkspace({
               ))}
             </div>
             <p className="detect-note">
-              {visibleModulation.rejection?.stage === 1
+              {visibleModulation.rejection?.stage === 0
+                ? 'Exact-zero capture rejected as no signal; no occupied-bandwidth estimate was made.'
+                : visibleModulation.rejection?.stage === 1
                 ? 'Noise-like capture gated before bandwidth estimation; no occupied-bandwidth estimate was made.'
                 : <>Occupied bandwidth ≈ {(visibleModulation.bwFraction * 100).toFixed(0)}% of {visibleModulation.flavor === 'iq' ? 'sample rate' : 'span'} · modulation family, not a protocol or emitter identity.</>}
             </p>

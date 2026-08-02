@@ -8,10 +8,9 @@ export const ATOMIZER_CLASSIFIER_ASSET_ORIGIN =
 
 const CLASSIFIER_ASSET_FILENAMES = new Set([
   'runtime-package-manifest.json',
-  'time-domain-v3-dual-binding.json',
-  'time-domain-v3-rejector-weights.json',
-  'time-domain-v3-classifier-weights.json',
-  'time-domain-v3-openset-policy.json',
+  'time-domain-profile-bank-v4.json',
+  'time-domain-profile-bank-openset-v4.json',
+  'time-domain-profile-bank-display-calibration-v4.json',
 ]);
 
 type ProtocolLike = Pick<Protocol, 'handle'>;
@@ -47,7 +46,7 @@ function response(
 }
 
 /**
- * Serve only the five deployment files from one fixed directory. No request
+ * Serve only the four v4 deployment files from one fixed directory. No request
  * path is ever joined: the exact allow-listed basename is selected first.
  */
 export async function classifierAssetResponse(

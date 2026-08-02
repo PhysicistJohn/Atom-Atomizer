@@ -1,11 +1,87 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { InstrumentAcquisitionCapability, InstrumentSessionSnapshot, Sweep } from '@tinysa/contracts';
+import type {
+  InstrumentAcquisitionCapability,
+  InstrumentConfigurationState,
+  InstrumentSessionSnapshot,
+  Sweep,
+} from '@tinysa/contracts';
 import { createRendererRuntime } from '../AppShell.js';
+import type {
+  ComplexIqConfiguration,
+  ComplexIqMeasurement,
+} from '../complex-iq.js';
 
 afterEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe('I/Q evidence publication', () => {
+  it('publishes the complete output/native sample-rate geometry to classification', async () => {
+    const runtime = createRendererRuntime({
+      initialWorkspace: 'spectrum',
+      initialAgentOpen: false,
+    });
+    const sessionId = 'signal-lab-session';
+    runtime.store.set({
+      instrument: {
+        ...runtime.store.get().instrument,
+        session: {
+          sessionId,
+          capabilities: { acquisitions: [{ kind: 'swept-spectrum' }], features: [] },
+        } as unknown as InstrumentSessionSnapshot,
+      },
+    });
+    const configuration: ComplexIqConfiguration = {
+      kind: 'complex-iq',
+      centerHz: 2_437_000_000,
+      sampleRateHz: 61_440_000,
+      bandwidthHz: 22_000_000,
+      sampleCount: 4_096,
+      sampleFormat: 'cf32le',
+    };
+    const configured: InstrumentConfigurationState = {
+      sessionId,
+      configurationRevision: 'iq-configuration',
+      configuration,
+      configuredAt: '2026-07-29T00:00:00.000Z',
+    };
+    runtime.kernel.configurationRevisions.current.commit(
+      configured.configurationRevision,
+      { kind: 'complex-iq', admitted: configuration },
+    );
+    const measurement = {
+      kind: 'complex-iq',
+      measurementId: 'scaled-iq',
+      sessionId,
+      configurationRevision: configured.configurationRevision,
+      centerHz: configuration.centerHz,
+      sampleRateHz: configuration.sampleRateHz,
+      nativeSampleRateHz: 122_880_000,
+      bandwidthHz: configuration.bandwidthHz,
+      sampleCount: configuration.sampleCount,
+      sampleFormat: configuration.sampleFormat,
+      samples: new Uint8Array(configuration.sampleCount * 8),
+    } as unknown as ComplexIqMeasurement;
+    const acquire = vi.fn().mockResolvedValue(measurement);
+    vi.stubGlobal('atomizerInstrument', { acquire });
+    const ingest = vi.spyOn(runtime.classification, 'ingestIq')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      runtime.acquisition.acquireConfiguredIq(configured),
+    ).resolves.toBe(measurement);
+
+    expect(runtime.store.get().iqCapture).toBe(measurement);
+    expect(ingest).toHaveBeenCalledWith(measurement);
+    expect(ingest.mock.calls[0]![0]).toMatchObject({
+      sampleRateHz: 61_440_000,
+      nativeSampleRateHz: 122_880_000,
+    });
+    runtime.classification.dispose();
+  });
 });
 
 describe('sweep evidence publication', () => {

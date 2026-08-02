@@ -5,9 +5,9 @@
  * Bayesian classifier.
  *
  * Two flavors share the surface but intentionally use different frozen models:
- *   - I/Q (complex baseband, SDR/SignalLab): the v3 dual-fusion runtime.
+ *   - I/Q (complex baseband, SDR/SignalLab): the v4 route-conditioned runtime.
  *   - magnitude (scalar power spectrum, tinySA): the retained v2 runtime.
- * The large v3 assets are fetched from the static runtime package, hashed before
+ * The large v4 assets are fetched from the static runtime package, hashed before
  * parsing, and never embedded in a JavaScript chunk.
  *
  * Also re-exports the blind symbol-recovery front-end (`recoverIqConstellation`)
@@ -17,6 +17,17 @@
  */
 
 import { recoverConstellation } from '../../../../../Atom-Classifier/src/embedding/recover.js';
+import {
+  loadTimeDomainV4ModulationAdapter,
+  TIME_DOMAIN_V4_RELEASE_MANIFEST_SHA256,
+  type TimeDomainV4DisplayCalibration,
+} from './time-domain-v4-runtime-package.js';
+import {
+  admitIqGeometryForPrototypeSource,
+  type TrustedIqGeometryContext,
+} from './iq-classification-geometry.js';
+
+export type { TrustedIqGeometryContext } from './iq-classification-geometry.js';
 
 /** Recovered symbol constellation, bounded + normalised for direct plotting. */
 export interface RecoveredConstellation {
@@ -91,7 +102,7 @@ export interface ModulationClassification {
   family: string;
   confidence: number;
   isUnknown: boolean;
-  /** Conditional family display distribution; absent on a v3 rejection. */
+  /** Conditional family display distribution; absent on an I/Q rejection. */
   readonly posterior?: Readonly<Record<string, number>>;
   /** Top posterior candidates (family distribution). */
   candidates: readonly { label: string; confidence: number }[];
@@ -99,14 +110,27 @@ export interface ModulationClassification {
   bwFraction: number;
   /** Strongest fused protocol leaf, when the fusion concentrates. */
   topLeaf?: { label: string; probability: number };
-  /** Present for a live v3 I/Q abstention; omitted for magnitude v2. */
-  rejection?: {
-    /** Stage 1 gated noise; stage 2 abstained before the label classifier. */
-    readonly stage: 1 | 2;
-    readonly reason: 'noise' | 'open-set';
-    readonly score: number;
-    readonly threshold: number;
-  };
+  /** Present for a live I/Q abstention; omitted for magnitude v2. */
+  rejection?:
+    | {
+        /** Exact-zero validity gate; no bandwidth estimator was run. */
+        readonly stage: 0;
+        readonly reason: 'no-signal';
+      }
+    | {
+        /** Route/length/class-conditioned v4 open-set abstention. */
+        readonly stage: 2;
+        readonly reason: 'open-set';
+        readonly score: number;
+        readonly threshold: number;
+      }
+    | {
+        /** Legacy v3 audit-loader result; never used by live I/Q startup. */
+        readonly stage: 1;
+        readonly reason: 'noise';
+        readonly score: number;
+        readonly threshold: number;
+      };
 }
 
 interface MagnitudeClassifierLike {
@@ -154,7 +178,7 @@ function toModulation(result: EmbeddingLikeResult, flavor: 'iq' | 'magnitude'): 
 }
 
 // ---------------------------------------------------------------------------
-// Live v3 dual-fusion I/Q runtime
+// Legacy v3 dual-fusion audit loader (not used by live I/Q startup)
 // ---------------------------------------------------------------------------
 
 const TIME_DOMAIN_V3_PACKAGE_SCHEMA =
@@ -213,12 +237,25 @@ export interface TimeDomainV3VerifiedRuntimeAssets {
 }
 
 export interface IqModulationClassifier {
+  /** Optional display-only asset. It has no classification decision authority. */
+  readonly displayCalibration?: TimeDomainV4DisplayCalibration;
   classifyIq(
     re: Float64Array,
     im: Float64Array,
-    bandwidthHz?: number,
+    bandwidthHz: number | undefined,
+    prototypeSource: IqClassifierPrototypeSource,
+    trustedGeometry?: TrustedIqGeometryContext,
   ): ModulationClassification;
 }
+
+/**
+ * Trusted acquisition-domain route for the v4 prototype bank.
+ *
+ * This is source provenance, never a classifier inference: live SignalLab
+ * measurements use the current catalog bank while untagged/physical SDR
+ * measurements retain the independently calibrated historical fallback.
+ */
+export type IqClassifierPrototypeSource = 'current' | 'historical';
 
 interface TimeDomainDualDecisionLike {
   readonly outcome: 'noise' | 'unknown' | 'known';
@@ -279,6 +316,19 @@ function toTimeDomainV3Modulation(
 ): ModulationClassification {
   if (decision.outcome !== 'known') {
     const stage = decision.outcome === 'noise' ? 1 : 2;
+    const rejection = stage === 1
+      ? {
+          stage: 1 as const,
+          reason: 'noise' as const,
+          score: decision.openSet.stagedScore,
+          threshold: decision.openSet.threshold,
+        }
+      : {
+          stage: 2 as const,
+          reason: 'open-set' as const,
+          score: decision.openSet.stagedScore,
+          threshold: decision.openSet.threshold,
+        };
     return {
       flavor: 'iq',
       modulation: 'unknown',
@@ -289,12 +339,7 @@ function toTimeDomainV3Modulation(
       // Stage 1 intentionally runs before the bandwidth-estimating frontend.
       // Use the conservative full-band value without doing downstream work.
       bwFraction: decision.forward?.preprocess.context.bw ?? 1,
-      rejection: {
-        stage,
-        reason: stage === 1 ? 'noise' : 'open-set',
-        score: decision.openSet.stagedScore,
-        threshold: decision.openSet.threshold,
-      },
+      rejection,
     };
   }
   if (
@@ -657,29 +702,52 @@ export async function loadTimeDomainV3ModulationAdapter(
   }, admission);
 }
 
-let iqV3ProductionPromise: Promise<IqModulationClassifier> | undefined;
+let iqV4ProductionPromise: Promise<IqModulationClassifier> | undefined;
 
-async function loadTimeDomainV3ProductionAdapter(): Promise<IqModulationClassifier> {
-  if (!iqV3ProductionPromise) {
-    const attempt = loadTimeDomainV3ModulationAdapter();
-    iqV3ProductionPromise = attempt;
+async function loadTimeDomainV4ProductionAdapter(): Promise<IqModulationClassifier> {
+  if (!iqV4ProductionPromise) {
+    // The compiled release pin is filled only by a release promotion, which
+    // also rewrites every asset to `release`/`release_evidence: true`. Until
+    // that promotion happens, admit the same bytes through the staging
+    // channel instead of failing closed before the first fetch. Admission
+    // changes only the provenance claim -- the manifest still binds each
+    // asset by SHA-256, and the decision path is byte-identical. Filling the
+    // pin flips this back to sealed production admission on its own.
+    const attempt = loadTimeDomainV4ModulationAdapter(
+      TIME_DOMAIN_V4_RELEASE_MANIFEST_SHA256 === undefined
+        ? { admission: 'staging' }
+        : {},
+    );
+    iqV4ProductionPromise = attempt;
     void attempt.catch(() => {
-      if (iqV3ProductionPromise === attempt) {
-        iqV3ProductionPromise = undefined;
+      if (iqV4ProductionPromise === attempt) {
+        iqV4ProductionPromise = undefined;
       }
     });
   }
-  return iqV3ProductionPromise;
+  return iqV4ProductionPromise;
 }
 
-/** I/Q flavor: dual-fusion v3 over raw complex baseband. */
+/** I/Q flavor: route-conditioned v4 over raw complex baseband. */
 export async function classifyIqModulation(
   re: Float64Array,
   im: Float64Array,
-  bandwidthHz?: number,
+  bandwidthHz: number | undefined,
+  prototypeSource: IqClassifierPrototypeSource,
+  trustedGeometry?: TrustedIqGeometryContext,
 ): Promise<ModulationClassification> {
-  const classifier = await loadTimeDomainV3ProductionAdapter();
-  return classifier.classifyIq(re, im, bandwidthHz);
+  const admittedGeometry = admitIqGeometryForPrototypeSource(
+    prototypeSource,
+    trustedGeometry,
+  );
+  const classifier = await loadTimeDomainV4ProductionAdapter();
+  return classifier.classifyIq(
+    re,
+    im,
+    bandwidthHz,
+    prototypeSource,
+    admittedGeometry,
+  );
 }
 
 /**

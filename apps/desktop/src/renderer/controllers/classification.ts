@@ -1,23 +1,132 @@
-import type { DetectedSignal, Sweep } from '@tinysa/contracts';
+import type {
+  DetectedSignal,
+  InstrumentSessionSnapshot,
+  Sweep,
+} from '@tinysa/contracts';
 import {
   accumulateModulationConsensus,
   emptyModulationConsensus,
 } from '../classification-consensus.js';
 import { decodeComplexIqChannels, type ComplexIqMeasurement } from '../complex-iq.js';
-import type { ModulationClassification } from '../embedding-classifier-runtime.js';
+import type {
+  IqClassifierPrototypeSource,
+  ModulationClassification,
+  TrustedIqGeometryContext,
+} from '../embedding-classifier-runtime.js';
+import {
+  admitTrustedIqGeometryContext,
+  TRUSTED_IQ_GEOMETRY_CONTEXT_KIND,
+} from '../iq-classification-geometry.js';
 import type { ClassificationWorkerRequest, ClassificationWorkerResponse } from '../classification-worker-protocol.js';
 import type { RendererKernel } from './kernel.js';
+import { prototypeSourceForAcquisitionV4 } from '../../../../../../Atom-Classifier/src/embedding/time-domain-profile-routing-v4.js';
 
-// Frozen live-v3 capture geometry. The prefixes are contiguous: no
-// plotting-style subsampling is allowed at this boundary. The causal stage-one
-// gate uses its own first-16K
-// prefix internally for captures longer than 16K.
+// Frozen live-v4 observation geometry. Prefixes are contiguous: no
+// plotting-style subsampling is allowed at this boundary. Captures longer than
+// 16K use their causal first-16K observation, the largest length trained and
+// parity-tested by v4. The schema-5 classifier, not this controller, then
+// canonicalizes trusted-current observations to its effective first 4K.
 const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
 const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
 const CLASSIFICATION_IQ_LONG_SAMPLES = 16_384;
-const CLASSIFICATION_IQ_MAX_SAMPLES = 32_768;
 const CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE =
   'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.';
+
+type SignalLabProfileSelectionCapability = Extract<
+  InstrumentSessionSnapshot['capabilities']['features'][number],
+  { kind: 'signal-lab-profile-selection' }
+>;
+
+interface IqClassificationRoute {
+  readonly prototypeSource: IqClassifierPrototypeSource;
+  readonly trustedGeometry?: TrustedIqGeometryContext;
+}
+
+const FIXED_PROFILE_MEASUREMENT_QUALIFICATIONS = new Set([
+  'independently-verified-digital-baseband',
+  'derived-from-independently-verified-digital-baseband',
+  'receiver-impaired-complex-baseband',
+]);
+
+function trustedCurrentGeometry(
+  capture: ComplexIqMeasurement,
+  feature: SignalLabProfileSelectionCapability,
+): TrustedIqGeometryContext {
+  const descriptor = feature.profiles.find(
+    ({ profileId }) => profileId === feature.selectedProfileId,
+  );
+  const transport = feature.iqProfiles.find(
+    ({ profileId }) => profileId === feature.selectedProfileId,
+  );
+  const nativeSampleRateHz = transport?.nativeSampleRateHz;
+  const receipt = capture.transformReceipt;
+  if (
+    descriptor?.qualification !==
+      'independently-verified-digital-baseband'
+    || nativeSampleRateHz === null
+    || nativeSampleRateHz === undefined
+    || capture.nativeSampleRateHz !== nativeSampleRateHz
+    || receipt === undefined
+    || receipt.sourceSampleRateHz !== nativeSampleRateHz
+    || receipt.outputSampleRateHz !== capture.sampleRateHz
+    || !FIXED_PROFILE_MEASUREMENT_QUALIFICATIONS.has(capture.qualification)
+  ) {
+    throw new Error(
+      'Current-route native geometry is unavailable or does not match the '
+      + 'independently verified SignalLab fixed-profile capability',
+    );
+  }
+  return admitTrustedIqGeometryContext({
+    kind: TRUSTED_IQ_GEOMETRY_CONTEXT_KIND,
+    sampleRateHz: capture.sampleRateHz,
+    nativeSampleRateHz,
+  });
+}
+
+function iqClassificationRoute(
+  capture: ComplexIqMeasurement,
+  session: InstrumentSessionSnapshot | undefined,
+): IqClassificationRoute {
+  if (session?.sessionId !== capture.sessionId) {
+    return {
+      prototypeSource: prototypeSourceForAcquisitionV4('untagged'),
+    };
+  }
+  if (session.provenance.sourceKind !== 'signal-lab') {
+    return {
+      prototypeSource: prototypeSourceForAcquisitionV4('physical-sdr'),
+    };
+  }
+  if (
+    capture.producerConfigurationEpoch === undefined
+    || session.provenance.producerConfigurationEpoch
+      !== capture.producerConfigurationEpoch
+  ) {
+    return {
+      prototypeSource: prototypeSourceForAcquisitionV4('untagged'),
+    };
+  }
+  const feature = session.capabilities.features.find(
+    (candidate) => candidate.kind === 'signal-lab-profile-selection',
+  );
+  const prototypeSource = prototypeSourceForAcquisitionV4(
+    'signal-lab',
+    feature?.kind === 'signal-lab-profile-selection'
+      ? feature.selectedProfileId
+      : undefined,
+  );
+  if (prototypeSource === 'historical') return { prototypeSource };
+  if (feature?.kind !== 'signal-lab-profile-selection') {
+    throw new Error(
+      'Current-route native geometry is unavailable because the SignalLab '
+      + 'profile capability is missing',
+    );
+  }
+  return {
+    prototypeSource,
+    trustedGeometry: trustedCurrentGeometry(capture, feature),
+  };
+}
 
 /**
  * Select the admitted contiguous capture prefix for modulation classification.
@@ -29,12 +138,17 @@ export function classificationIqPrefixLength(sampleCount: number): number | unde
   }
   if (sampleCount < CLASSIFICATION_IQ_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_MIN_SAMPLES;
   if (sampleCount < CLASSIFICATION_IQ_LONG_SAMPLES) return CLASSIFICATION_IQ_MEDIUM_SAMPLES;
-  if (sampleCount < CLASSIFICATION_IQ_MAX_SAMPLES) return CLASSIFICATION_IQ_LONG_SAMPLES;
-  return CLASSIFICATION_IQ_MAX_SAMPLES;
+  return CLASSIFICATION_IQ_LONG_SAMPLES;
 }
 
 export interface ClassificationExecutor {
-  classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification>;
+  classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    prototypeSource: IqClassifierPrototypeSource,
+    trustedGeometry?: TrustedIqGeometryContext,
+  ): Promise<ModulationClassification>;
   classifyScalar(
     powerDbm: readonly number[],
     frequencyHz: readonly number[],
@@ -89,6 +203,7 @@ export class ClassificationController {
       capture.producerConfigurationEpoch ?? null,
       capture.centerHz,
       capture.sampleRateHz,
+      capture.nativeSampleRateHz ?? null,
       capture.bandwidthHz,
       capture.sampleFormat,
       capture.sampleCount,
@@ -269,7 +384,17 @@ export class ClassificationController {
     const prefixLength = classificationIqPrefixLength(capture.sampleCount);
     if (prefixLength === undefined) return Promise.resolve(undefined);
     const { re, im } = decodeComplexIqChannels(capture, prefixLength);
-    return this.executor.classifyIq(re, im, capture.bandwidthHz);
+    const route = iqClassificationRoute(
+      capture,
+      this.k.state.instrument.session,
+    );
+    return this.executor.classifyIq(
+      re,
+      im,
+      capture.bandwidthHz,
+      route.prototypeSource,
+      route.trustedGeometry,
+    );
   }
 }
 
@@ -285,15 +410,31 @@ function classificationFailureMessage(failure: unknown): string {
 }
 
 class BrowserClassificationExecutor implements ClassificationExecutor {
+  static readonly responseTimeoutMilliseconds = 15_000;
   private worker: Worker | undefined;
   private nextId = 0;
   private readonly pending = new Map<number, {
     readonly resolve: (result: ModulationClassification | undefined) => void;
     readonly reject: (reason: unknown) => void;
+    readonly timeout: ReturnType<typeof setTimeout>;
   }>();
 
-  classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification> {
-    return this.dispatch({ id: ++this.nextId, kind: 'iq', real, imaginary, bandwidthHz })
+  classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    prototypeSource: IqClassifierPrototypeSource,
+    trustedGeometry?: TrustedIqGeometryContext,
+  ): Promise<ModulationClassification> {
+    return this.dispatch({
+      id: ++this.nextId,
+      kind: 'iq',
+      real,
+      imaginary,
+      bandwidthHz,
+      prototypeSource,
+      ...(trustedGeometry === undefined ? {} : { trustedGeometry }),
+    })
       .then((result) => {
         if (!result) throw new Error('I/Q classifier returned no result');
         return result;
@@ -317,20 +458,30 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
   }
 
   dispose(): void {
-    this.worker?.terminate();
+    const worker = this.worker;
     this.worker = undefined;
-    for (const { reject } of this.pending.values()) reject(new Error('Classification worker disposed'));
-    this.pending.clear();
+    worker?.terminate();
+    this.rejectAll(new Error('Classification worker disposed'));
   }
 
   private dispatch(request: ClassificationWorkerRequest): Promise<ModulationClassification | undefined> {
     const worker = this.requireWorker();
     return new Promise((resolve, reject) => {
-      this.pending.set(request.id, { resolve, reject });
+      const timeout = globalThis.setTimeout(() => {
+        if (!this.pending.has(request.id)) return;
+        this.failWorker(
+          worker,
+          new Error(
+            `Classification worker did not respond within ${BrowserClassificationExecutor.responseTimeoutMilliseconds / 1_000} seconds`,
+          ),
+        );
+      }, BrowserClassificationExecutor.responseTimeoutMilliseconds);
+      this.pending.set(request.id, { resolve, reject, timeout });
       try {
         if (request.kind === 'iq') worker.postMessage(request, [request.real.buffer, request.imaginary.buffer]);
         else worker.postMessage(request);
       } catch (failure) {
+        globalThis.clearTimeout(timeout);
         this.pending.delete(request.id);
         reject(failure);
       }
@@ -348,25 +499,53 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
       const pending = this.pending.get(response.id);
       if (!pending) return;
       this.pending.delete(response.id);
+      globalThis.clearTimeout(pending.timeout);
       if (response.ok) pending.resolve(response.result);
       else pending.reject(new Error(response.error));
     };
     worker.onerror = (event) => {
-      const failure = new Error(event.message || 'Classification worker failed');
-      for (const { reject } of this.pending.values()) reject(failure);
-      this.pending.clear();
-      worker.terminate();
-      if (this.worker === worker) this.worker = undefined;
+      this.failWorker(
+        worker,
+        new Error(event.message || 'Classification worker failed'),
+      );
     };
     this.worker = worker;
     return worker;
   }
+
+  private failWorker(worker: Worker, failure: Error): void {
+    if (this.worker !== worker) return;
+    this.worker = undefined;
+    worker.terminate();
+    this.rejectAll(failure);
+  }
+
+  private rejectAll(failure: Error): void {
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const request of pending) {
+      globalThis.clearTimeout(request.timeout);
+      request.reject(failure);
+    }
+  }
 }
 
 class InlineClassificationExecutor implements ClassificationExecutor {
-  async classifyIq(real: Float64Array, imaginary: Float64Array, bandwidthHz: number): Promise<ModulationClassification> {
+  async classifyIq(
+    real: Float64Array,
+    imaginary: Float64Array,
+    bandwidthHz: number,
+    prototypeSource: IqClassifierPrototypeSource,
+    trustedGeometry?: TrustedIqGeometryContext,
+  ): Promise<ModulationClassification> {
     const { classifyIqModulation } = await import('../embedding-classifier-runtime.js');
-    return classifyIqModulation(real, imaginary, bandwidthHz);
+    return classifyIqModulation(
+      real,
+      imaginary,
+      bandwidthHz,
+      prototypeSource,
+      trustedGeometry,
+    );
   }
 
   async classifyScalar(

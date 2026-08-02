@@ -9,7 +9,13 @@ const scope = globalThis as unknown as {
 scope.onmessage = (event) => {
   const request = event.data;
   const task = request.kind === 'iq'
-    ? classifyIqModulation(request.real, request.imaginary, request.bandwidthHz)
+    ? classifyIqModulation(
+        request.real,
+        request.imaginary,
+        request.bandwidthHz,
+        request.prototypeSource,
+        request.trustedGeometry,
+      )
     : classifyScalarSweep(
         request.powerDbm,
         request.frequencyHz,
