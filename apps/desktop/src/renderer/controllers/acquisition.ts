@@ -633,7 +633,7 @@ export class AcquisitionController {
   /** Read an IPC state snapshot without allowing it to regress a newer
    * lifecycle event or invoke acknowledgement already accepted by the
    * renderer. */
-  async readAuthoritativeConnectedSession(
+  private async readAuthoritativeConnectedSession(
     expectedSessionId: string,
     staleSessionMessage: string,
   ): Promise<InstrumentSessionSnapshot> {
