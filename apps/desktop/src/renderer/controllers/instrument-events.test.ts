@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  AtomizerInstrumentState,
   CanonicalInstrumentSurface,
   InstrumentConfigurationState,
   InstrumentSessionSnapshot,
@@ -9,6 +10,7 @@ import { AtomizerStore, createInitialRendererState } from '../store.js';
 import { InstrumentEventsController } from './instrument-events.js';
 import { RendererKernel } from './kernel.js';
 import { AcquisitionController } from './acquisition.js';
+import { ConnectionController } from './connection.js';
 
 const HASH = 'a'.repeat(64);
 const SESSION: InstrumentSessionSnapshot = {
@@ -95,6 +97,41 @@ describe('instrument configuration event admission', () => {
     expect(store.revision).toBe(before + 1);
   });
 
+  it('does not let a delayed initial state read erase a newer admitted configuration', async () => {
+    const store = new AtomizerStore(createInitialRendererState({ initialWorkspace: 'spectrum', initialAgentOpen: false }));
+    const kernel = new RendererKernel(store);
+    kernel.acquisition = new AcquisitionController(kernel);
+    kernel.connection = new ConnectionController(kernel);
+    const controller = new InstrumentEventsController(kernel);
+    kernel.rendererMounted.current = true;
+    kernel.initializationGeneration.current = 1;
+    const staleState = {
+      ...store.get().instrument,
+      session: SESSION,
+    } as AtomizerInstrumentState;
+    const admittedState = {
+      ...staleState,
+      session: { ...SESSION, configuration: CONFIGURATION },
+    } as AtomizerInstrumentState;
+    const pendingState = deferred<AtomizerInstrumentState>();
+    const previous = window.atomizerInstrument;
+    window.atomizerInstrument = {
+      getState: vi.fn().mockReturnValue(pendingState.promise),
+      discover: vi.fn().mockResolvedValue({ candidates: [], failures: [] }),
+    } as unknown as typeof window.atomizerInstrument;
+    try {
+      const initialization = controller.initialize(1);
+
+      controller.acceptInstrumentState(admittedState);
+      pendingState.resolve(staleState);
+      await initialization;
+
+      expect(store.get().instrument.session?.configuration).toEqual(CONFIGURATION);
+    } finally {
+      window.atomizerInstrument = previous;
+    }
+  });
+
   it('uses only the driver-published generic surface for an Auto/manual operation', async () => {
     const store = new AtomizerStore(createInitialRendererState({ initialWorkspace: 'spectrum', initialAgentOpen: false }));
     const kernel = new RendererKernel(store);
@@ -136,6 +173,17 @@ describe('instrument configuration event admission', () => {
   });
 
 });
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function genericCaptureSurface(): CanonicalInstrumentSurface {
   return {

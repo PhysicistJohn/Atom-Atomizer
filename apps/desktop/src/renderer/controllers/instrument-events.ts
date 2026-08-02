@@ -32,10 +32,10 @@ export class InstrumentEventsController {
       const stateEventSequence = k.instrumentStateEventSequence.current;
       const state = await window.atomizerInstrument.getState();
       if (!k.rendererMounted.current || k.initializationGeneration.current !== generation) return;
-      // A subscribed lifecycle event is newer than a state snapshot whose IPC
-      // request was still in flight. Never let that older snapshot disconnect or
-      // deconfigure the renderer after the event has already been accepted.
-      if (k.instrumentStateEventSequence.current === stateEventSequence) this.acceptInstrumentState(state);
+      // A subscribed lifecycle event or another authoritative state read may
+      // be newer than this snapshot while its IPC request was in flight. Never
+      // let the older response disconnect or deconfigure the renderer.
+      this.acceptInstrumentStateSnapshot(state, stateEventSequence);
       const discoveryEventSequence = k.instrumentDiscoveryEventSequence.current;
       const discovery = await window.atomizerInstrument.discover();
       if (!k.rendererMounted.current || k.initializationGeneration.current !== generation) return;
@@ -157,6 +157,10 @@ export class InstrumentEventsController {
 
   acceptInstrumentState(next: AtomizerInstrumentState, refreshCanonicalSurface = false): void {
     const k = this.k;
+    // This entry point is also used for authoritative invoke responses (not
+    // only subscribed events). Every accepted state must therefore supersede
+    // outstanding snapshots, including initialize()'s first getState() call.
+    k.instrumentStateEventSequence.current++;
     const previousSessionId = k.state.instrument.session?.sessionId;
     const admittedSession = next.session;
     if (next.session?.sessionId !== previousSessionId) k.invalidateAcquiredEvidence(true);
@@ -167,6 +171,23 @@ export class InstrumentEventsController {
     if (next.session && (refreshCanonicalSurface || next.session.sessionId !== previousSessionId)) {
       this.refreshCanonicalSurface(next.session.sessionId);
     }
+  }
+
+  /**
+   * Admit a state read only when no later lifecycle event or accepted state
+   * read has superseded the point at which it began. IPC state reads carry no
+   * manager revision of their own, so reject one once a newer state has been
+   * accepted rather than allowing it to undo an admitted configuration.
+   */
+  acceptInstrumentStateSnapshot(
+    next: AtomizerInstrumentState,
+    observedStateEventSequence: number,
+    refreshCanonicalSurface = false,
+  ): boolean {
+    const k = this.k;
+    if (k.instrumentStateEventSequence.current !== observedStateEventSequence) return false;
+    this.acceptInstrumentState(next, refreshCanonicalSurface);
+    return true;
   }
 
   acceptSession(next: InstrumentSessionSnapshot): void {

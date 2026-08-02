@@ -75,7 +75,10 @@ describe('canonical acquisition routing', () => {
       .mockResolvedValue({ id: 'sweep:canonical' } as never);
     vi.spyOn(runtime.acquisition, 'recordSweepEvidence').mockReturnValue(true);
     const configure = vi.fn();
-    vi.stubGlobal('atomizerInstrument', { configure });
+    vi.stubGlobal('atomizerInstrument', {
+      configure,
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
 
     await runtime.acquisition.acquireFromUi();
 
@@ -114,7 +117,12 @@ describe('canonical acquisition routing', () => {
     const configure = vi.fn();
     const startStreaming = vi.fn().mockResolvedValue({ status: 'running' });
     const stopStreaming = vi.fn().mockResolvedValue({ status: 'stopped' });
-    vi.stubGlobal('atomizerInstrument', { configure, startStreaming, stopStreaming });
+    vi.stubGlobal('atomizerInstrument', {
+      configure,
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+      startStreaming,
+      stopStreaming,
+    });
 
     await runtime.acquisition.startContinuousFromUi();
 
@@ -123,6 +131,40 @@ describe('canonical acquisition routing', () => {
     expect(runtime.kernel.continuousStreamOwnership.current?.configurationRevision)
       .toBe(configured.configurationRevision);
     await runtime.acquisition.stopContinuous();
+    runtime.classification.dispose();
+  });
+
+  it('refreshes the authoritative session before reusing a stale global Run configuration', async () => {
+    const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
+    const stale = activeConfiguration(complexIq, 'configuration:stale');
+    const configured = activeConfiguration(complexIq, 'configuration:current');
+    installSession(runtime, stale, true);
+    const surface = spectrumAndCaptureSurface();
+    const unconfiguredState = {
+      ...runtime.store.get().instrument,
+      session: { ...runtime.store.get().instrument.session!, configuration: undefined },
+    };
+    const execute = vi.spyOn(runtime.events, 'executeCanonicalOperation').mockImplementation(async (offered, operationId) => {
+      runtime.events.acceptConfiguration(configured);
+      return { sessionId: configured.sessionId, operationId, surface: offered };
+    });
+    const start = vi.spyOn(runtime.acquisition, 'startContinuous').mockResolvedValue();
+    const getState = vi.fn()
+      .mockResolvedValueOnce(unconfiguredState)
+      .mockImplementation(async () => runtime.store.get().instrument);
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(surface),
+      getState,
+    });
+
+    await runtime.acquisition.startContinuousFromUi();
+
+    expect(execute).toHaveBeenCalledWith(surface, 'capture', [
+      { parameterId: 'capture.tune', intent: { mode: 'auto' } },
+    ]);
+    expect(start).toHaveBeenCalledOnce();
+    expect(getState).toHaveBeenCalledTimes(2);
+    expect(runtime.store.get().error).toBeUndefined();
     runtime.classification.dispose();
   });
 
@@ -284,7 +326,10 @@ describe('canonical acquisition routing', () => {
   it('publishes a global error instead of silently swallowing unavailable automatic setup', async () => {
     const runtime = createRendererRuntime({ initialWorkspace: 'spectrum', initialAgentOpen: false });
     installSession(runtime);
-    vi.stubGlobal('atomizerInstrument', { canonicalSurface: vi.fn().mockResolvedValue(undefined) });
+    vi.stubGlobal('atomizerInstrument', {
+      canonicalSurface: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockImplementation(async () => runtime.store.get().instrument),
+    });
 
     await runtime.acquisition.acquireFromUi();
 

@@ -582,10 +582,18 @@ export class AcquisitionController {
    */
   async admitGlobalConfigurationFromAutomaticPrimary(): Promise<void> {
     const k = this.k;
-    const session = k.requireConnected();
+    const requestedSession = k.requireConnected();
     const expectedKind: GlobalAcquisitionKind = selectIqCapability(k.state) === undefined
       ? 'swept-spectrum'
       : 'complex-iq';
+    // A source operation can invalidate an acquisition configuration in the
+    // main process before its lifecycle event reaches the renderer. Confirm
+    // the current authoritative session before deciding an existing local
+    // configuration can be reused for the first Run or Single.
+    const session = await this.readAuthoritativeConnectedSession(
+      requestedSession.sessionId,
+      'Global acquisition setup was invalidated by a different instrument session',
+    );
     if (session.configuration?.configuration.kind === expectedKind) return;
 
     const readSurface = window.atomizerInstrument.canonicalSurface;
@@ -612,15 +620,29 @@ export class AcquisitionController {
     // the admitted configuration. Read the authoritative state before the
     // next transaction so IPC event ordering can never turn one click into a
     // configuration race.
-    const observed = await window.atomizerInstrument.getState();
-    if (observed.session?.sessionId !== session.sessionId) {
-      throw new Error('Global acquisition setup completed for a different instrument session');
-    }
-    k.events.acceptInstrumentState(observed);
-    const configured = k.requireConnected().configuration;
+    const configuredSession = await this.readAuthoritativeConnectedSession(
+      session.sessionId,
+      'Global acquisition setup completed for a different instrument session',
+    );
+    const configured = configuredSession.configuration;
     if (!configured || configured.configuration.kind !== expectedKind) {
       throw new Error(`The driver did not admit a ${expectedKind === 'complex-iq' ? 'complex I/Q' : 'spectrum'} configuration for Run or Single`);
     }
+  }
+
+  /** Read an IPC state snapshot without allowing it to regress a newer
+   * lifecycle event or invoke acknowledgement already accepted by the
+   * renderer. */
+  async readAuthoritativeConnectedSession(
+    expectedSessionId: string,
+    staleSessionMessage: string,
+  ): Promise<InstrumentSessionSnapshot> {
+    const observedStateEventSequence = this.k.instrumentStateEventSequence.current;
+    const observed = await window.atomizerInstrument.getState();
+    this.k.events.acceptInstrumentStateSnapshot(observed, observedStateEventSequence);
+    const session = this.k.requireConnected();
+    if (session.sessionId !== expectedSessionId) throw new Error(staleSessionMessage);
+    return session;
   }
 
   acquireIq(): Promise<ComplexIqMeasurement> {
