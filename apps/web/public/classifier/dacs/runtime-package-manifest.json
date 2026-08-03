@@ -1,0 +1,255 @@
+{
+  "architecture": {
+    "embedding_dimension": 128,
+    "exported_initializer_values": 1031297,
+    "model_line": "v7",
+    "name": "DACS",
+    "onnx_inventory": {
+      "initializer_values": 1031297,
+      "nodes": 95,
+      "operators": [
+        "Add",
+        "Clip",
+        "Concat",
+        "Constant",
+        "Conv",
+        "Div",
+        "Expand",
+        "Gemm",
+        "Identity",
+        "InstanceNormalization",
+        "Mul",
+        "ReduceL2",
+        "ReduceMax",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Sigmoid",
+        "Squeeze"
+      ]
+    },
+    "preprocessing": {
+      "bins": 33,
+      "channels": [
+        "real",
+        "imaginary",
+        "log1p_magnitude"
+      ],
+      "hop": 32,
+      "nfft": 64,
+      "periodic_hann": true,
+      "rms_normalization_floor": 1e-09
+    },
+    "width": 48
+  },
+  "assets": {
+    "encoder": {
+      "bytes": 4136843,
+      "path": "dacs-v7-encoder.onnx",
+      "runtime_role": "dacs_encoder",
+      "schema": "onnx.ModelProto.opset18",
+      "sha256": "629c83473aa81f7e9b05dd0c394c6eee69106ea634eb3ca3b908f03529fdfd2f"
+    },
+    "prototypes": {
+      "bytes": 78958,
+      "path": "dacs-v7-prototypes.json",
+      "runtime_role": "fixed_class_prototypes",
+      "schema": "atomos.dacs-v7.fixed-prototypes",
+      "sha256": "12dd06a0f94cfc4a40932f01dcb7e8f44b2b68d6134165cd0922b44159e0558d"
+    },
+    "validation": {
+      "bytes": 36309,
+      "path": "dacs-v7-validation.json",
+      "runtime_role": "release_evidence_not_runtime",
+      "schema": "atomos.dacs-v7.fixed-prototype-validation",
+      "sha256": "b5baaec8a789871b1803325742a1dc87bba037e27519845e214a5435cda2db68"
+    }
+  },
+  "classes": [
+    "am",
+    "bluetooth",
+    "cw",
+    "dsss",
+    "fm",
+    "gsm",
+    "ofdm"
+  ],
+  "development_only": false,
+  "export_provenance": {
+    "atom_classifier_branch": "ship/corrected-corpus-classifier",
+    "atom_classifier_revision": "9c4ac5903d8e93b3f7501da1c35c0746ec465af7",
+    "mlx_version": "0.32.0",
+    "onnx_opset": 18,
+    "torch_version": "2.13.0",
+    "working_tree_clean": true
+  },
+  "runtime_constraints": {
+    "closed_set_only": true,
+    "confidence_head_decision_authority": false,
+    "dwell_selection": "largest_supported_prefix_not_exceeding_capture_length",
+    "input": "contiguous complex baseband I/Q",
+    "released_open_set_gate_required_ahead_of_dacs": true,
+    "resampling_in_runtime": false,
+    "sample_rate_hz": 20000000,
+    "supported_dwell_samples": [
+      20000,
+      50000,
+      200000
+    ],
+    "training_decoder_exported": false
+  },
+  "schema": "atomos.dacs-v7.runtime-package",
+  "schema_version": 1,
+  "status": "release",
+  "training_provenance": {
+    "checkpoint_config": {
+      "dtype": "bf16",
+      "embed_dim": 128,
+      "episodes": 3000,
+      "k_shot": 5,
+      "q_query": 5,
+      "seed": 20260806,
+      "width": 48
+    },
+    "checkpoint_episode": 3000,
+    "checkpoint_sha256": "380a7c6eb44553fe2da2d91e311197b49ecd62a64fee238ce98daa331fd1e445",
+    "checkpoint_sidecar_sha256": "315797d854562f30a04f68aaaa4584c26a19bc685c04cff313ec112f699f6437",
+    "corpus_manifest_sha256": "925117b1e2d9da2d1c0ad10018d04041dcabb0a893e1d9e2fbc3dbcbfaee4d09",
+    "corpus_source_provenance": {
+      "atomClassifier": {
+        "revision": "8cb9774e98c6f292c689ae18ae1452b2cc50f87a",
+        "workingTreeClean": true
+      },
+      "atomSignalLab": {
+        "revision": "73d54369f1b398cd9aeab2a4e550b7332266ac0b",
+        "workingTreeClean": true
+      }
+    },
+    "params_sha256": "63a0f3fe6365a358348e00a40d82461ba2bea12f9f2697822da27ea42756e7a8"
+  },
+  "validation_summary": {
+    "balanced_accuracy": {
+      "10ms": {
+        "max": 0.9075609410430838,
+        "mean": 0.9043650793650793,
+        "min": 0.9015376984126985,
+        "std": 0.002180709855936574,
+        "values": [
+          0.9015376984126985,
+          0.9048681972789115,
+          0.9042304421768709,
+          0.9075609410430838,
+          0.9036281179138321
+        ]
+      },
+      "1ms": {
+        "max": 0.7925170068027211,
+        "mean": 0.7862457482993197,
+        "min": 0.779655612244898,
+        "std": 0.005129830015437302,
+        "values": [
+          0.7896116780045351,
+          0.7925170068027211,
+          0.7865291950113379,
+          0.7829152494331065,
+          0.779655612244898
+        ]
+      },
+      "2.5ms": {
+        "max": 0.8543438208616781,
+        "mean": 0.847859977324263,
+        "min": 0.8445294784580499,
+        "std": 0.003902864124214144,
+        "values": [
+          0.848391439909297,
+          0.8543438208616781,
+          0.8466198979591838,
+          0.8445294784580499,
+          0.8454152494331065
+        ]
+      }
+    },
+    "errors_total": {
+      "10ms": {
+        "max": 142.0,
+        "mean": 138.6,
+        "min": 134.0,
+        "std": 3.7815340802378072,
+        "values": [
+          141.0,
+          134.0,
+          141.0,
+          135.0,
+          142.0
+        ]
+      },
+      "1ms": {
+        "max": 697.0,
+        "mean": 676.4,
+        "min": 650.0,
+        "std": 17.868967513541456,
+        "values": [
+          688.0,
+          650.0,
+          672.0,
+          675.0,
+          697.0
+        ]
+      },
+      "2.5ms": {
+        "max": 416.0,
+        "mean": 401.0,
+        "min": 381.0,
+        "std": 16.34013463836819,
+        "values": [
+          414.0,
+          381.0,
+          408.0,
+          386.0,
+          416.0
+        ]
+      }
+    },
+    "min_profile_recall": {
+      "10ms": {
+        "max": 0.0,
+        "mean": 0.0,
+        "min": 0.0,
+        "std": 0.0,
+        "values": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "1ms": {
+        "max": 0.0,
+        "mean": 0.0,
+        "min": 0.0,
+        "std": 0.0,
+        "values": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "2.5ms": {
+        "max": 0.0,
+        "mean": 0.0,
+        "min": 0.0,
+        "std": 0.0,
+        "values": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  }
+}
