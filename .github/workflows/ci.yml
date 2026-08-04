@@ -9,8 +9,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # Both jobs check out the Atom-DSP, Atom-SignalLab, and Atom-Classifier
-  # siblings. All are public, so the default GITHUB_TOKEN covers the checkouts and no PAT
+  # Both jobs check out the Atom-DSP, Atom-SignalLab, Atom-Classifier, and
+  # Atom-Firmware siblings. Atom-Firmware is required because the
+  # trio-composition tests prove the manifest byte-identical across all three
+  # composition repositories by reading each sibling's contracts/ from disk.
+  # All are public, so the default GITHUB_TOKEN covers the checkouts and no PAT
   # or gate job is needed (a prior ATOMOS_CLASSIFIER_READ_TOKEN gate silently
   # skipped every run of this workflow from when Atom-Classifier went public
   # until this comment).
@@ -46,6 +49,12 @@ jobs:
           repository: PhysicistJohn/Atom-Classifier
           ref: c2f872fe8157cec4add34e2a7b5e01e186203573
           path: Atom-Classifier
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: PhysicistJohn/Atom-Firmware
+          ref: 2cf54b11f52848e4f21ce0b17b77d887196f102c
+          path: Atom-Firmware
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -116,6 +125,12 @@ jobs:
           repository: PhysicistJohn/Atom-Classifier
           ref: c2f872fe8157cec4add34e2a7b5e01e186203573
           path: Atom-Classifier
+          persist-credentials: false
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: PhysicistJohn/Atom-Firmware
+          ref: 2cf54b11f52848e4f21ce0b17b77d887196f102c
+          path: Atom-Firmware
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
