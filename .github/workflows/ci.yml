@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Firmware
-          ref: 2cf54b11f52848e4f21ce0b17b77d887196f102c
+          ref: 275c93b4b234953c33f74dcf0ba0764ab9111a28
           path: Atom-Firmware
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -129,7 +129,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: PhysicistJohn/Atom-Firmware
-          ref: 2cf54b11f52848e4f21ce0b17b77d887196f102c
+          ref: 275c93b4b234953c33f74dcf0ba0764ab9111a28
           path: Atom-Firmware
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

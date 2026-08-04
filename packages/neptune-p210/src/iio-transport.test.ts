@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BYTES_PER_CI16LE_SAMPLE,
@@ -8,11 +9,33 @@ import {
   NEPTUNE_IIO_NAMES,
   NeptuneIioTransport,
   createNeptuneIioTransport,
+  type NeptuneIioTransportOptions,
 } from './iio-transport.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, '..', 'test', 'fixtures');
 const fixture = (name: string): string => join(FIXTURES_DIR, name);
+
+/**
+ * POSIX executes the fixture shell scripts directly through their shebang.
+ * Windows cannot execute `.sh` files, so there every fixture spawn is routed
+ * through Git Bash (present on the windows-latest runners): the injected
+ * spawnFn keeps the fixture path as the logical bin and prepends `bash`.
+ * An explicitly supplied spawnFn (the before-spawn validation tests) is
+ * never overridden.
+ */
+function fixtureOptions(
+  options: NeptuneIioTransportOptions,
+): NeptuneIioTransportOptions {
+  if (process.platform !== 'win32' || options.spawnFn !== undefined) {
+    return options;
+  }
+  return {
+    ...options,
+    spawnFn: (bin, args, spawnOptions) =>
+      nodeSpawn('bash', [bin, ...args], spawnOptions),
+  };
+}
 
 const FAST_ATTR_TIMEOUT_MS = 200;
 const FAST_KILL_GRACE_MS = 100;
@@ -48,28 +71,28 @@ describe('createNeptuneIioTransport', () => {
 
 describe('getDeviceAttribute / setDeviceAttribute', () => {
   it('parses a numeric get result on success', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     const result = await transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'altvoltage0', 'frequency');
     expect(result.raw).toBe('42000000');
     expect(result.numeric).toBe(42_000_000);
   });
 
   it('resolves on a successful set', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     await expect(
       transport.setDeviceAttribute(FAKE_URI, 'ad9361-phy', 'altvoltage0', 'frequency', 2_441_000_000),
     ).resolves.toBeUndefined();
   });
 
   it('throws a non-zero-exit IioTransportError on failure', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-fail.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-fail.sh') }));
     await expect(transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'voltage0', 'sampling_frequency')).rejects.toMatchObject(
       { kind: 'non-zero-exit' },
     );
   });
 
   it('throws IioTransportError instances with a readable message on failure', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-fail.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-fail.sh') }));
     try {
       await transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'voltage0', 'sampling_frequency');
       expect.unreachable('expected getDeviceAttribute to throw');
@@ -80,12 +103,12 @@ describe('getDeviceAttribute / setDeviceAttribute', () => {
   });
 
   it('throws unparseable-output when get output is not numeric and a numeric wrapper is used', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-malformed.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-malformed.sh') }));
     await expect(transport.getCenterFrequencyHz(FAKE_URI)).rejects.toMatchObject({ kind: 'unparseable-output' });
   });
 
   it('returns numeric: null (without throwing) from the raw getDeviceAttribute call on malformed output', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-malformed.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-malformed.sh') }));
     const result = await transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'altvoltage0', 'frequency');
     expect(result.raw).toBe('not-a-number');
     expect(result.numeric).toBeNull();
@@ -111,11 +134,11 @@ describe('getDeviceAttribute / setDeviceAttribute', () => {
   });
 
   it('times out and forcibly kills a hung iio_attr process', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-hang.sh'),
       attrTimeoutMs: FAST_ATTR_TIMEOUT_MS,
       processKillGraceMs: FAST_KILL_GRACE_MS,
-    });
+    }));
     await expect(transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'altvoltage0', 'frequency')).rejects.toMatchObject(
       { kind: 'process-timeout' },
     );
@@ -126,7 +149,7 @@ describe('getDeviceAttribute / setDeviceAttribute', () => {
 
 describe('named scalar-attribute convenience wrappers', () => {
   it('round-trips center frequency / sample rate / rf bandwidth / gain through the ok fixture', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     await expect(transport.setCenterFrequencyHz(FAKE_URI, 2_441_000_000)).resolves.toBeUndefined();
     await expect(transport.getCenterFrequencyHz(FAKE_URI)).resolves.toBe(42_000_000);
     await expect(transport.setSampleRateHz(FAKE_URI, 61_440_000)).resolves.toBeUndefined();
@@ -140,7 +163,7 @@ describe('named scalar-attribute convenience wrappers', () => {
   });
 
   it('rejects non-positive frequency/rate/bandwidth values before spawning', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     await expect(transport.setCenterFrequencyHz(FAKE_URI, -1)).rejects.toMatchObject({ kind: 'invalid-argument' });
     await expect(transport.setSampleRateHz(FAKE_URI, 0)).rejects.toMatchObject({ kind: 'invalid-argument' });
     await expect(transport.setRfBandwidthHz(FAKE_URI, Number.NaN)).rejects.toMatchObject({ kind: 'invalid-argument' });
@@ -149,7 +172,7 @@ describe('named scalar-attribute convenience wrappers', () => {
 
 describe('probeContext', () => {
   it('returns a typed ok result on success instead of throwing', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     const result = await transport.probeContext(FAKE_URI);
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -159,7 +182,7 @@ describe('probeContext', () => {
   });
 
   it('returns a typed unreachable failure (not a throw) on non-zero exit', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-fail.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-fail.sh') }));
     const result = await transport.probeContext(FAKE_URI);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -178,10 +201,10 @@ describe('probeContext', () => {
   });
 
   it('returns a typed timeout failure (not a throw) on a hung probe', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-hang.sh'),
       processKillGraceMs: FAST_KILL_GRACE_MS,
-    });
+    }));
     const result = await transport.probeContext(FAKE_URI, { timeoutMs: FAST_ATTR_TIMEOUT_MS });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -193,7 +216,7 @@ describe('probeContext', () => {
 describe('capture', () => {
   it('rejects an over-ceiling sampleCount before spawning any subprocess', async () => {
     const spawnFn = vi.fn();
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh'), spawnFn });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh'), spawnFn }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -208,7 +231,7 @@ describe('capture', () => {
 
   it('rejects a non-positive sampleCount before spawning any subprocess', async () => {
     const spawnFn = vi.fn();
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh'), spawnFn });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh'), spawnFn }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -222,10 +245,10 @@ describe('capture', () => {
   });
 
   it('configures the receiver then returns exactly sampleCount * 4 raw ci16le bytes', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-ok.sh'),
       iioReaddevPath: fixture('iio_readdev-ok.sh'),
-    });
+    }));
     const sampleCount = 1024;
     const result = await transport.capture({
       uri: FAKE_URI,
@@ -243,10 +266,10 @@ describe('capture', () => {
   });
 
   it('throws short-capture when iio_readdev exits 0 but under-delivers bytes', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-ok.sh'),
       iioReaddevPath: fixture('iio_readdev-short.sh'),
-    });
+    }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -259,10 +282,10 @@ describe('capture', () => {
   });
 
   it('includes stderr in the short-capture error when the device reports a real failure reason on it (e.g. a stuck DMA/buffer refill)', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-ok.sh'),
       iioReaddevPath: fixture('iio_readdev-zero-with-stderr.sh'),
-    });
+    }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -280,10 +303,10 @@ describe('capture', () => {
 
   it('propagates a non-zero iio_attr configuration failure without attempting the capture', async () => {
     const readdevSpawnFn = vi.fn();
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-fail.sh'),
       iioReaddevPath: fixture('iio_readdev-ok.sh'),
-    });
+    }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -297,11 +320,11 @@ describe('capture', () => {
   });
 
   it('times out and forcibly kills a hung iio_readdev capture', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-ok.sh'),
       iioReaddevPath: fixture('iio_readdev-hang.sh'),
       processKillGraceMs: FAST_KILL_GRACE_MS,
-    });
+    }));
     await expect(
       transport.capture({
         uri: FAKE_URI,
@@ -318,7 +341,7 @@ describe('capture', () => {
 
 describe('dispose', () => {
   it('is a genuine no-op when nothing is outstanding', async () => {
-    const transport = new NeptuneIioTransport({ iioAttrPath: fixture('iio_attr-ok.sh') });
+    const transport = new NeptuneIioTransport(fixtureOptions({ iioAttrPath: fixture('iio_attr-ok.sh') }));
     expect(transport.outstandingProcessCount).toBe(0);
     await expect(transport.dispose()).resolves.toBeUndefined();
     await expect(transport.dispose()).resolves.toBeUndefined();
@@ -326,11 +349,11 @@ describe('dispose', () => {
   });
 
   it('is idempotent: calling it twice after killing an outstanding process does nothing the second time', async () => {
-    const transport = new NeptuneIioTransport({
+    const transport = new NeptuneIioTransport(fixtureOptions({
       iioAttrPath: fixture('iio_attr-hang.sh'),
       attrTimeoutMs: 60_000, // long enough that dispose(), not the internal timeout, does the killing
       processKillGraceMs: FAST_KILL_GRACE_MS,
-    });
+    }));
 
     // Fire off a call that will hang until we dispose() the transport.
     const pending = transport.getDeviceAttribute(FAKE_URI, 'ad9361-phy', 'altvoltage0', 'frequency');

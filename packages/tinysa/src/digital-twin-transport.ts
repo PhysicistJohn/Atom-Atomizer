@@ -86,6 +86,11 @@ class TwinBridgeClient {
   private constructor(child: TwinBridgeProcess, private readonly onUnexpectedFailure: (error: Error) => void) {
     this.#child = child;
     this.#ready = new Promise((resolveReady, rejectReady) => { this.#resolveReady = resolveReady; this.#rejectReady = rejectReady; });
+    // The boot rejection must never be unhandled even transiently: launch()
+    // yields ticks after wiring these streams and before start() can observe
+    // #ready, and a fast bridge can settle the handshake inside that gap.
+    // start() still receives the rejection through its own await.
+    this.#ready.catch(() => undefined);
     this.#exited = new Promise((resolveExit) => { this.#resolveExit = resolveExit; });
     this.#child.stdout.on('data', (chunk: Buffer | string) => this.#acceptStdout(toBuffer(chunk)));
     this.#child.stdout.once('end', () => {
