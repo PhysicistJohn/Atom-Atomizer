@@ -13,6 +13,7 @@ scope.onmessage = (event) => {
         request.real,
         request.imaginary,
         request.bandwidthHz,
+        request.sampleRateHz,
         request.prototypeSource,
         request.trustedGeometry,
       )

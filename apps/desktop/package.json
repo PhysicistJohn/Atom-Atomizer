@@ -38,6 +38,7 @@
     "electron-builder": "26.15.3",
     "jsdom": "29.1.1",
     "lucide-react": "1.25.0",
+    "onnxruntime-web": "1.27.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "vite": "8.1.5",

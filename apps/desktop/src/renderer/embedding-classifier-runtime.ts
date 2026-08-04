@@ -1,14 +1,14 @@
 /**
  * Renderer-side runtime for the browser-native metric-embedding classifier
- * (Atom-Classifier `src/embedding`). Zero runtime dependencies, committed JSON
- * assets, so it works identically on desktop and web — and it fully replaces the
- * Bayesian classifier.
+ * (Atom-Classifier `src/embedding`). Integrity-bound static assets and a pinned
+ * browser runtime keep desktop and web behavior identical, and fully replace
+ * the Bayesian classifier.
  *
  * Two flavors share the surface but intentionally use different frozen models:
  *   - I/Q (complex baseband, SDR/SignalLab): the v4 route-conditioned runtime.
  *   - magnitude (scalar power spectrum, tinySA): the retained v2 runtime.
- * The large v4 assets are fetched from the static runtime package, hashed before
- * parsing, and never embedded in a JavaScript chunk.
+ * Large model assets are fetched from static runtime packages, hashed before
+ * use, and never embedded in a JavaScript chunk.
  *
  * Also re-exports the blind symbol-recovery front-end (`recoverIqConstellation`)
  * — a zero-dependency DSP (CMA equalizer + carrier lock) that turns raw I/Q into
@@ -26,6 +26,11 @@ import {
   admitIqGeometryForPrototypeSource,
   type TrustedIqGeometryContext,
 } from './iq-classification-geometry.js';
+import {
+  isDacsV7SampleRate,
+  selectDacsV7Dwell,
+  type DacsV7Dwell,
+} from './dacs-v7-contract.js';
 
 export type { TrustedIqGeometryContext } from './iq-classification-geometry.js';
 
@@ -110,6 +115,20 @@ export interface ModulationClassification {
   bwFraction: number;
   /** Strongest fused protocol leaf, when the fusion concentrates. */
   topLeaf?: { label: string; probability: number };
+  /** Runtime provenance for the instantaneous result. */
+  runtime?: {
+    readonly model:
+      | 'magnitude-v2'
+      | 'time-domain-v3'
+      | 'time-domain-v4'
+      | 'dacs-v7';
+    readonly openSetGate?: 'time-domain-v3' | 'time-domain-v4';
+    readonly dwell?: DacsV7Dwell;
+    readonly dwellSamples?: number;
+    readonly executionProvider?: 'wasm';
+    /** Diagnostic only; it has no rejection or dwell-selection authority. */
+    readonly confidenceLogit?: number;
+  };
   /** Present for a live I/Q abstention; omitted for magnitude v2. */
   rejection?:
     | {
@@ -174,6 +193,7 @@ function toModulation(result: EmbeddingLikeResult, flavor: 'iq' | 'magnitude'): 
     candidates,
     bwFraction: result.bw,
     topLeaf: top && top.probability > 0.2 ? { label: top.label, probability: top.probability } : undefined,
+    runtime: { model: 'magnitude-v2' },
   };
 }
 
@@ -340,6 +360,7 @@ function toTimeDomainV3Modulation(
       // Use the conservative full-band value without doing downstream work.
       bwFraction: decision.forward?.preprocess.context.bw ?? 1,
       rejection,
+      runtime: { model: 'time-domain-v3' },
     };
   }
   if (
@@ -370,6 +391,7 @@ function toTimeDomainV3Modulation(
     posterior,
     candidates,
     bwFraction: decision.forward!.preprocess.context.bw,
+    runtime: { model: 'time-domain-v3' },
   };
 }
 
@@ -733,21 +755,56 @@ export async function classifyIqModulation(
   re: Float64Array,
   im: Float64Array,
   bandwidthHz: number | undefined,
+  sampleRateHz: number | undefined,
   prototypeSource: IqClassifierPrototypeSource,
   trustedGeometry?: TrustedIqGeometryContext,
 ): Promise<ModulationClassification> {
+  if (re.length !== im.length) {
+    throw new RangeError('I/Q classification requires parallel sample arrays');
+  }
   const admittedGeometry = admitIqGeometryForPrototypeSource(
     prototypeSource,
     trustedGeometry,
   );
   const classifier = await loadTimeDomainV4ProductionAdapter();
-  return classifier.classifyIq(
+  const admitted = classifier.classifyIq(
     re,
     im,
     bandwidthHz,
     prototypeSource,
     admittedGeometry,
   );
+  // DACS v7 is a closed-set family refinement that runs only after the
+  // route-conditioned v4 open-set gate accepts the capture, and only at its
+  // exact trained sample rate. It never bypasses a v4 abstention.
+  const dwell = selectDacsV7Dwell(re.length);
+  if (
+    admitted.isUnknown
+    || dwell === undefined
+    || sampleRateHz === undefined
+    || !isDacsV7SampleRate(sampleRateHz)
+  ) {
+    return admitted;
+  }
+  const { classifyDacsV7 } = await import('./dacs-v7-runtime.js');
+  const refined = await classifyDacsV7(re, im, dwell);
+  return {
+    ...admitted,
+    modulation: refined.family,
+    family: refined.family,
+    confidence: refined.confidence,
+    posterior: refined.posterior,
+    candidates: refined.candidates,
+    topLeaf: undefined,
+    runtime: {
+      model: 'dacs-v7',
+      openSetGate: 'time-domain-v4',
+      dwell: refined.dwell,
+      dwellSamples: refined.dwellSamples,
+      executionProvider: refined.executionProvider,
+      confidenceLogit: refined.confidenceLogit,
+    },
+  };
 }
 
 /**

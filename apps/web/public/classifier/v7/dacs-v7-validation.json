@@ -1,0 +1,1848 @@
+{
+  "device": "mps",
+  "eval_plans": {
+    "20260740": {
+      "eval_offset_max": 199842,
+      "eval_offset_mean": 100125.83792892157,
+      "eval_offset_min": 72,
+      "eval_seed": 20260740,
+      "max_dwell": 200000,
+      "n_eval_rows": 3264,
+      "n_mid_rows": 1088,
+      "n_proto_rows": 5440,
+      "offset_mode": "random",
+      "offset_range": [
+        0,
+        200000
+      ],
+      "plan_sha256": "610161b993ebe637c3b52cd112896a1cd82fc19fc08c9ad821d0f6bfde3cadbe",
+      "stream_key": 59297,
+      "subsample_mode": "random"
+    },
+    "20260741": {
+      "eval_offset_max": 199892,
+      "eval_offset_mean": 99012.9044117647,
+      "eval_offset_min": 9,
+      "eval_seed": 20260741,
+      "max_dwell": 200000,
+      "n_eval_rows": 3264,
+      "n_mid_rows": 1088,
+      "n_proto_rows": 5440,
+      "offset_mode": "random",
+      "offset_range": [
+        0,
+        200000
+      ],
+      "plan_sha256": "7b3ea7e13a02303e00a52e677bbc35b73edd29ca28fd07952eb44eaf32aa8eb6",
+      "stream_key": 59297,
+      "subsample_mode": "random"
+    },
+    "20260742": {
+      "eval_offset_max": 199918,
+      "eval_offset_mean": 99510.75428921569,
+      "eval_offset_min": 144,
+      "eval_seed": 20260742,
+      "max_dwell": 200000,
+      "n_eval_rows": 3264,
+      "n_mid_rows": 1088,
+      "n_proto_rows": 5440,
+      "offset_mode": "random",
+      "offset_range": [
+        0,
+        200000
+      ],
+      "plan_sha256": "29c102b7f8e44282ddd5e5fc71b0c8bc8b336956a8d97c993cd5bd546923e35f",
+      "stream_key": 59297,
+      "subsample_mode": "random"
+    },
+    "20260743": {
+      "eval_offset_max": 199979,
+      "eval_offset_mean": 101175.38449754902,
+      "eval_offset_min": 3,
+      "eval_seed": 20260743,
+      "max_dwell": 200000,
+      "n_eval_rows": 3264,
+      "n_mid_rows": 1088,
+      "n_proto_rows": 5440,
+      "offset_mode": "random",
+      "offset_range": [
+        0,
+        200000
+      ],
+      "plan_sha256": "55cd81da7c9428afb0595f342e51ae0ce386099a10e0a95dd3d1f7d84f680a49",
+      "stream_key": 59297,
+      "subsample_mode": "random"
+    },
+    "20260744": {
+      "eval_offset_max": 199971,
+      "eval_offset_mean": 99007.80851715687,
+      "eval_offset_min": 2,
+      "eval_seed": 20260744,
+      "max_dwell": 200000,
+      "n_eval_rows": 3264,
+      "n_mid_rows": 1088,
+      "n_proto_rows": 5440,
+      "offset_mode": "random",
+      "offset_range": [
+        0,
+        200000
+      ],
+      "plan_sha256": "f609924563eeee5f69a0cb17f48c57e9fb563bd5da2483c5612cb43c0c1ad690",
+      "stream_key": 59297,
+      "subsample_mode": "random"
+    }
+  },
+  "fixed_prototype_seed": 20260740,
+  "gates": {
+    "10ms": {
+      "balanced_accuracy": 0.99,
+      "min_profile_recall": 0.94
+    },
+    "1ms": {
+      "balanced_accuracy": 0.89,
+      "min_profile_recall": 0.15
+    },
+    "2.5ms": {
+      "balanced_accuracy": 0.94,
+      "min_profile_recall": 0.5
+    }
+  },
+  "query_offset_seeds": [
+    20260740,
+    20260741,
+    20260742,
+    20260743,
+    20260744
+  ],
+  "query_rows_per_seed": 3264,
+  "results": {
+    "20260740": {
+      "10ms": {
+        "accuracy": 0.9957107843137255,
+        "balanced_accuracy": 0.9934098639455783,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9957107843137255,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            186,
+            0,
+            0,
+            0,
+            4,
+            2
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            671,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            6,
+            0,
+            0,
+            2010
+          ]
+        ],
+        "errors_total": 14,
+        "min_profile_recall": 0.96875,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.96875,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.9985119047619048,
+          "ofdm": 0.9970238095238095
+        },
+        "worst_profiles": [
+          [
+            "bluetooth-classic-connected-longdwell",
+            0.96875
+          ],
+          [
+            "bluetooth-le-advertising-longdwell",
+            0.96875
+          ],
+          [
+            "nr-n78-tdd-100m",
+            0.9791666666666666
+          ],
+          [
+            "gsm-900-loaded-bcch",
+            0.9895833333333334
+          ],
+          [
+            "lte-band3-fdd-20m",
+            0.9895833333333334
+          ]
+        ]
+      },
+      "1ms": {
+        "accuracy": 0.8449754901960784,
+        "balanced_accuracy": 0.9043367346938777,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.8449754901960784,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            192,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            411,
+            0,
+            0,
+            0,
+            260,
+            1
+          ],
+          [
+            0,
+            80,
+            0,
+            9,
+            3,
+            1,
+            1923
+          ]
+        ],
+        "errors_total": 506,
+        "min_profile_recall": 0.23958333333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 1.0,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.3869047619047619,
+          "ofdm": 0.9538690476190477
+        },
+        "worst_profiles": [
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.23958333333333334
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.28125
+          ],
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.2916666666666667
+          ],
+          [
+            "gsm-aqpsk-normal-burst",
+            0.3020833333333333
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.3020833333333333
+          ]
+        ]
+      },
+      "2.5ms": {
+        "accuracy": 0.9224877450980392,
+        "balanced_accuracy": 0.9499716553287981,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9224877450980392,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            190,
+            0,
+            0,
+            0,
+            2,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            207,
+            0,
+            0,
+            0,
+            465,
+            0
+          ],
+          [
+            0,
+            34,
+            0,
+            8,
+            0,
+            1,
+            1973
+          ]
+        ],
+        "errors_total": 253,
+        "min_profile_recall": 0.59375,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9895833333333334,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.6919642857142857,
+          "ofdm": 0.9786706349206349
+        },
+        "worst_profiles": [
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.59375
+          ],
+          [
+            "gsm-normal-burst",
+            0.6041666666666666
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.6145833333333334
+          ],
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.625
+          ],
+          [
+            "gsm-aqpsk-normal-burst",
+            0.6666666666666666
+          ]
+        ]
+      }
+    },
+    "20260741": {
+      "10ms": {
+        "accuracy": 0.9938725490196079,
+        "balanced_accuracy": 0.9914965986394558,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9938725490196079,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            184,
+            0,
+            0,
+            0,
+            5,
+            3
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            670,
+            2
+          ],
+          [
+            0,
+            1,
+            0,
+            8,
+            0,
+            0,
+            2007
+          ]
+        ],
+        "errors_total": 20,
+        "min_profile_recall": 0.9479166666666666,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9583333333333334,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.9970238095238095,
+          "ofdm": 0.9955357142857143
+        },
+        "worst_profiles": [
+          [
+            "bluetooth-classic-connected-longdwell",
+            0.9479166666666666
+          ],
+          [
+            "bluetooth-le-advertising-longdwell",
+            0.96875
+          ],
+          [
+            "lte-etm3.1a",
+            0.9791666666666666
+          ],
+          [
+            "nr-n78-tdd-100m",
+            0.9791666666666666
+          ],
+          [
+            "gsm-900-loaded-bcch",
+            0.9895833333333334
+          ]
+        ]
+      },
+      "1ms": {
+        "accuracy": 0.8532475490196079,
+        "balanced_accuracy": 0.9075255102040817,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.8532475490196079,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            188,
+            0,
+            0,
+            0,
+            3,
+            1
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            381,
+            0,
+            0,
+            0,
+            288,
+            3
+          ],
+          [
+            0,
+            77,
+            0,
+            10,
+            2,
+            1,
+            1926
+          ]
+        ],
+        "errors_total": 479,
+        "min_profile_recall": 0.28125,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9791666666666666,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.42857142857142855,
+          "ofdm": 0.9553571428571429
+        },
+        "worst_profiles": [
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.28125
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.34375
+          ],
+          [
+            "gsm-aqpsk-normal-burst",
+            0.34375
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.34375
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.34375
+          ]
+        ]
+      },
+      "2.5ms": {
+        "accuracy": 0.9313725490196079,
+        "balanced_accuracy": 0.9557114512471656,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9313725490196079,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            190,
+            0,
+            0,
+            0,
+            2,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            181,
+            0,
+            0,
+            0,
+            491,
+            0
+          ],
+          [
+            0,
+            33,
+            0,
+            7,
+            0,
+            0,
+            1976
+          ]
+        ],
+        "errors_total": 224,
+        "min_profile_recall": 0.5729166666666666,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9895833333333334,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.7306547619047619,
+          "ofdm": 0.9801587301587301
+        },
+        "worst_profiles": [
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.5729166666666666
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.65625
+          ],
+          [
+            "gsm-normal-burst",
+            0.6979166666666666
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.7291666666666666
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.7291666666666666
+          ]
+        ]
+      }
+    },
+    "20260742": {
+      "10ms": {
+        "accuracy": 0.9950980392156863,
+        "balanced_accuracy": 0.9939413265306124,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9950980392156863,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            187,
+            0,
+            0,
+            0,
+            5,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            671,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            9,
+            0,
+            0,
+            2007
+          ]
+        ],
+        "errors_total": 16,
+        "min_profile_recall": 0.9583333333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9739583333333334,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.9985119047619048,
+          "ofdm": 0.9955357142857143
+        },
+        "worst_profiles": [
+          [
+            "bluetooth-classic-connected-longdwell",
+            0.9583333333333334
+          ],
+          [
+            "lte-band3-fdd-20m",
+            0.9791666666666666
+          ],
+          [
+            "lte-etm3.1a",
+            0.9791666666666666
+          ],
+          [
+            "nr-n78-tdd-100m",
+            0.9791666666666666
+          ],
+          [
+            "gsm-900-loaded-bcch",
+            0.9895833333333334
+          ]
+        ]
+      },
+      "1ms": {
+        "accuracy": 0.8330269607843137,
+        "balanced_accuracy": 0.8917942176870748,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.8330269607843137,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            188,
+            0,
+            0,
+            0,
+            2,
+            2
+          ],
+          [
+            0,
+            0,
+            94,
+            0,
+            0,
+            2,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            95,
+            0,
+            1
+          ],
+          [
+            0,
+            430,
+            0,
+            0,
+            0,
+            240,
+            2
+          ],
+          [
+            0,
+            93,
+            0,
+            10,
+            1,
+            1,
+            1911
+          ]
+        ],
+        "errors_total": 545,
+        "min_profile_recall": 0.20833333333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9791666666666666,
+          "cw": 0.9791666666666666,
+          "dsss": 0.9895833333333334,
+          "fm": 0.9895833333333334,
+          "gsm": 0.35714285714285715,
+          "ofdm": 0.9479166666666666
+        },
+        "worst_profiles": [
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.20833333333333334
+          ],
+          [
+            "gsm-aqpsk-normal-burst",
+            0.22916666666666666
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.22916666666666666
+          ],
+          [
+            "gsm-normal-burst",
+            0.23958333333333334
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.2916666666666667
+          ]
+        ]
+      },
+      "2.5ms": {
+        "accuracy": 0.9191176470588235,
+        "balanced_accuracy": 0.9471726190476192,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9191176470588235,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            187,
+            0,
+            0,
+            0,
+            5,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            205,
+            0,
+            0,
+            0,
+            465,
+            2
+          ],
+          [
+            0,
+            42,
+            0,
+            8,
+            0,
+            1,
+            1965
+          ]
+        ],
+        "errors_total": 264,
+        "min_profile_recall": 0.6145833333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9739583333333334,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.6919642857142857,
+          "ofdm": 0.9747023809523809
+        },
+        "worst_profiles": [
+          [
+            "gsm-normal-burst",
+            0.6145833333333334
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.6145833333333334
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.6354166666666666
+          ],
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.6354166666666666
+          ],
+          [
+            "gsm-aqpsk-normal-burst",
+            0.6458333333333334
+          ]
+        ]
+      }
+    },
+    "20260743": {
+      "10ms": {
+        "accuracy": 0.9960171568627451,
+        "balanced_accuracy": 0.994827097505669,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9960171568627451,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            188,
+            0,
+            0,
+            0,
+            3,
+            1
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            671,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            7,
+            0,
+            0,
+            2009
+          ]
+        ],
+        "errors_total": 13,
+        "min_profile_recall": 0.9791666666666666,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9791666666666666,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.9985119047619048,
+          "ofdm": 0.9965277777777778
+        },
+        "worst_profiles": [
+          [
+            "lte-etm3.1a",
+            0.9791666666666666
+          ],
+          [
+            "nr-n78-tdd-100m",
+            0.9791666666666666
+          ],
+          [
+            "bluetooth-classic-connected-longdwell",
+            0.9791666666666666
+          ],
+          [
+            "bluetooth-le-advertising-longdwell",
+            0.9791666666666666
+          ],
+          [
+            "gsm-900-loaded-bcch",
+            0.9895833333333334
+          ]
+        ]
+      },
+      "1ms": {
+        "accuracy": 0.8489583333333334,
+        "balanced_accuracy": 0.9001204648526079,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.8489583333333334,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            189,
+            0,
+            0,
+            0,
+            2,
+            1
+          ],
+          [
+            0,
+            1,
+            92,
+            0,
+            0,
+            3,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            392,
+            0,
+            0,
+            0,
+            278,
+            2
+          ],
+          [
+            0,
+            80,
+            0,
+            8,
+            0,
+            3,
+            1925
+          ]
+        ],
+        "errors_total": 493,
+        "min_profile_recall": 0.25,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.984375,
+          "cw": 0.9583333333333334,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.41369047619047616,
+          "ofdm": 0.9548611111111112
+        },
+        "worst_profiles": [
+          [
+            "gsm-aqpsk-normal-burst",
+            0.25
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.28125
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.2916666666666667
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.3333333333333333
+          ],
+          [
+            "gsm-normal-burst",
+            0.375
+          ]
+        ]
+      },
+      "2.5ms": {
+        "accuracy": 0.9280024509803921,
+        "balanced_accuracy": 0.9536210317460319,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9280024509803921,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            191,
+            0,
+            0,
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            95,
+            0,
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            184,
+            0,
+            0,
+            0,
+            487,
+            1
+          ],
+          [
+            0,
+            39,
+            0,
+            7,
+            0,
+            1,
+            1969
+          ]
+        ],
+        "errors_total": 235,
+        "min_profile_recall": 0.5729166666666666,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9947916666666666,
+          "cw": 0.9895833333333334,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.7247023809523809,
+          "ofdm": 0.9766865079365079
+        },
+        "worst_profiles": [
+          [
+            "gsm-aqpsk-normal-burst",
+            0.5729166666666666
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.65625
+          ],
+          [
+            "gsm-normal-burst",
+            0.6875
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.7083333333333334
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.71875
+          ]
+        ]
+      }
+    },
+    "20260744": {
+      "10ms": {
+        "accuracy": 0.9966299019607843,
+        "balanced_accuracy": 0.9956420068027212,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9966299019607843,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            189,
+            0,
+            0,
+            0,
+            3,
+            0
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            671,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            6,
+            0,
+            0,
+            2010
+          ]
+        ],
+        "errors_total": 11,
+        "min_profile_recall": 0.96875,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.984375,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.9985119047619048,
+          "ofdm": 0.9970238095238095
+        },
+        "worst_profiles": [
+          [
+            "bluetooth-classic-connected-longdwell",
+            0.96875
+          ],
+          [
+            "lte-band3-fdd-20m",
+            0.9791666666666666
+          ],
+          [
+            "gsm-900-loaded-bcch",
+            0.9895833333333334
+          ],
+          [
+            "lte-etm3.1a",
+            0.9895833333333334
+          ],
+          [
+            "nr-n3-fdd-20m",
+            0.9895833333333334
+          ]
+        ]
+      },
+      "1ms": {
+        "accuracy": 0.8409926470588235,
+        "balanced_accuracy": 0.8979946145124718,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.8409439166411278,
+          "answered_fraction_at_zero_logit": 0.9996936274509803
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            189,
+            0,
+            0,
+            0,
+            2,
+            1
+          ],
+          [
+            0,
+            0,
+            96,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            95,
+            0,
+            0,
+            1
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            426,
+            1,
+            0,
+            0,
+            236,
+            9
+          ],
+          [
+            0,
+            67,
+            0,
+            10,
+            1,
+            1,
+            1937
+          ]
+        ],
+        "errors_total": 519,
+        "min_profile_recall": 0.17708333333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.984375,
+          "cw": 1.0,
+          "dsss": 0.9895833333333334,
+          "fm": 1.0,
+          "gsm": 0.35119047619047616,
+          "ofdm": 0.9608134920634921
+        },
+        "worst_profiles": [
+          [
+            "gsm-aqpsk-normal-burst",
+            0.17708333333333334
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.23958333333333334
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.25
+          ],
+          [
+            "gsm-normal-burst",
+            0.2604166666666667
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.28125
+          ]
+        ]
+      },
+      "2.5ms": {
+        "accuracy": 0.9237132352941176,
+        "balanced_accuracy": 0.9468537414965988,
+        "confidence_head_diagnostic_only": {
+          "answered_accuracy_at_zero_logit": 0.9237132352941176,
+          "answered_fraction_at_zero_logit": 1.0
+        },
+        "confusion": [
+          [
+            96,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            190,
+            0,
+            0,
+            0,
+            2,
+            0
+          ],
+          [
+            0,
+            0,
+            95,
+            0,
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            94,
+            0,
+            0,
+            2
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            96,
+            0,
+            0
+          ],
+          [
+            0,
+            210,
+            0,
+            0,
+            0,
+            461,
+            1
+          ],
+          [
+            0,
+            25,
+            0,
+            8,
+            0,
+            0,
+            1983
+          ]
+        ],
+        "errors_total": 249,
+        "min_profile_recall": 0.5833333333333334,
+        "per_class_recall": {
+          "am": 1.0,
+          "bluetooth": 0.9895833333333334,
+          "cw": 0.9895833333333334,
+          "dsss": 0.9791666666666666,
+          "fm": 1.0,
+          "gsm": 0.6860119047619048,
+          "ofdm": 0.9836309523809523
+        },
+        "worst_profiles": [
+          [
+            "gsm-aqpsk-normal-burst",
+            0.5833333333333334
+          ],
+          [
+            "gsm-8psk-normal-burst",
+            0.6041666666666666
+          ],
+          [
+            "gsm-32qam-higher-symbol-rate-burst",
+            0.625
+          ],
+          [
+            "gsm-qpsk-higher-symbol-rate-burst",
+            0.6458333333333334
+          ],
+          [
+            "gsm-16qam-higher-symbol-rate-burst",
+            0.65625
+          ]
+        ]
+      }
+    }
+  },
+  "runtime_numeric_path": "torch-fp32-reference-for-onnx-fp32-export",
+  "schema": "atomos.dacs-v7.fixed-prototype-validation",
+  "schema_version": 1,
+  "summary_over_query_seeds": {
+    "balanced_accuracy": {
+      "10ms": {
+        "max": 0.9956420068027212,
+        "mean": 0.9938633786848075,
+        "min": 0.9914965986394558,
+        "std": 0.0015736638154283864,
+        "values": [
+          0.9934098639455783,
+          0.9914965986394558,
+          0.9939413265306124,
+          0.994827097505669,
+          0.9956420068027212
+        ]
+      },
+      "1ms": {
+        "max": 0.9075255102040817,
+        "mean": 0.9003543083900226,
+        "min": 0.8917942176870748,
+        "std": 0.0060453255818449505,
+        "values": [
+          0.9043367346938777,
+          0.9075255102040817,
+          0.8917942176870748,
+          0.9001204648526079,
+          0.8979946145124718
+        ]
+      },
+      "2.5ms": {
+        "max": 0.9557114512471656,
+        "mean": 0.9506660997732428,
+        "min": 0.9468537414965988,
+        "std": 0.003918160625709645,
+        "values": [
+          0.9499716553287981,
+          0.9557114512471656,
+          0.9471726190476192,
+          0.9536210317460319,
+          0.9468537414965988
+        ]
+      }
+    },
+    "errors_total": {
+      "10ms": {
+        "max": 20.0,
+        "mean": 14.8,
+        "min": 11.0,
+        "std": 3.420526275297414,
+        "values": [
+          14.0,
+          20.0,
+          16.0,
+          13.0,
+          11.0
+        ]
+      },
+      "1ms": {
+        "max": 545.0,
+        "mean": 508.4,
+        "min": 479.0,
+        "std": 25.294268125407385,
+        "values": [
+          506.0,
+          479.0,
+          545.0,
+          493.0,
+          519.0
+        ]
+      },
+      "2.5ms": {
+        "max": 264.0,
+        "mean": 245.0,
+        "min": 224.0,
+        "std": 15.668439615992398,
+        "values": [
+          253.0,
+          224.0,
+          264.0,
+          235.0,
+          249.0
+        ]
+      }
+    },
+    "min_profile_recall": {
+      "10ms": {
+        "max": 0.9791666666666666,
+        "mean": 0.9645833333333332,
+        "min": 0.9479166666666666,
+        "std": 0.011876827344782685,
+        "values": [
+          0.96875,
+          0.9479166666666666,
+          0.9583333333333334,
+          0.9791666666666666,
+          0.96875
+        ]
+      },
+      "1ms": {
+        "max": 0.28125,
+        "mean": 0.23125,
+        "min": 0.17708333333333334,
+        "std": 0.03993810315141836,
+        "values": [
+          0.23958333333333334,
+          0.28125,
+          0.20833333333333334,
+          0.25,
+          0.17708333333333334
+        ]
+      },
+      "2.5ms": {
+        "max": 0.6145833333333334,
+        "mean": 0.5875,
+        "min": 0.5729166666666666,
+        "std": 0.017430417219459936,
+        "values": [
+          0.59375,
+          0.5729166666666666,
+          0.6145833333333334,
+          0.5729166666666666,
+          0.5833333333333334
+        ]
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 // Bump on any change to the caching strategy so every existing install purges
 // its old cache on activate.
-const CACHE_NAME = 'atomizer-pwa-v4';
+const CACHE_NAME = 'atomizer-pwa-v5';
 const OFFLINE_SHELL = [
   '/manifest.json',
   '/icons/atomizer-192.png',
@@ -27,11 +27,15 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
-  // Stable v4 package filenames are integrity-bound by the freshly fetched
-  // manifest. Never let CacheStorage return a previous deployment's coherent
-  // but stale package; the browser HTTP cache may still revalidate normally.
-  // Offline classification fails closed instead of silently using old weights.
-  if (url.pathname.startsWith('/classifier/v4/')) {
+  // Stable classifier package filenames are integrity-bound by freshly fetched
+  // manifests (and DACS also seals its WASM runtime). Never let CacheStorage
+  // return a coherent but stale package after a deployment. Offline
+  // classification fails closed instead of silently using old weights.
+  if (
+    url.pathname.startsWith('/classifier/v3/')
+    || url.pathname.startsWith('/classifier/v4/')
+    || url.pathname.startsWith('/classifier/v7/')
+  ) {
     event.respondWith(fetch(request, { cache: 'no-cache' }));
     return;
   }

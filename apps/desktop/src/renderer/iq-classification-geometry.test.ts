@@ -55,6 +55,7 @@ describe('trusted I/Q classifier geometry', () => {
         new Float64Array(4_096),
         new Float64Array(4_096),
         20_000_000,
+        20_000_000,
         'current',
       ),
     ).rejects.toThrow(

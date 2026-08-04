@@ -11,17 +11,20 @@ const webRoot = basename(workingDirectory) === 'web'
   : resolve(workingDirectory, 'apps/web');
 
 describe('web classifier package cache policy', () => {
-  it('always revalidates stable v4 package filenames and purges the v3 cache', () => {
+  it('always revalidates every stable classifier package prefix', () => {
     const source = readFileSync(
       resolve(webRoot, 'public/sw.js'),
       'utf8',
     );
-    expect(source).toContain("const CACHE_NAME = 'atomizer-pwa-v4'");
+    expect(source).toContain("const CACHE_NAME = 'atomizer-pwa-v5'");
+    expect(source).toContain(
+      "url.pathname.startsWith('/classifier/v3/')",
+    );
     expect(source).toContain(
       "url.pathname.startsWith('/classifier/v4/')",
     );
-    expect(source).not.toContain(
-      "url.pathname.startsWith('/classifier/v3/')",
+    expect(source).toContain(
+      "url.pathname.startsWith('/classifier/v7/')",
     );
   });
 });

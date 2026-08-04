@@ -11,6 +11,7 @@ export type ClassificationWorkerRequest =
       readonly real: Float64Array;
       readonly imaginary: Float64Array;
       readonly bandwidthHz: number;
+      readonly sampleRateHz: number;
       readonly prototypeSource: IqClassifierPrototypeSource;
       readonly trustedGeometry?: TrustedIqGeometryContext;
     }

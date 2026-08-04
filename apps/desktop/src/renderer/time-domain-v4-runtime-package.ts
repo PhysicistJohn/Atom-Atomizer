@@ -744,8 +744,11 @@ function defaultTimeDomainV4ManifestUrl(): URL {
   }
   const locationUrl = new URL(globalThis.location.href);
   if (locationUrl.protocol === 'file:') {
+    // The packaged protocol namespaces the staging v4 package exactly like
+    // the HTTP public directory does; the bare runtime root belongs to the
+    // released v3 package.
     return new URL(
-      `atomizer-classifier://runtime/${TIME_DOMAIN_V4_MANIFEST_FILENAME}`,
+      `atomizer-classifier://runtime/v4/${TIME_DOMAIN_V4_MANIFEST_FILENAME}`,
     );
   }
   const publicRoot = new URL('/', locationUrl.origin);

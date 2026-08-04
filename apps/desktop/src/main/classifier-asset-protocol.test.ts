@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,11 +20,15 @@ describe('packaged classifier asset protocol', () => {
     );
   });
 
-  it('serves an allow-listed file byte-for-byte with bounded response headers', async () => {
+  it('serves the released v3 manifest under its bare stable URL', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'atomizer-classifier-assets-'));
     temporaryDirectories.push(root);
+    await mkdir(resolve(root, 'classifier', 'v3'), { recursive: true });
     const source = Uint8Array.from([0x7b, 0x0a, 0x7d, 0x0a]);
-    await writeFile(resolve(root, 'runtime-package-manifest.json'), source);
+    await writeFile(
+      resolve(root, 'classifier', 'v3', 'runtime-package-manifest.json'),
+      source,
+    );
 
     const result = await classifierAssetResponse(
       new Request(
@@ -46,14 +50,16 @@ describe('packaged classifier asset protocol', () => {
     'time-domain-profile-bank-v4.json',
     'time-domain-profile-bank-openset-v4.json',
     'time-domain-profile-bank-display-calibration-v4.json',
-  ])('serves the exact v4 package basename %s', async (filename) => {
+  ])('serves the namespaced v4 package file %s', async (filename) => {
     const root = await mkdtemp(resolve(tmpdir(), 'atomizer-classifier-assets-'));
     temporaryDirectories.push(root);
+    const subdirectory = resolve(root, 'classifier', 'v4');
+    await mkdir(subdirectory, { recursive: true });
     const source = new TextEncoder().encode(`{"asset":"${filename}"}`);
-    await writeFile(resolve(root, filename), source);
+    await writeFile(resolve(subdirectory, filename), source);
 
     const result = await classifierAssetResponse(
-      new Request(`${ATOMIZER_CLASSIFIER_ASSET_ORIGIN}/${filename}`),
+      new Request(`${ATOMIZER_CLASSIFIER_ASSET_ORIGIN}/v4/${filename}`),
       root,
     );
 
@@ -62,11 +68,36 @@ describe('packaged classifier asset protocol', () => {
   });
 
   it.each([
+    ['dacs-v7-encoder.onnx', 'application/octet-stream'],
+    ['onnxruntime-wasm-1.27.0.wasm', 'application/wasm'],
+  ])('serves the namespaced v7 %s with its binary media type', async (
+    filename,
+    contentType,
+  ) => {
+    const root = await mkdtemp(resolve(tmpdir(), 'atomizer-classifier-assets-'));
+    temporaryDirectories.push(root);
+    const subdirectory = resolve(root, 'classifier', 'v7');
+    await mkdir(subdirectory, { recursive: true });
+    const source = Uint8Array.from([0, 1, 2, 3]);
+    await writeFile(resolve(subdirectory, filename), source);
+
+    const result = await classifierAssetResponse(
+      new Request(`${ATOMIZER_CLASSIFIER_ASSET_ORIGIN}/v7/${filename}`),
+      root,
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.headers.get('content-type')).toBe(contentType);
+    expect(new Uint8Array(await result.arrayBuffer())).toEqual(source);
+  });
+
+  it.each([
     'subdirectory/runtime-package-manifest.json',
     'runtime-package-manifest.json%2fextra',
     'untracked.json',
-    'time-domain-v3-classifier-weights.json',
     'runtime-package-manifest.json?alternate=true',
+    'dacs-v7-encoder.onnx',
+    'v3/runtime-package-manifest.json',
   ])('rejects non-canonical request path %s', async (path) => {
     const result = await classifierAssetResponse(
       new Request(`${ATOMIZER_CLASSIFIER_ASSET_ORIGIN}/${path}`),

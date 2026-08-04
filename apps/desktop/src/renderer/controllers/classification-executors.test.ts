@@ -67,6 +67,7 @@ describe('classification executors', () => {
       real,
       imaginary,
       2_000_000,
+      20_000_000,
       'current',
       nativeGeometry,
     );
@@ -75,6 +76,7 @@ describe('classification executors', () => {
       real,
       imaginary,
       2_000_000,
+      20_000_000,
       'current',
       nativeGeometry,
     );
@@ -92,6 +94,7 @@ describe('classification executors', () => {
       real,
       imaginary,
       2_000_000,
+      20_000_000,
       'historical',
       scaledGeometry,
     );
@@ -105,6 +108,7 @@ describe('classification executors', () => {
       real,
       imaginary,
       bandwidthHz: 2_000_000,
+      sampleRateHz: 20_000_000,
       prototypeSource: 'historical',
       trustedGeometry: scaledGeometry,
     });
@@ -124,6 +128,7 @@ describe('classification executors', () => {
       new Float64Array([1, 2, 3]),
       new Float64Array([-1, -2, -3]),
       2_000_000,
+      20_000_000,
       'current',
       nativeGeometry,
     );
@@ -131,6 +136,7 @@ describe('classification executors', () => {
       new Float64Array([4, 5, 6]),
       new Float64Array([-4, -5, -6]),
       2_000_000,
+      20_000_000,
       'historical',
     );
     const silentWorker = FakeWorker.instances[0]!;
@@ -168,6 +174,7 @@ describe('classification executors', () => {
       new Float64Array([7, 8, 9]),
       new Float64Array([-7, -8, -9]),
       2_000_000,
+      20_000_000,
       'current',
       nativeGeometry,
     );

@@ -259,7 +259,7 @@ app.whenReady().then(async () => {
   if (useClassifierAssetProtocol) {
     registerClassifierAssetProtocol(
       protocol,
-      join(here, '../renderer/classifier/v4'),
+      join(here, '../renderer'),
     );
   }
   await createWindow();

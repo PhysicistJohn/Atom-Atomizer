@@ -7,7 +7,17 @@ export default defineConfig(async () => {
   process.env.MINIFLARE_REGISTRY_PATH ??= '.wrangler/registry';
   const { cloudflare } = await import('@cloudflare/vite-plugin');
   return {
-    resolve: { dedupe: ['react', 'react-dom', 'lucide-react'] },
+    define: { __ATOMIZER_ORT_EXTERNAL_WASM__: 'true' },
+    resolve: {
+      dedupe: ['react', 'react-dom', 'lucide-react'],
+      // DACS verifies and passes its committed WASM bytes to ORT directly.
+      conditions: [
+        'onnxruntime-web-use-extern-wasm',
+        'module',
+        'browser',
+        'development|production',
+      ],
+    },
     server: {
       fs: {
         // The browser edition bundles sibling-repo SignalLab sources

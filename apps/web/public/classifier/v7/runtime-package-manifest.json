@@ -1,0 +1,254 @@
+{
+  "architecture": {
+    "embedding_dimension": 128,
+    "exported_initializer_values": 1031585,
+    "model_line": "v7",
+    "name": "DACS",
+    "onnx_inventory": {
+      "initializer_values": 1031585,
+      "nodes": 93,
+      "operators": [
+        "Add",
+        "Clip",
+        "Concat",
+        "Constant",
+        "Conv",
+        "Div",
+        "Expand",
+        "Gemm",
+        "InstanceNormalization",
+        "Mul",
+        "ReduceL2",
+        "ReduceMax",
+        "ReduceMean",
+        "Reshape",
+        "Shape",
+        "Sigmoid",
+        "Squeeze"
+      ]
+    },
+    "preprocessing": {
+      "bins": 33,
+      "channels": [
+        "real",
+        "imaginary",
+        "log1p_magnitude"
+      ],
+      "hop": 32,
+      "nfft": 64,
+      "periodic_hann": true,
+      "rms_normalization_floor": 1e-09
+    },
+    "width": 48
+  },
+  "assets": {
+    "encoder": {
+      "bytes": 4137944,
+      "path": "dacs-v7-encoder.onnx",
+      "runtime_role": "dacs_encoder",
+      "schema": "onnx.ModelProto.opset18",
+      "sha256": "c51177a2375113500c1446693c42edee52ce8eaef2d15a044076c7f061def933"
+    },
+    "prototypes": {
+      "bytes": 79118,
+      "path": "dacs-v7-prototypes.json",
+      "runtime_role": "fixed_class_prototypes",
+      "schema": "atomos.dacs-v7.fixed-prototypes",
+      "sha256": "1dd9e4252ac2d11d3906e665808dfee370a2db4c0f00806d7a8d1fb5c1325dcd"
+    },
+    "validation": {
+      "bytes": 37286,
+      "path": "dacs-v7-validation.json",
+      "runtime_role": "release_evidence_not_runtime",
+      "schema": "atomos.dacs-v7.fixed-prototype-validation",
+      "sha256": "415d605bd822f14a37d1d90a30bd2e7a65755efae3fd432847f9eec517236cc7"
+    }
+  },
+  "classes": [
+    "am",
+    "bluetooth",
+    "cw",
+    "dsss",
+    "fm",
+    "gsm",
+    "ofdm"
+  ],
+  "development_only": false,
+  "export_provenance": {
+    "atom_classifier_branch": "ship/corrected-corpus-classifier",
+    "atom_classifier_revision": "ab4995200470630133637f36a05d069400c27f9f",
+    "mlx_version": "0.32.0",
+    "onnx_opset": 18,
+    "torch_version": "2.13.0",
+    "working_tree_clean": true
+  },
+  "runtime_constraints": {
+    "closed_set_only": true,
+    "confidence_head_decision_authority": false,
+    "dwell_selection": "largest_supported_prefix_not_exceeding_capture_length",
+    "input": "contiguous complex baseband I/Q",
+    "released_open_set_gate_required_ahead_of_dacs": true,
+    "resampling_in_runtime": false,
+    "sample_rate_hz": 20000000,
+    "supported_dwell_samples": [
+      20000,
+      50000,
+      200000
+    ],
+    "training_decoder_exported": false
+  },
+  "schema": "atomos.dacs-v7.runtime-package",
+  "schema_version": 1,
+  "status": "release",
+  "training_provenance": {
+    "checkpoint_config": {
+      "dtype": "bf16",
+      "embed_dim": 128,
+      "episodes": 3000,
+      "k_shot": 5,
+      "q_query": 5,
+      "seed": 20260740,
+      "width": 48
+    },
+    "checkpoint_episode": 3000,
+    "checkpoint_sha256": "1d75a01e6a68936a7facaf4f8bd32c93cedfd46fc98d0cecdc5ecdacd640b281",
+    "checkpoint_sidecar_sha256": "b9373718b54019927c642000d6c47db1a933db3d4d49e1c422880e48052386d1",
+    "corpus_manifest_sha256": "539414e087160375f42fdc8a44f65f15bce7daafa1fc1c15d12c18909832eb81",
+    "corpus_source_provenance": {
+      "atomClassifier": {
+        "revision": "2014019a68f56ad83ec24277970252b9405ff030",
+        "workingTreeClean": true
+      },
+      "atomSignalLab": {
+        "revision": "12e7eefec06047308eb7053ec33abe54f94d6160",
+        "workingTreeClean": true
+      }
+    },
+    "params_sha256": "4426769114b8272b7acc4fbe935691dce0ee12b81d346f4eecfcd3485393138b"
+  },
+  "validation_summary": {
+    "balanced_accuracy": {
+      "10ms": {
+        "max": 0.9956420068027212,
+        "mean": 0.9938633786848075,
+        "min": 0.9914965986394558,
+        "std": 0.0015736638154283864,
+        "values": [
+          0.9934098639455783,
+          0.9914965986394558,
+          0.9939413265306124,
+          0.994827097505669,
+          0.9956420068027212
+        ]
+      },
+      "1ms": {
+        "max": 0.9075255102040817,
+        "mean": 0.9003543083900226,
+        "min": 0.8917942176870748,
+        "std": 0.0060453255818449505,
+        "values": [
+          0.9043367346938777,
+          0.9075255102040817,
+          0.8917942176870748,
+          0.9001204648526079,
+          0.8979946145124718
+        ]
+      },
+      "2.5ms": {
+        "max": 0.9557114512471656,
+        "mean": 0.9506660997732428,
+        "min": 0.9468537414965988,
+        "std": 0.003918160625709645,
+        "values": [
+          0.9499716553287981,
+          0.9557114512471656,
+          0.9471726190476192,
+          0.9536210317460319,
+          0.9468537414965988
+        ]
+      }
+    },
+    "errors_total": {
+      "10ms": {
+        "max": 20.0,
+        "mean": 14.8,
+        "min": 11.0,
+        "std": 3.420526275297414,
+        "values": [
+          14.0,
+          20.0,
+          16.0,
+          13.0,
+          11.0
+        ]
+      },
+      "1ms": {
+        "max": 545.0,
+        "mean": 508.4,
+        "min": 479.0,
+        "std": 25.294268125407385,
+        "values": [
+          506.0,
+          479.0,
+          545.0,
+          493.0,
+          519.0
+        ]
+      },
+      "2.5ms": {
+        "max": 264.0,
+        "mean": 245.0,
+        "min": 224.0,
+        "std": 15.668439615992398,
+        "values": [
+          253.0,
+          224.0,
+          264.0,
+          235.0,
+          249.0
+        ]
+      }
+    },
+    "min_profile_recall": {
+      "10ms": {
+        "max": 0.9791666666666666,
+        "mean": 0.9645833333333332,
+        "min": 0.9479166666666666,
+        "std": 0.011876827344782685,
+        "values": [
+          0.96875,
+          0.9479166666666666,
+          0.9583333333333334,
+          0.9791666666666666,
+          0.96875
+        ]
+      },
+      "1ms": {
+        "max": 0.28125,
+        "mean": 0.23125,
+        "min": 0.17708333333333334,
+        "std": 0.03993810315141836,
+        "values": [
+          0.23958333333333334,
+          0.28125,
+          0.20833333333333334,
+          0.25,
+          0.17708333333333334
+        ]
+      },
+      "2.5ms": {
+        "max": 0.6145833333333334,
+        "mean": 0.5875,
+        "min": 0.5729166666666666,
+        "std": 0.017430417219459936,
+        "values": [
+          0.59375,
+          0.5729166666666666,
+          0.6145833333333334,
+          0.5729166666666666,
+          0.5833333333333334
+        ]
+      }
+    }
+  }
+}

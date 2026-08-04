@@ -21,14 +21,20 @@ import type { ClassificationWorkerRequest, ClassificationWorkerResponse } from '
 import type { RendererKernel } from './kernel.js';
 import { prototypeSourceForAcquisitionV4 } from '../../../../../../Atom-Classifier/src/embedding/time-domain-profile-routing-v4.js';
 
-// Frozen live-v4 observation geometry. Prefixes are contiguous: no
-// plotting-style subsampling is allowed at this boundary. Captures longer than
-// 16K use their causal first-16K observation, the largest length trained and
-// parity-tested by v4. The schema-5 classifier, not this controller, then
-// canonicalizes trusted-current observations to its effective first 4K.
+// Frozen observation geometry. Prefixes are contiguous: no plotting-style
+// subsampling is allowed at this boundary. The v4 gate buckets its own
+// trained 4K / 8K / 16K prefixes internally, and the schema-5 classifier
+// canonicalizes trusted-current observations to its effective first 4K. At
+// the exact DACS sample rate the admitted prefix extends to the largest
+// trained 20K / 50K / 200K dwell present in the capture for the exact-rate
+// DACS v7 refinement.
 const CLASSIFICATION_IQ_MIN_SAMPLES = 4_096;
 const CLASSIFICATION_IQ_MEDIUM_SAMPLES = 8_192;
 const CLASSIFICATION_IQ_LONG_SAMPLES = 16_384;
+const CLASSIFICATION_IQ_DACS_SAMPLE_RATE_HZ = 20_000_000;
+const CLASSIFICATION_IQ_DACS_SHORT_SAMPLES = 20_000;
+const CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES = 50_000;
+const CLASSIFICATION_IQ_DACS_LONG_SAMPLES = 200_000;
 const CLASSIFICATION_IQ_UNAVAILABLE_MESSAGE =
   'Modulation classification requires at least 4,096 complex samples. Increase Complex samples to 4,096 or more, then capture again.';
 
@@ -132,12 +138,20 @@ function iqClassificationRoute(
  * Select the admitted contiguous capture prefix for modulation classification.
  * Captures below the minimum independently tested geometry produce no sample.
  */
-export function classificationIqPrefixLength(sampleCount: number): number | undefined {
+export function classificationIqPrefixLength(
+  sampleCount: number,
+  sampleRateHz?: number,
+): number | undefined {
   if (!Number.isInteger(sampleCount) || sampleCount < CLASSIFICATION_IQ_MIN_SAMPLES) {
     return undefined;
   }
   if (sampleCount < CLASSIFICATION_IQ_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_MIN_SAMPLES;
   if (sampleCount < CLASSIFICATION_IQ_LONG_SAMPLES) return CLASSIFICATION_IQ_MEDIUM_SAMPLES;
+  if (sampleRateHz === CLASSIFICATION_IQ_DACS_SAMPLE_RATE_HZ) {
+    if (sampleCount >= CLASSIFICATION_IQ_DACS_LONG_SAMPLES) return CLASSIFICATION_IQ_DACS_LONG_SAMPLES;
+    if (sampleCount >= CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES) return CLASSIFICATION_IQ_DACS_MEDIUM_SAMPLES;
+    if (sampleCount >= CLASSIFICATION_IQ_DACS_SHORT_SAMPLES) return CLASSIFICATION_IQ_DACS_SHORT_SAMPLES;
+  }
   return CLASSIFICATION_IQ_LONG_SAMPLES;
 }
 
@@ -146,6 +160,7 @@ export interface ClassificationExecutor {
     real: Float64Array,
     imaginary: Float64Array,
     bandwidthHz: number,
+    sampleRateHz: number,
     prototypeSource: IqClassifierPrototypeSource,
     trustedGeometry?: TrustedIqGeometryContext,
   ): Promise<ModulationClassification>;
@@ -381,7 +396,10 @@ export class ClassificationController {
   }
 
   private classifyIq(capture: ComplexIqMeasurement): Promise<ModulationClassification | undefined> {
-    const prefixLength = classificationIqPrefixLength(capture.sampleCount);
+    const prefixLength = classificationIqPrefixLength(
+      capture.sampleCount,
+      capture.sampleRateHz,
+    );
     if (prefixLength === undefined) return Promise.resolve(undefined);
     const { re, im } = decodeComplexIqChannels(capture, prefixLength);
     const route = iqClassificationRoute(
@@ -392,6 +410,7 @@ export class ClassificationController {
       re,
       im,
       capture.bandwidthHz,
+      capture.sampleRateHz,
       route.prototypeSource,
       route.trustedGeometry,
     );
@@ -423,6 +442,7 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
     real: Float64Array,
     imaginary: Float64Array,
     bandwidthHz: number,
+    sampleRateHz: number,
     prototypeSource: IqClassifierPrototypeSource,
     trustedGeometry?: TrustedIqGeometryContext,
   ): Promise<ModulationClassification> {
@@ -432,6 +452,7 @@ class BrowserClassificationExecutor implements ClassificationExecutor {
       real,
       imaginary,
       bandwidthHz,
+      sampleRateHz,
       prototypeSource,
       ...(trustedGeometry === undefined ? {} : { trustedGeometry }),
     })
@@ -535,6 +556,7 @@ class InlineClassificationExecutor implements ClassificationExecutor {
     real: Float64Array,
     imaginary: Float64Array,
     bandwidthHz: number,
+    sampleRateHz: number,
     prototypeSource: IqClassifierPrototypeSource,
     trustedGeometry?: TrustedIqGeometryContext,
   ): Promise<ModulationClassification> {
@@ -543,6 +565,7 @@ class InlineClassificationExecutor implements ClassificationExecutor {
       real,
       imaginary,
       bandwidthHz,
+      sampleRateHz,
       prototypeSource,
       trustedGeometry,
     );
