@@ -911,9 +911,9 @@ frames/events.
 
 ## 6. SignalLab canonical corpus contract
 
-SignalLab's 42-profile UI catalog contains 12 public canonized observable
+SignalLab's 44-profile UI catalog contains 12 public canonized observable
 profiles backed by the same executable known-scenario source as the corpus.
-The other 30 profiles remain outside the classifier's physical training truth
+The other 32 profiles remain outside the classifier's physical training truth
 and posterior taxonomy, irrespective of their separate digital-I/Q
 qualification. Named test models
 whose required power-balanced allocation, per-slot PRB sequence, subslot/slot

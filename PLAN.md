@@ -1,8 +1,8 @@
 # Atomizer delivery plan
 
 Status: active implementation baseline
-Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 11, application contract 6, SignalLab measurement bridge 3, trio composition 7
-Updated: 2026-08-01
+Contract/API version: instrument API 1, TinySA protocol 3, Atom surface 13, application contract 6, SignalLab measurement bridge 3, trio composition 7
+Updated: 2026-08-03
 Physical firmware baseline: source revision `c97938697b6c7485e7cab50bca9af76996b7d671`; executable-twin release identity is pinned separately by trio composition v7
 
 ## Outcome
@@ -134,7 +134,7 @@ Complete only after clean install/connect/sweep on frozen macOS, Windows, and Li
 
 The exact model is `gpt-realtime-2.1`, which the official model catalog describes as a reasoning Realtime model with text/audio/image input and function calling. Voice uses WebRTC through `/v1/realtime/calls`; trusted text/tools/screenshots use Realtime WebSocket. Both set `reasoning.effort: high`.
 
-Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 51-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
+Voice call creation sends only the immutable `{ type: "realtime", model: "gpt-realtime-2.1" }` bootstrap with SDP. Before enabling the muted microphone, the data channel sends and verifies the complete static session: `audio.output.voice: ballad`, `audio.input.turn_detection` as `server_vad` with threshold `0.97`, automatic response creation/interruption, `gpt-realtime-whisper` transcription, high reasoning, concise instructions, and only `load_atom_tools`. That loader selects at most eight names from the closed 48-tool registry; the following `response.create` overrides tools with only those exact concrete schemas. Text configures the same static session once and obtains current application data through typed read tools. No output-token or truncation limit is configured. Requested/applied microphone settings, sent/API-returned session settings, response usage, and server rate limits are emitted to the console and reflected in Atom's rail.
 
 Every application capability ships with a domain contract, closed agent schema, risk class, executor through the same application host, context projection, UI activity, tests, and docs. RF enable and remote physical-screen touch require action-time approval. Computer clicks are application-only and DOM-hit-tested; every coordinate action consumes a short-lived screenshot ID, focus-sensitive input verifies the expected target, and high-impact targets are blocked.
 

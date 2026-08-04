@@ -633,7 +633,7 @@ Safety invariants hold in every reachable state; liveness requires every admitte
 **Deliverables**
 
 - Exact model constants, Atom system contract, pull-based state access, and typed tool/result/approval contracts.
-- Closed 51-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
+- Closed 48-tool catalog with runtime validators, one compact startup loader, response-scoped concrete schemas, risk classes, action-time approval policy and bounded orchestration loop.
 - Agent-hook completion rule for all future features and source-to-contract traceability.
 - Hobbyist/engineer behavior profiles without changing safety authority.
 

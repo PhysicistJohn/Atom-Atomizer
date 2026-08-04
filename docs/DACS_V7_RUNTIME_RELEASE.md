@@ -4,6 +4,16 @@ Status: production runtime integration
 
 Updated: 2026-08-02
 
+Post-integration note (2026-08-03): this record seals the DACS v7 package as
+released. At the merge into `feature/neptune-p210-driver`, the I/Q open-set
+gate moved from the released time-domain v3 runtime to the route-conditioned
+time-domain v4 runtime. The refinement contract below is unchanged — DACS v7
+still runs only as a closed-set family refinement after the open-set gate
+accepts an exact-20-Msps capture and never bypasses an abstention — and the
+runtime now reports `openSetGate: 'time-domain-v4'`. The sealed-release table,
+claim boundary wording, and release metrics below remain as recorded at
+release time.
+
 ## Claim boundary
 
 Atomizer uses DACS v7 only as a closed-set family refinement after the released

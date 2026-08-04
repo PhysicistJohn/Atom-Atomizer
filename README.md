@@ -19,11 +19,11 @@ pins, then install in the same order CI installs them:
 
 ```bash
 git clone https://github.com/PhysicistJohn/Atom-DSP.git ../Atom-DSP
-git -C ../Atom-DSP checkout v0.1.0
+git -C ../Atom-DSP checkout v0.2.0
 git clone https://github.com/PhysicistJohn/Atom-SignalLab.git ../Atom-SignalLab
-git -C ../Atom-SignalLab checkout 02846e21863a5f50130139ffa1e42fc022bdaec2
+git -C ../Atom-SignalLab checkout deae7214a1d7b74b4327983362e97d754c9736a6
 git clone https://github.com/PhysicistJohn/Atom-Classifier.git ../Atom-Classifier
-git -C ../Atom-Classifier checkout 50764b92b4aa1b2557e7e0a943fc172f5d868ae7
+git -C ../Atom-Classifier checkout c2f872fe8157cec4add34e2a7b5e01e186203573
 
 npm --prefix ../Atom-DSP ci
 npm --prefix ../Atom-DSP run build
@@ -218,7 +218,7 @@ Both AI paths use exactly `gpt-realtime-2.1`:
 | Voice | Realtime API over WebRTC | Audio, image context, function tools |
 | Text | Realtime API over trusted WebSocket | Text, image context, function tools |
 
-Both response paths use the identical closed registry of 51 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
+Both response paths use the identical closed registry of 48 concrete tools, `reasoning.effort: high`, and no model/API/transport fallback. The persistent session contains only `load_atom_tools`; Atom selects at most eight exact names for one operation, and the next `response.create` installs only those concrete schemas. Voice uses Ballad, server VAD threshold `0.97`, and the separate `gpt-realtime-whisper` input-transcription subsystem; Chromium requests echo cancellation, noise suppression, and automatic gain control.
 
 Realtime tool calls are executed only from completed `response.done` items. Atomizer submits every function output, then exactly one continuation response with the current response-scoped schemas, so a tool cannot race the response that requested it. User and assistant transcript deltas stream into the Atom history. Voice makes one 15-second-bounded startup connection attempt with the microphone muted; it remains cancellable while connecting, and an explicit typed request cleanly preempts voice rather than disappearing. Microphone and Atom speaker state are independent, color-coded local human controls. `response.done.usage` and `rate_limits.updated` drive console and rail telemetry.
 
