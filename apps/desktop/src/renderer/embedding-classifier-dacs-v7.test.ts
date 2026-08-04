@@ -141,7 +141,7 @@ describe('route-conditioned v4 open-set gate with DACS v7 refinement', () => {
       'historical',
     );
 
-    expect(result.runtime).toBeUndefined();
+    expect(result.runtime).toEqual({ model: 'time-domain-v4' });
     expect(result).toEqual(legacyResult);
     expect(requested.slice(requestsBefore).filter((path) =>
       path.startsWith('/classifier/v7/'))).toEqual([]);

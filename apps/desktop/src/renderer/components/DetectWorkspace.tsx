@@ -16,9 +16,12 @@ function runtimeLabel(result: ModulationClassification): string | undefined {
   if (result.runtime?.model === 'dacs-v7') {
     const openSetGate = result.runtime.openSetGate === 'time-domain-v3'
       ? 'V3 OPEN-SET'
-      : 'V4 OPEN-SET';
+      : result.runtime.openSetGate === 'time-domain-v4'
+        ? 'V4 OPEN-SET'
+        : 'UNKNOWN OPEN-SET';
     return `DACS V7 · ${result.runtime.dwell?.toUpperCase()} · ${openSetGate} · WASM`;
   }
+  if (result.runtime?.model === 'time-domain-v4') return 'TIME-DOMAIN V4';
   if (result.runtime?.model === 'time-domain-v3') return 'TIME-DOMAIN V3';
   if (result.runtime?.model === 'magnitude-v2') return 'MAGNITUDE V2';
   return undefined;

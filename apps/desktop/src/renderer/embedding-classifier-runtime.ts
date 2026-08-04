@@ -767,13 +767,17 @@ export async function classifyIqModulation(
     trustedGeometry,
   );
   const classifier = await loadTimeDomainV4ProductionAdapter();
-  const admitted = classifier.classifyIq(
+  const gateResult = classifier.classifyIq(
     re,
     im,
     bandwidthHz,
     prototypeSource,
     admittedGeometry,
   );
+  const admitted: ModulationClassification = {
+    ...gateResult,
+    runtime: { model: 'time-domain-v4' },
+  };
   // DACS v7 is a closed-set family refinement that runs only after the
   // route-conditioned v4 open-set gate accepts the capture, and only at its
   // exact trained sample rate. It never bypasses a v4 abstention.

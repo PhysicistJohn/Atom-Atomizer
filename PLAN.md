@@ -56,7 +56,7 @@ See [docs/FIRMWARE_PROTOCOL_CONTRACT.md](./docs/FIRMWARE_PROTOCOL_CONTRACT.md) f
 | Area | Implemented now | Remaining acceptance |
 |---|---|---|
 | Repository/build | npm workspaces, TypeScript, Vitest, Electron/Vite, Dock dev launcher, full check command, exact Node/npm CI matrix on macOS/Windows/Linux | signed and platform-qualified release artifacts |
-| Contracts | strict `AtomizerInstrumentApiV1`, SignalLab measurement bridge v3, TinySA protocol v3, Atom surface v11, application contract v6, byte-identical trio composition v7, source/provenance unions, physical/OEM firmware provenance, instrument/device/sweep/detected-power/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
+| Contracts | strict `AtomizerInstrumentApiV1`, SignalLab measurement bridge v3, TinySA protocol v3, Atom surface v13, application contract v6, byte-identical trio composition v7, source/provenance unions, physical/OEM firmware provenance, instrument/device/sweep/detected-power/screen/diagnostics/export/analysis contracts | operation IDs and schema migrations before public file persistence |
 | USB transport | serial enumeration/open/read/write/events; exact VID/PID ranking; one delivered macOS ZS407 admitted at `0483:5740` | Windows/Linux port evidence and permission guidance; multiple-device hardware exercise |
 | Parser/scheduler | exact echo/prompt correlation, binary fixed-length parsing, device-observed raw-offset decoder, session-fatal timeout/desync | fuzz/property corpus; physical long-command timing |
 | Protocol test double | stateful ZS407 identity, fragments, analyzer/generator, screen/touch/telemetry; test-only | scripted corrupt/truncated/unplug matrix expansion |
