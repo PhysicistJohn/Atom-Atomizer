@@ -21,8 +21,11 @@ const fixture = (name: string): string => join(FIXTURES_DIR, name);
  * Windows cannot execute `.sh` files, so there every fixture spawn is routed
  * through Git Bash (present on the windows-latest runners): the injected
  * spawnFn keeps the fixture path as the logical bin and prepends `bash`.
- * An explicitly supplied spawnFn (the before-spawn validation tests) is
- * never overridden.
+ * The hang fixtures are the exception: killing a shell busy loop does not
+ * propagate reliably through Windows process semantics, so they become a
+ * native endlessly scheduled Node child instead, which TerminateProcess
+ * reaps cleanly. An explicitly supplied spawnFn (the before-spawn validation
+ * tests) is never overridden.
  */
 function fixtureOptions(
   options: NeptuneIioTransportOptions,
@@ -33,7 +36,13 @@ function fixtureOptions(
   return {
     ...options,
     spawnFn: (bin, args, spawnOptions) =>
-      nodeSpawn('bash', [bin, ...args], spawnOptions),
+      bin.endsWith('-hang.sh')
+        ? nodeSpawn(
+          process.execPath,
+          ['--eval', 'setInterval(() => undefined, 1_000);'],
+          spawnOptions,
+        )
+        : nodeSpawn('bash', [bin, ...args], spawnOptions),
   };
 }
 
